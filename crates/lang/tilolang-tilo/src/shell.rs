@@ -44,6 +44,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/docks.tl"),
     ),
     (
+        "feedback.tl",
+        include_str!("../../../../apps/tl/shell/feedback.tl"),
+    ),
+    (
         "launcher.tl",
         include_str!("../../../../apps/tl/shell/launcher.tl"),
     ),
@@ -507,6 +511,7 @@ fn workspace_fields(w: &LayoutWorkspaceReading) -> Vec<(&'static str, Value)> {
         ("key", text(&w.key)),
         ("name", text(&w.name)),
         ("current", Value::Bool(w.current)),
+        ("home", text(&w.home)),
     ]
 }
 

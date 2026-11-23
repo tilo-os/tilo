@@ -3,6 +3,8 @@
 
 d-so-tilo-chat = Chat
 
+d-so-tilo-lang-chat-keywords = messenger, instant messaging, conversation
+
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
     .noun = { $count ->
@@ -520,6 +522,7 @@ d-5rkfnkg4 = Sidebar
     .w-channels = Channels
     .w-no-channels-yet = No channels yet
     .w-channels-are-where-your-workspace-talks = Channels are where your workspace talks, each one a topic.
+    .w-notes-to-self = Notes to self
     .w-direct-messages = Direct messages
     .w-workspace = Workspace
     .w-workspace-skills = Workspace skills
@@ -528,10 +531,24 @@ d-5rkfnkg4 = Sidebar
 d-ymtess4x = Channel
     .w-message = Message #{ $name }
     .w-send = Send
+    .w-wrote-this-in-the-native-chat = { $by } wrote this in the native Chat
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-jbezqvlc = Direct
     .w-message = Message { $name }
     .w-send = Send
+    .w-wrote-this-in-the-native-chat = { $by } wrote this in the native Chat
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-q45utnmh = Channel summary
 
@@ -548,6 +565,13 @@ d-hrbsxhor = Skill row
 d-enkgjyn7 = Thread
     .w-message = Message { $name }
     .w-send = Send
+    .w-wrote-this-in-the-native-chat = { $by } wrote this in the native Chat
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-rydgecpc = Typing here
     .w-is-typing = { $who } is typing…

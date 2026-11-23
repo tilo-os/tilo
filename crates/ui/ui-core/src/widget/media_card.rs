@@ -1150,71 +1150,6 @@ impl crate::widget::ReservedShape for MediaCard {
 }
 
 impl Widget for MediaCard {
-    /// Its picture, then the title and facts underneath, as a card of its own.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        cx.element("article");
-        cx.selected(self.selected);
-        let m = MediaMetrics::new(theme);
-        let art = self.with_face(|face| face.art_rect(self.rect));
-        let version = {
-            use std::hash::{Hash, Hasher};
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            serde_json::to_string(&Widget::accessibility(self))
-                .unwrap_or_default()
-                .hash(&mut hash);
-            self.loaded.is_some().hash(&mut hash);
-            hash.finish()
-        };
-        let picture = cx.part("art", "MediaCard", art);
-        picture.painted(version);
-        let mut y = art.y1 + m.text_gap;
-        if let Some(title) = &self.title {
-            let look = TextLook::new(title.clone(), &m.title, Some(theme.text_primary))
-                .with_max_lines(Some(2));
-            let height = f64::from(m.title.line_height_px()) * 2.0;
-            cx.words(
-                "title",
-                "h3",
-                crate::kurbo::Rect::new(self.rect.x0, y, self.rect.x1, y + height),
-                look,
-            );
-            y += height;
-        }
-        for (index, meta) in self.meta.iter().enumerate() {
-            let empty = meta.is_empty();
-            if empty {
-                continue;
-            }
-            let look =
-                TextLook::new(meta.clone(), &m.meta, Some(theme.text_dim)).with_max_lines(Some(1));
-            let height = f64::from(m.meta.line_height_px());
-            cx.words(
-                &format!("meta:{index}"),
-                "p",
-                crate::kurbo::Rect::new(self.rect.x0, y, self.rect.x1, y + height),
-                look,
-            );
-            y += height;
-        }
-        if let Some(creator) = &self.creator {
-            let look = TextLook::new(creator.name.clone(), &m.meta, Some(theme.text_dim))
-                .with_max_lines(Some(1));
-            cx.words(
-                "creator",
-                "p",
-                crate::kurbo::Rect::new(
-                    self.rect.x0 + m.creator_side,
-                    y,
-                    self.rect.x1,
-                    y + f64::from(m.meta.line_height_px()),
-                ),
-                look,
-            );
-        }
-    }
-
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::ReservedShape
@@ -1834,16 +1769,6 @@ impl MediaGrid {
 }
 
 impl Widget for MediaGrid {
-    /// Its cards in a grid.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if let Some(inner) = &self.inner {
-            inner.html(cx);
-            return;
-        }
-        cx.element("div");
-        cx.children();
-    }
-
     crate::described!();
 
     fn build_layout(

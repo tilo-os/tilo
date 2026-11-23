@@ -30,10 +30,6 @@ x86_64 = 196608
 x86_64 = 65536
 
 # model 459,633 bytes; 3,256,832 bytes in all, 2,621,440 budgeted.
-[apps."so.tilo.calendar"]
-x86_64 = 655360
-
-# model 51,336 bytes; 1,780,736 bytes in all, 1,703,936 budgeted.
 [apps."so.tilo.camera"]
 x86_64 = 131072
 

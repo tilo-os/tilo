@@ -313,68 +313,6 @@ impl Widget for HungApps {
         "HungApps"
     }
 
-    /// Each card as its own section over the window it is about: what happened and whose window it
-    /// is as words, and its two ways out as real buttons.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        let theme = cx.theme().clone();
-        let heading = t("hung-app-title");
-        let style = Self::heading_style(&theme);
-        let ink = theme.tokens.colors.text_primary;
-        for painted in &self.painted {
-            let card = cx.part(
-                &format!("hung:{}", painted.tab),
-                "HungAppCard",
-                painted.card,
-            );
-            card.tag = Some("section");
-            card.own = Some(ui::composition::Own::Text(
-                ui::composition::TextLook::new(
-                    format!("{heading}\n{}", painted.title),
-                    &style,
-                    Some(ink),
-                )
-                .with_max_lines(None),
-            ));
-            for (rect, choice) in &painted.buttons {
-                let (label, role, key) = match choice {
-                    LivenessChoice::Wait => (t("hung-app-wait"), ButtonRole::Secondary, "wait"),
-                    LivenessChoice::ForceQuit => {
-                        (t("hung-app-force-quit"), ButtonRole::Destructive, "quit")
-                    }
-                };
-                let (fill, edge, ink) =
-                    ui::widget::face_colors(&theme, role, ui::widget::Interaction::default());
-                let part = cx.part(
-                    &format!("hung:{}:{key}", painted.tab),
-                    "HungAppChoice",
-                    *rect,
-                );
-                part.tag = Some("button");
-                part.focusable = true;
-                part.own = Some(ui::composition::Own::Face(ui::composition::Face {
-                    icon: None,
-                    label: Some(
-                        ui::composition::TextLook::new(
-                            label,
-                            &theme.text(TextRole::Body),
-                            Some(ink),
-                        )
-                        .with_max_lines(Some(1)),
-                    ),
-                    detail: None,
-                    trailing: None,
-                    fill: Some(ui::composition::rgba8(fill)),
-                    edge: edge.map(ui::composition::rgba8),
-                    radius: f64::from(theme.tokens.radii.control),
-                    pad: 0.0,
-                    gap: 0.0,
-                    spread: false,
-                }));
-            }
-        }
-    }
-
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -597,11 +535,9 @@ impl DesktopSurface {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::collect;
     use super::*;
     use crate::DesktopHandle;
     use tilo_desktop_model::{IdMinter, Tab};
-    use ui::composition::Own;
     use ui::widget::TileHost;
 
     struct Notices;
@@ -743,37 +679,32 @@ mod tests {
         );
     }
 
-    /// The card of a window that stopped answering composes as its words and its two real buttons.
+    /// A page shows the card of a window that stopped answering as what happened, whose window
+    /// it is, and its two ways out as real buttons that act on the card.
     #[test]
-    fn the_hung_card_composes_as_words_and_buttons() {
-        let (mut frame, handle, _tab) = shell(91);
+    fn a_page_shows_the_hung_card_as_words_and_buttons() {
+        let (mut frame, handle, tab) = shell(91);
         assert!(handle.set_unresponsive_windows(vec![91]));
         frame.request_layout();
         frame.poll_frame().expect("a frame draws the card");
-        let composition = frame.composition();
-        let cards = collect(&composition.root, "HungAppCard");
-        let card = cards
-            .first()
-            .unwrap_or_else(|| panic!("a card: {composition:#?}"));
-        assert_eq!(card.tag, Some("section"));
-        let Some(Own::Text(look)) = &card.own else {
-            panic!("the card is words: {card:#?}");
-        };
-        assert!(look.text.contains(&t("hung-app-title")));
-        assert!(look.text.contains("Notes"), "whose window it is: {look:?}");
-        let buttons = collect(&composition.root, "HungAppChoice");
-        assert_eq!(buttons.len(), 2, "Wait and Force quit: {buttons:#?}");
-        for (button, label) in buttons
-            .iter()
-            .zip([t("hung-app-wait"), t("hung-app-force-quit")])
-        {
-            assert_eq!(button.tag, Some("button"));
-            let Some(Own::Face(face)) = &button.own else {
-                panic!("a button face: {button:#?}");
-            };
-            assert_eq!(
-                face.label.as_ref().map(|label| label.text.as_str()),
-                Some(label.as_str())
+        let html = ui::composition::page::Page::new().render(&frame.composition());
+        assert!(
+            html.contains(&ui::composition::page::escape(&t("hung-app-title"))),
+            "the page says what happened: {html}"
+        );
+        assert!(html.contains("Notes"), "and whose window it is: {html}");
+        for (label, verb) in [
+            (t("hung-app-wait"), "wait"),
+            (t("hung-app-force-quit"), "quit"),
+        ] {
+            let target = format!("data-t=\"hung-app:{verb}:{tab}\"");
+            let button = html
+                .split('<')
+                .find(|tag| tag.contains(&target))
+                .unwrap_or_else(|| panic!("{label} is on the page: {html}"));
+            assert!(
+                button.starts_with("button") && button.contains("data-a=\"activate\""),
+                "{label} is a button a press acts on: {button}"
             );
         }
     }

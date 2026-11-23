@@ -125,6 +125,7 @@ broker_services! {
     shortcut_library: Arc<dyn ShortcutLibraryServices>,
     keyboard_shortcuts: Arc<dyn KeyboardShortcutServices>,
     host_steps: Vec<Arc<dyn HostStepServices>> => default,
+    providers: tilo_workspace_service::workspaces::providers::Providers,
     continuations: Arc<dyn ContinuationServices>,
     search_index: Arc<dyn SearchIndexServices>,
     document_index_changes: Arc<dyn DocumentIndexChanges>,
@@ -153,60 +154,239 @@ broker_services! {
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
     shell: Arc<tilo_workspace_service::apps::shell::ShellServices>,
+    device_daemon: tilo_workspace_service::apps::services::DeviceDaemon,
 }
 
-/// The resources of the workspaces this device's own workspace service holds, as the broker reads
-/// them.
-pub(crate) type HeldDocuments =
-    BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>>;
-
-/// The one store of the workspaces this device's own workspace service holds, as apps write and
-/// read their resources in it.
-pub(crate) type HeldResources =
-    BrokerService<Arc<dyn tilo_workspace_service::apps::services::ResourceServices>>;
-
-/// The resources this session reads outside their apps: the workspaces this device's own service
-/// holds, the ones it governs and the ones it joined at a device serving them alike.
-pub(crate) fn document_reads(
-    service: tilo_workspace_service::service::ServiceSlot,
-) -> HeldDocuments {
-    BrokerService::served(Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceReads::on(service),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>)
-}
-
-/// Where this device's own workspace service is installed, and what the session's own roles read
-/// the workspaces it holds from.
-/// The reads of this device's own workspace service on `service`, which other parts of the
-/// session hold too: what they read of a workspace is what its roles read here.
-pub(crate) fn session_documents_on(
-    service: tilo_workspace_service::service::ServiceSlot,
+/// What the session's own roles read and write of the person's workspaces: the device's daemon
+/// keeps them, and answers on the shell `link` it handed this session; and each write the daemon
+/// takes, which the desktop reads its layouts again by.
+pub(crate) fn session_documents(
+    link: tilo_workspace_service::apps::services::DeviceDaemon,
+    runtime: tokio::runtime::Handle,
 ) -> (
-    tilo_workspace_service::service::ServiceSlot,
     Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+    Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    tilo_session_client::daemon_documents::DaemonWritesFeed,
 ) {
-    let reads = Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
-    ) as Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>;
-    (service, reads)
+    let (documents, writes, shell) =
+        tilo_session_client::daemon_documents::on_daemon(link, runtime);
+    let feed = tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell);
+    (documents, writes, feed)
 }
 
-/// What the session's own roles write into the documents of the workspaces this device's service
-/// holds: the same workspaces its reads answer from.
-pub(crate) fn session_writes(
-    service: tilo_workspace_service::service::ServiceSlot,
-) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> {
-    Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service))
+/// The apps' resources in the device's one store, which the daemon keeps, read over the shell's
+/// link: what an agent this session admits reads them with. An app writes its own on its
+/// connection at the daemon, and an agent writes none here.
+pub(crate) struct DaemonResources {
+    pub(crate) shell: tilo_session_client::daemon_documents::DaemonShell,
+    /// The daemon's writes, which a query held open is asked again on.
+    pub(crate) writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
 }
 
-/// The one store of the workspaces this device's service holds, as apps write and read their
-/// resources in it: no app keeps a store of its own, and none is kept beside the service's.
-pub(crate) fn resources(service: tilo_workspace_service::service::ServiceSlot) -> HeldResources {
-    BrokerService::served(Arc::new(
-        tilo_workspace_service::apps::service_resources::ServiceResources::on(service),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::ResourceServices>)
+/// `command` of `app`'s resources in `workspace`, answered by the daemon as the device's person.
+async fn daemon_resource_command(
+    shell: &tilo_session_client::daemon_documents::DaemonShell,
+    workspace: String,
+    app: String,
+    command: &tilo_resource_store::wire::Command,
+) -> Result<tilo_resource_store::wire::Reply, String> {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let command = serde_json::to_string(command)
+        .map_err(|error| format!("a resource command does not encode: {error}"))?;
+    match shell
+        .ask(ShellCall::Resources {
+            workspace,
+            app,
+            command,
+        })
+        .await?
+    {
+        ShellReply::Resources(answer) => serde_json::from_str(&answer?)
+            .map_err(|error| format!("the daemon's answer does not read: {error}")),
+        other => Err(format!("the daemon answered something else: {other:?}")),
+    }
+}
+
+impl tilo_workspace_service::apps::services::ResourceServices for DaemonResources {
+    fn command(
+        &self,
+        context: &tilo_workspace_service::apps::services::ResourceRequestContext,
+        command: tilo_resource_store::wire::Command,
+    ) -> tilo_workspace_service::apps::services::ResourceAnswer {
+        if command.writes() {
+            return Box::pin(std::future::ready(Err(
+                "an app writes its resources on its own connection at the device's daemon"
+                    .to_owned(),
+            )));
+        }
+        let shell = self.shell.clone();
+        let (workspace, app) = (
+            context.workspace_id().to_owned(),
+            context.app_id().to_owned(),
+        );
+        Box::pin(async move { daemon_resource_command(&shell, workspace, app, &command).await })
+    }
+
+    fn open(
+        &self,
+        context: &tilo_workspace_service::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> tilo_workspace_service::apps::services::ResourcePages {
+        let shell = self.shell.clone();
+        let mut written = self.writes.follow();
+        let (workspace, app) = (
+            context.workspace_id().to_owned(),
+            context.app_id().to_owned(),
+        );
+        Box::pin(async move {
+            let command = tilo_resource_store::wire::Command::Query(query);
+            let page = |reply| match reply {
+                tilo_resource_store::wire::Reply::Page(page) => Ok(page),
+                other => Err(format!("the daemon answered a query with {other:?}")),
+            };
+            let first = page(
+                daemon_resource_command(&shell, workspace.clone(), app.clone(), &command).await?,
+            )?;
+            let (pages, received) = tokio::sync::mpsc::unbounded_channel();
+            let mut shown = serde_json::to_vec(&first).unwrap_or_default();
+            pages
+                .send(first)
+                .map_err(|_| "the query was let go before its first page".to_owned())?;
+            // Each write to the workspace (or writes missed, told with no workspace) may change
+            // what the query shows: it is asked again then, and a different page is sent.
+            tokio::spawn(async move {
+                loop {
+                    let heard = tokio::select! {
+                        heard = written.recv() => heard,
+                        () = pages.closed() => return,
+                    };
+                    match heard {
+                        Ok(write)
+                            if !write.workspace.is_empty() && write.workspace != workspace =>
+                        {
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    }
+                    let asked =
+                        daemon_resource_command(&shell, workspace.clone(), app.clone(), &command)
+                            .await
+                            .and_then(page);
+                    match asked {
+                        Ok(next) => {
+                            let bytes = serde_json::to_vec(&next).unwrap_or_default();
+                            if bytes != shown {
+                                shown = bytes;
+                                if pages.send(next).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a held query was not asked again");
+                            return;
+                        }
+                    }
+                }
+            });
+            Ok(received)
+        })
+    }
+}
+
+/// The workspaces' records as the device's daemon keeps them, read over the shell's link: what an
+/// agent this session admits reads a record outside its app with. The session keeps no copy;
+/// the agent's read is decided here, at the record's node, before the daemon is asked.
+pub(crate) struct DaemonRecordReads(
+    pub(crate) tilo_session_client::daemon_documents::DaemonDocuments,
+);
+
+impl tilo_workspace_service::apps::collab_app_broker::NativeDocumentReads for DaemonRecordReads {
+    fn resource_read(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> tilo_workspace_service::apps::collab_app_broker::ResourceRead {
+        use tilo_peer_state::workspace_documents::DeviceDocuments as _;
+        if self.0.holds(workspace, app, record) {
+            tilo_workspace_service::apps::collab_app_broker::ResourceRead::Sealed
+        } else {
+            tilo_workspace_service::apps::collab_app_broker::ResourceRead::Own
+        }
+    }
+
+    fn authorize(
+        &self,
+        context: &tilo_workspace_service::apps::collab_app_broker::NativeDocumentReadContext,
+    ) -> Result<(), String> {
+        context.revalidate()?;
+        let route = context.route();
+        self.0.authorizes(
+            &route.cluster_id,
+            &route.app_id,
+            &route.document_id,
+            context.certificate(),
+        )?;
+        context.revalidate()
+    }
+
+    fn capture(
+        &self,
+        context: &tilo_workspace_service::apps::collab_app_broker::NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<tilo_workspace_service::apps::collab_app_broker::NativeDocumentRead, String> {
+        use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+        use tilo_workspace_service::apps::collab_app_broker::NativeDocumentRead;
+        context.revalidate()?;
+        let route = context.route();
+        let read = self
+            .0
+            .read(&route.cluster_id, &route.app_id, &route.document_id, None)?;
+        let answer = match read {
+            DocumentRead::Whole { revision, .. } | DocumentRead::Unchanged(revision)
+                if Some(revision) == known_revision =>
+            {
+                NativeDocumentRead::Unchanged(revision)
+            }
+            DocumentRead::Whole {
+                revision,
+                heads,
+                bytes,
+            } => {
+                if bytes.len() > maximum {
+                    return Err(format!(
+                        "the record is {} bytes, more than the {maximum} one read takes",
+                        bytes.len()
+                    ));
+                }
+                NativeDocumentRead::Captured {
+                    revision,
+                    heads,
+                    body: Box::new(Captured(bytes)),
+                }
+            }
+            // A read asked for nothing since: the daemon answers the record whole or not at all.
+            DocumentRead::Changes { .. } | DocumentRead::Unchanged(_) => {
+                return Err("the daemon answered a whole read with a part".to_owned());
+            }
+            DocumentRead::Absent => NativeDocumentRead::Absent,
+            DocumentRead::Pending => NativeDocumentRead::Pending,
+        };
+        context.revalidate()?;
+        Ok(answer)
+    }
+}
+
+/// A record's bytes as the daemon answered them.
+struct Captured(Vec<u8>);
+
+impl tilo_workspace_service::apps::collab_app_broker::DocumentBytes for Captured {
+    fn bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 /// What each installed app declared it may do on the action API, read from the lists search keeps:
@@ -273,6 +453,10 @@ pub(crate) const CALLED_SERVICES: &[(&str, &str)] = &[
 /// line; a call to a service this session leaves unserved and this list does not name fails the guard.
 #[cfg(test)]
 pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
+
+#[cfg(test)]
+#[path = "broker_services/daemon_resources_tests.rs"]
+mod daemon_resources_tests;
 
 #[cfg(test)]
 mod tests {

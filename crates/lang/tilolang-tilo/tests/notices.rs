@@ -21,7 +21,7 @@ const TASKS: (&str, &str) = (
     crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 
 /// An app that tells a person about a note and then asks who seals it: the notice is written
 /// before the ask, as something that goes out before one is.

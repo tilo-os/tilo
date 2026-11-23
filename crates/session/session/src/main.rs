@@ -105,6 +105,12 @@ fn main() -> std::process::ExitCode {
         Ok(Some(command)) => return tilo_session::startup::run(command, host_desktop),
         Ok(None) => {}
     }
+    // A display manager's session on a distribution Tilo was added to is started as the person's
+    // shell by their own Tilo service, which hands it the link it is admitted by; this process
+    // only stands in for it.
+    if host_desktop && tilo_session::shell_start::asks_the_service() {
+        return tilo_session::shell_start::through_the_service(&args);
+    }
     // The shell placing, drawing and answering a window is what a person waits
     // on when they open something, so this session carries the session's own
     // CPU and IO weight. The image sets it on the compositor's logind scope

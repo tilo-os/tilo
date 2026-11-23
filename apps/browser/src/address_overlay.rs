@@ -240,28 +240,6 @@ fn describe(row: &Row) -> String {
 }
 
 impl Widget for AddressSuggestions {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Body);
-        let shown = self
-            .items
-            .iter()
-            .map(|row| {
-                if row.detail.trim().is_empty() {
-                    row.title.clone()
-                } else {
-                    format!("{}\n{}", row.title, row.detail)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        cx.text(ui::composition::TextLook::new(
-            shown,
-            &style,
-            Some(theme.tokens.colors.text_primary),
-        ));
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

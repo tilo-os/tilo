@@ -170,8 +170,8 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
     walk(&resources, &mut kinds);
     for kind in [
         "tl.so.tilo.notes.Note",
-        "tl.so.tilo.lang.tasks.Task",
-        "tl.so.tilo.chat.TextChannel",
+        "tl.so.tilo.tasks.Task",
+        "tl.so.tilo.lang.chat.TextChannel",
         "tl.so.tilo.mail.Mailbox",
     ] {
         assert!(kinds.contains(kind), "{kind} is published: {kinds:?}");

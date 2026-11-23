@@ -77,6 +77,7 @@ d-yjwm6mjf = Rename column
 d-yjwm6mjf-title = Title
 
 d-t5kjcxjq = Board
+    .w-new-card = New card
 
 d-ufycrk6s = Card tile
     .w-move-to = Move to { $title }

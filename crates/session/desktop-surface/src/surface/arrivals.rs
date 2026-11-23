@@ -263,32 +263,6 @@ impl Widget for ArrivalHints {
         "ArrivalHints"
     }
 
-    /// Each hint as its own pill of words where it stands, so a page reads who opened what and
-    /// pressing it brings the window into view.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        let theme = cx.theme();
-        let style = Self::style(theme);
-        let ink = theme
-            .tokens
-            .colors
-            .on_surface(theme.tokens.colors.surfaces.overlay)
-            .ink;
-        for hint in &self.hints {
-            let look = ui::composition::TextLook::new(hint.text.clone(), &style, Some(ink))
-                .with_max_lines(Some(1));
-            let part = cx.part(&format!("arrival:{}", hint.tab), "ArrivalHint", hint.rect);
-            part.tag = Some("button");
-            part.focusable = true;
-            part.own = Some(ui::composition::Own::Text(look));
-            part.semantics = Some(
-                AccessNode::new(Role::Label)
-                    .with_name(hint.text.clone())
-                    .with_state(ui::a11y::AccessState::new().focusable(true)),
-            );
-        }
-    }
-
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

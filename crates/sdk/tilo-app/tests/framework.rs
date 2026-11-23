@@ -343,7 +343,7 @@ tilo_test_env::scenario! {
         let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
         let target = format!(
             "timeline-entry:{}",
-            tilo_app::widget::history_group::hex16(&entry)
+            tilo_app::HistoryEntryId::hex(&entry)
         );
         harness
             .perform_semantic_named(

@@ -101,10 +101,6 @@ impl ModalBody {
 }
 
 impl Widget for ModalBody {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(input) = &mut self.input {
             input.sync(state, path);

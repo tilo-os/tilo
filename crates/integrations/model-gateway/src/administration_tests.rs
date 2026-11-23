@@ -1,69 +1,10 @@
 use super::*;
-use crate::{
-    caller::{Caller, Session},
-    transport::{AdministrationClient, CallFuture, FdTransport, Transport},
-};
+use crate::transport::{AdministrationClient, FdTransport};
 use agent_provider_config::management::ProviderAdmin;
 use std::os::fd::AsFd as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::within;
 
-struct Grant(Caller, bool);
-impl Session for Grant {
-    fn caller(&self) -> Caller {
-        self.0
-    }
-    fn may_manage_credentials(&self) -> bool {
-        self.1
-    }
-    fn active(&self) -> bool {
-        true
-    }
-}
-struct Auth;
-impl crate::http_service::SessionAuthorizer for Auth {
-    fn authorize(&self, headers: &hyper::HeaderMap) -> Option<Arc<dyn Session>> {
-        match headers.get("authorization")?.to_str().ok()? {
-            "Bearer manager" => Some(Arc::new(Grant(Caller::Settings, true))),
-            "Bearer settings" => Some(Arc::new(Grant(Caller::Settings, false))),
-            "Bearer agent" => Some(Arc::new(Grant(Caller::Agent, false))),
-            "Bearer chat" => Some(Arc::new(Grant(Caller::Chat, false))),
-            _ => None,
-        }
-    }
-}
-struct Http {
-    url: String,
-    token: &'static str,
-}
-impl Transport for Http {
-    fn call<'a>(
-        &'a self,
-        request: Request,
-        _: &'a mut (dyn FnMut(Response) -> bool + Send),
-    ) -> CallFuture<'a> {
-        Box::pin(async move {
-            let response = provider_client()
-                .unwrap()
-                .post(&self.url)
-                .bearer_auth(self.token)
-                .json(&Frame {
-                    version: RPC_VERSION,
-                    value: request,
-                })
-                .send()
-                .await
-                .unwrap();
-            let status = response.status();
-            let body = response.text().await.unwrap();
-            if status == reqwest::StatusCode::FORBIDDEN {
-                return Err(ModelError::new(ErrorKind::PermissionDenied));
-            }
-            assert!(status.is_success(), "{status}: {body}");
-            Ok(serde_json::from_str(body.trim()).unwrap())
-        })
-    }
-}
 fn fd(app: &str) -> (FdTransport, tokio::task::JoinHandle<()>) {
     let (mut original, peer) = UnixStream::pair().unwrap();
     HANDOFF_FRAMING
@@ -328,64 +269,6 @@ async fn mutation_stop_waits_for_commit() {
     server.await.unwrap();
 }
 
-async fn child(http: bool) {
-    if http {
-        child_http().await;
-    } else {
-        child_fd().await;
-    }
-}
-
-async fn child_http() {
-    let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/model/rpc", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let service = service.clone();
-            tokio::spawn(async move {
-                service.serve_io(stream).await.unwrap();
-            });
-        }
-    });
-    for token in ["agent", "chat", "settings"] {
-        within(format!("{token} being refused administration"), async {
-            let denied = AdministrationClient::new(Http {
-                url: url.clone(),
-                token,
-            });
-            assert_eq!(
-                denied.get_config().await.unwrap_err().kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .set_config("stale".into(), ProviderConfig::default())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .list_models("test-provider".into())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-        })
-        .await;
-    }
-    lifecycle(&AdministrationClient::new(Http {
-        url,
-        token: "manager",
-    }))
-    .await;
-    server.abort();
-}
-
 async fn child_fd() {
     for app in [AGENT_APP, CHAT_APP] {
         within(format!("{app} being refused administration"), async {
@@ -417,7 +300,7 @@ async fn child_fd() {
     .await;
 }
 
-/// Run the end-to-end administration test `name` over `kind` (`http` or
+/// Run the end-to-end administration test `name` over `kind` (`fd`
 /// `fd`) in a process of its own, with disposable configuration. Each step
 /// of it is bounded as a hang on its own ([`within`]): the test is a long
 /// chain of durable settings writes, each syncing its directories,
@@ -430,7 +313,7 @@ fn administration_end_to_end(name: &str, kind: &str) {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(child(kind == "http"));
+            .block_on(child_fd());
         return;
     }
     let root = tempfile::tempdir().unwrap();
@@ -454,11 +337,6 @@ fn administration_end_to_end(name: &str, kind: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-#[test]
-fn provider_administration_over_http_end_to_end() {
-    administration_end_to_end("provider_administration_over_http_end_to_end", "http");
 }
 
 #[test]

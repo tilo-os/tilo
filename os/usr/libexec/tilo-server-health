@@ -15,7 +15,7 @@
 #      notifies READY only after its iroh endpoint is bound and accepting, so an
 #      active server is one peers can dial, and its metrics snapshot is one it
 #      wrote since this boot began.
-#   2. The store opens: `tilo-server-admin status` opens every durable workspace
+#   2. The store opens: `tilo-server status` opens every durable workspace
 #      store on the state root and reads its membership and retained changes.
 #      A generation whose store cannot be opened is one no workspace can reach.
 #
@@ -31,7 +31,7 @@ warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
 
 SERVER_CONFIG="${TILO_SERVER_HEALTH_SERVER_CONFIG:-/etc/tilo/server.toml}"
 CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
-ADMIN="${TILO_SERVER_HEALTH_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
+SERVER_CLI="${TILO_SERVER_HEALTH_CLI:-/usr/libexec/tilo/tilo-server}"
 # tilo-server.service's own default state root (os/usr/lib/systemd/system/
 # tilo-server.service reads /etc/tilo/server.toml; this is the image's default).
 STATE_ROOT="${TILO_SERVER_HEALTH_STATE_ROOT:-/var/lib/tilo-server}"
@@ -82,15 +82,15 @@ serving() {
     reason="the server has written no metrics snapshot in $STATE_ROOT"
   elif [ $(( $(date +%s) - $(stat -c %Y "$STATE_ROOT/metrics.json") )) -gt "$FRESH" ]; then
     reason="the server's metrics snapshot in $STATE_ROOT is older than ${FRESH}s: it is not serving now"
-  elif ! applies="$("$ADMIN" --config "$SERVER_CONFIG" status 2>&1)"; then
-    reason="tilo-server-admin status cannot open this state root: $applies"
+  elif ! applies="$("$SERVER_CLI" --config "$SERVER_CONFIG" status 2>&1)"; then
+    reason="tilo-server status cannot open this state root: $applies"
   fi
   if [ -n "$reason" ]; then
     warn "$reason"
     return 1
   fi
   log 'the server is serving'
-  log 'the store opens (tilo-server-admin status read every durable workspace)'
+  log 'the store opens (tilo-server status read every durable workspace)'
   return 0
 }
 

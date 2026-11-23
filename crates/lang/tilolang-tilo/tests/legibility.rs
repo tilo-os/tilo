@@ -20,7 +20,7 @@ const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 pub(crate) const NOTES_APP: &str = "so.tilo.notes";
-pub(crate) const TASKS_APP: &str = "so.tilo.lang.tasks";
+pub(crate) const TASKS_APP: &str = "so.tilo.tasks";
 
 pub(crate) const AGENT: &str = "helper";
 

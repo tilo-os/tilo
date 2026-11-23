@@ -8,11 +8,11 @@ use std::sync::Arc;
 use base64::Engine as _;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Affine;
 
 use super::FrameHarness;
 use crate::app_core::AppCore as _;
-use crate::composition::{Composed, Composition, HtmlCx, Own, css};
+use crate::composition::{Composed, Composition, Picture, css};
 use crate::widget::Widget;
 
 /// Every widget of the retained tree by its address: the path semantic actions name it by, and the
@@ -52,13 +52,12 @@ struct Walk<'a> {
     widgets: HashMap<usize, Vec<(String, &'a dyn Widget)>>,
     node_widgets: HashMap<NodeId, usize>,
     taffy: &'a TaffyTree<()>,
-    theme: &'a crate::Theme,
     placed: std::cell::RefCell<std::collections::HashSet<usize>>,
     /// The addresses of the widgets being composed, outermost first.
     open: std::cell::RefCell<Vec<usize>>,
-    /// The theme each grounded widget being composed hands what it holds, innermost last: a
-    /// button on a card wears the card's on-ground colours, as its paint does.
-    grounds: std::cell::RefCell<Vec<std::rc::Rc<crate::Theme>>>,
+    /// What a widget's parent publishes for it in its own nodes, by the widget's address: a
+    /// list's row with its place in the list, its level and its disclosure.
+    represented: std::cell::RefCell<HashMap<usize, crate::a11y::AccessNode>>,
 }
 
 impl<'a> Walk<'a> {
@@ -77,6 +76,37 @@ impl<'a> Walk<'a> {
     /// The innermost widget at `address`.
     fn innermost(&self, address: usize) -> Option<&(String, &'a dyn Widget)> {
         self.widgets.get(&address).and_then(|all| all.last())
+    }
+
+    /// What `widget` publishes for each child it represents in its own nodes (`access`), kept
+    /// for when that child is composed: the node at the path it hangs the child at, or the
+    /// node standing where the child stands.
+    fn represent(&self, widget: &dyn Widget, access: &crate::a11y::AccessNode) {
+        let mut represented = self.represented.borrow_mut();
+        for (index, child) in widget.children().into_iter().enumerate() {
+            if !widget.accessibility_represents_child(index) {
+                continue;
+            }
+            let node = match widget.accessibility_child_path(index) {
+                Some(path) if !path.is_empty() => path
+                    .iter()
+                    .try_fold(access, |node, &at| node.children.get(at)),
+                _ => {
+                    let rect = child.get_rect();
+                    access.children.iter().find(|node| {
+                        node.bounds.is_some_and(|bounds| {
+                            (bounds.x0 - rect.x0).abs() < 0.5
+                                && (bounds.y0 - rect.y0).abs() < 0.5
+                                && (bounds.x1 - rect.x1).abs() < 0.5
+                                && (bounds.y1 - rect.y1).abs() < 0.5
+                        })
+                    })
+                }
+            };
+            if let Some(node) = node {
+                represented.insert(address(child), node.clone());
+            }
+        }
     }
 
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
@@ -129,125 +159,70 @@ impl<'a> Walk<'a> {
                 .into_iter()
                 .map(|child| self.compose(child, (x, y), &mut inner, &path))
                 .collect();
-            let flows = self.flows(node, (x, y), &children);
-            return Composed {
-                flows,
-                places: false,
-                well: None,
-                surfaces: Vec::new(),
-                children,
-                tag: None,
-                fallback: false,
-                path,
-                widget: String::new(),
-                rect: [x, y, size.0, size.1],
-                clip: None,
-                layout: css,
-                scroll: None,
-                semantics: None,
-                ground: None,
-                floats: false,
-                shadow_side: None,
-                attrs: Vec::new(),
-                own: None,
-                focusable: false,
-            };
+            let mut composed = Composed::new(path, "", [x, y, size.0, size.1]);
+            composed.flows = self.flows(node, (x, y), &children);
+            composed.layout = css;
+            composed.children = children;
+            return composed;
         };
         let widget: &dyn Widget = *widget;
         self.placed.borrow_mut().insert(address(widget));
         let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-            return Composed {
-                tag: None,
-                fallback: false,
-                path: path.clone(),
-                widget: "ClosedComponent".into(),
-                rect: [x, y, size.0, size.1],
-                clip: None,
-                layout: None,
-                scroll: None,
-                semantics: None,
-                ground: None,
-                floats: false,
-                shadow_side: None,
-                attrs: Vec::new(),
-                own: None,
-                focusable: false,
-                flows: false,
-                places: false,
-                well: None,
-                surfaces: Vec::new(),
-                children: Vec::new(),
-            };
+            return Composed::new(path.clone(), "ClosedComponent", [x, y, size.0, size.1]);
         };
         let rect = widget.get_rect();
-        let semantics = widget
-            .accessibility()
-            .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
-        let base = (rect.x0, rect.y0);
-        let theme = self.grounds.borrow().last().cloned();
-        let theme: &crate::Theme = theme.as_deref().unwrap_or(self.theme);
-        let mut compose_children = |ground: Option<[u8; 4]>| {
-            let on = ground.map(|[r, g, b, a]| {
-                std::rc::Rc::new(theme.on_ground(vello::peniko::Color::from_rgba8(r, g, b, a)))
+        let semantics = self
+            .represented
+            .borrow_mut()
+            .remove(&address(widget))
+            .or_else(|| {
+                (!widget.accessibility_hidden())
+                    .then(|| widget.accessibility())
+                    .flatten()
+                    .map(|access| crate::a11y::with_synthetic_bounds(access, widget))
             });
-            let grounded = on.is_some();
-            self.grounds.borrow_mut().extend(on);
-            let mut inner = 0;
-            let children: Vec<Composed> = children_nodes
-                .iter()
-                .map(|&child| self.compose(child, base, &mut inner, path))
-                .collect();
-            let widgets = children_nodes
-                .iter()
-                .map(|child| self.node_widgets.get(child).copied().unwrap_or(0))
-                .collect();
-            if grounded {
-                self.grounds.borrow_mut().pop();
-            }
-            let flows = self.flows(node, base, &children);
-            (children, widgets, flows)
-        };
-        let mut cx = HtmlCx {
-            composed: Composed {
-                tag: None,
-                fallback: false,
-                path: path.clone(),
-                widget: widget.name().to_owned(),
-                rect: [rect.x0, rect.y0, rect.width(), rect.height()],
-                clip: widget
-                    .child_clip_rect()
-                    .map(|r| [r.x0, r.y0, r.width(), r.height()]),
-                layout: css,
-                scroll: widget.primary_vertical_scroll().map(|region| {
-                    [
-                        region.metrics.offset,
-                        region.metrics.content,
-                        region.metrics.viewport,
-                    ]
-                }),
-                semantics,
-                ground: None,
-                floats: false,
-                shadow_side: None,
-                attrs: Vec::new(),
-                own: None,
-                focusable: widget.is_focusable(),
-                flows: false,
-                places: false,
-                well: None,
-                surfaces: Vec::new(),
-                children: Vec::new(),
-            },
-            theme,
-            compose_children: &mut compose_children,
-            child_widgets: Vec::new(),
-        };
+        if let Some(access) = semantics
+            .as_ref()
+            .filter(|access| !access.children.is_empty())
+        {
+            self.represent(widget, access);
+        }
+        let base = (rect.x0, rect.y0);
         self.open.borrow_mut().extend(at);
-        widget.html(&mut cx);
+        let mut inner = 0;
+        let children: Vec<Composed> = children_nodes
+            .iter()
+            .map(|&child| self.compose(child, base, &mut inner, path))
+            .collect();
         if at.is_some() {
             self.open.borrow_mut().pop();
         }
-        cx.composed
+        let mut composed = Composed::new(
+            path.clone(),
+            widget.name(),
+            [rect.x0, rect.y0, rect.width(), rect.height()],
+        );
+        composed.flows = self.flows(node, base, &children);
+        composed.clip = widget
+            .child_clip_rect()
+            .map(|r| [r.x0, r.y0, r.width(), r.height()]);
+        composed.layout = css;
+        composed.scroll = widget.primary_vertical_scroll().map(|region| {
+            [
+                region.metrics.offset,
+                region.metrics.content,
+                region.metrics.viewport,
+            ]
+        });
+        composed.focusable = widget.is_focusable();
+        if children.is_empty()
+            && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)
+        {
+            composed.picture = Some(Picture::default());
+        }
+        composed.semantics = semantics;
+        composed.children = children;
+        composed
     }
 }
 
@@ -271,42 +246,24 @@ impl FrameHarness {
                 .map(|(&node, &widget)| (node, widget.cast::<()>() as usize))
                 .collect(),
             taffy: &self.taffy,
-            theme: &self.theme,
             placed: std::cell::RefCell::default(),
             open: std::cell::RefCell::default(),
-            grounds: std::cell::RefCell::default(),
+            represented: std::cell::RefCell::default(),
         };
         let mut anonymous = 0;
         let root = if self.layout_built {
             walk.compose(self.root_node, (0.0, 0.0), &mut anonymous, "")
         } else {
-            Composed {
-                tag: None,
-                fallback: false,
-                path: String::new(),
-                widget: String::new(),
-                rect: [
+            Composed::new(
+                String::new(),
+                "",
+                [
                     0.0,
                     0.0,
                     f64::from(self.viewport.0),
                     f64::from(self.viewport.1),
                 ],
-                clip: None,
-                layout: None,
-                scroll: None,
-                semantics: None,
-                ground: None,
-                floats: false,
-                shadow_side: None,
-                attrs: Vec::new(),
-                own: None,
-                focusable: false,
-                flows: false,
-                places: false,
-                well: None,
-                surfaces: Vec::new(),
-                children: Vec::new(),
-            }
+            )
         };
         // What the layout tree does not reach stands over it: the palette,
         // an open menu, a dialog, each laid out as a tree of its own.
@@ -341,20 +298,18 @@ impl FrameHarness {
                 .and_then(|address| walk.innermost(*address))
                 .map(|(path, _)| path.clone())
         });
-        let mut composition = Composition {
+        Composition {
             viewport: [self.viewport.0, self.viewport.1],
             focus,
             root,
             layers,
-        };
-        composition.forget_semantics_children();
-        composition
+        }
     }
 
-    /// `composition`, read from this frame ([`Self::composition`]), with the picture of each part
-    /// that declares nothing of its own ([`Own::Painted`]): its paint alone, drawn at twice its
-    /// size for a sharp screen, without the words and chart readouts the page sets over it. A
-    /// picture is drawn again only when its part's version changes.
+    /// `composition`, read from this frame ([`Self::composition`]), with the picture of each
+    /// widget a page shows as its paint ([`crate::composition::page::shows_paint`]): its paint
+    /// alone, drawn at twice its size for a sharp screen. A picture is drawn again only when
+    /// what the widget paints changed.
     pub fn paint_pictures(&mut self, composition: &mut Composition) {
         let mut wanted = Vec::new();
         for node in std::iter::once(&composition.root).chain(&composition.layers) {
@@ -363,16 +318,22 @@ impl FrameHarness {
         let mut drawn = std::mem::take(&mut self.pictures);
         let mut targets = None;
         let mut shown = HashMap::with_capacity(wanted.len());
-        for (composed, version) in wanted {
-            let kept = drawn
-                .remove(&composed.path)
-                .filter(|(was, _)| *was == version);
+        for (path, rect) in wanted {
+            let Some((scene, [_, _, width, height])) = self.scene_of(&path, rect, &mut targets)
+            else {
+                continue;
+            };
+            if scene.encoding().is_empty() {
+                continue;
+            }
+            let version = scene_version(&scene, width, height);
+            let kept = drawn.remove(&path).filter(|(was, _)| *was == version);
             let picture = match kept {
                 Some((_, picture)) => Some(picture),
-                None => self.picture(composed, &mut targets),
+                None => picture_of(&path, &scene, width, height),
             };
             if let Some(picture) = picture {
-                shown.insert(composed.path.clone(), (version, picture));
+                shown.insert(path, (version, picture));
             }
         }
         for node in std::iter::once(&mut composition.root).chain(&mut composition.layers) {
@@ -381,53 +342,20 @@ impl FrameHarness {
         self.pictures = shown;
     }
 
-    /// The picture of `composed`, a PNG as a `data:` address, or none for a part no laid-out widget
-    /// has the path of or that has no area.
-    fn picture(
+    /// The paint of the widget at `path` (or the window's part row), with its box's top left at
+    /// the origin, at the picture's scale; none for a path no laid-out widget has.
+    fn scene_of(
         &mut self,
-        composed: &Composed,
+        path: &str,
+        rect: [f64; 4],
         targets: &mut Option<HashMap<String, NodeId>>,
-    ) -> Option<Arc<str>> {
-        let path = composed.path.as_str();
-        let (scene, [_, _, width, height]) = if path == super::part_row::WINDOW_PARTS {
-            self.paint_part_row(PICTURE_SCALE)?
-        } else {
-            let widget = path.split_once('#').map_or(path, |(widget, _)| widget);
-            let node = *targets
-                .get_or_insert_with(|| self.named_target_nodes())
-                .get(widget)?;
-            self.paint_node(node, composed)?
-        };
-        let pixels = |logical: f64| {
-            let device = (logical * PICTURE_SCALE).ceil();
-            (1.0..=f64::from(u16::MAX))
-                .contains(&device)
-                .then(|| crate::num::u32_of_f64(device))
-        };
-        let (width, height) = (pixels(width)?, pixels(height)?);
-        let rgba = crate::offscreen::render_picture(
-            &scene,
-            width,
-            height,
-            vello::peniko::Color::TRANSPARENT,
-        )
-        .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
-        .ok()?;
-        let png = crate::png::encode_rgba8(width, height, &rgba).ok()?;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
-        Some(format!("data:image/png;base64,{encoded}").into())
-    }
-
-    /// The paint of `composed`, the widget laid out at `node` or a part of it, with its box's top
-    /// left at the origin.
-    fn paint_node(&mut self, node: NodeId, composed: &Composed) -> Option<(Scene, [f64; 4])> {
-        let [x, y, width, height] = composed.rect;
-        let part = composed
-            .path
-            .contains('#')
-            .then(|| Rect::new(x, y, x + width, y + height));
-        // Words the page sets over the picture are left out of it.
-        let words_on_top = composed.children.iter().any(shows_words);
+    ) -> Option<(Scene, [f64; 4])> {
+        if path == super::part_row::WINDOW_PARTS {
+            return self.paint_part_row(PICTURE_SCALE);
+        }
+        let node = *targets
+            .get_or_insert_with(|| self.named_target_nodes())
+            .get(path)?;
         let text = &mut self.text;
         let theme = &self.theme;
         let presence = &self.presence;
@@ -439,24 +367,13 @@ impl FrameHarness {
                 &self.node_map,
                 node,
                 |widget| {
-                    let rect = part.unwrap_or_else(|| widget.get_rect());
                     let mut scene = Scene::new();
                     let transform =
-                        Affine::scale(PICTURE_SCALE) * Affine::translate((-rect.x0, -rect.y0));
-                    let mut paint = || {
-                        crate::widget::DrawChild::draw_child(
-                            widget, &mut scene, transform, text, theme, presence,
-                        );
-                    };
-                    // A chart's readout is the page's own elements over its picture.
-                    crate::widget::chart_readout::without_readouts(|| {
-                        if words_on_top {
-                            crate::text_render::without_words(paint);
-                        } else {
-                            paint();
-                        }
-                    });
-                    (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
+                        Affine::scale(PICTURE_SCALE) * Affine::translate((-rect[0], -rect[1]));
+                    crate::widget::DrawChild::draw_child(
+                        widget, &mut scene, transform, text, theme, presence,
+                    );
+                    (scene, rect)
                 },
             )
         }
@@ -464,40 +381,72 @@ impl FrameHarness {
     }
 }
 
-/// Device pixels a page's picture has for each logical pixel of its part: a sharp picture on a
+/// The picture of `scene`, `width` by `height` logical pixels, as a PNG's `data:` address.
+fn picture_of(path: &str, scene: &Scene, width: f64, height: f64) -> Option<Arc<str>> {
+    let pixels = |logical: f64| {
+        let device = (logical * PICTURE_SCALE).ceil();
+        (1.0..=f64::from(u16::MAX))
+            .contains(&device)
+            .then(|| crate::num::u32_of_f64(device))
+    };
+    let (width, height) = (pixels(width)?, pixels(height)?);
+    let rgba =
+        crate::offscreen::render_picture(scene, width, height, vello::peniko::Color::TRANSPARENT)
+            .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
+            .ok()?;
+    let png = crate::png::encode_rgba8(width, height, &rgba).ok()?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+    Some(format!("data:image/png;base64,{encoded}").into())
+}
+
+/// What `scene` draws, as a number that changes when it does: its paths, its draws and their
+/// colours, its glyphs and where they stand, and its size.
+fn scene_version(scene: &Scene, width: f64, height: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let encoding = scene.encoding();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    width.to_bits().hash(&mut hash);
+    height.to_bits().hash(&mut hash);
+    encoding.path_data.hash(&mut hash);
+    encoding.draw_data.hash(&mut hash);
+    encoding.path_tags.len().hash(&mut hash);
+    encoding.draw_tags.len().hash(&mut hash);
+    encoding.transforms.len().hash(&mut hash);
+    encoding.resources.patches.len().hash(&mut hash);
+    for glyph in &encoding.resources.glyphs {
+        glyph.id.hash(&mut hash);
+        glyph.x.to_bits().hash(&mut hash);
+        glyph.y.to_bits().hash(&mut hash);
+    }
+    hash.finish()
+}
+
+/// Device pixels a page's picture has for each logical pixel of its widget: a sharp picture on a
 /// screen of twice the density, scaled down on any other.
 const PICTURE_SCALE: f64 = 2.0;
 
-/// Every part of `node` that shows as a picture, with the version it shows.
-fn painted_parts<'c>(node: &'c Composed, out: &mut Vec<(&'c Composed, u64)>) {
-    if let Some(Own::Painted { version, .. }) = node.own {
-        out.push((node, version));
+/// Every widget under `node` that shows as a picture, with where it stands.
+fn painted_parts(node: &Composed, out: &mut Vec<(String, [f64; 4])>) {
+    if node.picture.is_some() {
+        out.push((node.path.clone(), node.rect));
     }
     for child in &node.children {
         painted_parts(child, out);
     }
 }
 
-/// `node` with each picture of `shown` handed to the part it is of.
+/// `node` with each picture of `shown` handed to the widget it is of.
 fn hand_pictures(node: &mut Composed, shown: &HashMap<String, (u64, Arc<str>)>) {
-    if let Some(Own::Painted { picture, .. }) = &mut node.own {
-        *picture = shown.get(&node.path).map(|(_, drawn)| Arc::clone(drawn));
+    if let Some(picture) = &mut node.picture {
+        match shown.get(&node.path) {
+            Some((version, drawn)) => {
+                picture.version = *version;
+                picture.data = Some(Arc::clone(drawn));
+            }
+            None => picture.data = None,
+        }
     }
     for child in &mut node.children {
         hand_pictures(child, shown);
     }
-}
-
-/// Whether `node` or a part of it shows words of its own on a page.
-fn shows_words(node: &Composed) -> bool {
-    matches!(
-        node.own,
-        Some(
-            Own::Text(_)
-                | Own::Field { .. }
-                | Own::Blocks { .. }
-                | Own::Face(_)
-                | Own::Control { .. }
-        )
-    ) || node.children.iter().any(shows_words)
 }

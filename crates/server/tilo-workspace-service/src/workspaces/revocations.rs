@@ -76,6 +76,27 @@ impl Workspaces {
         refused
     }
 
+    /// Take in what a refused dial said: a key its person's root retired, as the entry the root
+    /// signed. The entry is checked before anything is done with the refusal: the root's
+    /// signature first, as every entry the revocation list keeps is checked
+    /// ([`verify_revocation_entry`]), then [`Self::take_revocations`]'s own checks of the roots
+    /// this device serves and of the roots its workspaces certify. A refusal carrying an entry
+    /// that does not verify changes nothing here, whatever the refusing device said.
+    pub(crate) async fn take_refusal(&self, refusal: tilo_server_protocol::refusal::Refusal) {
+        let tilo_server_protocol::refusal::Refusal::Revoked(entry) = refusal else {
+            return;
+        };
+        if verify_revocation_entry(&entry).is_err() {
+            tracing::warn!(
+                "a refusal named a revocation its root did not sign; nothing was kept of it"
+            );
+            return;
+        }
+        if let Err(error) = self.take_revocations(vec![*entry]).await {
+            tracing::warn!(%error, "a refused dial's revocation was not taken in");
+        }
+    }
+
     /// Add `entries` to this holder's revocation log and its live list: what
     /// it refuses from each entry's moment on.
     ///
@@ -245,6 +266,72 @@ mod tests {
         let mut key = [0xa5; 32];
         key[..8].copy_from_slice(&n.to_le_bytes());
         key
+    }
+
+    /// A refused dial that names a revocation nothing signed is no revocation: the device the
+    /// entry names stays in service, nothing is recorded, and no workspace carries it. The
+    /// root's own signature is what makes the entry one, as it is for every entry the
+    /// revocation list keeps.
+    #[tokio::test]
+    async fn a_refused_dial_naming_an_unsigned_entry_changes_nothing() {
+        // The authority epoch is the whole process's, which every test that narrows anything
+        // bumps: only in a process of its own does the epoch stay still of this server's doing.
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_refused_dial_naming_an_unsigned_entry_changes_nothing",
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
+        let created = workspaces.create("Plans").await.unwrap();
+        let device = SigningKey::from_bytes(&[9; 32]);
+        let mut forged = revocation(&key, device.verifying_key().to_bytes());
+        forged.signature = [0; 64];
+        let epoch = crate::authority_epoch::current();
+        workspaces
+            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
+                forged,
+            )))
+            .await;
+        assert!(
+            workspaces.revocations().is_empty(),
+            "an entry its own root did not sign revokes nothing"
+        );
+        assert!(
+            crate::workspace_files::load_revocations(dir.path())
+                .unwrap()
+                .is_empty()
+        );
+        let workspace = workspaces.workspace(&created.workspace).await.unwrap();
+        assert!(workspace.lock().await.peer().revocations().is_empty());
+        assert_eq!(
+            crate::authority_epoch::current(),
+            epoch,
+            "no session is re-checked"
+        );
+
+        // The same entry the root signs is taken, and reaches the workspace.
+        let signed = revocation(&key, device.verifying_key().to_bytes());
+        workspaces
+            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
+                signed.clone(),
+            )))
+            .await;
+        assert_eq!(
+            crate::workspace_files::load_revocations(dir.path()).unwrap(),
+            vec![signed.clone()]
+        );
+        assert!(
+            workspaces
+                .revocations()
+                .is_revoked(&cert.user_public_key, &device.verifying_key().to_bytes())
+        );
+        assert!(!workspace.lock().await.peer().revocations().is_empty());
+        drop(workspace);
+        server.shutdown().await;
     }
 
     /// Bob's root signs an entry naming a device of Ada's: the host keeps

@@ -1731,10 +1731,13 @@ impl Described for DescribedList {
         // The row the view asks to show moves the list when the key it names changes, and never
         // for the same key again, so a person's own scroll stays. It is taken before the list is
         // borrowed, since the ask is the component's.
-        let asking = if reveal == self.revealed {
-            None
-        } else {
-            reveal.clone()
+        // The row the view asks to show moves the list when the key it names changes, and also
+        // when that row is no longer in the window (a person scrolled away and pressed the same
+        // letter again); a row already in view stays where they scrolled it.
+        let outside = |key: &str| self.list().is_some_and(|list| !list.row_is_visible(key));
+        let asking = match &reveal {
+            Some(key) if reveal != self.revealed || outside(key) => Some(key.clone()),
+            _ => None,
         };
         self.revealed.clone_from(&reveal);
         let reading = Rc::clone(&self.reading);

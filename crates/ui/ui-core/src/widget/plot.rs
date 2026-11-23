@@ -472,29 +472,6 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
 impl<M: PlotMarks> Widget for Plot<M> {
     crate::described!();
 
-    /// Its frame and marks: a picture, named by its title and its items, under what it reads at
-    /// the inspected mark as the page's own elements. The picture is drawn again when what it
-    /// shows changes, not as the pointer moves over it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("figure");
-        let theme = cx.theme();
-        let shown = (
-            cx.semantics()
-                .map(|node| serde_json::to_string(node).unwrap_or_default())
-                .unwrap_or_default(),
-            self.marks.shown_inspection(),
-            self.marks
-                .toggles()
-                .and_then(|toggles| toggles.focus())
-                .map(str::to_owned),
-        );
-        let rect = self.marks.frame().rect;
-        cx.part("marks", "ChartMarks", rect).painted_of(&shown);
-        if let Some(readout) = self.marks.readout(theme) {
-            readout.compose(cx.node(), theme);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -569,9 +546,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
     ) {
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
-        if !crate::widget::chart_readout::readouts_left_out()
-            && let Some(readout) = self.marks.readout(theme)
-        {
+        if let Some(readout) = self.marks.readout(theme) {
             readout.paint(scene, transform, tr, theme);
         }
     }

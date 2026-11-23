@@ -41,7 +41,7 @@ pub fn reviewing() -> (tempfile::TempDir, AccountsController) {
         |ownership| ownership,
     )
     .unwrap();
-    let config = calendar::CalDavConfig {
+    let config = CalDavConfig {
         server_url: "https://cloud.example/remote.php/dav/".into(),
         username: "person".into(),
         ..Default::default()
@@ -57,7 +57,7 @@ pub fn reviewing() -> (tempfile::TempDir, AccountsController) {
             entry: 0,
             config,
             google: false,
-            discovered: vec![calendar::RemoteCalendar {
+            discovered: vec![RemoteCalendar {
                 id: "https://cloud.example/remote.php/dav/calendars/person/work/".into(),
                 name: "Work".into(),
                 color: 0,

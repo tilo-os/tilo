@@ -14,7 +14,6 @@ runtime-client = ["dep:tilo-rt"]
 
 [dependencies]
 agent-provider-config = { version = "0.1.0", path = "../../integrations/provider-config" }
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -25,10 +24,6 @@ wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
 libc.workspace = true
 tilo-rt = { workspace = true, optional = true }
 wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["tokio"] }
-
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-# A page checks a model service's URL with the browser's own parser.
-web-sys = { version = "=0.3.85", features = ["Url"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }

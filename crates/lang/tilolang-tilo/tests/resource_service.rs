@@ -28,7 +28,7 @@ const TASKS: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const APP: &str = "so.tilo.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 
 /// A view of another app's package that shows a note by the notes app's own row view.
 const CARD: &str = r#"app test.card "Card"

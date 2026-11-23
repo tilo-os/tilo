@@ -2608,19 +2608,6 @@ impl Findable for TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Code);
-        cx.element("pre");
-        let mut look = ui::composition::TextLook::new(
-            self.grid_text().trim_end().to_owned(),
-            &style,
-            Some(theme.tokens.colors.text_primary),
-        );
-        look.mono = true;
-        cx.text(look);
-    }
-
     ui::provides!(
         dyn Findable,
         dyn ui::AppWidget,

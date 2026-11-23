@@ -57,10 +57,6 @@ impl Probe {
     }
 }
 impl Widget for Probe {
-    /// Nothing of its own: a stand-in that answers control results and shows nothing.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

@@ -326,11 +326,6 @@ impl NativeViewLifecycle for NativeView {
 }
 
 impl Widget for NativeView {
-    /// The fallback the toolkit draws where the platform's own surface does not show.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
     crate::provides!(dyn crate::widget::NativeViewLifecycle);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {

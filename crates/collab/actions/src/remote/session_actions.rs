@@ -41,6 +41,26 @@ pub const SHOW_INVITE: &str = "show-invite";
 /// (Settings' Devices) offers adding to it this way.
 pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
 
+/// The resource the person's own tilolang line is run on: a line typed in a conversation, run as
+/// the person at this device. What it reads and changes is theirs, and History credits them,
+/// never an agent.
+pub const PROGRAMS_RESOURCE: &str = "session:programs";
+
+/// The action running one tilolang line as the invoking person: `line`, its source text. It
+/// answers the program's output in the person's words, or why it failed — a parse or type error
+/// with its place in the line, or the system's own word for a refusal.
+pub const RUN_LINE: &str = "run-line";
+
+/// The target of [`RUN_LINE`]: the session's own provider, on [`PROGRAMS_RESOURCE`]. A composer
+/// asks it as the person typing it.
+#[must_use]
+pub fn run_line_target() -> super::RemoteActionTarget {
+    super::RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: super::ActionAddress::new(PROGRAMS_RESOURCE, RUN_LINE),
+    }
+}
+
 /// The resource the person's layout is published as: the layout itself, which a place is put
 /// on, brought forward and closed through, and which carries the system's `open`.
 pub const LAYOUT_RESOURCE: &str = "shell:layout";

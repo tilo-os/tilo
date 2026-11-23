@@ -34,10 +34,6 @@ pub(crate) fn removed_from_flow() -> Style {
 }
 
 impl Widget for Absent {
-    /// Nothing of its own: what a condition leaves out is in no page either.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -262,24 +258,6 @@ impl Decorator for Fitted {
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn a_condition_shown_forwards_what_its_child_shows_to_the_page() {
-        let when = When::new(Box::new(crate::widget::Text::new("Shown")), || true);
-        let composed = crate::composition::compose_alone(&when, &Theme::dark(), "when");
-        assert_eq!(composed.tag, Some("p"), "its child's element");
-        let Some(crate::composition::Own::Text(words)) = &composed.own else {
-            panic!("its child's words: {composed:#?}");
-        };
-        assert_eq!(words.text, "Shown");
-    }
-
-    #[test]
-    fn a_condition_left_out_shows_nothing() {
-        let when = When::new(Box::new(crate::widget::Text::new("Hidden")), || false);
-        let composed = crate::composition::compose_alone(&when, &Theme::dark(), "when");
-        assert_eq!(composed.tag, Some("div"));
-        assert!(composed.own.is_none());
-    }
     use super::*;
     use crate::widget::{Column, Row, Spacer, Text};
 

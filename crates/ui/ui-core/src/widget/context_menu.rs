@@ -1625,56 +1625,6 @@ impl ContextMenu {
 }
 
 impl Widget for ContextMenu {
-    /// A menu as a page's own: its rows as real menu items, each naming the
-    /// target that runs it, with its icon and its shortcut.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption};
-        let theme = cx.theme();
-        let ink = theme.tokens.colors.text_primary;
-        let options = self
-            .shown
-            .iter()
-            .filter_map(|&index| match self.items.get(index)? {
-                MenuItem::Action {
-                    label,
-                    icon,
-                    checked,
-                    enabled,
-                    shortcut,
-                    detail,
-                    ..
-                } => {
-                    let mut option = ControlOption::new(label.clone())
-                        .with_target(format!("context-menu:item:{index}"))
-                        .disabled(!enabled);
-                    if let Some(checked) = checked {
-                        option = option.selected(*checked);
-                    }
-                    if let Some(icon) = icon {
-                        option = option
-                            .with_icon_opt(crate::composition::glyph(*icon, 16.0, ink, false));
-                    }
-                    let trailing = shortcut
-                        .as_ref()
-                        .map(|shortcut| shortcut.label(self.platform))
-                        .or_else(|| detail.clone());
-                    if let Some(trailing) = trailing {
-                        option = option.with_detail(trailing);
-                    }
-                    Some(option)
-                }
-                MenuItem::Caption(text) => Some(ControlOption::new(text.clone()).disabled(true)),
-                _ => None,
-            })
-            .collect();
-        cx.control(Control::Choices {
-            list: "menu",
-            item: "menuitem",
-            label: None,
-            options,
-        });
-    }
-
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
     );

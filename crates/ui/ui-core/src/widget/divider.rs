@@ -135,14 +135,6 @@ pub fn paint_rule(
 }
 
 impl Widget for Divider {
-    /// A rule between things: a separator a reader passes over.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element(match self.axis {
-            DividerAxis::Horizontal => "hr",
-            DividerAxis::Vertical => "div",
-        });
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

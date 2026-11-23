@@ -493,18 +493,6 @@ impl ProgressRing {
 }
 
 impl Widget for ProgressRing {
-    /// Its ring as its picture, its readout as a value a reader hears.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.attr(
-            "aria-valuenow",
-            format!("{:.0}", self.frac.clamp(0.0, 1.0) * 100.0),
-        );
-        cx.attr("aria-valuemin", "0");
-        cx.attr("aria-valuemax", "100");
-        cx.picture();
-    }
-
     crate::described!();
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
@@ -787,73 +775,6 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    /// Its name and readout as words, over a track and a fill the page lays itself.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, TextLook, rgba8};
-        let theme = cx.theme();
-        let rect = Widget::get_rect(self);
-        let track = Rect::new(rect.x0, rect.y1 - BAR_TRACK_H, rect.x1, rect.y1);
-        let radius = BAR_TRACK_H / 2.0;
-        cx.element("div");
-        cx.attr(
-            "aria-valuenow",
-            format!("{:.0}", f64::from(self.frac.clamp(0.0, 1.0)) * 100.0),
-        );
-        cx.attr("aria-valuemin", "0");
-        cx.attr("aria-valuemax", "100");
-        let above = Rect::new(rect.x0, rect.y0, rect.x1, track.y0);
-        let half = rect.width() / 2.0;
-        if !self.label.is_empty() {
-            let look = TextLook::new(
-                self.label.clone(),
-                &theme.text(TextRole::Label),
-                Some(theme.tokens.colors.text_primary),
-            );
-            cx.words(
-                "label",
-                "span",
-                Rect::new(above.x0, above.y0, above.x0 + half, above.y1),
-                look,
-            );
-        }
-        if !self.value.is_empty() {
-            let look = TextLook::new(
-                self.value.clone(),
-                &theme.text(TextRole::Caption).numeric(),
-                Some(theme.tokens.colors.text_dim),
-            );
-            cx.words(
-                "value",
-                "span",
-                Rect::new(above.x0 + half, above.y0, above.x1, above.y1),
-                look,
-            );
-        }
-        let ground = cx.part("track", "BarGauge", track);
-        ground.ground = Some(Ground {
-            fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
-            edge: None,
-            radius,
-            inset: [0.0; 2],
-        });
-        let frac = f64::from(self.frac.clamp(0.0, 1.0));
-        if frac > 0.0 {
-            let fill = Rect::new(
-                track.x0,
-                track.y0,
-                track.x0 + track.width() * frac,
-                track.y1,
-            );
-            let ground = cx.part("fill", "BarGauge", fill);
-            ground.ground = Some(Ground {
-                fill: Some(rgba8(self.resolve_color(theme))),
-                edge: None,
-                radius,
-                inset: [0.0; 2],
-            });
-        }
-    }
-
     crate::described!();
 
     crate::widget::chart_navigation::chart_leaf!();

@@ -136,11 +136,18 @@ fn canonical_temp() -> (tempfile::TempDir, PathBuf) {
     (temp, root)
 }
 
+/// The apps installed in `store`, launched into [`WORKSPACE`] with no grants.
 fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
+    let apps = installed(store, root, candidates);
+    apps.keep_launch_grants(Arc::new(Granted(Vec::new())));
+    apps
+}
+
+/// The apps installed in `store`, before the workspace service answers what they are granted.
+fn installed(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     Apps::new(
         Some(store.catalog()),
         root,
-        WORKSPACE,
         root.join("support"),
         candidates,
     )
@@ -170,6 +177,10 @@ impl LaunchGrantsSource for Granted {
             sandbox: self.0.clone(),
         }
     }
+
+    fn serves(&self, workspace: &str) -> bool {
+        workspace == WORKSPACE
+    }
 }
 
 tilo_test_env::scenario! {
@@ -184,7 +195,7 @@ tilo_test_env::scenario! {
             &reachable_manifest(VIEWER, "allowlist", &["mail.example.com", "calendar.example.com"]),
             &[("probe", b"binary")],
         );
-        let apps = Arc::new(apps(&store, &root, Vec::new()));
+        let apps = Arc::new(installed(&store, &root, Vec::new()));
         let granted = CapOverride::grant(
             Grantee::person("person-7"),
             Scope::NetHost("mail.example.com".into()),
@@ -194,7 +205,7 @@ tilo_test_env::scenario! {
         apps.keep_launch_grants(Arc::new(Granted(vec![granted])));
         let app = apps.launchable(VIEWER).unwrap();
         let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
-        let (plan, egress) = apps.launch_capabilities(&app, &manifest);
+        let (plan, egress) = apps.launch_capabilities(&app, WORKSPACE, &manifest);
         assert_eq!(plan.net_hosts, vec!["mail.example.com".to_owned()]);
         let policy = egress
             .policy()
@@ -216,7 +227,7 @@ tilo_test_env::scenario! {
         let apps = apps(&store, &root, Vec::new());
         let app = apps.launchable(VIEWER).unwrap();
         let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
-        let (_, egress) = apps.launch_capabilities(&app, &manifest);
+        let (_, egress) = apps.launch_capabilities(&app, WORKSPACE, &manifest);
         assert!(
             matches!(egress, launcher::egress_proxy::EgressDecision::Blocked),
             "a launch without a grant reaches nothing, got {egress:?}"
@@ -277,7 +288,7 @@ tilo_test_env::scenario! {
             .unwrap_err();
         assert!(err.contains("not installed"), "{err}");
 
-        let empty = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
+        let empty = Apps::new(None, &root, PathBuf::new(), Vec::new());
         assert!(empty.applications().is_empty());
     }
 
@@ -543,7 +554,7 @@ tilo_test_env::scenario! {
     // workspace `open` learns which instance it started.
     {
         let root = std::env::temp_dir();
-        let apps = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
+        let apps = Apps::new(None, &root, PathBuf::new(), Vec::new());
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn_locked()
@@ -646,4 +657,75 @@ int main(void) {
     // ends it, and the probe's read with it.
     drop(collab);
     assert_eq!(launch.wait(), Some(0));
+}
+
+/// A connection this daemon makes for an instance it starts itself names that instance, and the
+/// collaboration service attests it as exactly that, once, from this process alone: opened for the
+/// caller its view was opened for (a visitor at a page here), or showing nothing. The connection is
+/// the instance's; who acts is the caller it carries. An app that is no tilolang app installed here
+/// opens no view, and nothing starts for it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
+    use std::io::Read as _;
+    use tilo_actions::remote::Caller;
+    let (_temp, root) = canonical_temp();
+    let store = Store::new(&root);
+    let listener = std::os::unix::net::UnixListener::bind(root.join(crate::COLLAB_SOCKET)).unwrap();
+    let apps = apps(&store, &root, Vec::new());
+    let ours = std::process::id();
+    let visitor = Caller::visitor([9; 32]).in_workspace(WORKSPACE);
+
+    let _view = apps
+        .instances
+        .connect(VIEWER, WORKSPACE, 7, Some(visitor.clone()))
+        .unwrap();
+    let (mut broker_end, _) = listener.accept().unwrap();
+    let mut named = [0; 256];
+    let read = broker_end.read(&mut named).unwrap();
+    let named = String::from_utf8_lossy(&named[..read]);
+    assert!(
+        named.contains(VIEWER) && named.contains("\"window_instance\":7"),
+        "the connection names the instance it is for: {named}"
+    );
+    assert!(
+        apps.authenticated_launch(1, VIEWER, WORKSPACE, Some(7))
+            .unwrap()
+            .is_none(),
+        "another process naming the instance is no launch"
+    );
+    let launch = apps
+        .authenticated_launch(ours, VIEWER, WORKSPACE, Some(7))
+        .unwrap()
+        .expect("the instance's connection is attested");
+    assert_eq!(launch.continuation_instance, Some(7));
+    assert!(!launch.windowless, "it shows a view");
+    assert_eq!(
+        launch.opened_for,
+        Some(visitor.clone()),
+        "opened for the visitor"
+    );
+    assert!(
+        apps.authenticated_launch(ours, VIEWER, WORKSPACE, Some(7))
+            .unwrap()
+            .is_none(),
+        "a second connection naming it is no launch"
+    );
+
+    let _no_view = apps.instances.connect(VIEWER, WORKSPACE, 8, None).unwrap();
+    let launch = apps
+        .authenticated_launch(ours, VIEWER, WORKSPACE, Some(8))
+        .unwrap()
+        .expect("the instance that shows nothing is attested");
+    assert!(launch.windowless, "it shows nothing");
+    assert_eq!(launch.opened_for, None, "and was opened for nobody");
+
+    let refused = apps
+        .open_view(&visitor, VIEWER, WORKSPACE, None, None)
+        .unwrap_err();
+    assert!(refused.contains("no tilolang app"), "{refused}");
+    assert!(
+        apps.windowless(VIEWER, WORKSPACE).unwrap().is_none(),
+        "an app that is no tilolang app is launched as it always was"
+    );
 }

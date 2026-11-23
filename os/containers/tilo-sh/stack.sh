@@ -1343,7 +1343,7 @@ vm_host() {
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_VM_TICKET=${TILO_VM_TICKET:-}" \
-    "TILO_SH_TILO_SERVER_ADMIN=$programs/tilo-server-admin" \
+    "TILO_SH_TILO_SERVER=$programs/tilo-server" \
     "TILO_SH_SERVER_SECRETS=$state/secrets" \
     "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
@@ -1567,7 +1567,7 @@ build_programs() {
     # package's dev-dependencies, and a server built with test-only features loads fixture fonts
     # its app workers cannot.
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker --bin tilo-server --bin tilo-server-admin --bin discord-worker >&2 \
+      -p tilo-server -p discord-worker --bin tilo-server --bin discord-worker >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
         --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime --bin tilolang-process >&2 \
@@ -1637,7 +1637,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server tilo-server-admin discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
+  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"

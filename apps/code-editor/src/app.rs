@@ -1934,10 +1934,6 @@ impl ui::content_zoom::ContentZoom for CodeApp {
 }
 
 impl Widget for CodeApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Continuable,

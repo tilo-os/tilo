@@ -88,6 +88,7 @@ pub(crate) async fn open_with_groups(
         tilo_workspace_service::own_device::Device {
             cert: &identity.device_cert,
             signer: &identity.signer,
+            itself: None,
         },
         endpoint.clone(),
         groups,

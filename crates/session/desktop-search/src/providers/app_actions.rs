@@ -29,7 +29,7 @@ impl Source for Actions {
             self.0.iter().map(|record| record.id.as_str()).collect();
         let flats: Vec<_> = tilo_actions::flatten(&self.0)
             .into_iter()
-            .filter(|flat| offered(&flat.action.contract))
+            .filter(|flat| flat.action.contract.a_person_can_take_now())
             .collect();
         // An open document's actions answer to what they do. An item's (one
         // message of a chat, one card of a board) answer only to the item

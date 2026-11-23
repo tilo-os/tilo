@@ -2980,10 +2980,6 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(dyn ui::collaboration::presences::Presences);
 
     fn set_motion_reduced(&mut self, reduced: bool) {

@@ -14,6 +14,7 @@ use accounts::{Account, AccountId, Secret, SecretVault};
 use zeroize::Zeroize;
 
 use crate::account_store::Accounts;
+use calendar_model::account::{CalDavConfig, RemoteCalendar};
 
 pub use account_credentials::hints::{self, AccountHint, Provider};
 use browser::{BrowserOpener, LiveBrowserOpener};
@@ -92,8 +93,8 @@ struct Verified {
 
 struct CalendarReview {
     entry: usize,
-    config: calendar::CalDavConfig,
-    discovered: Vec<calendar::RemoteCalendar>,
+    config: CalDavConfig,
+    discovered: Vec<RemoteCalendar>,
     google: bool,
 }
 
@@ -336,7 +337,7 @@ impl AccountsController {
                     .entries
                     .get_mut(review.entry)
                     .ok_or(AccountsError::InvalidRequest)?;
-                calendar::setup::select_calendars(
+                calendar_setup::select_calendars(
                     &mut entry.0,
                     &review.config,
                     &review.discovered,
@@ -826,8 +827,8 @@ fn launch_authorization(
 
 fn calendar_model(
     pending: tilo_dav::oauth::PendingCalendars,
-) -> (calendar::CalDavConfig, Vec<calendar::RemoteCalendar>) {
-    let config = calendar::CalDavConfig {
+) -> (CalDavConfig, Vec<RemoteCalendar>) {
+    let config = CalDavConfig {
         server_url: pending.server_url,
         username: pending.username,
         ..Default::default()
@@ -836,7 +837,7 @@ fn calendar_model(
         .collections
         .into_iter()
         .zip((0_u8..8).cycle())
-        .map(|(collection, color)| calendar::RemoteCalendar {
+        .map(|(collection, color)| RemoteCalendar {
             id: collection.href,
             name: collection.name,
             color,
@@ -913,6 +914,7 @@ fn authorize_nextcloud(
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub mod calendar_setup;
 pub mod calendar_tests;
 #[cfg(test)]
 mod oauth_tests;

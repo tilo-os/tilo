@@ -161,31 +161,6 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
-    /// Its outline as an inline SVG in its ink; a mark with nothing to read says so to a reader.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::Face;
-        cx.element("span");
-        let theme = cx.theme();
-        let size = f64::from(self.size.px(theme));
-        let glyph = self.icon.glyph(size, self.resolve_color(theme), false);
-        match glyph {
-            Some(icon) => cx.face(Face {
-                icon: Some(icon),
-                label: None,
-                detail: None,
-                trailing: None,
-                fill: None,
-                edge: None,
-                radius: 0.0,
-                pad: 0.0,
-                gap: 0.0,
-                spread: false,
-            }),
-            None => cx.picture(),
-        }
-        cx.attr("aria-hidden", "true");
-    }
-
     crate::described!();
 
     fn build_layout(

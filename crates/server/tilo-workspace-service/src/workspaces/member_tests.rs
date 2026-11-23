@@ -1089,7 +1089,7 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
             let kept = copies
                 .inner
                 .records
-                .retained(workspace_id)
+                .retained(workspace_id).await
                 .expect("the copy's kept writes read")
                 .iter()
                 .filter(|frame| {
@@ -1407,4 +1407,204 @@ async fn a_copied_disk_holds_its_workspace_as_a_member_copy_once_the_source_admi
         state.governance().workspace_name().as_deref(),
         Some("Shared")
     );
+}
+
+/// A shared workspace this device joined, and the person's shell on a dispatch over it.
+#[cfg(feature = "apps")]
+async fn shell_on_a_joined_workspace(
+    states: (&std::path::Path, &std::path::Path, &std::path::Path),
+    seed: u8,
+) -> (
+    TestHost,
+    TestHost,
+    WorkspaceSummary,
+    DeviceCert,
+    runtime_collab::ShellClient,
+    crate::apps::collab_broker::BrokerHandle,
+) {
+    use runtime_collab::wire::shell::SHELL_MAGIC;
+    use std::os::unix::fs::PermissionsExt as _;
+    use tokio::io::AsyncWriteExt as _;
+    let (serving_state, member_state, dir) = states;
+    let (serving, device, created, invitation) = shared(serving_state, "Shared", seed).await;
+    let member_cert = device.1.clone();
+    let member = member_service(member_state, device).await;
+    member.workspaces().join_member(&invitation).await.unwrap();
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.join("collab.sock");
+    let links = Arc::new(crate::apps::shell::ShellLinks::default());
+    let dispatch = crate::apps::collab_broker::spawn_with_services(
+        socket.clone(),
+        None,
+        crate::apps::collab_outbound::PeerPublisher::disabled(),
+        None,
+        crate::apps::services::ProcessServices {
+            shell: Some(Arc::new(crate::apps::shell::ShellServices {
+                links: Arc::clone(&links),
+                socket: socket.clone(),
+                documents: Arc::new(crate::apps::service_reads::ServiceDocuments::of(
+                    member.workspaces().clone(),
+                )),
+                writes: Arc::new(crate::apps::service_writes::ServiceWrites::of(
+                    member.workspaces().clone(),
+                )),
+                document_writes: Arc::new({
+                    let copies = member.workspaces().clone();
+                    move || copies.document_writes()
+                }),
+                actions: Arc::new(NoActions),
+                standing: Arc::new(NoStanding),
+                workspaces: member.workspaces().clone(),
+            })),
+            ..crate::apps::services::ProcessServices::default()
+        },
+        Arc::default(),
+        Arc::new(crate::apps::collab_broker::FanoutState::new()),
+    )
+    .unwrap();
+    let secret = links.make(crate::apps::shell::ShellCaller {
+        person: member_cert.user_public_key,
+    });
+    let mut link = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let mut opening = SHELL_MAGIC.to_vec();
+    opening.extend_from_slice(&secret);
+    link.write_all(&opening).await.unwrap();
+    let (shell, _) = runtime_collab::ShellClient::open(link);
+    (serving, member, created, member_cert, shell, dispatch)
+}
+
+/// The person's shell records the receipt of an effect an action it ran had: the device keeps it
+/// in its own slice of the member copy, as it keeps its own actions' receipts.
+#[cfg(feature = "apps")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_receipt_the_shell_sends_is_kept_in_the_joined_workspace() {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let (serving_state, member_state, dir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (_serving, member, created, member_cert, shell, _dispatch) =
+        shell_on_a_joined_workspace((serving_state.path(), member_state.path(), dir.path()), 13)
+            .await;
+    let ShellReply::Is(keeps) = shell
+        .call(ShellCall::KeepsReceipts {
+            workspace: created.workspace.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("the daemon says whether it keeps receipts there");
+    };
+    assert!(keeps, "a member copy keeps this device's receipts");
+
+    let invocation = uuid::Uuid::new_v4();
+    let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        tilo_actions::InvocationId(invocation),
+        &tilo_actions::MemberId::person(hex::encode(member_cert.user_public_key)),
+        tilo_actions::ActionContext::for_resource("layout", "desktop", "Layout"),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
+    );
+    effect.completed_at = 100;
+    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        workspace: created.workspace.clone(),
+        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+            invocation,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let reply = shell
+        .call(ShellCall::Receipt {
+            request: serde_json::to_string(&request).unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(reply, ShellReply::Receipted(Ok(_))),
+        "the daemon records the receipt: {reply:?}"
+    );
+    let state = member.workspaces().state(&created.workspace).await.unwrap();
+    let kept = tilo_desktop_model::projection::workspace_effect_receipts_of(
+        state.admitted_workspace().expect("the copy's governance"),
+    );
+    assert!(
+        kept.iter().any(|kept| kept.invocation.0 == invocation),
+        "the member copy keeps the shell's receipt"
+    );
+}
+
+/// What an agent the person's shell admitted reads is decided at the record, for its certificate.
+#[cfg(feature = "apps")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_daemon_decides_a_read_for_the_certificate_the_shell_names() {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let (serving_state, member_state, dir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (_serving, _member, created, member_cert, shell, _dispatch) =
+        shell_on_a_joined_workspace((serving_state.path(), member_state.path(), dir.path()), 41)
+            .await;
+    let authorizes = |certificate: &DeviceCert| ShellCall::Authorizes {
+        workspace: created.workspace.clone(),
+        app: "so.tilo.notes".to_owned(),
+        resource: "n1".to_owned(),
+        certificate: serde_json::to_string(certificate).unwrap(),
+    };
+    let reply = shell.call(authorizes(&member_cert)).await.unwrap();
+    assert!(matches!(reply, ShellReply::Authorized(Ok(()))), "{reply:?}");
+    let reply = shell.call(authorizes(&laptop(99).1)).await.unwrap();
+    assert!(
+        matches!(&reply, ShellReply::Authorized(Err(why)) if why.contains("certifies")),
+        "a device the workspace does not certify reads nothing: {reply:?}"
+    );
+}
+
+#[cfg(feature = "apps")]
+struct NoActions;
+
+#[cfg(feature = "apps")]
+impl crate::apps::shell::ShellActions for NoActions {
+    fn invoke(
+        &self,
+        _: &crate::apps::shell::ShellCaller,
+        _: tilo_actions::remote::InvokeRequest,
+    ) -> crate::apps::shell::ShellInvoked {
+        Box::pin(std::future::ready(Err("no actions here".to_owned())))
+    }
+}
+
+#[cfg(feature = "apps")]
+struct NoStanding;
+
+#[cfg(feature = "apps")]
+impl crate::apps::services::PublishedResources for NoStanding {
+    fn snapshot(
+        &self,
+        _: &crate::apps::services::Caller,
+        _: &str,
+    ) -> tokio::sync::oneshot::Receiver<Result<crate::apps::services::Reading, String>> {
+        tokio::sync::oneshot::channel().1
+    }
+    fn watch(
+        &self,
+        _: &crate::apps::services::Caller,
+        _: &str,
+        _: tokio::sync::mpsc::UnboundedSender<runtime_collab::wire::Event>,
+    ) -> Result<crate::apps::services::ResourceWatch, String> {
+        Err("nothing stands here".to_owned())
+    }
+    fn unwatch(&self, _: crate::apps::services::ResourceWatch) {}
+    fn invoke(
+        &self,
+        _: &crate::apps::services::Caller,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> tokio::sync::oneshot::Receiver<runtime_collab::wire::Receipt> {
+        tokio::sync::oneshot::channel().1
+    }
 }

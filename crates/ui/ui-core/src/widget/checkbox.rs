@@ -628,36 +628,6 @@ impl Widget for Checkbox {
 
     bool_control_widget_methods!("checkbox");
 
-    /// A box as a page's `<label>` around its own `<input type=checkbox>`
-    /// (a radio's in a set, a switch's as `role=switch`), holding what it is
-    /// marked with and its visible words.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{CheckStyle, Control, TextLook};
-        cx.element("label");
-        let theme = cx.theme();
-        let label = self
-            .label
-            .as_deref()
-            .filter(|label| !label.is_empty())
-            .map(|label| {
-                TextLook::new(
-                    widget_text(label),
-                    &self.label_style,
-                    Some(theme.tokens.colors.text_primary),
-                )
-            });
-        cx.control(Control::Check {
-            style: if self.radio {
-                CheckStyle::Radio
-            } else {
-                CheckStyle::Checkbox
-            },
-            checked: self.control.is_checked,
-            mixed: self.indeterminate,
-            label,
-        });
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -533,21 +533,6 @@ impl HeaderStatus {
 }
 
 impl Widget for HeaderStatus {
-    /// What it says, as the bar sets it: a line that is read out as it changes.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        let Some(status) = self.text.as_deref() else {
-            return;
-        };
-        let theme = cx.theme().clone();
-        let look = crate::composition::TextLook::new(
-            status.to_owned(),
-            &theme.text(crate::tokens::TextRole::Caption),
-            Some(theme.tokens.colors.text_dim),
-        )
-        .with_max_lines(Some(1));
-        cx.text(look);
-    }
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }

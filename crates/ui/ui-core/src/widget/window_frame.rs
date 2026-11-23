@@ -616,55 +616,6 @@ impl Decorator for WindowFrame {
         &mut self.layers
     }
 
-    /// The window's bar is the handle a person picks the window up by: a press on the bar's
-    /// empty area that travels carries `carries` on the drag bus, as a
-    /// [`DragSource`](super::drag_source::DragSource) does, so a place on the canvas reaches a
-    /// composer or the canvas itself by its own bar (`shell.md` §8.1, "Dropping on the
-    /// composer"). The tabs, the controls and the app's own header buttons take their presses
-    /// first: only what the content did not take is the bar's.
-    /// What the window holds, on the window's own ground, floating over the shell; the one in
-    /// front wears the focused edge.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.layers.html(cx);
-        let theme = cx.theme();
-        let node = cx.node();
-        SurfaceLevel::Window.compose(theme, self.rect, node);
-        if self.focused
-            && let Some(ground) = node.ground.as_mut()
-        {
-            ground.edge = Some(crate::composition::rgba8(
-                theme.tokens.colors.window_edge_focused(),
-            ));
-        }
-        // The pill the controls stand in, under them and over the content they sit on: the
-        // floating material's ground and edge, without a shadow of its own, as it is painted.
-        if self.pill.area() > 0.0 {
-            let path = format!("{}#controls-pill", node.path);
-            let mut pill = crate::composition::Composed::new(
-                path,
-                "WindowControlsPill",
-                [
-                    self.pill.x0,
-                    self.pill.y0,
-                    self.pill.width(),
-                    self.pill.height(),
-                ],
-            );
-            pill.ground = Some(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(crate::chrome::panel_ground(
-                    theme,
-                ))),
-                edge: Some(crate::composition::rgba8(crate::chrome::panel_border(
-                    theme,
-                ))),
-                radius: crate::chrome::ChromeRole::Selector.radius(theme, self.pill.height()),
-                inset: [0.0; 2],
-            });
-            let at = node.children.len().saturating_sub(1);
-            node.children.insert(at, pill);
-        }
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.carries.is_none() {
             if let WindowEvent::CursorMoved { position, .. } = event {

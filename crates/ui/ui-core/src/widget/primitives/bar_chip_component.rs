@@ -131,17 +131,6 @@ impl BarChip {
 
 impl Widget for BarChip {
     crate::described!();
-    /// A bar chip as a page's own button: its face, composed by the code a page
-    /// links.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("button");
-        let theme = cx.theme();
-        let ground = theme.tokens.colors.surfaces.content;
-        match crate::composition::bar_chip_face(&self.face(theme, &[]), theme, ground) {
-            Some(face) => cx.face(face),
-            None => cx.picture(),
-        }
-    }
 
     fn build_layout(
         &mut self,

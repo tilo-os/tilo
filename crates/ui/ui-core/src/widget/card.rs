@@ -78,28 +78,6 @@ pub(crate) fn surface_fill(theme: &Theme, interaction: Interaction, pressable: b
     }
 }
 
-/// A card's surface on a page, as [`paint_surface`] lays it: its fill, and its rest edge or, for
-/// the selected card, the accent edge in its place.
-pub(crate) fn surface_ground(
-    theme: &Theme,
-    interaction: Interaction,
-    pressable: bool,
-    selected: bool,
-) -> crate::composition::Ground {
-    let fill = surface_fill(theme, interaction, pressable);
-    let edge = if selected {
-        theme.tokens.colors.intent.accent
-    } else {
-        crate::surface::edge_on(fill)
-    };
-    crate::composition::Ground {
-        fill: Some(crate::composition::rgba8(fill)),
-        edge: Some(crate::composition::rgba8(edge)),
-        radius: CardMetrics::new(theme).radius,
-        inset: [0.0; 2],
-    }
-}
-
 pub(crate) fn paint_surface(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -271,12 +249,6 @@ struct CardHeader {
 }
 
 impl Widget for CardHeader {
-    /// A card's head: its leading, title and trailing controls.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("header");
-        cx.children();
-    }
-
     retained_parts!("CardHeader");
 
     fn build_layout(
@@ -516,20 +488,6 @@ impl Card {
 }
 
 impl Widget for Card {
-    /// A card: its media, head, body and actions.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("article");
-        // Its surface, as the canvas lays it under the card's parts.
-        let ground = surface_ground(
-            cx.theme(),
-            self.activation.state,
-            self.activation.is_bound(),
-            self.selected,
-        );
-        cx.ground(ground);
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -813,12 +771,6 @@ impl Actions {
 }
 
 impl Widget for Actions {
-    /// A card's actions.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("footer");
-        cx.children();
-    }
-
     retained_parts!("Actions");
 
     fn build_layout(
@@ -1035,12 +987,6 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    /// Its cards in a grid.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {

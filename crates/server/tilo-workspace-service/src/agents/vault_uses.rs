@@ -600,9 +600,6 @@ pub(super) async fn settle(
         arguments.insert("detail".into(), json!(told));
     }
     let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
-    // The answer was read in the conversation as the workspace's store holds it: the settle is
-    // made on that, not on what the replica it writes through held before its person answered.
-    service.landed(route.clone());
     invoke_named(
         service,
         asker,

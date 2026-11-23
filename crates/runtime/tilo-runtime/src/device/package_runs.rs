@@ -55,6 +55,26 @@ pub fn task_packages() -> Vec<TaskPackage> {
         .collect()
 }
 
+/// The tilolang and Tilo runtimes an agent task's host runs on: those of the first tilolang app
+/// installed here that verifies on runtimes installed here, since the host compiles a task's
+/// programs against the apps' packages.
+///
+/// # Errors
+/// No tilolang app installed here runs on runtimes this device has.
+pub fn task_runtimes() -> Result<(String, String), String> {
+    let apps = app_catalogue::apps::read_from_env()
+        .map_err(|error| format!("the installed apps are not known: {error}"))?;
+    apps.iter()
+        .filter(|app| runs_in_process(&app.app_id))
+        .find_map(|app| verified_installed("", &app.app_id).ok())
+        .map(|verified| (verified.runtime, verified.app_runtime))
+        .ok_or_else(|| {
+            "no tilolang app installed here runs on runtimes this device has, so a task's \
+             programs have nowhere to run"
+                .to_owned()
+        })
+}
+
 /// The tilolang apps installed here, each by its id: what an instance tells another app it uses
 /// by.
 pub(super) fn installed_apps() -> std::collections::BTreeMap<String, String> {

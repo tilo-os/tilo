@@ -329,6 +329,7 @@ impl ServiceSessions {
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
             reachability: cfg.reachability.clone(),
+            reaching: cfg.reaching,
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
@@ -615,6 +616,12 @@ impl WorkspaceService {
             .iter()
             .find(|(own, _)| *own == alpn)
             .map(|(_, handler)| handler)
+    }
+
+    /// The session stack the service's members connect through.
+    #[must_use]
+    pub const fn sessions(&self) -> &ServiceSessions {
+        &self.sessions
     }
 
     /// The governance of the workspaces served here.
@@ -1012,7 +1019,7 @@ pub struct ServiceIdentity {
 
 /// Where a device's workspace service keeps its own key and the certificate
 /// its device issued for it, under the service's state root.
-const OWN_KEY_DIR: &str = "service-key";
+pub(crate) const OWN_KEY_DIR: &str = tilo_paths::desktop_service::KEY_DIR;
 
 impl ServiceIdentity {
     /// The identity of the workspace service of the device `device`, whose
@@ -1044,7 +1051,7 @@ impl ServiceIdentity {
             ServiceError::Identity(format!("this device's workspace service {what}: {error}"))
         };
         let dir = root.join(OWN_KEY_DIR);
-        let key_path = dir.join("key.bin");
+        let key_path = dir.join(tilo_paths::desktop_service::KEY_FILE);
         let cert_path = dir.join("cert.bin");
         // A certificate the person's other device issued belongs to the machine this one was
         // copied from: two machines serving as one key would be one author, giving changes the

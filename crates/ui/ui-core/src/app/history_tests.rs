@@ -1289,7 +1289,7 @@ impl RoutedOwners {
 fn select_native_version(app: &mut App, hash: automerge::ChangeHash) {
     let target = format!(
         "timeline-entry:{}",
-        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );

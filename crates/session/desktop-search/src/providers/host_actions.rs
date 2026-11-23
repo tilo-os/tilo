@@ -25,7 +25,6 @@ use tilo_actions::remote::{
 use ui::search::system::ResourceKind;
 use ui::time::{Duration, Instant};
 
-use super::offered;
 use crate::model::{Hit, InvokeTarget, Source, Target};
 use crate::rank;
 
@@ -90,7 +89,7 @@ impl HostActions {
     /// address in the app that publishes it, as `tilo do` does, and reads as the app's own row.
     fn hit(&self, needle: &str, row: &CatalogueRow) -> Option<Hit> {
         let action = row.action.as_ref()?;
-        if !offered(&action.contract) || self.listed.contains(&action.address) {
+        if !action.contract.a_person_can_take_now() || self.listed.contains(&action.address) {
             return None;
         }
         let score = rank::action_match_score(

@@ -511,20 +511,6 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
-    /// Its text as a code block when it is only read, and as its own field when it is edited.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if !self.read_only {
-            Widget::html(&self.inner, cx);
-            return;
-        }
-        let theme = cx.theme();
-        let text = self.inner.display_text();
-        cx.element("pre");
-        let style = theme.text(crate::TextRole::Code);
-        let look = crate::composition::TextLook::new(text, &style, Some(theme.text_primary));
-        cx.words("code", "code", Widget::get_rect(self), look);
-    }
-
     crate::described!();
 
     crate::provides!(

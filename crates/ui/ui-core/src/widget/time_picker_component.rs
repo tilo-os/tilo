@@ -17,9 +17,11 @@ pub struct TimePickerProps {
     pub value: Bound<String>,
     /// Its spoken name.
     pub label: Option<String>,
-    /// The moment changed: carries the instant, at the time chosen today.
+    /// The minutes the wheel and the chevrons step the minute cell by: a quarter hour by default.
+    pub step: i64,
+    /// The time changed: carries the instant, at the time chosen today.
     #[component(event(value = crate::component::Moment))]
-    pub change: Event,
+    pub changed: Event,
 }
 
 impl Default for TimePickerProps {
@@ -27,9 +29,15 @@ impl Default for TimePickerProps {
         Self {
             value: Bound::default(),
             label: None,
-            change: Event::None,
+            step: 15,
+            changed: Event::None,
         }
     }
+}
+
+/// A step in minutes, clamped to the minute dial.
+fn step_of(step: i64) -> u8 {
+    u8::try_from(step.clamp(1, 59)).unwrap_or(15)
 }
 
 /// Today at `time` in the person's zone, as the instant a bound moment holds.
@@ -48,8 +56,14 @@ impl Described for TimePicker {
     type Props = TimePickerProps;
 
     fn from_props(key: &str, props: TimePickerProps) -> Self {
-        let TimePickerProps { value, label, .. } = props;
+        let TimePickerProps {
+            value,
+            label,
+            step,
+            changed,
+        } = props;
         let shown = value.clone();
+        let fires = changed;
         let mut picker = Self::from_text_state(&value.state)
             .on_change(move |hours, minutes, seconds| {
                 let time = TimeValue {
@@ -57,8 +71,11 @@ impl Described for TimePicker {
                     minutes: minutes.min(59),
                     seconds: seconds.map(|seconds| seconds.min(59)),
                 };
-                shown.edited(crate::component::Value::Text(instant_today(time)));
+                let instant = instant_today(time);
+                shown.edited(crate::component::Value::Text(instant.clone()));
+                fires.fire(Some(crate::component::Value::Text(instant)));
             })
+            .with_step(step_of(step))
             .with_id(key);
         if let Some(seconds) = picker.value().seconds {
             picker = picker.with_seconds(seconds);
@@ -72,6 +89,7 @@ impl Described for TimePicker {
     /// The time changes in place.
     fn set_props(&mut self, props: TimePickerProps) -> bool {
         self.accessible_name = props.label;
+        self.set_step(step_of(props.step));
         true
     }
 }

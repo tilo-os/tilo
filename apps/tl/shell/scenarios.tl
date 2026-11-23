@@ -1,6 +1,6 @@
 use so.tilo.chat as chat
 use so.tilo.notes as notes
-use so.tilo.lang.tasks as tasks
+use so.tilo.tasks as tasks
 
 /// Scenarios: the shell as people meet it, in the states its views are for. Each fills
 /// the layout's own fields (the ones the session writes, which a scenario may set) and the
@@ -1858,8 +1858,13 @@ action a_query_place(a: Layout, strip: Text, text: Text) -> Text {
 fn installed_apps() -> List<device.App> {
     return [
         device.App(key: "so.tilo.notes", name: "Notes", icon: "file-text", category: "work"),
-        device.App(key: "so.tilo.chat", name: "Chat", icon: "message-square", category: "work"),
-        device.App(key: "so.tilo.lang.tasks", name: "Tasks", icon: "list-checks", category: "work"),
+        device.App(
+            key: "so.tilo.chat",
+            name: "Chat",
+            icon: "message-square",
+            category: "work",
+        ),
+        device.App(key: "so.tilo.tasks", name: "Tasks", icon: "list-checks", category: "work"),
         device.App(key: "so.tilo.settings", name: "Settings", icon: "settings", category: "system"),
     ]
 }
@@ -1928,7 +1933,7 @@ scenario "a layout of places" -> Layout {
         LayoutPlace(
             key: "n-1",
             strip: narrow,
-            shows: "so.tilo.lang.tasks",
+            shows: "so.tilo.tasks",
             resource: tasks.tasks.id(),
             title: "Tasks",
             name: "Tasks",
@@ -2783,4 +2788,92 @@ scenario "a window on another device" {
         ),
     )
     stage(device.overlays, device.Overlays(here: "none"))
+}
+
+/// Reporting a problem: the picker over the person's work, each window of the workspace in front
+/// a card with its own picture, and the line saying what a click and a drag do.
+scenario "the problem report's picker" -> Layout {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 667,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p2",
+            strip: "s-notes",
+            shows: "so.tilo.mail",
+            title: "Inbox",
+            name: "Inbox — Mail",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    strip_key: "s-notes",
+                    workspace: "Studio",
+                    workspace_key: "studio",
+                    group_key: "p1",
+                    share: 0.5,
+                    local: true,
+                    place: 0,
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+                device.Window(
+                    key: "p2",
+                    title: "Inbox",
+                    origin_app: "Mail",
+                    app_key: "so.tilo.mail",
+                    icon: "mail",
+                    strip: "Drafts",
+                    strip_key: "s-notes",
+                    workspace: "Studio",
+                    workspace_key: "studio",
+                    group_key: "p2",
+                    share: 0.5,
+                    local: true,
+                    place: 1,
+                    recency: 2,
+                    focused: false,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    let sh = root Shell
+    sh.reporting = true
+    d
 }

@@ -949,6 +949,9 @@ mod shared_desktop;
 #[path = "governed_workspaces/revocations.rs"]
 mod revocations;
 
+#[path = "governed_workspaces/copies_read.rs"]
+mod copies_read;
+
 #[path = "governed_workspaces/hard_stops.rs"]
 mod hard_stops;
 
@@ -956,8 +959,8 @@ mod hard_stops;
 mod app_push;
 
 #[cfg(feature = "agents")]
-#[path = "governed_workspaces/key_place.rs"]
-mod key_place;
+#[path = "governed_workspaces/member_files.rs"]
+mod member_files;
 
 #[path = "governed_workspaces/record_content.rs"]
 mod record_content;

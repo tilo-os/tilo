@@ -362,7 +362,7 @@ pub(crate) struct Shared {
     pub(crate) held_stores: crate::engine_records::HeldStores,
     /// Where moving the apps' resources into the workspace stands.
     #[cfg(target_os = "linux")]
-    pub(crate) app_stores: Cell<crate::engine_records::AppStores>,
+    pub(crate) app_stores: RefCell<crate::engine_records::AppStores>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.

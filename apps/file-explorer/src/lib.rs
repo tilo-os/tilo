@@ -62,6 +62,8 @@ pub mod identity_directory;
 mod metadata_refresh;
 #[cfg(feature = "desktop")]
 pub mod model;
+/// How a new file's name is proposed and read, on a computer and in a page alike.
+pub mod naming;
 #[cfg(feature = "desktop")]
 pub mod native_fixture;
 #[cfg(feature = "desktop")]

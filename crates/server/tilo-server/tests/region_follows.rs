@@ -7,8 +7,6 @@
     reason = "the devices and routers a test starts stay alive until each test ends"
 )]
 
-use std::time::Duration;
-
 use serde_json::json;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
@@ -111,16 +109,10 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
 
     // The desktop is handed her own workspace, as any workspace of hers, and reads the zone
     // she chose there.
-    servers::take_in(
-        on_laptop.host.workspaces(),
-        &desktop.cert,
-        &on_desktop.host.node_addr(),
-    )
-    .await
-    .unwrap();
+    crate::common::join_person_workspace(&on_laptop, &desktop, &on_desktop).await;
     tilo_test_env::within("the desktop to read the zone chosen on the laptop", async {
         while zone_on(&on_desktop).await.as_deref() != Some(CHOSEN) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
         }
     })
     .await;

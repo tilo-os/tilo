@@ -34,15 +34,6 @@ use crate::rank;
 /// The provider id of the window's actions.
 pub const ACTIONS: &str = "window-actions";
 
-/// Whether a person may pick `spec` from a palette now: what a row can take
-/// ([`ui::search::system::a_row_a_person_can_take`], the rule an app's own
-/// palette lists by), and not the opening of a search hit (which a hit of the
-/// app's own search stands for).
-fn offered(spec: &ActionSpec) -> bool {
-    ui::search::system::a_row_a_person_can_take(spec)
-        && spec.operation_type.as_deref() != Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
-}
-
 /// The picture `spec` declares for itself, when the toolkit draws it.
 #[must_use]
 pub fn action_icon(spec: &ActionSpec) -> Option<ui::icons::Icon> {
@@ -75,10 +66,7 @@ impl Source for Actions<'_> {
     fn query(&self, needle: &str) -> Vec<Hit> {
         let flat: Vec<FlatAction<'_>> = tilo_actions::flatten(self.resources)
             .into_iter()
-            .filter(|flat| {
-                offered(flat.action)
-                    && tilo_actions::listed_for_people(&flat.resource_kind, &flat.resource_label)
-            })
+            .filter(FlatAction::lists_a_row)
             // An item's own view is what its row among what the window
             // holds opens: it is not listed again as something to do.
             .filter(|flat| flat.depth == 0 || flat.action.kind != tilo_actions::OperationKind::View)

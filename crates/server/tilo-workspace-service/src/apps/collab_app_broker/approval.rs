@@ -120,21 +120,22 @@ pub(super) struct Question {
 
 /// Answer `message` from `caller`, a connection `person` admitted. An
 /// invocation refused for want of a confirmation the caller may not give
-/// itself is put to `person` first, and retried with their answer.
+/// itself is put to `person` first, and retried with their answer; with no
+/// `person` to ask, that refusal is the answer.
 pub(super) async fn serve_answering(
     state: Arc<AppBrokerState>,
     provider: ConnectionActionProvider,
     caller: Caller,
-    person: String,
+    person: Option<String>,
     message: RemoteActionMessage,
 ) -> Option<RemoteActionMessage> {
     let first = serve(&provider, &caller, message.clone())?.await?;
     let RemoteActionMessage::Invoke(request) = message else {
         return Some(first);
     };
-    if !needs_approval(&first) {
+    let Some(person) = person.filter(|_| needs_approval(&first)) else {
         return Some(first);
-    }
+    };
     let approved = match state
         .request_approval(&caller, Some(&person), &request)
         .await

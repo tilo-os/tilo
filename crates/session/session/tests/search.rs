@@ -805,7 +805,7 @@ fn an_app_card_opens_the_app_it_names() {
 /// The verb of the app that is not installed opens nothing, neither a window nor a card.
 #[test]
 fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is_not() {
-    const TASKS: &str = "so.tilo.lang.tasks";
+    const TASKS: &str = "so.tilo.tasks";
     let _settled = ui::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session_installing(Rc::clone(&asked), &[(TASKS, "Tasks")]);
@@ -1657,7 +1657,7 @@ fn tasks_capture() -> Vec<ResourceSpec> {
         "Call the landlord fri 10am",
         tilo_actions::ExecutionLocus::ClientLocal,
         |text| tilo_actions::EncodedAction {
-            type_id: "so.tilo.lang.tasks.new_task".into(),
+            type_id: "so.tilo.tasks.new_task".into(),
             payload: text.as_bytes().to_vec(),
         },
     );
@@ -1681,7 +1681,7 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     // The workspace's action host publishes Tasks' capture; no window of the app is open to write
     // it in.
     asked.publishing.borrow_mut().push(PublishedActions::of(
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
         &workspace,
         &tasks_capture(),
     ));
@@ -1707,7 +1707,7 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, "so.tilo.lang.tasks", "tasks", "new_task"),
+        application_action_target(&workspace, "so.tilo.tasks", "tasks", "new_task"),
         "the capture runs through the workspace's address for the app's action"
     );
     assert_eq!(

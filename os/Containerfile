@@ -2179,11 +2179,9 @@ COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
     /usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf
 COPY os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate /usr/libexec/
 COPY \
-    os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
     os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
     /usr/share/polkit-1/actions/
 COPY \
-    os/etc/polkit-1/rules.d/49-tilo-home-peer.rules \
     os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \

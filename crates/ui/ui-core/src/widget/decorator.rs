@@ -304,12 +304,6 @@ decorator_trait! {
             true
         }
 
-        /// What it shows, as its inner widget shows it: a decorator is its inner widget plus
-        /// what it adds.
-        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            self.inner().html(cx)
-        }
-
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>)
         where
             Self: Decorated,
@@ -394,11 +388,6 @@ decorator_trait! {
     /// Every decorator is a widget: each method is the decorator's own, which
     /// forwards to the inner widget unless the decorator overrides it.
     impl {
-        /// What it shows, as its inner widget shows it: a decorator is its inner widget
-        /// plus what it adds.
-        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            Decorator::html(self, cx)
-        }
 
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {

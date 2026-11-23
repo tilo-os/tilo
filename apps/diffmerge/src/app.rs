@@ -896,10 +896,6 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow_document();
         self.do_asked();

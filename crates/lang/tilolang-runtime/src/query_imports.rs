@@ -108,7 +108,11 @@ impl Core {
             let mut held: Vec<String> = Vec::new();
             for p in self.registry.borrow().packages() {
                 let app = &p.meta.app;
-                if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app) {
+                if app == tilolang::HOST_APP
+                    || p.library
+                    || app.starts_with("agent.")
+                    || held.contains(app)
+                {
                     continue;
                 }
                 // A description alone (`Runtime::load_foreign`: the device's sound, the

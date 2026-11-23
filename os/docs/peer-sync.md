@@ -61,15 +61,14 @@ this one for a file's bytes gets them only while the workspace's signed policy
 lets its member read Files; a member that policy refuses or has revoked gets
 none.
 
-The Fedora host payload includes the `fs` daemon and `tilo-server-admin`, plus
-the user service `tilo-files-workspace.service`. It belongs to
+The Fedora host payload includes the `fs` daemon and the user service
+`tilo-files-workspace.service`. It belongs to
 `tilo-graphical-session.target`; installation alone does not enroll a device
 or grant Files access. Before mounting, the service checks that this computer
-is signed in to a workspace:
+is signed in to a workspace with a current certificate its root has not
+revoked:
 
 ```sh
-tilo-server-admin files-workspace-check \
-  --identity-root "$HOME/.local/share/tilo"
 systemctl --user start tilo-files-workspace.service
 ```
 

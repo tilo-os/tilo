@@ -30,6 +30,7 @@ async fn checkout_channel(
                 continuation_instance: Some(73),
                 launch_ticket: None,
                 windowless: false,
+                opened_for: None,
             },
         )
         .unwrap()

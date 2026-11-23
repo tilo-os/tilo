@@ -42,7 +42,7 @@ use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
-use tilo_agent_session::workspace_actions::{Opened, Opening, Recorder, ShellRan, Watching};
+use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, RemoteDevice};
 use tilo_server_protocol::hosted::Material;
 use ush::environment_terminals::quic::{Receiving, Sending, dial};

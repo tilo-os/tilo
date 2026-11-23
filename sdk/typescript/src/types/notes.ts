@@ -292,10 +292,10 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `append_to_note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   append_to_noteMany(items: AppendToNoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
+  /** Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
   file_note(args: {
     title: string;
-    name: string;
+    tag: string;
   }): Promise<Note>;
   /** Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by. */
   new_tag(args?: {

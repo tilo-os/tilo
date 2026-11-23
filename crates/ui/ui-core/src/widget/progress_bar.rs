@@ -374,53 +374,6 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    /// Its label as words over a track and a fill, as the bar paints them: the same track
-    /// and fill colours on the page as in the window.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, TextLook, rgba8};
-        let theme = cx.theme();
-        let track = self.track_rect(theme);
-        cx.element("div");
-        if !self.indeterminate {
-            let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round();
-            cx.attr("aria-valuenow", format!("{pct:.0}"));
-            cx.attr("aria-valuemin", "0");
-            cx.attr("aria-valuemax", "100");
-        }
-        if let Some(label) = self.shown_label() {
-            let look = TextLook::new(
-                label.to_owned(),
-                &theme.text(crate::tokens::TextRole::Label),
-                Some(theme.text_primary),
-            );
-            cx.words(
-                "label",
-                "span",
-                Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, track.y0),
-                look,
-            );
-        }
-        let radius = f64::from(theme.tokens.radii.detail).min(track.height() / 2.0);
-        let face = self.face();
-        let ground = cx.part("track", "ProgressBar", track);
-        ground.ground = Some(Ground {
-            fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
-            edge: None,
-            radius,
-            inset: [0.0; 2],
-        });
-        let filled = face.filled(theme, track);
-        if !filled.is_zero_area() {
-            let ground = cx.part("fill", "ProgressBar", filled);
-            ground.ground = Some(Ground {
-                fill: Some(rgba8(face.fill_colour(theme))),
-                edge: None,
-                radius,
-                inset: [0.0; 2],
-            });
-        }
-    }
-
     crate::described!();
 
     crate::provides!(

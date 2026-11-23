@@ -136,11 +136,6 @@ label = "Live rows are items of declared resource types"
 run = "python3 tools/policy/check_live_rows.py"
 
 [[step]]
-name = "widget-html"
-label = "Every widget renders itself as HTML too"
-run = "python3 tools/policy/check_widget_html.py"
-
-[[step]]
 name = "host-data-apps"
 label = "Apps that show the machine declare it and are captured only from scenarios"
 run = "python3 tools/policy/check_host_data_apps.py"

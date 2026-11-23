@@ -403,12 +403,11 @@ impl HistoryLog {
             let context = if genesis {
                 Some(genesis_context())
             } else {
-                match logged.message.as_deref() {
-                    Some(message) if message.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
-                        tilo_actions::entry_of(doc.committed_document(), logged.hash)
-                    }
-                    message => message.and_then(tilo_actions::ActionContext::from_change_message),
-                }
+                tilo_resource::history::context_of(
+                    doc.committed_document(),
+                    logged.hash,
+                    logged.message.as_deref(),
+                )
             };
             let summary = |context: Option<&tilo_actions::ActionContext>| {
                 if genesis {

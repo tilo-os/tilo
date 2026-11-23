@@ -1322,6 +1322,29 @@ class Walk:
         hover(self.session, selector)
         return {"rested_on": selector}
 
+    def op_drag(self, value) -> dict:
+        """A press, a move with the button held, and a release, as a person dragging does:
+        `{"window": [[fx, fy], [fx, fy]]}` names the points as fractions of the app window's
+        rect, so a drag on a grid lands where the person means whatever the window's size."""
+        window = self.window_of()
+        if window is None or window.get("rect") is None:
+            raise Failed("the app has no window to drag in")
+        x, y, w, h = window["rect"]
+        (fx0, fy0), (fx1, fy1) = value["window"]
+        x0, y0 = x + fx0 * w, y + fy0 * h
+        x1, y1 = x + fx1 * w, y + fy1 * h
+        self.session.control({"op": "pointer_move", "x": x0, "y": y0})
+        self.session.control({"op": "pointer_button", "pressed": True, "button": "left"})
+        steps = 10
+        for step in range(1, steps + 1):
+            self.session.control({
+                "op": "pointer_move",
+                "x": x0 + (x1 - x0) * step / steps,
+                "y": y0 + (y1 - y0) * step / steps,
+            })
+        self.session.control({"op": "pointer_button", "pressed": False, "button": "left"})
+        return {"dragged": value["window"], "rect": window["rect"]}
+
     def op_click(self, value) -> dict:
         """Press at the middle of the control `selector` names: a field, or a
         control whose own press the walk cannot address by name."""

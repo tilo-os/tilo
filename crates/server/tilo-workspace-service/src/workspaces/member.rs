@@ -36,13 +36,10 @@ use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::owner::session::hosted_by;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::DeviceCert;
 
-use super::actions::NAME;
-use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
-
-/// How long naming the person in a workspace they just joined may take.
-const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
+use super::{GovernedWorkspace, Held, Workspaces, appended, peer_parts};
 use crate::workspace_documents::HostCommit;
 
 /// The member copies a device holds: the links of the workspaces it joined,
@@ -286,7 +283,7 @@ impl ServedWrites {
 
 /// The extension of the file beside a member copy's workspace naming the
 /// device it syncs with ([`member_of`]).
-const MEMBER: &str = "member";
+pub(super) const MEMBER: &str = "member";
 
 /// How long after the link ends this device dials that device again.
 const REDIAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -485,38 +482,6 @@ impl Workspaces {
         self.inner.member.set_device(device);
     }
 
-    /// Save `change` to the shortcuts of `workspace` as this device's person: a shortcut it
-    /// saves is signed by the device this service signs its own writes as
-    /// ([`Self::signing_device`]), so its triggers fire for that person as one they saved.
-    ///
-    /// # Errors
-    /// The shortcut could not be signed, or the workspace did not take the change.
-    pub async fn change_own_shortcuts(
-        &self,
-        workspace: &str,
-        mut change: tilo_automation::ShortcutChange,
-    ) -> Result<(), String> {
-        if let tilo_automation::ShortcutChange::Save(shortcut) = &mut change {
-            let device = self.signing_device();
-            tilo_peer_state::workspace::sign_saved_shortcut(
-                workspace,
-                shortcut,
-                &device.cert,
-                device.signer.as_ref(),
-            )?;
-        }
-        self.commit_own_membership(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
-                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
-            ),
-            None,
-        )
-        .await
-        .map(drop)
-        .map_err(|error| error.to_string())
-    }
-
     /// The device a member copy acts as, when this service serves one.
     pub(super) fn member_identity(&self) -> Result<Arc<MemberDevice>, String> {
         self.inner
@@ -548,23 +513,6 @@ impl Workspaces {
     /// The invitation is not for this device, that device refuses or cannot be
     /// reached, or the copy could not be kept.
     pub async fn join_member(&self, invitation: &str) -> Result<WorkspaceId, String> {
-        self.join_member_as(invitation, None).await
-    }
-
-    /// [`Self::join_member`], and then name the person `name` among the workspace's people
-    /// (else the name the invitation gave them): what its member list and everyone's lists of
-    /// people show for them, rather than this device's label. Asked of the device that let them
-    /// in as the workspace's governance operation, over the device action service, signed as
-    /// this device; a workspace that does not answer keeps the name it admitted them with.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::join_member`].
-    pub async fn join_member_as(
-        &self,
-        invitation: &str,
-        name: Option<&str>,
-    ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
@@ -577,24 +525,15 @@ impl Workspaces {
         if workspace.is_nil() {
             return Err("invitation names no valid workspace".into());
         }
-        // A device that holds the workspace's keys, where the invitation names one: only such a
-        // device lets a new member in.
-        let routes: Vec<_> = join
+        let hint = join
             .grant()
             .transport
             .iter()
-            .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
-            .filter_map(|hint| {
-                let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(hint).ok()?;
-                Some((hint.clone(), address))
-            })
-            .collect();
-        let (hint, address) = routes
-            .iter()
-            .find(|(_, address)| address.holds_keys)
-            .or_else(|| routes.first())
+            .find(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
             .cloned()
             .ok_or("invitation has no authenticated native Iroh route")?;
+        let (address, _) =
+            WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
         address
             .validate_invitation(join.grant())
             .map_err(|e| e.to_string())?;
@@ -636,60 +575,7 @@ impl Workspaces {
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
-        let joined = self.hold_member(&device, &bootstrap, &hint).await?;
-        let name = name
-            .or_else(|| join.grant().invitee_name.as_deref())
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
-        if let Some(name) = name
-            && let Err(why) = self.name_at(&address.endpoint_addr, joined, name).await
-        {
-            tracing::debug!(%why, "the person is not named in the workspace they joined");
-        }
-        Ok(joined)
-    }
-
-    /// Ask the device at `addr` to name this device's person `name` in `workspace`.
-    async fn name_at(
-        &self,
-        addr: &iroh::EndpointAddr,
-        workspace: WorkspaceId,
-        name: &str,
-    ) -> Result<(), String> {
-        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-        let named = workspace.to_string();
-        let remote = Arc::new(self.action_service().remote(
-            &self.inner.host.endpoint,
-            addr,
-            &named,
-        ));
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(
-            "name".to_owned(),
-            serde_json::Value::String(name.to_owned()),
-        );
-        let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-                address: tilo_actions::remote::workspace_governance_address(&named, NAME),
-            },
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        match remote.invoke_until_settled(request, NAMING_WITHIN).await {
-            Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. })) => Ok(()),
-            Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(error.message),
-            Some(Ok(_)) => Err("no answer in time".to_owned()),
-            Some(Err(error)) => Err(error.to_string()),
-            None => Err("the device is not reached".to_owned()),
-        }
+        self.hold_member(&device, &bootstrap, &hint).await
     }
 
     /// Hold the workspace `bootstrap` answers as a member copy, synced with the device `hint`
@@ -1796,14 +1682,16 @@ impl Workspaces {
     pub(super) async fn bind_member(&self, governed: &GovernedWorkspace) -> Result<(), String> {
         let services = &self.inner.host;
         let workspace_id = governed.workspace_id();
-        crate::workspace_io::get_or_initialize(
+        let runtime_state = crate::workspace_io::get_or_initialize(
             &services.workspaces,
             services.access.state_root().to_path_buf(),
             workspace_id,
+            crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
+        runtime_state.lock().await.governs_here = false;
         Ok(())
     }
 
@@ -1835,7 +1723,7 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
-        let keying = self.take_part_in_keys(&name);
+        let keying = self.take_part_in_keys(&name, Held::MemberCopy);
         let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
@@ -1859,6 +1747,14 @@ impl Workspaces {
                         }
                         up.send_replace(false);
                     }
+                    Err(refusal @ Refusal::Revoked(_)) => {
+                        tracing::debug!(%name, ?refusal, "a member copy's device says the key is retired");
+                        // The serving device says the person's root retired this device's key,
+                        // with the entry the root signed: kept only once the entry verifies.
+                        if let Some(workspaces) = workspaces.upgrade() {
+                            workspaces.take_refusal(refusal).await;
+                        }
+                    }
                     Err(error) => {
                         tracing::debug!(%name, %error, "a member copy's device is unavailable");
                     }
@@ -1880,49 +1776,35 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Have this device take part in the group of the member copy `workspace`, as the copy is
-    /// synced: its key service asks the group's key holders to admit it, and keeps asking until
-    /// one does. The group admits only a device that asks, and reading a sealed record never asks
-    /// (it waits for keys the device is due, [`crate::documents::Sealing::Due`]): a device that
-    /// joined a workspace and only reads what was written there before it arrived would
-    /// otherwise hold every sealed record unopened, however long it waited.
+    /// Have this device take part in the group of `workspace`, as the copy is held: its key
+    /// service asks the group's key holders to admit it, and keeps asking until one does. The
+    /// group admits only a device that asks, and reading a sealed record never asks (it waits
+    /// for keys the device is due, [`crate::documents::Sealing::Due`]): a device that joined a
+    /// workspace and only reads what was written there before it arrived would otherwise hold
+    /// every sealed record unopened, however long it waited.
     ///
-    /// When the device comes to hold the group's keys, the copy takes in once what it kept but
-    /// could not open before ([`Self::take_in_what_keys_open`]). Answers the task that waits for
-    /// them, `None` when the device has no key service.
-    fn take_part_in_keys(&self, workspace: &str) -> Option<tokio::task::AbortHandle> {
+    /// When the device comes to hold the group's keys, the member copy takes in once what it
+    /// kept but could not open before ([`Self::take_in_what_keys_open`]), and a governed copy —
+    /// one another host handed over — replays what this host retains ([`Self::replay`]). Answers
+    /// the task that waits for them, `None` when the device has no key service.
+    pub(super) fn take_part_in_keys(
+        &self,
+        workspace: &str,
+        held: Held,
+    ) -> Option<tokio::task::AbortHandle> {
         let keys = self.device_keys()?;
         let workspace = workspace.to_owned();
         let workspaces = self.downgrade();
         let task = tokio::spawn(async move {
-            // The first ask starts the device's part in the group; the key service keeps asking
-            // on its own after the wait, so a wait that ends first leaves nothing undone.
-            if let Some(Err(error)) = keys
-                .group_keys(&workspace, collab_types::EVERY_MEMBER, true)
-                .await
-            {
-                tracing::debug!(%workspace, %error, "a member copy's group has not admitted this device yet");
+            if !super::sealed_documents::wait_for_group_keys(&keys, &workspace).await {
+                return;
             }
-            // Where the keys stood when last looked at: a change after that look ends the wait
-            // at once, so keys that arrive between a look and the wait are not missed.
-            let mut seen = 0;
-            loop {
-                match keys
-                    .group_keys(&workspace, collab_types::EVERY_MEMBER, false)
-                    .await
-                {
-                    Some(Ok(_)) => break,
-                    // The device takes part in no group of the workspace: nothing is sealed.
-                    None => return,
-                    Some(Err(_)) => {}
-                }
-                let Some(next) = keys.keys_changed(&workspace, seen).await else {
-                    return;
-                };
-                seen = next;
-            }
-            if let Some(workspaces) = workspaces.upgrade() {
-                workspaces.take_in_what_keys_open(&workspace).await;
+            let Some(workspaces) = workspaces.upgrade() else {
+                return;
+            };
+            match held {
+                Held::MemberCopy => workspaces.take_in_what_keys_open(&workspace).await,
+                Held::Governs => workspaces.replay(&workspace).await,
             }
         });
         Some(task.abort_handle())
@@ -1943,7 +1825,7 @@ impl Workspaces {
             return;
         };
         let mut governed = state.lock().await;
-        let retained = match self.inner.records.retained(governed.workspace_id()) {
+        let retained = match self.inner.records.retained(governed.workspace_id()).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "a member copy did not read the writes it kept");
@@ -2002,7 +1884,7 @@ impl Workspaces {
         governed: &mut GovernedWorkspace,
         link: Option<&DirectSync>,
     ) -> Result<(), String> {
-        let retained = self.inner.records.retained(governed.workspace_id())?;
+        let retained = self.inner.records.retained(governed.workspace_id()).await?;
         for frame in retained {
             let Ok(message) = NeighbourMsg::decode(&frame.body) else {
                 continue;
@@ -2070,6 +1952,22 @@ impl Workspaces {
                         .await
                 {
                     tracing::warn!(%name, %error, "a member copy did not keep what the serving device sent");
+                }
+                // A write caught up, not one written now: the link admitted it
+                // into this copy's replica before the reader heard it, so
+                // neither taking it in nor landing it changes the copy, and
+                // nothing above told a follower. Whoever follows the record
+                // hears of it as of a write made now, from where the copy
+                // keeps it.
+                if frame.retained
+                    && frame.report.is_ok()
+                    && let NeighbourMsg::AppDocument {
+                        app_id,
+                        document_id,
+                        ..
+                    } = &frame.message
+                {
+                    workspaces.wrote(&name, app_id, document_id);
                 }
                 if answering {
                     let (workspaces, name, author) =

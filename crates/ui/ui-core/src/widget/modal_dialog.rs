@@ -1771,11 +1771,6 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl Widget for ModalDialog<dyn Widget> {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        cx.children();
-    }
-
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         if self.environment != environment {
             self.environment = environment;
@@ -2467,9 +2462,6 @@ impl Widget for ModalDialog<dyn Widget> {
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.as_dyn().html(cx);
-    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

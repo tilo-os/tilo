@@ -34,11 +34,25 @@ use tilo_workspace_service::apps::{
 };
 
 #[cfg(target_os = "linux")]
+mod instances;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
 mod original;
+
+#[cfg(unix)]
+/// A view the daemon opened for a caller: the descriptors its page window is started with
+/// (`Processes::show_page`), and the device's end of that window's page link.
+pub(crate) struct OpenedView {
+    /// The window's end of its instance's patch connection.
+    pub patch: std::os::fd::OwnedFd,
+    /// The window's end of the page link.
+    pub page: std::os::fd::OwnedFd,
+    /// The device's end of the page link, which asks the window for the page.
+    pub link: std::os::unix::net::UnixStream,
+}
 
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
@@ -68,6 +82,9 @@ pub struct Apps {
     /// What a launch into this profile's workspace is granted, once the
     /// workspace service that holds the person's grants is open.
     grants: OnceLock<Arc<dyn LaunchGrantsSource>>,
+    /// The tilolang instances this daemon starts itself, with no session.
+    #[cfg(target_os = "linux")]
+    instances: instances::Instances,
 }
 
 /// Where a launch reads what the person granted the app it starts: the
@@ -124,6 +141,8 @@ impl Apps {
             sockets: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
+            #[cfg(target_os = "linux")]
+            instances: instances::Instances::new(profile, launcher_candidates.clone()),
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
@@ -187,6 +206,61 @@ impl Apps {
     /// `source` from now on: the workspace service, once it is open.
     pub(crate) fn keep_launch_grants(&self, source: Arc<dyn LaunchGrantsSource>) {
         let _ = self.grants.set(source);
+    }
+
+    /// Run the code of an app whose calls name no view as `person`, the member the device acts
+    /// as, from now on.
+    pub(crate) fn keep_person(&self, person: &str) {
+        #[cfg(target_os = "linux")]
+        self.instances.keep_person(person.to_owned());
+        #[cfg(not(target_os = "linux"))]
+        let _ = person;
+    }
+
+    /// This daemon's tilolang processes, which start every tilolang process it runs.
+    ///
+    /// # Errors
+    /// No launcher is installed to start them.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn processes(&self) -> Result<Arc<crate::device::processes::Processes>, String> {
+        self.instances.processes().cloned()
+    }
+
+    /// Open a view of the tilolang app `app` in `workspace` for `caller`, whom the device's
+    /// dispatch admitted (a member, a member's agent, a visitor at a page): an instance of the
+    /// app, started here with no session in the app's sandboxed process, shows it, on `record`
+    /// (else what it opens by default) and revealing `reveal`. What the instance writes for the
+    /// view is the caller's, limited to what they may do. Its window, which lays the view out
+    /// and draws nothing, runs sandboxed as every tilolang process here does; the answer is the
+    /// device's end of its page link (`tilo_server_protocol::page::window`), and closing it ends
+    /// the window.
+    ///
+    /// # Errors
+    /// The app is no tilolang app installed here, no launcher can start its process, or its
+    /// instance or its window did not start.
+    #[cfg(unix)]
+    pub fn open_view(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+        workspace: &str,
+        record: Option<String>,
+        reveal: Option<String>,
+    ) -> Result<std::os::unix::net::UnixStream, String> {
+        #[cfg(target_os = "linux")]
+        return {
+            let view = self
+                .instances
+                .open_view(caller, app, workspace, record, reveal)?;
+            self.processes()?
+                .show_page(app, workspace, view)
+                .map_err(|error| format!("the view's window: {error}"))
+        };
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (caller, app, workspace, record, reveal);
+            Err("this device starts no tilolang app's view".to_owned())
+        }
     }
 
     /// What a launch into this runtime's workspace is granted: the
@@ -489,18 +563,45 @@ impl LauncherServices for Apps {
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
         self.launched.attest(pid, app, workspace) || self.serves(pid, app, workspace)
     }
+
+    /// A tilolang app runs an instance here that shows nothing, in its sandboxed process, to take
+    /// the call that asked for it; other apps' actions launch them.
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
+        #[cfg(target_os = "linux")]
+        if crate::device::package_runs::runs_in_process(app) {
+            return self.instances.start_with_no_view(app, workspace).map(Some);
+        }
+        let _ = (app, workspace);
+        Ok(None)
+    }
+
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
         workspace: &str,
-        _window_instance: Option<u64>,
+        window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        // A connection this process made for an instance it started: the one it names, once.
+        #[cfg(target_os = "linux")]
+        if pid == std::process::id()
+            && let Some(instance) = window_instance
+            && let Some(launch) = self.instances.take(app, workspace, instance)
+        {
+            return Ok(Some(launch));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = window_instance;
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: true,
+                opened_for: None,
             }));
         }
         if !self.launched.attest(pid, app, workspace) {
@@ -510,6 +611,7 @@ impl LauncherServices for Apps {
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
             windowless: false,
+            opened_for: None,
         }))
     }
     #[cfg(target_os = "linux")]

@@ -10920,506 +10920,6 @@
         "required": [],
         "description": ""
       },
-      "contacts.book.export-vcard-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "contact": {
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "description": ""
-      },
-      "contacts.contacts.new-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "contacts.contacts.add-contacts.Arguments": {
-        "type": "object",
-        "properties": {
-          "contacts": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "addresses": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "city": {
-                        "type": "string"
-                      },
-                      "country": {
-                        "type": "string"
-                      },
-                      "id": {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      "label": {
-                        "type": "string"
-                      },
-                      "postal": {
-                        "type": "string"
-                      },
-                      "region": {
-                        "type": "string"
-                      },
-                      "street": {
-                        "type": "string"
-                      }
-                    },
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "birthday": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "oneOf": [
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "Full": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "day": {
-                                  "maximum": 4294967295,
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "month": {
-                                  "maximum": 4294967295,
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "year": {
-                                  "maximum": 2147483647,
-                                  "minimum": -2147483648,
-                                  "type": "integer"
-                                }
-                              },
-                              "required": [
-                                "year",
-                                "month",
-                                "day"
-                              ],
-                              "type": "object"
-                            }
-                          },
-                          "required": [
-                            "Full"
-                          ],
-                          "type": "object"
-                        },
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "MonthDay": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "day": {
-                                  "maximum": 4294967295,
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "month": {
-                                  "maximum": 4294967295,
-                                  "minimum": 0,
-                                  "type": "integer"
-                                }
-                              },
-                              "required": [
-                                "month",
-                                "day"
-                              ],
-                              "type": "object"
-                            }
-                          },
-                          "required": [
-                            "MonthDay"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                "emails": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      "label": {
-                        "type": "string"
-                      },
-                      "value": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "value"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "favorite": {
-                  "type": "boolean"
-                },
-                "first": {
-                  "type": "string"
-                },
-                "groups": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      "value": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "value"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "last": {
-                  "type": "string"
-                },
-                "notes": {
-                  "type": "string"
-                },
-                "org": {
-                  "type": "string"
-                },
-                "phones": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      "label": {
-                        "type": "string"
-                      },
-                      "value": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "value"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "photo": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "website": {
-                  "type": "string"
-                }
-              },
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "contacts"
-        ],
-        "description": ""
-      },
-      "contacts.contacts.delete-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "contact": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "contact"
-        ],
-        "description": ""
-      },
-      "contacts.contacts.merge-contacts.Arguments": {
-        "type": "object",
-        "properties": {
-          "contact": {
-            "type": "string"
-          },
-          "source": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "take_from_source": {
-            "items": {
-              "enum": [
-                "First",
-                "Last",
-                "Organization",
-                "Title",
-                "Website",
-                "Birthday",
-                "Notes"
-              ],
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "merged": {
-            "additionalProperties": false,
-            "properties": {
-              "addresses": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "city": {
-                      "type": "string"
-                    },
-                    "country": {
-                      "type": "string"
-                    },
-                    "id": {
-                      "format": "uuid",
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    },
-                    "postal": {
-                      "type": "string"
-                    },
-                    "region": {
-                      "type": "string"
-                    },
-                    "street": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "birthday": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "oneOf": [
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "Full": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "day": {
-                                "maximum": 4294967295,
-                                "minimum": 0,
-                                "type": "integer"
-                              },
-                              "month": {
-                                "maximum": 4294967295,
-                                "minimum": 0,
-                                "type": "integer"
-                              },
-                              "year": {
-                                "maximum": 2147483647,
-                                "minimum": -2147483648,
-                                "type": "integer"
-                              }
-                            },
-                            "required": [
-                              "year",
-                              "month",
-                              "day"
-                            ],
-                            "type": "object"
-                          }
-                        },
-                        "required": [
-                          "Full"
-                        ],
-                        "type": "object"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "MonthDay": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "day": {
-                                "maximum": 4294967295,
-                                "minimum": 0,
-                                "type": "integer"
-                              },
-                              "month": {
-                                "maximum": 4294967295,
-                                "minimum": 0,
-                                "type": "integer"
-                              }
-                            },
-                            "required": [
-                              "month",
-                              "day"
-                            ],
-                            "type": "object"
-                          }
-                        },
-                        "required": [
-                          "MonthDay"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  }
-                ]
-              },
-              "emails": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "format": "uuid",
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "value"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "favorite": {
-                "type": "boolean"
-              },
-              "first": {
-                "type": "string"
-              },
-              "groups": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "format": "uuid",
-                      "type": "string"
-                    },
-                    "value": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "value"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "last": {
-                "type": "string"
-              },
-              "notes": {
-                "type": "string"
-              },
-              "org": {
-                "type": "string"
-              },
-              "phones": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "format": "uuid",
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "value"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "photo": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "website": {
-                "type": "string"
-              }
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "contact",
-          "source",
-          "take_from_source"
-        ],
-        "description": ""
-      },
       "containers.engine.clear-create.Arguments": {
         "type": "object",
         "properties": {},
@@ -27232,6 +26732,1176 @@
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
       },
+      "tl.so.tilo.contacts.Labeled.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.Labeled.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "label",
+              "value"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Labeled.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Address.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.Address.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "label",
+              "street",
+              "city",
+              "region",
+              "postal",
+              "country"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Address.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Contact.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.Contact.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "org",
+              "role",
+              "website",
+              "notes",
+              "photo"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Contact.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "favorite"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Contact.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Renames a contact."
+      },
+      "tl.so.tilo.contacts.Contact.favorite.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Adds a contact to favorites, or takes them off."
+      },
+      "tl.so.tilo.contacts.Contact.add_phone.Arguments": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Gives a contact a phone number, as the number `number` and the kind `label` where the caller\nknows them already. Addressed from the card's own button, both are empty for the person to\nfill in."
+      },
+      "tl.so.tilo.contacts.Contact.remove_phone.Arguments": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Labeled",
+            "type": "object"
+          }
+        },
+        "required": [
+          "phone"
+        ],
+        "description": "Takes one of a contact's phone numbers away."
+      },
+      "tl.so.tilo.contacts.Contact.add_email.Arguments": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Gives a contact a mailbox, as the `address` and the kind `label` where the caller knows them\nalready. Addressed from the card's own button, both are empty for the person to fill in."
+      },
+      "tl.so.tilo.contacts.Contact.remove_email.Arguments": {
+        "type": "object",
+        "properties": {
+          "mail": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Labeled",
+            "type": "object"
+          }
+        },
+        "required": [
+          "mail"
+        ],
+        "description": "Takes one of a contact's mailboxes away."
+      },
+      "tl.so.tilo.contacts.Contact.add_address.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Gives a contact a postal address to fill in."
+      },
+      "tl.so.tilo.contacts.Contact.remove_address.Arguments": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Address",
+            "type": "object"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "description": "Takes one of a contact's addresses away."
+      },
+      "tl.so.tilo.contacts.Contact.ungroup.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Takes a contact out of a group."
+      },
+      "tl.so.tilo.contacts.Contact.export_contact.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A contact as a file: their card, named for them."
+      },
+      "tl.so.tilo.contacts.Group.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.Group.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Group.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Book.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.Book.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Book.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.Book.new_contact.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "A new contact, named by what is typed where they were made; a book's entry gives the name\nit takes, so nothing is left called \"No name yet\" by a person who typed one."
+      },
+      "tl.so.tilo.contacts.Book.group.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Contact",
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "c",
+          "name"
+        ],
+        "description": "Puts a contact in a group, making the group the book's place if it is new: the same group\nhowever it is spelled, so \"Work\" and \"work\" are one place."
+      },
+      "tl.so.tilo.contacts.Book.new_group.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Starts a group the book offers as a place, with nobody in it yet."
+      },
+      "tl.so.tilo.contacts.Book.delete.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Contact",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Deletes a contact from the book."
+      },
+      "tl.so.tilo.contacts.Book.merge_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "keep": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Contact",
+            "type": "object"
+          },
+          "goes": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Contact",
+            "type": "object"
+          },
+          "take": {
+            "items": {
+              "choice_labels": {
+                "birthday": "The day they were born",
+                "name": "Their name",
+                "notes": "What is written about them",
+                "org": "Where they work",
+                "role": "What they do there",
+                "website": "Their website"
+              },
+              "enum": [
+                "name",
+                "org",
+                "role",
+                "website",
+                "birthday",
+                "notes"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keep",
+          "goes"
+        ],
+        "description": "Merges the card that goes into the one that stays: every number, mailbox, address and group of\nboth is the card that stays, the fields `take` names come from the card that goes, and the\ncard that goes is deleted. One change, so undo brings both cards back."
+      },
+      "tl.so.tilo.contacts.Book.export_book.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Every contact as one vCard file, which another address book reads whole."
+      },
+      "tl.so.tilo.contacts.Book.import_vcard.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Imports the contacts a vCard file holds into the book, each card a contact of its own, and\nanswers how many were added. A file whose cards cannot be read adds nothing and changes\nnothing: what it says is the refusal."
+      },
+      "tl.so.tilo.contacts.Book.add_contacts.Arguments": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cards"
+        ],
+        "description": "The cards `cards`, the words of a vCard file, as contacts of this book, and how many named\nsomebody: what an importer, an agent or a script hands a book in one call."
+      },
+      "tl.so.tilo.contacts.Book.add_card.Arguments": {
+        "type": "object",
+        "properties": {
+          "card": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "card"
+        ],
+        "description": "The contact a vCard card says, made in the book, or none for a card that names nobody. Its\nrows are filled after it stands in the book, as every resource's are."
+      },
+      "tl.so.tilo.contacts.Book.find_for_address.Arguments": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "description": "The contact the book holds for `address`, as an action: what a person, an agent or another\napp asks before they write to it. Nothing is changed and nothing is guessed from a name."
+      },
+      "tl.so.tilo.contacts.confirm.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Identities",
+            "type": "object"
+          },
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Person",
+            "type": "object"
+          },
+          "service": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "d",
+          "person",
+          "service",
+          "scope",
+          "account"
+        ],
+        "description": "Binds `account` of `service` to the person: the directory's `confirm-endpoint`, or\n`confirm-account` where the service names an account scope."
+      },
+      "tl.so.tilo.contacts.change.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Identities",
+            "type": "object"
+          },
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Person",
+            "type": "object"
+          },
+          "endpoint": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Endpoint",
+            "type": "object"
+          },
+          "service": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "d",
+          "person",
+          "endpoint",
+          "service",
+          "scope",
+          "account"
+        ],
+        "description": "Changes the account an association names, under the directory's rule that a changed address\nneeds review before anything is sent to it."
+      },
+      "tl.so.tilo.contacts.forget.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Identities",
+            "type": "object"
+          },
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Person",
+            "type": "object"
+          },
+          "endpoint": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Endpoint",
+            "type": "object"
+          }
+        },
+        "required": [
+          "d",
+          "person",
+          "endpoint"
+        ],
+        "description": "Takes an association away: messages from that account stop reaching this contact, and what was\nalready received is unchanged."
+      },
+      "tl.so.tilo.contacts.share.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Identities",
+            "type": "object"
+          },
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Person",
+            "type": "object"
+          },
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.Contact",
+            "type": "object"
+          }
+        },
+        "required": [
+          "d",
+          "person",
+          "c"
+        ],
+        "description": "Shares this card with the workspace's apps, under the person it is: the name, the numbers and\nthe mailboxes another app reads of a contact before it writes to them."
+      },
+      "tl.so.tilo.contacts.unshare.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Identities",
+            "type": "object"
+          },
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.directory.Person",
+            "type": "object"
+          }
+        },
+        "required": [
+          "d",
+          "person"
+        ],
+        "description": "Takes the contact out of the directory, leaving its card in the book: what the apps read of it\nstops naming it."
+      },
       "tl.so.tilo.lang.counter.Counter.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -30328,15 +30998,15 @@
           "title": {
             "type": "string"
           },
-          "name": {
+          "tag": {
             "type": "string"
           }
         },
         "required": [
           "title",
-          "name"
+          "tag"
         ],
-        "description": "Files a note titled `title` and carrying the tag `name` in one step: what another app writes\ndown of what it did (Today's morning) without waiting on the note it made to name it."
+        "description": "Files a note titled `title` and tagged `tag` in one step: what another app writes\ndown of what it did (Today's morning) without waiting on the note it made to name it."
       },
       "tl.so.tilo.notes.Notebook.new_tag.Arguments": {
         "type": "object",
@@ -37298,96 +37968,6 @@
       "arguments": "#/components/schemas/console.view.show-everything.Arguments"
     },
     {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.book",
-      "action": "export-vcard-content",
-      "arguments": "#/components/schemas/contacts.book.export-vcard-content.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.contacts",
-      "action": "new-contact",
-      "arguments": "#/components/schemas/contacts.contacts.new-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.contacts",
-      "action": "add-contacts",
-      "arguments": "#/components/schemas/contacts.contacts.add-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.contacts",
-      "action": "delete-contact",
-      "arguments": "#/components/schemas/contacts.contacts.delete-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.contacts",
-      "action": "merge-contacts",
-      "arguments": "#/components/schemas/contacts.contacts.merge-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "remove-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.remove-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-account.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-account.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "project-phones",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-phones.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "project-emails",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-emails.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contacts",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilo.contacts.identities",
-      "action": "forget-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
-    },
-    {
       "app": "so.tilo.containers",
       "resource": "containers.engine",
       "action": "clear-create",
@@ -41202,6 +41782,264 @@
       "resource": "tl.so.tilo.lang.chat",
       "action": "start_thread",
       "arguments": "#/components/schemas/tl.so.tilo.lang.chat.start_thread.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Labeled",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Labeled.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Labeled",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Labeled.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Labeled",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Labeled.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Address",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Address.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Address",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Address.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Address",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Address.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "rename",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "favorite",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.favorite.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "add_phone",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.add_phone.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "remove_phone",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.remove_phone.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "add_email",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.add_email.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "remove_email",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.remove_email.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "add_address",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.add_address.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "remove_address",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.remove_address.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "ungroup",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.ungroup.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
+      "action": "export_contact",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.export_contact.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Group",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Group.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Group",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Group.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Group",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Group.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "new_contact",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.new_contact.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "group",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.group.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "new_group",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.new_group.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "delete",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "merge_into",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.merge_into.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "export_book",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.export_book.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "import_vcard",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.import_vcard.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "add_contacts",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.add_contacts.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "add_card",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.add_card.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "find_for_address",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.find_for_address.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts",
+      "action": "confirm",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.confirm.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts",
+      "action": "change",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.change.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts",
+      "action": "forget",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.forget.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts",
+      "action": "share",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.share.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts",
+      "action": "unshare",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.unshare.Arguments"
     },
     {
       "app": "so.tilo.lang.counter",

@@ -127,15 +127,10 @@ impl Published for ServiceSurface {
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
-    /// The resources of the workspaces this device's own service holds, as the broker reads them.
-    pub documents: crate::broker_services::BrokerService<
-        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
-    >,
-    /// The one store of the workspaces this device's service holds, as apps write and read their
-    /// resources in it.
-    pub resources: crate::broker_services::BrokerService<
-        std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
-    >,
+    /// The shell link the device's daemon handed this session, or why it has none.
+    pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
+    /// Each write the daemon takes, as the session follows them.
+    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
     /// Where this device's own workspace service is installed: the workspaces it holds take an
     /// app's window write, the one store the session's own writes and reads go through.
     pub service: tilo_workspace_service::service::ServiceSlot,
@@ -240,8 +235,8 @@ pub(crate) fn start_app_wire(
     let Collaboration {
         revocations,
         sync,
-        documents,
-        resources,
+        daemon,
+        daemon_writes,
         engine,
         service,
         sealed,
@@ -310,8 +305,8 @@ pub(crate) fn start_app_wire(
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
-            documents,
-            resources,
+            daemon,
+            daemon_writes,
             service: service.clone(),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             device_actions: sync.map(crate::sync::Client::actions_handle),

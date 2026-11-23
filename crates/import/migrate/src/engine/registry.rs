@@ -82,8 +82,7 @@ pub const SOURCES: &[Row] = &[
         connect: None,
         resources: &[
             "workspace/mail-accounts",
-            "contacts/contacts.book",
-            "contacts/contacts.contacts",
+            "contacts",
             "calendar/calendar.calendar",
         ],
     },

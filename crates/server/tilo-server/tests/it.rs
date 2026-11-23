@@ -57,10 +57,6 @@ mod hosting_member;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
-#[cfg(unix)]
-#[cfg(feature = "agents")]
-#[path = "persistent_workspace.rs"]
-mod persistent_workspace;
 #[path = "presence_batching.rs"]
 mod presence_batching;
 #[path = "record_content_routing.rs"]

@@ -322,6 +322,12 @@ struct Inner {
     /// The invocation the writes made now serve, as whoever delivered it names it: what they
     /// are stamped with, so the workspace and its history tell them by the call that made them.
     serving: RefCell<Option<String>>,
+    /// Who the writes made now are made for, when the invoker is not the person at this device
+    /// (a page whose reader is a member): the actor the changes name as theirs.
+    serving_invoker: RefCell<Option<String>>,
+    /// The invocation as the caller signed it, when the writes made now serve one a caller asked
+    /// for under their own key: what each change keeps, for the holders that check it.
+    serving_signed: RefCell<Option<Box<tilo_actions::remote::SignedCall>>>,
     /// The resources made here since [`ResourceStore::take_made`] last took them.
     made: RefCell<Vec<ResourceRef>>,
     /// Why the last batch was refused, for the host to say.
@@ -591,6 +597,8 @@ impl ResourceStore {
                 device: RefCell::new(uuid::Uuid::new_v4().to_string()),
                 run: RefCell::default(),
                 serving: RefCell::default(),
+                serving_invoker: RefCell::default(),
+                serving_signed: RefCell::default(),
                 made: RefCell::default(),
                 burst: RefCell::default(),
                 edit_pause: StdCell::new(DEFAULT_EDIT_PAUSE),
@@ -3080,6 +3088,18 @@ impl ResourceStore {
         *self.inner.serving.borrow_mut() = invocation;
     }
 
+    /// The writes made from now on are made for the actor `invoker` (none: the person at this
+    /// device), as a page's writes are made for the member who reads it.
+    pub fn serve_invoker(&self, invoker: Option<String>) {
+        *self.inner.serving_invoker.borrow_mut() = invoker;
+    }
+
+    /// The writes made from now on serve the call `call` as its caller signed it (none: none),
+    /// and each change keeps it.
+    pub fn serve_signed(&self, call: Option<Box<tilo_actions::remote::SignedCall>>) {
+        *self.inner.serving_signed.borrow_mut() = call;
+    }
+
     /// The resources made here since this was last asked, oldest first: what an action that
     /// stopped at a step a person must answer made before it stopped. A write taken back since
     /// may have made one that is no more.
@@ -3210,16 +3230,19 @@ impl ResourceStore {
         });
         Stamp {
             verb: published_verb(note),
-            invoker: note.invoker.as_ref().map_or_else(
-                || {
+            invoker: note
+                .invoker
+                .as_ref()
+                .map(actor_text)
+                // A write a page's reader made is theirs, not the person at this device's.
+                .or_else(|| self.inner.serving_invoker.borrow().clone())
+                .unwrap_or_else(|| {
                     PLATFORM_WRITES
                         .contains(&note.action.as_str())
                         .then(|| self.inner.writer.borrow().as_ref().map(actor_text))
                         .flatten()
                         .unwrap_or_default()
-                },
-                actor_text,
-            ),
+                }),
             invocation,
             membership: Vec::new(),
             undoes: None,
@@ -3239,6 +3262,7 @@ impl ResourceStore {
                 .map(actor_text)
                 .unwrap_or_default(),
             moment: self.next_moment(note.at.as_deref()),
+            signed: self.inner.serving_signed.borrow().clone(),
         }
     }
 

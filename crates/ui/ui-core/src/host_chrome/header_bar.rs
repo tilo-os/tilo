@@ -275,11 +275,6 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 }
 
 impl Widget for HeaderBar {
-    /// The bar as the window's header, with its controls as buttons in it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("header");
-        cx.children();
-    }
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         self.dirty = true;
         self.take_menu_request();

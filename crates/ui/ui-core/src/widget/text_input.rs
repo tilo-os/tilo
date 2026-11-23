@@ -485,6 +485,12 @@ pub struct TextInput {
     /// Escape let go of what was being typed ([`Self::set_cancel_event`]): the field clears, and
     /// what holds it is told, so a caret on a canvas goes away with it.
     cancel_event: crate::component::Event,
+    /// The field's text went from empty to non-empty ([`Self::set_begin_event`]): the first
+    /// change, which makes the item a list entry names. Carries the text it now holds.
+    begin_event: crate::component::Event,
+    /// The field lost the keyboard ([`Self::set_blur_event`]): a list's entry that was left
+    /// empty is taken away by what listens.
+    blur_event: crate::component::Event,
     submit_action: Option<ActionEmitter<String>>,
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
@@ -776,6 +782,8 @@ impl TextInput {
             on_submit: None,
             selection_event: None,
             cancel_event: crate::component::Event::None,
+            begin_event: crate::component::Event::None,
+            blur_event: crate::component::Event::None,
             submit_action: None,
             accessory: None,
             content_sized: false,
@@ -4769,33 +4777,6 @@ impl Widget for TextInput {
             .filter(|shown| !shown.is_empty())
     }
 
-    /// The field as a page's: an input holding what it shows, a secret's as its mask, set in the
-    /// field's own style.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let value = self.display_text();
-        let style = self.line_style(cx.theme().text_scale);
-        let look = crate::composition::TextLook::new(value.clone(), &style, None);
-        let placeholder = (!self.placeholder.is_empty()).then(|| widget_text(&self.placeholder));
-        cx.field(value, self.multiline, placeholder, look);
-        let theme = cx.theme();
-        if self.multiline {
-            cx.field_inset(self.ml_left(), self.multiline_padding_y());
-        } else {
-            cx.field_inset(self.text_inset_x(theme), 0.0);
-        }
-        if !self.plain {
-            // Its well, as the canvas paints it at rest: the raised fill, no edge.
-            cx.ground(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(
-                    theme.tokens.colors.surfaces.raised,
-                )),
-                edge: None,
-                radius: f64::from(theme.tokens.radii.control),
-                inset: [0.0; 2],
-            });
-        }
-    }
-
     fn take_focus_request(&mut self) -> Option<String> {
         std::mem::take(&mut self.focus_wanted)
             .then(|| self.test_id().unwrap_or_default().to_owned())
@@ -5571,6 +5552,9 @@ impl Widget for TextInput {
             if left && (entry_commits || self.leaving_commits) {
                 self.fire_submit();
             }
+            if left {
+                self.blur_event.fire(None);
+            }
         }
     }
     fn is_focused(&self) -> bool {
@@ -5662,7 +5646,8 @@ impl Widget for TextInput {
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
                 protected: secret,
-                multiline: self.multiline && !self.title,
+                // A title wraps as a note does, though it takes no line breaks of its own.
+                multiline: self.multiline,
                 invalid: self.invalid,
                 autofill: self.autofill(),
                 ..Default::default()

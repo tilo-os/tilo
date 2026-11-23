@@ -947,16 +947,6 @@ inputs = ["crates/integrations/provider-config/tests/fixtures/openrouter-models.
 readers = ["crates/integrations/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
-package = "calendar"
-# Its tests of what it writes to a calendar server start the server the
-# holder's own tests start, from its source, so both writers are judged by
-# one reading of the standard's tables.
-inputs = [
-  "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
-]
-readers = ["apps/calendar/src/lib.rs"]
-
-[[cargo]]
 package = "discord-worker"
 # The bridge test and the live example install the bridge bot from its
 # program file, beside the worker in the connector app.

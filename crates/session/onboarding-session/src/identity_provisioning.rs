@@ -72,10 +72,6 @@ fn host_files_environment(
         ("TILO_AUTHORITY_SOCKET_DIR", runtime.clone()),
         ("TILO_FS_BLOB_SOCKET", runtime.join("fs-blobs.sock")),
         ("TILO_FS_STORAGE_DIR", storage),
-        (
-            "TILO_FS_AUTHORITY_PUBLISHER",
-            PathBuf::from("/usr/libexec/tilo/tilo-server-admin"),
-        ),
     ])
 }
 

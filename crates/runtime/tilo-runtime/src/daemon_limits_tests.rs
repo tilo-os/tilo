@@ -34,11 +34,11 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
                 "owner",
             ))
         }),
-        status: Status {
+        status: Arc::new(|| Status {
             version: 1,
             pid: std::process::id(),
             workspace: "workspace".into(),
-        },
+        }),
         search: Arc::new(std::sync::OnceLock::from(Arc::new(
             tilo_os_search::OsSearch::new(
                 Arc::new(host.clone()),

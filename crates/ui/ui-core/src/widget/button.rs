@@ -1783,12 +1783,6 @@ impl<'a> ButtonFace<'a> {
             self.label
         }
     }
-    #[must_use]
-    pub fn composed(&self, theme: &Theme) -> Option<crate::composition::Face> {
-        let label = localized_label(self.label);
-        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
-        self.painter(&metrics, &label).composed(theme)
-    }
 
     pub fn colors(&self, theme: &Theme) -> FaceColors {
         resolve_face_colors(theme, self.role, self.confirms, self.interact)
@@ -2112,14 +2106,6 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("button");
-        match self.composed_face(cx.theme()) {
-            Some(face) => cx.face(face),
-            None => cx.picture(),
-        }
-    }
-
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGuarded,
@@ -2705,7 +2691,6 @@ impl Button {
 mod tests;
 
 mod component;
-mod html;
 pub use component::ButtonProps;
 
 #[cfg(test)]

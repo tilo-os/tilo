@@ -44,3 +44,73 @@ impl std::fmt::Debug for RecoveryKey {
 /// The id of the workspace of the person whose root is `person`, which the workspace policy
 /// derives so that every process that decides a record's changes finds the workspace holding it.
 pub use tilo_action_policy::roles::person_workspace_id;
+
+/// The device of the person that approved another, as an enrollment's answer
+/// names it: its certificate and where it is dialled. The person's first
+/// device has none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Introducer {
+    /// The certificate of the device that holds the workspace, which the
+    /// person's root signed.
+    pub device: tilo_user_identity::DeviceCert,
+    /// Where that device is dialled.
+    pub endpoint: iroh_base::EndpointAddr,
+}
+
+/// Where a device keeps the [`Introducer`] it was admitted with, below its
+/// identity root, until it holds the person's workspace.
+#[must_use]
+pub fn introducer_path(identity_root: &std::path::Path) -> std::path::PathBuf {
+    identity_root.join("peers").join("introducer.json")
+}
+
+/// Keep `introducer` below `identity_root`, or let the one kept there go
+/// (`None`), once this device holds the person's workspace or never needs one.
+///
+/// # Errors
+/// The file could not be replaced or removed.
+pub fn keep_introducer(
+    identity_root: &std::path::Path,
+    introducer: Option<&Introducer>,
+) -> std::io::Result<()> {
+    let path = introducer_path(identity_root);
+    let Some(introducer) = introducer else {
+        return match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    };
+    let encoded = serde_json::to_vec_pretty(introducer)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    // A certificate and an address are public; the device's service reads
+    // the file whatever account wrote it.
+    tilo_files::native::atomic::write_creating_parent_with_mode(&path, &encoded, 0o644)
+}
+
+impl Introducer {
+    /// The introducer as `person`'s device approving another hands it: its
+    /// own certificate, and the address it answers on: its endpoint, keyed by its device key.
+    #[must_use]
+    pub fn of_device(
+        device: tilo_user_identity::DeviceCert,
+        device_secret: &ed25519_dalek::SigningKey,
+    ) -> Self {
+        let endpoint = iroh_base::SecretKey::from_bytes(&device_secret.to_bytes());
+        Self {
+            device,
+            endpoint: iroh_base::EndpointAddr::new(endpoint.public()),
+        }
+    }
+
+    /// Whether this names a device of `person`'s whose certificate verifies.
+    ///
+    /// # Errors
+    /// It names another person's device, or its certificate does not verify.
+    pub fn checked(&self, person: &[u8; 32]) -> Result<(), String> {
+        if self.device.user_public_key != *person {
+            return Err("the introducer is another person's device".into());
+        }
+        tilo_user_identity::verify_device_cert(&self.device)
+            .map_err(|error| format!("the introducer's certificate does not verify: {error}"))
+    }
+}

@@ -1075,6 +1075,16 @@ impl ActionContract {
         self.reaches_people() && !self.needs_an_item()
     }
 
+    /// Whether a person may take it from a list now: offered to people
+    /// ([`Self::offered_to_people`]) and with something to act on in the
+    /// window's state. One that can only say why it cannot run (an event's
+    /// `Invite` with no event selected) takes no row: the person who typed its
+    /// name meant the thing that works.
+    #[must_use]
+    pub fn a_person_can_take_now(&self) -> bool {
+        self.offered_to_people() && self.availability.is_available()
+    }
+
     /// [`Self::offered_to_people`] for agents: what an agent's listing of a
     /// resource offers it, an action that needs an item being offered on
     /// the item.

@@ -47,11 +47,14 @@ mod mcp_server;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
+mod web_ui;
+pub use web_ui::WebUi;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod device_actions;
 mod follow;
 mod founding;
+pub mod providers;
 mod removals;
 #[cfg(test)]
 mod work_tests;
@@ -69,6 +72,8 @@ pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod carried;
+mod moving_in;
+pub use moving_in::{MovedIn, MovingService, MovingWorkspace, moved_out, moving_out};
 mod host_invitations;
 mod hosts;
 use carried::Carried;
@@ -946,6 +951,9 @@ pub(crate) struct WorkspaceServices {
     pub(crate) work: tilo_server_protocol::WorkSetting,
     /// The relays this device holds back until something needs it reachable.
     pub(crate) reachability: tilo_endpoint_reachability::Reachability,
+    /// Whether the endpoint had named where it is reached when the service opened, or names it
+    /// only later ([`crate::service::ServiceConfig::reaching`]).
+    pub(crate) reaching: tilo_endpoint_reachability::Reaching,
     /// What this keeper says of itself among the holders of the workspaces it serves, which
     /// its signed address carries.
     pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
@@ -1072,6 +1080,9 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
+    /// What starts and stops this device's own web UI
+    /// ([`Workspaces::serve_web_with`]).
+    web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
     /// The records sessions opened, and where a write of one goes
@@ -1410,6 +1421,7 @@ impl Workspaces {
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
+                web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
@@ -1627,6 +1639,17 @@ impl Workspaces {
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
     }
 
+    /// Every workspace kept here, served from here or taken part in.
+    pub async fn ids(&self) -> Vec<WorkspaceId> {
+        self.inner
+            .workspaces
+            .lock()
+            .await
+            .keys()
+            .filter_map(|workspace| WorkspaceId::parse(workspace))
+            .collect()
+    }
+
     /// Every workspace this server governs.
     pub async fn list(&self) -> Vec<WorkspaceSummary> {
         let workspaces = self
@@ -1783,7 +1806,15 @@ impl Workspaces {
         provider: &'static str,
         answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
     ) {
-        self.inner.jobs.provide(provider, answers);
+        self.inner.jobs.providers.provide(provider, answers);
+    }
+
+    /// The providers registered with [`Self::provide`], as this device's dispatch reaches them
+    /// for a call made on this device: the same registry, and the same admission, a call from
+    /// another device meets.
+    #[must_use]
+    pub fn providers(&self) -> providers::Providers {
+        self.inner.jobs.providers.clone()
     }
 
     /// Answer the workspaces' governance actions their member devices ask on the device action
@@ -2186,7 +2217,7 @@ impl Workspaces {
             return;
         };
         let workspace_id = state.lock().await.workspace_id();
-        let retained = match self.inner.records.retained_settled(workspace_id) {
+        let retained = match self.inner.records.retained_settled(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "governed workspace did not replay what its members wrote");

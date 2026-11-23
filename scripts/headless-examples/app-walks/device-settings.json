@@ -68,13 +68,21 @@
         {
           "must": {
             "see": [
-              "Try"
+              [
+                "Try",
+                "Keep these display settings?"
+              ]
             ],
             "within": 10
           }
         },
         {
-          "press": "Try"
+          "press_when_any": {
+            "selectors": [
+              "Try"
+            ],
+            "within": 20
+          }
         },
         {
           "press_when_any": {

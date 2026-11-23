@@ -121,16 +121,6 @@ impl CropEditor {
 }
 
 impl Widget for CropEditor {
-    /// The editor once the picture is here; its empty box before that.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if let Some(editor) = &self.editor {
-            Widget::html(editor, cx);
-        } else {
-            cx.element("div");
-            cx.attr("aria-hidden", "true");
-        }
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

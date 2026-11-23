@@ -1240,7 +1240,7 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     let packages = tasks_packages();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
             &packages,
             "a busy week",
             size,
@@ -1590,7 +1590,7 @@ fn on_a_windows_stack(body: impl FnOnce() + Send + 'static) {
 /// The tasks app staged as the "while you were away" scenario has it, laid out at `size`.
 fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     let mut staged = stage::Staged::over(
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
         packages,
         "while you were away",
         size,
@@ -1811,7 +1811,7 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
     ui::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut changed = stage::Staged::over(
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
         &packages,
         "a task that changed since you looked",
         (1280, 800),
@@ -2035,7 +2035,7 @@ fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
     // Each app's directory under `apps/tl` and the id it answers to: Notes took the id the
     // native app had, so a directory's name does not say its app's id.
     for (dir, app, scenario, action) in [
-        ("tasks", "so.tilo.lang.tasks", "a busy week", "New task"),
+        ("tasks", "so.tilo.tasks", "a busy week", "New task"),
         ("notes", "so.tilo.notes", "a first note", "New note"),
     ] {
         let packages = app_packages(dir);
@@ -2244,7 +2244,7 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
     let task = packages
         .compiled
         .iter()
-        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .find(|package| package.meta.app == "so.tilo.tasks")
         .and_then(|package| package.meta.types.iter().find(|ty| ty.name == "Task"))
         .map(|ty| ty.id.clone())
         .expect("the tasks app declares its task");
@@ -2253,7 +2253,7 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
     let mut opened = Vec::new();
     for run in 0..4 {
         let mut staged = stage::Staged::over(
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
             &packages,
             "a busy week",
             size,
@@ -2429,7 +2429,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
     ui::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut page = stage::Staged::over(
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
         &packages,
         "a task two people changed",
         (1280, 800),

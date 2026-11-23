@@ -742,3 +742,22 @@ pub fn person(id: &str) -> Actor {
 pub fn agent(id: &str) -> Actor {
     tilolang_runtime::ids::MemberId::agent(id).into()
 }
+
+/// The notices a run raised, kept for a test to read: what the desktop's notifications would
+/// show, in the order the runs raised them.
+#[derive(Clone, Default)]
+pub struct Raised(pub std::rc::Rc<std::cell::RefCell<Vec<tilolang_runtime::notify::Notice>>>);
+
+impl tilolang_runtime::notify::Notices for Raised {
+    fn raised(&self, notice: &tilolang_runtime::notify::Notice) {
+        self.0.borrow_mut().push(notice.clone());
+    }
+}
+
+impl Raised {
+    /// The notices raised so far.
+    #[must_use]
+    pub fn notices(&self) -> Vec<tilolang_runtime::notify::Notice> {
+        self.0.borrow().clone()
+    }
+}

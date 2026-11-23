@@ -124,22 +124,26 @@ impl Drop for MediaHost {
 /// The content service of one workspace, read as each app reads it.
 pub struct BlobMedia {
     blob_socket: std::path::PathBuf,
-    workspace: String,
+    /// The workspace whose apps' content is read: the person's, asked when it is read.
+    workspace: Box<dyn Fn() -> io::Result<String> + Send + Sync>,
 }
 
 impl BlobMedia {
     #[must_use]
-    pub fn new(blob_socket: &Path, workspace: &str) -> Self {
+    pub fn new(
+        blob_socket: &Path,
+        workspace: Box<dyn Fn() -> io::Result<String> + Send + Sync>,
+    ) -> Self {
         Self {
             blob_socket: blob_socket.to_path_buf(),
-            workspace: workspace.to_owned(),
+            workspace,
         }
     }
 }
 
 impl tilo_mcp::MediaReader for BlobMedia {
     fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
-        read_media(&self.blob_socket, &self.workspace, app_id, hash)
+        read_media(&self.blob_socket, &(self.workspace)()?, app_id, hash)
     }
 }
 

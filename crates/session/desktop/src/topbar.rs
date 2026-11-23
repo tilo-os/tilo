@@ -43,7 +43,6 @@ mod arrival_notice;
 mod avatar_ask;
 mod clock;
 mod controls;
-mod html;
 mod people;
 mod placed;
 pub mod reveal;
@@ -1529,10 +1528,6 @@ impl Widget for TopBarChrome {
         rects
     }
 
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        self.compose_html(cx);
-    }
-
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children: Vec<AccessNode> = self
@@ -1926,9 +1921,6 @@ mod tests;
 
 #[cfg(test)]
 mod fixture;
-
-#[cfg(test)]
-mod html_tests;
 
 #[cfg(test)]
 mod narrow_tests;

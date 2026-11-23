@@ -1762,16 +1762,6 @@ impl Panel {
 }
 
 impl Widget for Panel {
-    /// The roster it draws — who is here, each face and status, and the banner when the person
-    /// follows someone — shows as a picture of it, with the controls it names as buttons.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        cx.picture();
-        if let Some(access) = self.accessibility() {
-            cx.controls("people", &access);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

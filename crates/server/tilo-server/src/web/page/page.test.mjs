@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {ack2, blake3Block, hello, parseExact, serverNonce} from './page.mjs';
+import {ack2, blake3, hello, parseExact, serverNonce, signedAct} from './page.mjs';
 
 const golden = JSON.parse(readFileSync(new URL('./handshake.json', import.meta.url), 'utf8'));
 const bytes = text => Uint8Array.from(text.match(/../g) ?? [], pair => parseInt(pair, 16));
@@ -28,9 +28,22 @@ test('the device signs the server\'s challenge under the client tag', async () =
   assert.equal(hex(answer), `40${'04'.repeat(64)}`);
 });
 
-test('blake3 of one block matches the reference', () => {
-  // The BLAKE3 reference's hash of no input.
-  assert.equal(hex(blake3Block(new Uint8Array(0))), 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262');
+test('blake3 matches the reference across blocks and chunks', () => {
+  for (const {len, hash} of golden.signing.hashes) {
+    const input = Uint8Array.from({length: len}, (_, i) => i % 251);
+    assert.equal(hex(blake3(input)), hash, `${len} bytes`);
+  }
+});
+
+test('an act goes signed as the server checks it', async () => {
+  const {act, message, call} = golden.signing;
+  const {cert} = parseExact(golden.cases[0].certified);
+  let signedOver;
+  const sign = async digest => { signedOver = digest; return new Uint8Array(64).fill(4); };
+  const made = await signedAct({cert, sign}, call.signed.workspace, 'notes', act,
+    {invocation: call.signed.invocation, issuedAtNs: call.signed.issued_at_ns});
+  assert.equal(hex(signedOver), message);
+  assert.deepEqual(JSON.parse(JSON.stringify(made)), call);
 });
 
 test('the page never says what the entry page says', () => {

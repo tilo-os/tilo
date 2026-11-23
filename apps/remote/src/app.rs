@@ -1739,10 +1739,6 @@ impl Store {
 }
 
 impl Widget for RemoteApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(dyn ui::widget::Collaborative);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

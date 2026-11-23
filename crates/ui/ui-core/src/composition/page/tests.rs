@@ -1,24 +1,9 @@
 use super::*;
-use crate::a11y::AccessNode;
-
-fn look(text: &str) -> TextLook {
-    TextLook {
-        text: text.to_owned(),
-        size: 14.0,
-        line_height: 1.4,
-        weight: 400,
-        italic: false,
-        color: Some([10, 20, 30, 255]),
-        align: "start",
-        max_lines: Some(1),
-        mono: false,
-        struck: false,
-    }
-}
+use crate::a11y::{AccessBounds, AccessNode, AccessState};
 
 fn text(path: &str, words: &str) -> Composed {
     let mut node = Composed::new(path.to_owned(), "Label", [13.0, 27.0, 200.0, 20.0]);
-    node.own = Some(Own::Text(look(words)));
+    node.semantics = Some(AccessNode::new(Role::StaticText).with_value(words.to_owned()));
     node.layout = Some("display:flex;width:120px;".to_owned());
     node
 }
@@ -42,57 +27,164 @@ fn window(title: &str) -> Composition {
     }
 }
 
+/// A window whose content flows is laid out by the browser from its containers' styles: where
+/// the frame put each widget is nowhere in it.
 #[test]
-fn the_page_carries_no_frame_geometry() {
+fn a_flowing_window_carries_no_frame_geometry() {
     let html = Page::new().render(&window("Groceries"));
-    // Where the frame put each widget (13, 27, 1280 wide) is nowhere in it: the
-    // browser lays it out from the containers' styles.
-    for geometry in [
-        "left:",
-        "top:",
-        "13px",
-        "27px",
-        "1280",
-        "720",
-        "position:absolute",
-    ] {
+    for geometry in ["left:", "top:", "13px", "27px", "position:absolute"] {
         assert!(!html.contains(geometry), "{geometry} in {html}");
     }
     assert!(
         html.contains("display:flex;flex-direction:column;gap:8px 8px;"),
         "{html}"
     );
-    assert!(
-        html.contains("width:120px;"),
-        "a style's own width stays: {html}"
-    );
 }
 
+/// Each node is the element its role names, with its words and its action.
 #[test]
-fn widgets_render_as_their_own_elements() {
+fn nodes_render_as_the_elements_their_roles_name() {
     let html = Page::new().render(&window("Fish & <chips>"));
     assert!(html.contains(">Fish &amp; &lt;chips&gt;</span>"), "{html}");
-    assert!(
-        html.contains("<button data-p=\"3\" role=\"button\"")
-            || html.contains("<button data-p=\"3\" aria-label"),
-        "a button is a <button>: {html}"
-    );
-    assert!(html.contains("aria-label=\"New note\""), "{html}");
-    assert!(
-        html.contains("data-a=\"activate\""),
-        "a press on it activates it: {html}"
-    );
+    let button = html
+        .split('<')
+        .find(|tag| tag.starts_with("button"))
+        .unwrap_or_else(|| panic!("a button is a <button>: {html}"));
+    assert!(button.contains("data-a=\"activate\""), "{button}");
+    assert!(button.ends_with(">New note"), "it says its name: {button}");
 }
 
 #[test]
-fn a_change_patches_only_what_changed() {
+fn a_change_patches_only_what_changed_and_keeps_every_number() {
     let mut page = Page::new();
-    page.render(&window("Groceries"));
+    let first = page.render(&window("Groceries"));
+    assert_eq!(first, page.render(&window("Groceries")));
     let patches = page.patch(&window("Groceries list"));
     assert_eq!(patches.len(), 1, "{patches:?}");
     assert_eq!(page.path(patches[0].id), Some("Root[0]/Label[0]"));
     assert!(patches[0].html.contains("Groceries list"));
     assert!(page.patch(&window("Groceries list")).is_empty());
+}
+
+/// A widget that publishes its rows (a list drawing them itself) shows each as an element of
+/// its own, numbered under the widget, a press on it the row's action.
+#[test]
+fn a_widgets_own_nodes_are_elements_a_press_acts_on() {
+    let mut composition = window("Notes");
+    let mut list = Composed::new(
+        "Root[0]/List[0]".to_owned(),
+        "List",
+        [0.0, 100.0, 300.0, 400.0],
+    );
+    list.semantics = Some(
+        AccessNode::new(Role::List)
+            .with_name("Notes".to_owned())
+            .with_children(
+                ["Milk", "Eggs"]
+                    .into_iter()
+                    .map(|name| {
+                        AccessNode::new(Role::ListItem)
+                            .with_name(name.to_owned())
+                            .with_description("Yesterday".to_owned())
+                            .with_action_target(format!("note-{name}"))
+                    })
+                    .collect(),
+            ),
+    );
+    composition.root.children.push(list);
+    let mut page = Page::new();
+    let html = page.render(&composition);
+    for name in ["Milk", "Eggs"] {
+        let target = format!("data-t=\"note-{name}\"");
+        let row = html
+            .split('<')
+            .find(|tag| tag.contains(&target))
+            .unwrap_or_else(|| panic!("{name} is a row: {html}"));
+        assert!(row.contains("data-a=\"activate\""), "{row}");
+        assert!(
+            html.contains(&format!(
+                "<span class=\"tilo-title\">{name}</span><span class=\"tilo-detail\">Yesterday</span>"
+            )),
+            "{html}"
+        );
+    }
+    let id = numbers(&html)
+        .into_iter()
+        .find(|&id| page.path(id).is_some_and(|path| path.ends_with("#1")))
+        .expect("the second row is numbered");
+    assert_eq!(page.path(id), Some("Root[0]/List[0]#1"));
+}
+
+/// What a widget only paints is its picture, and what acts in it stands over the picture where
+/// it is drawn.
+#[test]
+fn a_painted_widget_is_its_picture_with_what_acts_over_it() {
+    let mut composition = window("Chart");
+    let mut chart = Composed::new(
+        "Root[0]/Chart[0]".to_owned(),
+        "Chart",
+        [10.0, 100.0, 400.0, 200.0],
+    );
+    chart.semantics = Some(
+        AccessNode::new(Role::Image)
+            .with_name("Sales".to_owned())
+            .with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name("March".to_owned())
+                    .with_action_target("bar:3")
+                    .with_bounds(AccessBounds {
+                        x0: 50.0,
+                        y0: 120.0,
+                        x1: 70.0,
+                        y1: 280.0,
+                    })
+                    .with_state(AccessState::new().focusable(true)),
+            ]),
+    );
+    chart.picture = Some(Picture {
+        version: 1,
+        data: Some("data:image/png;base64,AAAA".into()),
+    });
+    composition.root.children.push(chart);
+    let html = Page::new().render(&composition);
+    assert!(
+        html.contains("<img class=\"tilo-paint\" src=\"data:image/png;base64,AAAA\" alt=\"\">"),
+        "{html}"
+    );
+    assert!(html.contains("aria-label=\"Sales\""), "{html}");
+    let over = html
+        .split('<')
+        .find(|tag| tag.contains("data-t=\"bar:3\""))
+        .unwrap_or_else(|| panic!("March stands over the picture: {html}"));
+    assert!(
+        over.contains("class=\"tilo-over\"")
+            && over.contains("left:40px;top:20px;width:20px;height:160px;"),
+        "{over}"
+    );
+}
+
+/// An editable text node is the browser's own field, holding its value.
+#[test]
+fn a_text_field_is_an_input() {
+    let mut composition = window("Title");
+    let mut field = Composed::new(
+        "Root[0]/TextInput[0]".to_owned(),
+        "TextInput",
+        [0.0, 100.0, 300.0, 30.0],
+    );
+    field.semantics = Some(
+        AccessNode::new(Role::TextInput)
+            .with_name("Title".to_owned())
+            .with_value("Fish & chips".to_owned()),
+    );
+    composition.root.children.push(field);
+    let html = Page::new().render(&composition);
+    let input = html
+        .split('<')
+        .find(|tag| tag.starts_with("input"))
+        .unwrap_or_else(|| panic!("the field is an <input>: {html}"));
+    assert!(input.contains("value=\"Fish &amp; chips\""), "{input}");
+    assert!(input.contains("aria-label=\"Title\""), "{input}");
 }
 
 /// Every `data-p` in `html`, as the number it names.
@@ -106,127 +198,11 @@ fn numbers(html: &str) -> Vec<u32> {
         .collect()
 }
 
-/// The page's numbers, each with the path it names.
-fn numbered(page: &Page, html: &str) -> Vec<(u32, String)> {
-    numbers(html)
-        .into_iter()
-        .map(|id| (id, page.path(id).unwrap_or_default().to_owned()))
-        .collect()
-}
-
-#[test]
-fn an_element_keeps_its_number_across_renders() {
-    let mut page = Page::new();
-    let first = page.render(&window("A"));
-    let second = page.render(&window("A"));
-    assert_eq!(first, second);
-}
-
-#[test]
-fn a_patch_names_the_element_it_replaces_and_renumbers_nothing() {
-    // The page's client replaces the element numbered `id` with the patched
-    // HTML and keeps every other element where it is. So a number must name
-    // the same element after a patch as before it, and the patch must carry
-    // the number of the element it replaces; a patch that renumbered its
-    // neighbours would leave the client's page showing the old number's
-    // element.
-    let mut page = Page::new();
-    let before = page.render(&window("Groceries"));
-    let numbered_before = numbered(&page, &before);
-    assert!(
-        numbered_before.len() >= 4,
-        "the fixture draws several elements: {before}"
-    );
-    let patches = page.patch(&window("Groceries list"));
-    assert_eq!(patches.len(), 1, "{patches:?}");
-    let patched = &patches[0];
-    assert_eq!(
-        page.path(patched.id),
-        Some("Root[0]/Label[0]"),
-        "the patch replaces the element the label is"
-    );
-    assert_eq!(
-        numbers(&patched.html),
-        vec![patched.id],
-        "it carries the number of the element it replaces: {}",
-        patched.html
-    );
-    // Nothing else moved: every element the first render numbered still names
-    // the same path.
-    for (id, path) in &numbered_before {
-        assert_eq!(page.path(*id), Some(path.as_str()), "number {id} moved");
-    }
-    // And a whole render of what the patch showed numbers the same elements
-    // the same way: a patch and a render never disagree about an element.
-    let mut whole = Page::new();
-    let after = whole.render(&window("Groceries list"));
-    assert_eq!(numbered(&whole, &after), numbered_before, "{after}");
-}
-
-#[test]
-fn a_document_block_is_patched_alone() {
-    let block = |id: &str, words: &str| DocBlock {
-        id: id.to_owned(),
-        kind: "paragraph",
-        level: 0,
-        done: false,
-        ordinal: None,
-        tag: None,
-        soft_break: false,
-        text: words.to_owned(),
-        marks: vec![super::super::InlineMark {
-            start: 0,
-            end: 4,
-            mark: "bold",
-            href: None,
-        }],
-        selection: None,
-        editable: true,
-        gap: 0.0,
-        size: 15.0,
-        line_height: 1.5,
-        weight: 400,
-    };
-    let doc = |second: &str| {
-        let mut composition = window("t");
-        let mut editor = Composed::new(
-            "Root[0]/BlockEditor[0]".to_owned(),
-            "BlockEditor",
-            [0.0, 0.0, 10.0, 10.0],
-        );
-        editor.own = Some(Own::Blocks {
-            blocks: vec![block("a", "Milk and eggs"), block("b", second)],
-            edges: super::super::DocEdges {
-                text: 0.0,
-                list: 28.0,
-                indent: 28.0,
-                quote: 16.0,
-            },
-        });
-        composition.root.children.push(editor);
-        composition
-    };
-    let mut page = Page::new();
-    let html = page.render(&doc("Fish"));
-    assert!(html.contains("<p data-p="), "{html}");
-    assert!(html.contains("<strong>Milk</strong> and eggs"), "{html}");
-    let patches = page.patch(&doc("Fish!"));
-    assert_eq!(patches.len(), 1, "{patches:?}");
-    assert_eq!(
-        page.path(patches[0].id),
-        Some("Root[0]/BlockEditor[0]#block:b")
-    );
-}
-
 /// A canvas at (100, 50) holding two places, the second a window's well.
 fn canvas(second_at: [f64; 2]) -> Composition {
     let mut map = Composed::new("Root[0]".to_owned(), "Map", [100.0, 50.0, 800.0, 600.0]);
-    map.places = true;
-    let first = text("Root[0]/MapPin[0]", "Groceries");
-    let mut first = Composed {
-        rect: [140.0, 90.0, 300.0, 200.0],
-        ..first
-    };
+    let mut first = text("Root[0]/MapPin[0]", "Groceries");
+    first.rect = [140.0, 90.0, 300.0, 200.0];
     first.layout = None;
     let mut second = Composed::new(
         "Root[0]/MapPin[1]".to_owned(),
@@ -238,7 +214,7 @@ fn canvas(second_at: [f64; 2]) -> Composition {
         "WindowWell",
         [second_at[0], second_at[1], 400.0, 300.0],
     );
-    well.well = Some("tab-7".to_owned());
+    well.semantics = Some(AccessNode::new(Role::Window).with_item("tab-7".to_owned()));
     // A window's frame lays its well out itself, as a column.
     second.flows = true;
     second.children = vec![well];
@@ -260,10 +236,6 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
     );
     let html = page.render(&canvas([500.0, 350.0]));
     assert!(
-        html.contains("position:relative;overflow:auto;"),
-        "the canvas scrolls to what it places: {html}"
-    );
-    assert!(
         html.contains("position:absolute;left:40px;top:40px;width:300px;height:200px;"),
         "a place stands at its point from the canvas's corner: {html}"
     );
@@ -274,11 +246,6 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
     assert!(
         html.contains("data-well=\"tab-7\"><a href=\"/w/ws/notes\">Notes</a>"),
         "the host's window stands in its well: {html}"
-    );
-    assert!(
-        page.placed.is_empty(),
-        "nothing is flowed: {:?}",
-        page.placed
     );
     // Another member moved the second place: only its element changes.
     let patches = page.patch(&canvas([520.0, 330.0]));

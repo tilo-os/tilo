@@ -3,6 +3,8 @@
 
 d-so-tilo-tube = YouTube
 
+d-so-tilo-tube-keywords = youtube, video, videos, streaming, watch, channel, channels, subscriptions, creators, trending, filme, videos ansehen, kanäle, kanaele, kanal, schauen, mediathek, anschauen, abos, videoportal
+
 d-m5wewovo = Channel
     .doc = A channel someone publishes videos on.
     .noun = { $count ->
@@ -597,7 +599,8 @@ d-tbcsx2lp = Search found
     .w-nothing-matches = Nothing matches { $search_text }
     .w-channels = Channels
     .w-playlists = Playlists
-    .w-videos = Videos
+    .w-videos = { $video_count } videos
+    .w-videos-2 = Videos
 
 d-yf5l4ysw = Watched page
     .w-history = History

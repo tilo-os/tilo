@@ -93,6 +93,22 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          passed over.",
     ),
     (
+        "caldav.check",
+        "Asks a calendar account for its calendars now: (the account's key). What its server \
+         holds comes in as it does when the server is heard from.",
+    ),
+    (
+        "caldav.answer",
+        "Answers an invitation: (the account's key, the event's key, the address invited, \
+         `accepted`, `declined` or `tentative`). The person's own answer goes to its server, and \
+         their status on the attendee says it.",
+    ),
+    (
+        "caldav.import",
+        "Puts an invitation's iCalendar text into a calendar, once: (the account's key, the \
+         calendar's key, the text).",
+    ),
+    (
         "youtube.search",
         "Searches YouTube's catalogue for the query, as typed: (the query, the kinds it shows, \
          how long its videos run, how recent they are). The channels, playlists and videos it \
@@ -451,6 +467,196 @@ pub const KINDS: &[OriginKind] = &[
                 "kind",
                 "Text",
                 "Its kind, as its app publishes it (`tube.channel`).",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.calendar",
+        doc: "A calendar: one the workspace's own, or one an account's server holds, which the \
+              system keeps in step with it. Its entries are `caldav.event` records that name it.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The calendar's id: the address its server keeps it at, or one the app gives a \
+                 calendar of the workspace's own.",
+            ),
+            field(
+                "account",
+                "Text",
+                "The key of the account whose server holds it; empty for a calendar of the \
+                 workspace's own, which no server is ever asked about.",
+            ),
+            people("name", "Text", "Its name, as the person reads it."),
+            people(
+                "color",
+                "Text",
+                "The colour it is shown in, as its server's `calendar-color` says it; empty \
+                 for none.",
+            ),
+            field(
+                "writable",
+                "Bool",
+                "Whether its server lets its person write it, and the account is not read-only.",
+            ),
+            field(
+                "sync_token",
+                "Text",
+                "Where its last pull ended, as its server names it: the next pull asks from                  there. Empty for one not pulled yet.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.attendee",
+        doc: "Somebody an entry names: who organises it, or who it invites.",
+        derived: false,
+        fields: &[
+            people("name", "Text", "Their name, as the entry says it."),
+            people("email", "Text", "Their address."),
+            people(
+                "status",
+                "Text",
+                "Whether they come: `needs-action`, `accepted`, `declined` or `tentative`.",
+            ),
+            people(
+                "role",
+                "Text",
+                "What they are to the entry: `required`, `optional` or `chair`.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.event",
+        doc: "One entry of a calendar, as its server holds it. The fields people change are \
+              written to the server; the rest are the server's.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The entry's id: its `UID`, the name its server and every client know it by.",
+            ),
+            field(
+                "href",
+                "Text",
+                "Where its server keeps it; empty for an entry no server holds.",
+            ),
+            field(
+                "etag",
+                "Text",
+                "The version its server last gave it: a write goes over that one.",
+            ),
+            people("title", "Text", "What it is called."),
+            people(
+                "start",
+                "Text",
+                "When it starts, as iCalendar writes the wall time: `2026-11-24T09:00:00`.",
+            ),
+            people(
+                "end",
+                "Text",
+                "When it ends, as iCalendar writes the wall time.",
+            ),
+            people("all_day", "Bool", "Whether it lasts whole days."),
+            people(
+                "timezone",
+                "Text",
+                "The zone its wall time is read in: an IANA name, `UTC` for a time written in \
+                 it, or `floating` for a time written nowhere in particular.",
+            ),
+            people(
+                "day",
+                "Date",
+                "The day it starts on, its wall time's own: what a calendar sorts and counts it \
+                 by.",
+            ),
+            people(
+                "end_day",
+                "Date",
+                "The day it ends on, its wall time's own; the last day it is on, where it lasts \
+                 whole days.",
+            ),
+            people("location", "Text", "Where it is."),
+            people("notes", "Text", "What it says: its `DESCRIPTION`, as text."),
+            people(
+                "attendees",
+                "Collection<caldav.attendee>",
+                "Who organises it and who it invites.",
+            ),
+            people(
+                "categories",
+                "Set<Text>",
+                "What it is filed under, as its server's `CATEGORIES`.",
+            ),
+            people(
+                "recurrence",
+                "Text",
+                "How it repeats, as its `RRULE`'s frequency and days \
+                 (`FREQ=WEEKLY;BYDAY=MO,TU`); empty for one occurrence.",
+            ),
+            people(
+                "recurrence_every",
+                "Int",
+                "One for a repeat every time it comes, two for every other, and so on.",
+            ),
+            people(
+                "recurrence_until",
+                "Option<Date>",
+                "The last day it repeats on; none for no end.",
+            ),
+            people(
+                "recurrence_count",
+                "Option<Int>",
+                "How many times it repeats; none for no count.",
+            ),
+            people(
+                "exdates",
+                "Set<Text>",
+                "The days it is left out on, `YYYY-MM-DD` each.",
+            ),
+            people(
+                "color",
+                "Text",
+                "The colour it is shown in, as its `COLOR`; empty for none.",
+            ),
+            people(
+                "organizer",
+                "Text",
+                "The address of whoever organises it; empty for nobody.",
+            ),
+            field(
+                "project",
+                "Text",
+                "What the app files it under; the server holds nothing of it.",
+            ),
+            people(
+                "cancelled",
+                "Bool",
+                "Whether this occurrence of a repeat is called off.",
+            ),
+            people(
+                "remind",
+                "Time",
+                "When its reminder rings, an instant; 1970 for none. Its `VALARM`.",
+            ),
+            people(
+                "calendar",
+                "Option<caldav.calendar>",
+                "The calendar it is in. A change to it moves the entry: written to the calendar \
+                 it names, and taken out of the one it was in.",
+            ),
+            people(
+                "recurrence_of",
+                "Option<caldav.event>",
+                "The repeating entry this is one occurrence of, changed or cancelled; none for \
+                 an entry of its own.",
+            ),
+            people(
+                "original_start",
+                "Text",
+                "The wall time this occurrence would have started at, where it is one of a \
+                 repeat's.",
             ),
         ],
     },

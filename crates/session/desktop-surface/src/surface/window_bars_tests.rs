@@ -305,6 +305,7 @@ fn an_apps_own_process_declares_its_parts_and_hears_the_press_on_its_connection(
     assert_eq!(
         handle.take_bar_events(),
         vec![(
+            front,
             41,
             ToolbarEvent::Action {
                 id: "save".to_owned(),
@@ -459,6 +460,7 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
         handle.take_target_presses(),
         vec![crate::surface::window_bars::TargetPress {
             connection: 41,
+            tab: front,
             name: "Documents".to_owned(),
             role: "ListItem".to_owned(),
             identity: None,

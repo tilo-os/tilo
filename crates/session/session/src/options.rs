@@ -256,15 +256,7 @@ pub(crate) fn start_collaboration(
         tilo_workspace_service::service::ServiceSlot,
         &crate::platform::records::Changes,
     ),
-) -> (
-    Option<Rc<sync::Client>>,
-    crate::broker_services::HeldDocuments,
-    crate::broker_services::HeldResources,
-) {
-    // What the broker reads its workspaces' resources from.
-    let reads = crate::broker_services::document_reads(service.clone());
-    // Where apps write and read their resources: the service's store, which alone holds them.
-    let resources = crate::broker_services::resources(service.clone());
+) -> Option<Rc<sync::Client>> {
     let founding = engine.clone();
     let sync = collaborating(
         options,
@@ -280,7 +272,7 @@ pub(crate) fn start_collaboration(
     if let Some(engine) = &founding {
         sync::found_alone(engine, service, changes.clone());
     }
-    (sync, reads, resources)
+    sync
 }
 
 /// [`start_collaboration`]'s peer network: the one `options` hands, or this device's own.

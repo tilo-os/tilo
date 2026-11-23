@@ -397,14 +397,6 @@ impl Drop for LevelMeter {
 }
 
 impl Widget for LevelMeter {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.attr("role", "progressbar");
-        cx.attr("aria-label", self.name_text());
-        cx.attr("aria-valuenow", self.value_text());
-        cx.picture();
-    }
-
     crate::described!();
 
     fn build_layout(

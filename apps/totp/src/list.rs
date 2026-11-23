@@ -184,59 +184,6 @@ impl Default for AccountList {
 }
 
 impl AccountList {
-    /// The rows a page shows: each account's name and its code, or the dots that stand
-    /// for the code until the person reveals it, where the list stands them.
-    pub(crate) fn compose_html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(TextRole::Body);
-        let row_h = self
-            .metrics
-            .map_or_else(|| f64::from(theme.tokens.metrics.row_double), |m| m.row_h);
-        let edge = self
-            .metrics
-            .map_or_else(|| f64::from(theme.tokens.spacing.s2), |m| m.edge);
-        let scroll = self.scroller.offset().y;
-        let now = totp::unix_now();
-        cx.element("ul");
-        for (index, account) in self.accounts.iter().enumerate() {
-            let y0 = self.rect.y0 + edge + index as f64 * row_h - scroll;
-            let rect = Rect::new(self.column.x0, y0, self.column.x1, y0 + row_h);
-            if rect.y1 < self.rect.y0 || rect.y0 > self.rect.y1 {
-                continue;
-            }
-            let code = if !account.secret_is_valid() {
-                unkeyed_caption()
-            } else if self.is_revealed(account.id) {
-                totp::group_code(&totp::code_at(account, now))
-            } else {
-                totp::group_code(&"\u{2022}".repeat(account.digits.clamp(4, 10) as usize))
-            };
-            let mut words = account.title().to_owned();
-            if !account.label.trim().is_empty() {
-                words.push_str(" — ");
-                words.push_str(&account.label);
-            }
-            words.push('\n');
-            words.push_str(&code);
-            let part = cx.part(&format!("account{index}"), "TotpRow", rect);
-            part.tag = Some("li");
-            part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
-                words,
-                &style,
-                Some(theme.tokens.colors.text_primary),
-            )));
-            if self.selected == Some(account.id) {
-                part.semantics = Some(
-                    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem).with_state(
-                        ui::a11y::AccessState {
-                            selected: true,
-                            ..Default::default()
-                        },
-                    ),
-                );
-            }
-        }
-    }
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,

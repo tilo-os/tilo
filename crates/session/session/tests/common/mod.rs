@@ -780,10 +780,14 @@ pub fn seeded_session(root: &Path) -> Session {
 /// Wait until the seeded apps' resources are kept in the workspace the session shows: what a test
 /// reads of them, their ids included, is the workspace's from then on.
 pub fn kept_in_workspace(session: &mut Session) {
-    until(
-        session,
-        "the seeded apps' resources in the workspace",
-        |session| session.apps_kept_in_workspace(),
+    let kept = reached(session, |session| session.apps_kept_in_workspace());
+    assert!(
+        kept,
+        "the seeded apps' resources in the workspace: not reached in {:?}, {}; the shell's \
+         refusals: {:?}",
+        tilo_test_env::hang_bound(),
+        session.apps_in_workspace(),
+        session.shell_refusals(),
     );
 }
 

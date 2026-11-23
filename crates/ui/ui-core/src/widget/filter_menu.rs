@@ -509,37 +509,6 @@ impl<T: Clone> FilterMenu<T> {
 }
 
 impl<T: Clone + 'static> Widget for FilterMenu<T> {
-    /// The caret menu as a page's own: its visible rows as real menu items,
-    /// each naming the row it chooses.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption};
-        let theme = cx.theme();
-        let ink = theme.tokens.colors.text_primary;
-        let options = self
-            .visible
-            .iter()
-            .filter_map(|&index| {
-                let entry = self.entries.get(index)?;
-                let mut option =
-                    ControlOption::new(entry.label.clone()).with_target(format!("row:{index}"));
-                if let Some(icon) = entry.icon {
-                    option =
-                        option.with_icon_opt(crate::composition::glyph(icon, 16.0, ink, false));
-                }
-                if let Some(hint) = entry.hint {
-                    option = option.with_detail(hint);
-                }
-                Some(option)
-            })
-            .collect();
-        cx.control(Control::Choices {
-            list: "menu",
-            item: "menuitem",
-            label: None,
-            options,
-        });
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

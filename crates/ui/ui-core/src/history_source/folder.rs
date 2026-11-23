@@ -203,15 +203,16 @@ fn file_sentence(context: &tilo_actions::ActionContext, path: &str) -> Option<St
 pub fn last_change_by_node(
     doc: &AutoCommit,
 ) -> std::collections::HashMap<String, (String, tilo_actions::ActionContext)> {
-    let mut changes: Vec<(i64, String, tilo_actions::ActionContext)> = doc
-        .committed_document()
+    let committed = doc.committed_document();
+    let mut changes: Vec<(i64, String, tilo_actions::ActionContext)> = committed
         .get_changes_meta(&[])
         .into_iter()
         .filter_map(|change| {
-            let context = change
-                .message
-                .as_deref()
-                .and_then(tilo_actions::ActionContext::from_change_message)?;
+            let context = tilo_resource::history::context_of(
+                committed,
+                change.hash,
+                change.message.as_deref(),
+            )?;
             Some((change.timestamp, change.actor.to_hex_string(), context))
         })
         .collect();

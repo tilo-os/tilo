@@ -68,6 +68,11 @@ impl Checker<'_> {
                     if name.name == "may_read" {
                         return self.builtin_may_read(args, span);
                     }
+                    // `std.occurrences(rule, start, timezone, exdates, from, to)`: the moments a
+                    // repeat falls on in a window, read from the rule alone.
+                    if name.name == "occurrences" {
+                        return self.builtin_occurrences(args, span);
+                    }
                 }
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
                     && self.lookup(RANDOM).is_none()
@@ -2186,6 +2191,40 @@ impl Checker<'_> {
         if ty == Ty::File {
             return self.file_type_method(name, args, span);
         }
+        // `Time.from_wall(zone, text)`: the moment a wall-clock time names where people in `zone`
+        // are, a pure reading of the zone's rules, so a view draws it and an action that imports
+        // a calendar needs no clock to say when its events are.
+        if ty == Ty::Time && name.name == "from_wall" {
+            let [zone, text] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`Time.from_wall` takes the zone and the wall-clock time: `Time.from_wall(\"Europe/Berlin\", \"2026-11-24T09:00\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            for arg in [zone, text] {
+                if let Some(named) = &arg.name {
+                    self.err(
+                        "E022",
+                        named.span,
+                        "`Time.from_wall` takes the zone and the time by position",
+                    );
+                }
+            }
+            let zone = self.expr_as(&zone.value, &Ty::Text);
+            let text = self.expr_as(&text.value, &Ty::Text);
+            return Ex::host(
+                Imp::TimeFromWall,
+                vec![zone, text],
+                Ty::Option(Box::new(Ty::Time)),
+            );
+        if ty == Ty::Bytes {
+            return self.bytes_type_method(name, args, span);
+        }
         if name.name != "parse" {
             self.err(
                 "E027",
@@ -2379,6 +2418,38 @@ impl Checker<'_> {
         // invocation records it.
         self.st.facts.outside = true;
         Ex::host(imp, vec![value], ty)
+    }
+
+    /// `Bytes`'s method: `Bytes.from_base64(text)`, the bytes a base64 text holds — how a picture
+    /// or another file an action came by as text becomes bytes it can keep.
+    fn bytes_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name != "from_base64" {
+            self.err(
+                "E027",
+                name.span,
+                format!(
+                    "`Bytes` has `from_base64`, not `{}`: `Bytes.from_base64(text)` reads the bytes a base64 text holds (a vCard's PHOTO, a reply's body)",
+                    name.name
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [text] = args else {
+            self.err(
+                "E022",
+                span,
+                "`Bytes.from_base64` takes the text: `Bytes.from_base64(text)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let text = self.expr_as(&text.value, &Ty::Text);
+        Ex::host(Imp::Base64Decode, vec![text], Ty::Bytes)
     }
 
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
@@ -2722,6 +2793,27 @@ impl Checker<'_> {
                 self.reads(crate::effects::Effect::Time, span, "`day`");
                 Ex::host(Imp::TimeDay, vec![r], Ty::Date)
             }
+            // The day a moment falls on in the named zone, or in `floating`'s (its wall time read
+            // as UTC): a pure reading of the zone's rules, which a view draws as it draws a day.
+            (Ty::Time, "day_in")
+                if args.len() == 1 && args.first().is_some_and(|a| a.name.is_none()) =>
+            {
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let zone = self.expr_as(&a.value, &Ty::Text);
+                Ex::host(Imp::TimeDayIn, vec![r, zone], Ty::Date)
+            }
+            // The wall time a moment is in a named zone, as a calendar stores one.
+            (Ty::Time, "wall")
+                if args.len() == 1 && args.first().is_some_and(|a| a.name.is_none()) =>
+            {
+                let Some(one) = args.first() else {
+                    return Ex::error();
+                };
+                let zone = self.expr_as(&one.value, &Ty::Text);
+                Ex::host(Imp::TimeWall, vec![r, zone], Ty::Option(Box::new(Ty::Text)))
+            }
             (Ty::Time, "time_of_day") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
@@ -2912,6 +3004,7 @@ fn parse_ty(name: &str) -> Option<Ty> {
         "Time" => Some(Ty::Time),
         "RichText" => Some(Ty::RichText),
         "File" => Some(Ty::File),
+        "Bytes" => Some(Ty::Bytes),
         _ => None,
     }
 }

@@ -542,6 +542,12 @@ pub enum FloatingSurfaceHostMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<String>,
         action: crate::window_targets::TargetAction,
+        /// The serial of the last input the shell had sent the window when the control was
+        /// pressed: the press runs once the window has handled that input, so it comes after
+        /// what the person typed before it and before what they type after. Absent when the
+        /// shell names none, which runs the press at once.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_input: Option<u32>,
     },
 }
 

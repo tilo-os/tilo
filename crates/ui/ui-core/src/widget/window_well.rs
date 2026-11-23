@@ -220,13 +220,14 @@ impl Described for WindowWell {
 }
 
 impl Widget for WindowWell {
-    /// Nothing of its own: the place's own window shows there, which a page's host fills in.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.well(&self.place);
-    }
     fn name(&self) -> &'static str {
         "WindowWell"
+    }
+
+    /// The window of the place it shows, standing here: a page's host fills it with what stands
+    /// for that window ([`crate::composition::page::well_place`]).
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Window).with_item(self.place.clone()))
     }
 
     fn build_layout(
@@ -296,17 +297,6 @@ mod tests {
 
     use super::{WINDOW_ASPECT, WindowWell};
 
-    #[test]
-    fn a_page_gets_an_empty_place_where_the_window_shows() {
-        let composed =
-            crate::composition::compose_alone(&WindowWell::new("window-1"), &Theme::dark(), "well");
-        assert_eq!(composed.tag, Some("div"));
-        assert!(
-            composed.own.is_none(),
-            "the well draws nothing: {composed:#?}"
-        );
-        assert!(composed.children.is_empty());
-    }
     use crate::theme::Theme;
     use crate::widget::Widget as _;
 

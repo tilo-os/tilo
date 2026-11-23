@@ -816,14 +816,45 @@ impl Resolver<'_> {
                 _ => false,
             };
         }
+        // An option of a value a service keeps: a day or a count, or another of its kinds
+        // (`Option<Date>`, `Option<caldav.event>`).
+        if let Some(inner) = want
+            .strip_prefix("Option<")
+            .and_then(|r| r.strip_suffix('>'))
+        {
+            return match have {
+                Ty::Option(item) => self.origin_type_fits(item, inner),
+                _ => false,
+            };
+        }
         match want {
             "Text" => *have == Ty::Text,
             "Bool" => *have == Ty::Bool,
             "Int" => *have == Ty::Int,
             "Time" => *have == Ty::Time,
+            "Date" => *have == Ty::Date,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
             "List<File>" => *have == Ty::List(Box::new(Ty::File)),
-            _ => false,
+            other => {
+                // A reference to one of the service's other kinds, where it is one
+                // (`Option<caldav.calendar>`).
+                let Some(inner) = other
+                    .strip_prefix("Option<")
+                    .and_then(|r| r.strip_suffix('>'))
+                else {
+                    return false;
+                };
+                match have {
+                    Ty::Option(item) => match item.as_ref() {
+                        Ty::Record(key) => self
+                            .env
+                            .type_info(key)
+                            .is_some_and(|t| t.origin.as_deref() == Some(inner)),
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            }
         }
     }
 

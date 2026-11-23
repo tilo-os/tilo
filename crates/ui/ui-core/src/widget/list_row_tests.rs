@@ -2334,3 +2334,53 @@ fn a_double_click_opens_once_and_changes_twice() {
         "a row that changes something counts every click"
     );
 }
+
+/// A line that stands beside a chooser is the chooser's: the window publishes one control
+/// named after the setting, and a press anywhere on the line opens the list it offers.
+#[test]
+fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
+    use crate::headless::ControlInput;
+    use crate::widget::Dropdown;
+
+    let chosen = crate::LocalState::new("100%".to_string());
+    let line: Element = Box::new(Column::new().with_no_padding().push(Box::new(
+        ListRow::new("row", "Scale").trailing(Box::new(Dropdown::from_state(
+            vec!["100%".to_string(), "125%".to_string()],
+            &chosen,
+        ))),
+    )));
+    let mut harness = FrameHarness::new(crate::State::new(), line, (480, 240));
+
+    let named: Vec<_> = harness
+        .controls()
+        .into_iter()
+        .filter(|control| control.name.as_deref() == Some("Scale"))
+        .collect();
+    assert_eq!(
+        named.len(),
+        1,
+        "one control is named after the setting: {named:?}"
+    );
+    let opener = &named[0];
+    assert!(
+        opener.verbs.iter().any(|verb| verb == "activate"),
+        "the chooser is pressed to open its list: {opener:?}"
+    );
+
+    // The chooser stands at the line's trailing edge; the press is on the words.
+    let [x, y, _w, h] = find(&harness.inspection().root, "ListRow")
+        .expect("the line is laid out")
+        .rect;
+    harness.click_at(x + 20.0, y + h / 2.0);
+    harness.relayout();
+    let options: Vec<_> = harness
+        .controls()
+        .into_iter()
+        .filter(|control| control.name.as_deref() == Some("125%"))
+        .collect();
+    assert_eq!(options.len(), 1, "the line's press opened its list");
+    harness
+        .operate_control(&options[0].id, &ControlInput::Press)
+        .expect("an option is chosen by a press");
+    assert_eq!(chosen.get(), "125%");
+}

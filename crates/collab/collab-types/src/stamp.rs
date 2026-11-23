@@ -43,6 +43,12 @@ pub struct Stamp {
     /// invocation apart. Zero where the writer kept none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub moment: u64,
+    /// The invocation as its caller signed it, when a host ran the action for someone who asked
+    /// it under their own key: the device that wrote the change signs it as its own, and this
+    /// says who asked, for what, with what arguments. A holder checks it against the person's
+    /// root ([`tilo_actions::remote::SignedCall`]); the host never makes one up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<Box<tilo_actions::remote::SignedCall>>,
 }
 
 #[allow(

@@ -52,7 +52,7 @@ action write(all: Journal, title: Text, body: Text) -> Entry {
 }
 "#;
 
-const TODO: &str = "so.tilo.lang.tasks";
+const TODO: &str = "so.tilo.tasks";
 
 /// The task's world: Tasks and the journal in one host, Notes, Chat and Board in another, each
 /// filled by its first scenario, and a task of them all whose programs run in a host of its own.
@@ -128,7 +128,7 @@ fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
     let lines: Vec<&str> = out.lines().collect();
     assert!(
         lines[0]
-            .starts_with(r"grep /\blemons?\b/: 2 matches in 2 of 8 resources searched (notes 8)"),
+            .starts_with(r"grep /\blemons?\b/: 2 matches in 2 of 9 resources searched (notes 9)"),
         "counts first: {out}"
     );
     assert!(
@@ -143,7 +143,7 @@ fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
 fn grep_reads_several_apps_and_each_match_says_where_it_is() {
     let w = world();
     let out = printed(&w.run(r"grep(/(?i)importer/, in: notes + board)"));
-    assert!(out.contains("(notes 8, board "), "{out}");
+    assert!(out.contains("(notes 9, board "), "{out}");
     assert!(
         out.lines().any(|l| l.starts_with("@notes.Note:")
             && l.contains("body ¶1: The importer handles tables now.")),

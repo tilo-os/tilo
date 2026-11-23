@@ -273,24 +273,7 @@ impl Icon {
     }
 }
 
-impl Icon {
-    /// The icon as a page shows it: its outlines as SVG path data in the 24 × 24 box, in `color`,
-    /// `size` pixels on a side.
-    #[must_use]
-    pub fn glyph(self, size: f64, color: Color, filled: bool) -> Option<crate::composition::Glyph> {
-        if self == Self::Tilo || self.is_brand() {
-            return None;
-        }
-        Some(crate::composition::Glyph {
-            name: self.name(),
-            paths: icon_subpaths(self).iter().map(BezPath::to_svg).collect(),
-            size,
-            stroke: LUCIDE_DEFAULT_STROKE_PX,
-            color: crate::composition::rgba8(color),
-            filled,
-        })
-    }
-}
+impl Icon {}
 
 /// Paint `icon` stroked in `color` into `scene`, centred within `rect`. The icon is scaled from
 /// `rect.size().min() / LUCIDE_VIEWBOX` so it always fits the shorter dimension, padding the longer

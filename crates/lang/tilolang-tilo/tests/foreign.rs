@@ -604,7 +604,7 @@ tilo_test_env::scenario! {
         assert!(
             roots.iter().any(|(published, ty)| {
                 *published == "contacts:tilo.contacts.identities"
-                    && ty == "so.tilo.contacts#Identities"
+                    && ty == "so.tilo.contacts.directory#Identities"
             }),
             "{roots:?}"
         );
@@ -612,7 +612,7 @@ tilo_test_env::scenario! {
 
     phase the_view_shows_one_person_of_the_directory;
     {
-        let (host, view, _confirm) = directory_host(DIRECTORY_VIEW);
+        let (host, view, _confirm) = directory_host(DIRECTORY_VIEW, "directory");
         set_directory(&host, "Ada");
         let open = host.open_resource(&directory(), Some(&view)).unwrap();
         assert_eq!(shown(&open), Value::text("Ada"), "{:?}", open.tree());
@@ -620,7 +620,8 @@ tilo_test_env::scenario! {
 
     phase the_buttons_invocation_is_the_directories_own_confirm_endpoint;
     {
-        let (host, view, confirm) = directory_host(DIRECTORY_VIEW);
+        let (host, view, confirm) = directory_host(DIRECTORY_VIEW, "directory");
+        let confirm = confirm.expect("the button's anchor");
         set_directory(&host, "Ada");
         let open = host.open_resource(&directory(), Some(&view)).unwrap();
         let sent = Rc::new(RefCell::new(Vec::new()));
@@ -644,11 +645,11 @@ tilo_test_env::scenario! {
         assert_eq!(
             (app.as_str(), action.as_str(), name.as_str()),
             (
-                "so.tilo.contacts",
-                "so.tilo.contacts#confirm-endpoint",
+                "so.tilo.contacts.directory",
+                "so.tilo.contacts.directory#confirm-endpoint",
                 "confirm-endpoint"
             ),
-            "Contacts' verb, named here by its app, reaches Contacts as the verb it publishes"
+            "the directory's verb, named here by its package, reaches it as the verb it publishes"
         );
         assert_eq!(target.as_ref(), Some(&directory()));
         assert_eq!(args[0], ("identities".to_owned(), Value::resource(&directory())));
@@ -663,7 +664,7 @@ tilo_test_env::scenario! {
 /// button confirms an endpoint of that person.
 const DIRECTORY_VIEW: &str = r#"app test.people "People"
 
-use so.tilo.contacts as contacts
+use so.tilo.contacts.directory as contacts
 
 view directory(d: contacts.Identities) {
   stack {
@@ -677,7 +678,7 @@ view directory(d: contacts.Identities) {
 fn directory() -> ResourceRef {
     ResourceRef::parse_id(
         "contacts:tilo.contacts.identities",
-        "so.tilo.contacts#Identities",
+        "so.tilo.contacts.directory#Identities",
     )
     .expect("a resource id")
 }
@@ -708,9 +709,9 @@ fn set_directory(host: &Host, label: &str) {
         .unwrap();
 }
 
-/// A host that runs `DIRECTORY_VIEW` over the Contacts package, with the
-/// view's id and its `confirm` anchor.
-fn directory_host(view: &str) -> (Host, String, String) {
+/// A host that runs `view` over the Contacts package, with the id of its view named `name` and its
+/// `confirm` anchor where the view has one.
+fn directory_host(view: &str, name: &str) -> (Host, String, Option<String>) {
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -719,7 +720,7 @@ fn directory_host(view: &str) -> (Host, String, String) {
     let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
     let contacts = metas
         .iter()
-        .find(|meta| meta.app == "so.tilo.contacts")
+        .find(|meta| meta.app == "so.tilo.contacts.directory")
         .expect("the Contacts package");
     host.runtime().load_foreign(contacts.clone()).unwrap();
     let compiled = tilolang::compile_package(view, &IdsLock::new(), &metas)
@@ -729,8 +730,8 @@ fn directory_host(view: &str) -> (Host, String, String) {
         .meta
         .views
         .iter()
-        .find(|view| view.name == "directory")
-        .expect("the view's declaration")
+        .find(|view| view.name == name)
+        .unwrap_or_else(|| panic!("the view's declaration: {name}"))
         .id
         .clone();
     let confirm = package
@@ -739,8 +740,130 @@ fn directory_host(view: &str) -> (Host, String, String) {
         .iter()
         .flat_map(|view| &view.anchors)
         .find(|anchor| anchor.name == "confirm")
-        .expect("the button's anchor")
-        .id
-        .clone();
+        .map(|anchor| anchor.id.clone());
     (host, view, confirm)
+}
+
+/// A view over a workspace directory of many people: the count, and each person's picture as the
+/// address the directory keeps rather than its bytes.
+const MANY_PEOPLE_VIEW: &str = r#"app test.people "People"
+
+use so.tilo.contacts.directory as contacts
+
+view people(d: contacts.Identities) {
+  stack {
+    text("{d.people.count()}")
+    for person in d.people {
+      ui.Avatar(name: person.label, picture: "tilo-blob://{person.photo}")
+    }
+  }
+}
+"#;
+
+/// Every avatar of the view, anywhere in it.
+fn every_avatar(view: &ViewInstance) -> Vec<tilolang_runtime::UiNode> {
+    view.tree()
+        .of_kind("ui.Avatar")
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+/// The picture an avatar is given, if it is given one.
+fn picture_of(avatar: &tilolang_runtime::UiNode) -> Option<String> {
+    match avatar.props.get("picture") {
+        Some(Value::Text(text)) => Some(text.clone()),
+        Some(Value::Opt(Some(inner))) => match &**inner {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The portraits a reading publishes: each person's picture address and its size.
+fn portraits(reading: &str) -> Vec<(String, i64)> {
+    let read: serde_json::Value = serde_json::from_str(reading).expect("a directory reading");
+    read["people"]
+        .as_array()
+        .expect("people")
+        .iter()
+        .map(|person| {
+            (
+                person["photo"]
+                    .as_str()
+                    .expect("a picture address")
+                    .to_owned(),
+                person["photo_size"].as_i64().expect("a picture size"),
+            )
+        })
+        .collect()
+}
+
+/// A directory of ten thousand people, each with a portrait of its own: renaming one sends the
+/// label and nothing of any picture, and the card still shows the portrait the directory names.
+#[test]
+fn a_directory_of_ten_thousand_people_sends_no_picture() {
+    let (host, view, _) = directory_host(MANY_PEOPLE_VIEW, "people");
+    let people: Vec<serde_json::Value> = (0..10_000)
+        .map(|n| {
+            json!({
+                "label": format!("Person {n}"),
+                "removed": false,
+                "phones": [],
+                "emails": [],
+                "photo": format!("{n:064x}"),
+                "photo_size": 4096,
+                "endpoints": [],
+            })
+        })
+        .collect();
+    let first = json!({ "people": people }).to_string();
+    assert!(
+        !first.contains("data:") && !first.contains(";base64,"),
+        "a directory reading carries picture addresses, never picture bytes"
+    );
+    host.runtime().set_reading(&directory(), &first).unwrap();
+
+    let open = host.open_resource(&directory(), Some(&view)).unwrap();
+    assert_eq!(shown(&open), Value::text("10000"));
+    let shown_avatars = every_avatar(&open);
+    assert_eq!(shown_avatars.len(), 10_000);
+    assert_eq!(
+        picture_of(shown_avatars.last().unwrap()).as_deref(),
+        Some(format!("tilo-blob://{:064x}", 9999).as_str())
+    );
+
+    let mut renamed = people;
+    renamed[9999]["label"] = json!("Renamed");
+    let second = json!({ "people": renamed }).to_string();
+    let sent = second.len().abs_diff(first.len());
+    assert!(
+        sent <= 64,
+        "renaming one of ten thousand people sent {sent} bytes differently"
+    );
+    host.runtime().set_reading(&directory(), &second).unwrap();
+    assert_eq!(
+        portraits(&second),
+        portraits(&first),
+        "every picture and its size are the same reference after a rename"
+    );
+
+    let open = host.open_resource(&directory(), Some(&view)).unwrap();
+    let shown_avatars = every_avatar(&open);
+    assert_eq!(shown_avatars.len(), 10_000);
+    let last = shown_avatars.last().unwrap();
+    assert_eq!(
+        picture_of(last).as_deref(),
+        Some(format!("tilo-blob://{:064x}", 9999).as_str()),
+        "the renamed person still shows the picture the directory names"
+    );
+    assert_eq!(
+        last.props.get("name").and_then(|name| match name {
+            Value::Text(text) => Some(text.as_str()),
+            _ => None,
+        }),
+        Some("Renamed"),
+        "the rename itself is what the card shows"
+    );
 }

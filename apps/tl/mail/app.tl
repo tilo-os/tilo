@@ -5,6 +5,8 @@ app so.tilo.mail "Mail" (
     keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact", "emails", "post", "posteingang", "briefe", "postfach", "mailprogramm", "elektronische post", "e-mails"],
 )
 
+use so.tilo.contacts as contacts
+
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
 /// ownership; the system keeps this in step with the server.
@@ -194,7 +196,7 @@ type Mail {
     }
 }
 
-root Mail
+root mail: Mail
 
 default view mail for Mail
 
@@ -2082,6 +2084,13 @@ view message(m: Message) {
             ui.Time(m.received, role: .caption, past: true, secondary: true)
             spacer()
             ui.HoverToolbar {
+                // Who wrote it, when the workspace's address book knows them: the person the
+                // message is from opens in Contacts, where their numbers and groups are.
+                if let who = contacts.for_address(contacts.book, sender_address(m.from)) {
+                    ui.Button("Open contact", icon: .user, icon_only: true) {
+                        on press: open(who)
+                    }
+                }
                 ui.Button("Reply", icon: .reply, icon_only: true) {
                     on press: reply_to(m)
                 }
@@ -2094,6 +2103,11 @@ view message(m: Message) {
             }
         }
         ui.ContextMenu {
+            if let who = contacts.for_address(contacts.book, sender_address(m.from)) {
+                ui.MenuItem("Open contact", icon: .user) {
+                    on choose: open(who)
+                }
+            }
             ui.MenuItem("Reply", icon: .reply) {
                 on choose: reply_to(m)
             }

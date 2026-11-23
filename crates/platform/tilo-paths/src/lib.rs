@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 mod app;
 mod caps;
+pub mod desktop_service;
 mod location;
 pub mod login;
 pub mod machine;

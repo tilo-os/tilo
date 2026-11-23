@@ -19,7 +19,6 @@
 "camera" = 23   # 19.8 MB
 "click_test_client" = 3   # 1.9 MB
 "code-editor" = 27   # 23.0 MB
-"contacts" = 25   # 21.1 MB
 "containers" = 24   # 20.1 MB
 "db-client" = 26   # 22.6 MB
 "diffmerge" = 25   # 20.9 MB
@@ -56,7 +55,6 @@
 "tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
 "tilo-server" = 16   # 13.8 MB
-"tilo-server-admin" = 2   # 1.0 MB
 "tilo-rollback" = 2   # 1.2 MB
 "tilo-runtime-bundle" = 2   # 1.2 MB
 "tilo-unlock-helper" = 1   # 0.3 MB

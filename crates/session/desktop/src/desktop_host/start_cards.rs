@@ -131,12 +131,6 @@ impl EmptyWorkspace {
 }
 
 impl Widget for EmptyWorkspace {
-    /// The start cards of the display in use, where the shell stands them.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("main");
-        cx.children();
-    }
-
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The cards follow the apps the host has: an app installed or removed here changes what
         // every display's shell offers.

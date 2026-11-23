@@ -1534,27 +1534,6 @@ impl FullscreenProvider for TileHost {
 }
 
 impl Widget for TileHost {
-    /// The app it holds as its content; a place with none yet says what it will hold.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if let Some((title, detail)) = self.card_words() {
-            let theme = cx.theme().clone();
-            let mut words = title;
-            if !detail.is_empty() {
-                words.push_str("\n\n");
-                words.push_str(&detail);
-            }
-            let look = crate::composition::TextLook::new(
-                words,
-                &theme.text(crate::tokens::TextRole::Body),
-                Some(theme.tokens.colors.text_primary),
-            );
-            cx.text(look);
-            return;
-        }
-        cx.children();
-    }
-
     crate::provides!(
         dyn crate::widget::FullscreenProvider,
         dyn crate::widget::Continuable,

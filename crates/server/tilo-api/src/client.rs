@@ -1345,12 +1345,16 @@ mod tests {
     async fn api_key_client(workspaces: Vec<crate::session::Workspace>) -> Client {
         struct Holding(Vec<crate::session::Workspace>);
         impl crate::session::Here for Holding {
-            fn workspaces(&self) -> Vec<crate::session::Workspace> {
+            fn workspaces(
+                &self,
+                _: &tilo_user_identity::DeviceCert,
+            ) -> Vec<crate::session::Workspace> {
                 self.0.clone()
             }
             fn enter(
                 &self,
                 workspace: &str,
+                _: &crate::grant_key::GrantKey,
             ) -> std::result::Result<crate::session::Reached, String> {
                 Err(format!("no workspace {workspace} here"))
             }

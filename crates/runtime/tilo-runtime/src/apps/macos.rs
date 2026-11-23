@@ -18,7 +18,12 @@ use app_catalogue::apps::InstalledApp;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;
 
-pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
+pub(super) fn launch(
+    apps: &Apps,
+    app: &InstalledApp,
+    workspace: &str,
+    sockets: &Sockets,
+) -> Result<Launch, String> {
     let catalog = apps
         .catalog
         .as_ref()
@@ -40,15 +45,14 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
     }
-    let container = launcher_macos::policy::prepare_container(
-        &apps.data_home,
-        Some(&apps.workspace),
-        &app.app_id,
-    )
-    .map_err(|error| format!("refusing to launch {}: its container: {error}", app.app_id))?;
+    let container =
+        launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
+            .map_err(|error| {
+                format!("refusing to launch {}: its container: {error}", app.app_id)
+            })?;
     let services = ServiceConnections::connect(
         &app.app_id,
-        &apps.workspace,
+        workspace,
         &ServiceSockets {
             collab: &sockets.collab,
             identity: &sockets.identity,
@@ -64,7 +68,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     inherit_fds.push(chooser.app_end.as_raw_fd());
     inherit_fds.push(capture.app_end.as_raw_fd());
     let mut env: Vec<(OsString, OsString)> = services
-        .env(&app.app_id, &apps.workspace)
+        .env(&app.app_id, workspace)
         .into_iter()
         .map(|(key, value)| (OsString::from(key), OsString::from(value)))
         .collect();
@@ -82,7 +86,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             app.payload_root.clone().into_os_string(),
         ));
     }
-    let (capabilities, egress) = apps.launch_capabilities(app, &manifest);
+    let (capabilities, egress) = apps.launch_capabilities(app, workspace, &manifest);
     let request = launcher_macos::LaunchRequest {
         package_id: app.app_id.to_string(),
         executable: runtime

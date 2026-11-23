@@ -159,31 +159,21 @@ fn painted(
     f64::from(drawn) / f64::from(all.max(1))
 }
 
-/// How many elements a composition has: each node that is a tag of its own or carries what a
+/// How many elements a composition has: each node that shows its paint or carries what a
 /// screen reader acts on.
 fn elements(node: &ui::composition::Composed) -> usize {
-    let mine = usize::from(node.tag.is_some() || node.semantics.is_some());
+    let mine = usize::from(node.picture.is_some() || node.semantics.is_some());
     mine.saturating_add(node.children.iter().map(elements).sum::<usize>())
 }
 
-/// The words a composition shows: each element's text of its own, and what its semantics say.
+/// The words a composition shows: what each element's semantics say.
 fn words(composition: &ui::composition::Composition) -> Vec<String> {
     fn walk(node: &ui::composition::Composed, out: &mut Vec<String>) {
-        match &node.own {
-            Some(ui::composition::Own::Text(text)) => out.push(text.text.clone()),
-            Some(ui::composition::Own::Face(face)) => {
-                if let Some(label) = &face.label {
-                    out.push(label.text.clone());
-                }
-            }
-            _ => {}
-        }
         if let Some(semantics) = &node.semantics {
-            if let Some(name) = &semantics.name {
-                out.push(name.clone());
-            }
-            if let Some(description) = &semantics.description {
-                out.push(description.clone());
+            for said in semantics.nodes() {
+                out.extend(said.name.iter().cloned());
+                out.extend(said.value.iter().cloned());
+                out.extend(said.description.iter().cloned());
             }
         }
         for child in &node.children {

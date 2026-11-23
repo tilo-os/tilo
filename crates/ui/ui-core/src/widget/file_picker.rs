@@ -2461,31 +2461,6 @@ impl FilePicker {
 }
 
 impl Widget for FilePicker {
-    /// A file dialog as a page's own: its title and the files it lists as real
-    /// rows (a press on one reaches the table by where it stands, as on the
-    /// canvas).
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption, TextLook};
-        cx.element("dialog");
-        let theme = cx.theme();
-        let label = TextLook::new(
-            self.title.clone(),
-            &theme.text(crate::tokens::TextRole::Body),
-            Some(theme.tokens.colors.text_primary),
-        );
-        let options = self
-            .entries
-            .iter()
-            .map(|entry| ControlOption::new(entry.name.clone()))
-            .collect();
-        cx.control(Control::Choices {
-            list: "listbox",
-            item: "option",
-            label: Some(label),
-            options,
-        });
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

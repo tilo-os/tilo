@@ -14,7 +14,14 @@ impl Session {
     /// them the workspace's ids.
     #[must_use]
     pub fn apps_kept_in_workspace(&self) -> bool {
-        self.shared.app_stores.get() == crate::engine_records::AppStores::Kept
+        *self.shared.app_stores.borrow() == crate::engine_records::AppStores::Kept
+    }
+
+    /// Where keeping the resources of the apps the session's services run over in the workspace
+    /// stands: kept, refused and why, or what it waits on.
+    #[must_use]
+    pub fn apps_in_workspace(&self) -> String {
+        self.shared.app_stores.borrow().to_string()
     }
 
     /// The workspaces this device holds: those whose content reached this computer, joined ones

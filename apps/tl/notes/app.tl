@@ -416,15 +416,15 @@ fn titled(nb: Notebook, title: Text) -> Option<Note> {
     nb.notes.find(n -> n.title.trim().lower() == title.trim().lower())
 }
 
-/// Files a note titled `title` and carrying the tag `name` in one step: what another app writes
-/// down of what it did (Today's morning) without waiting on the note it made to name it.
-action file_note(nb: Notebook, title: Text, name: Text) -> Note (
+/// Files a note titled `title` and tagged `tag` in one step: what another app writes down of
+/// what it did (Today's morning) without waiting on the note it made to name it.
+action file_note(nb: Notebook, title: Text, tag: Text) -> Note (
     icon: .file_plus,
     label: "File a note",
 ) {
     let made = nb.notes.insert(Note(title: title))
-    let known = nb.tags.find(t -> t.name.lower() == name.trim().lower())
-    let listed = known?.name ?? name.trim()
+    let known = nb.tags.find(t -> t.name.lower() == tag.trim().lower())
+    let listed = known?.name ?? tag.trim()
     if known == .none { nb.tags.insert(Tag(name: listed)) }
     made.tags.add(listed)
     made

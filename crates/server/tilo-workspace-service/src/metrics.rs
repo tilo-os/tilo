@@ -1,5 +1,5 @@
 //! Cheap per-workspace counters — accessible via
-//! `tilo-server-admin status` and eventually a Prometheus endpoint.
+//! `tilo-server status` and eventually a Prometheus endpoint.
 //!
 //! These are `AtomicU64` counters with no external client; a peer
 //! only observes them if it explicitly asks (`admin status`).

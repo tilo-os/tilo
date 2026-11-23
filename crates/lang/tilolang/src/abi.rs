@@ -231,6 +231,7 @@ imports! {
     UiPropPic = "ui_prop_picture" ([H, H, H] -> []);
     UiChild = "ui_child" ([H, H] -> []);
     UiBind = "ui_bind" ([H, H, H] -> []);
+    UiBindBegin = "ui_bind_begin" ([H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
     UiBindState = "ui_bind_state" ([H, H] -> []);
@@ -304,10 +305,20 @@ imports! {
     // far two days or two moments are apart; a part of a day, its weekday and the day its week starts on;
     // and a day or a moment a text names, read at a moment.
     TimeDay = "time_day" ([H] -> [H]);
+    // The day a moment falls on in a named zone: the same moment, read where people there are, from
+    // the zone's own rules and never the person's clock.
+    TimeDayIn = "time_day_in" ([H, H] -> [H]);
+    // The moment a wall-clock time names in a named zone: the zone's own rules decide it, the
+    // person's clock none of it.
+    TimeFromWall = "time_from_wall" ([H, H] -> [H]);
+    // The wall time a moment is in a named zone (`2026-11-24T09:00:00`), the form a calendar
+    // stores; `floating`'s is where the reader is.
+    TimeWall = "time_wall" ([H, H] -> [H]);
     TimeOfDay = "time_of_day" ([H] -> [I64]);
     TimeClock = "time_clock" ([H] -> [H]);
     DayShift = "day_shift" ([H, I64, I32] -> [H]);
     TimeSpan = "time_span" ([H, H] -> [I64]);
+    Occurrences = "occurrences" ([H, H, H, H, H, H] -> [H]);
     DayPart = "day_part" ([H, I32] -> [I64]);
     DayWeekday = "day_weekday" ([H] -> [I64]);
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
@@ -339,6 +350,7 @@ imports! {
     // file called by its name; and an archive of the files it holds, each under its own name.
     FileOfText = "file_of_text" ([H, H] -> [H]);
     FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
+    Base64Decode = "base64_decode" ([H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
     FileZip = "file_zip" ([H, H] -> [H]);
     // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the

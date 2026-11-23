@@ -543,7 +543,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
         driver,
         format!(
             "timeline-entry:{}",
-            crate::widget::history_group::hex16(&id)
+            crate::HistoryEntryId::hex(&id)
         ),
         before,
     )
@@ -1068,7 +1068,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
 
     let target = format!(
         "timeline-entry:{}",
-        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &body_change.to_string()
         ))
     );
@@ -1133,7 +1133,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     assert_eq!(
         format!(
             "timeline-entry:{}",
-            crate::widget::history_group::hex16(&named.start)
+            crate::HistoryEntryId::hex(&named.start)
         ),
         target
     );

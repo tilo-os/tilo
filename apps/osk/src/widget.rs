@@ -2596,10 +2596,6 @@ mod keyboard_preferences;
 mod personal_vocabulary_tests;
 
 impl Widget for OskWidget {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.dirty = true;
         self.poll_hold(Instant::now());

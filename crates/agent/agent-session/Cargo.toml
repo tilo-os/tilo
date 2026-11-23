@@ -20,7 +20,7 @@ name = "it"
 path = "tests/it.rs"
 
 [features]
-# What tests drive the service with: a part held back from it ([`workspace_actions::held_back`]).
+# What the crate's tests drive it with.
 test-support = []
 
 [dependencies]
@@ -35,26 +35,24 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-actions = { path = "../../collab/actions" }
 # A report's authenticated transport and the signed receipt an agent's
 # member answers for.
-tilo-feedback-transport = { path = "../../sdk/feedback-transport" }
+tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
 # The kinds of work a transform's model is chosen by.
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { path = "../provider-config" }
 # The apps an agent can open in a browser session: those whose manifests declare
 # the web platform.
 activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 assistant = { path = "../../../apps/assistant" }
 calculator = { path = "../../../apps/calculator" }
-calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
 camera = { path = "../../../apps/camera", default-features = false, features = ["live-capture"] }
 canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
 tilo-console = { path = "../../../apps/console" }
-contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
@@ -66,6 +64,7 @@ model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
+photos = { path = "../../../apps/photos" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 settings = { path = "../../../apps/settings", default-features = false, features = [] }
@@ -107,7 +106,7 @@ tilo-automerge.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The workspace's canvas on its front page: the shell's package, run and written as HTML as
 # a page shows an app.
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 tilolang-web = { path = "../../lang/tilolang-web" }
 ed25519-dalek.workspace = true
 serde.workspace = true
@@ -116,7 +115,7 @@ hex.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 # The requests and answers of the model calls a host's agents make.
-tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../../integrations/model-gateway" }
+tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
@@ -142,7 +141,7 @@ tempfile.workspace = true
 uuid.workspace = true
 # The render service's side of `tilo-video-render`, the confined helper an
 # agent's video renders run in (the helper itself is its binary).
-tilo-video-render = { path = "../../engines/video-render", default-features = false }
+tilo-video-render = { path = "../../media/video-render", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -155,7 +154,7 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The worker's Landlock ruleset and seccomp filters, from the shared
 # primitives every confinement path uses.
-tilo-sandbox-core = { path = "../../platform/sandbox-core" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
@@ -168,12 +167,6 @@ discord = { path = "../../../apps/discord" }
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages", "fixture-servers"] }
 # The crate's own test support, for its integration tests.
 tilo-agent-session = { path = ".", features = ["test-support"] }
-tilo-session-actions = { path = "../../session/session-actions" }
-# The session a page's desktop serves its windows, which carries what the workspace's server
-# keeps to that server. The peer view is off: a server drives apps and decodes no other device's
-# window, and its media stack would be compiled into every test and into the api-on-server
-# example the SDKs run.
-tilo-desktop-surface = { path = "../../session/desktop-surface", default-features = false }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
 # The content hash a test names a file it puts in a peer's folder by, as the shared
@@ -181,9 +174,6 @@ base64.workspace = true
 iroh-blobs.workspace = true
 # The meeting times a test writes into a calendar.
 jiff.workspace = true
-# Documents the tests write and read back as a Word or Markdown file.
-tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs" }
-tilo-doc = { path = "../../sdk/tilo-doc" }
 # The desktop broker's admission, which the host's decisions are held to.
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The demo workspace and the helpers that write a chat as its people would.
@@ -191,32 +181,13 @@ chat = { path = "../../../apps/chat", default-features = false, features = ["sam
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
-accounts = { path = "../../integrations/accounts", features = ["person"] }
+accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
-# An installed app's package, and the module it carries: the packaged-model
-# test installs Tasks into a server that never built it.
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
-tilo-model-engine = { path = "../../lang/tilo-model-engine" }
-tasks-model = { path = "../../../apps/tasks-model" }
 tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
-# The settings a computer's Agent models pane keeps, apart from this process's own.
-settings-store = { path = "../../system/settings-store" }
-# The workspace's machine secrets.
-tilo-environment = { path = "../../vm/environment" }
-# The API server, driven through its HTTP routes against the relay.
-tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 # A message with large attachments, split as `tilo migrate` splits one.
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
 test-server = { path = "../../../tools/test-server" }
-# A hosted Terminal session's stream, dialled as a device dials it, and a host selling Linux
-# machines whose programs a test reads back.
-ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
-test-http = { path = "../../../tools/test-http" }
-# Opens an invitation's link as a page does, asking the workspace's host for it.
-tilo-workspace-directory = { path = "../../session/workspace-directory" }
-# `tilolang repl`, driven in process against a workspace the server hosts.
-tilolang-cli = { path = "../../lang/tilolang-cli" }
 iroh.workspace = true
 # The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
@@ -228,14 +199,10 @@ rustls.workspace = true
 sha2.workspace = true
 bytes.workspace = true
 tilo-test-env = { path = "../../../tools/test-env", features = ["tokio"] }
-# The tools a hosted agent's turn works through, asked as a turn asks them.
-tilo-mcp = { path = "../../runtime/tilo-mcp" }
 tokio = { workspace = true, features = ["full"] }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
-# The desktop's search over a workspace's record index, as a person finds a record.
-tilo-desktop-search = { path = "../../session/desktop-search" }
-# The subscriber the `api-on-server` example traces with.
+# The subscriber a worker test reads what the worker logged through.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]

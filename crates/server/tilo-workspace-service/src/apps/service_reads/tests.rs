@@ -351,7 +351,7 @@ async fn a_device_reads_what_changed_since_its_heads() {
 /// A session whose service was not opened reads nothing, and says so.
 #[test]
 fn a_session_with_no_service_open_reads_nothing() {
-    let reads = ServiceDocuments::on(ServiceSlot::default());
+    let reads = ServiceDocuments::on(crate::service::ServiceSlot::default());
     assert!(reads.read(APP, APP, RESOURCE, None).is_err());
     assert!(reads.listing(APP).is_err());
     assert!(!reads.holds(APP, APP, RESOURCE));

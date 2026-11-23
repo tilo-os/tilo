@@ -424,10 +424,10 @@ class Notebook(Resource):
     def file_note(self,
         *,
         title: str,
-        name: str,
+        tag: str,
     ) -> Note:
-        """Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
-        return self.action("file_note", title=title, name=name)
+        """Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
+        return self.action("file_note", title=title, tag=tag)
 
     def new_tag(self,
         *,

@@ -7,7 +7,6 @@ use tilo_sort::CompactSort as _;
 pub mod filters;
 #[cfg(test)]
 mod tests;
-use crate::search::Scope;
 
 /// One well-known category a result can belong to — the domain vocabulary the chip strip
 /// and grouping use.
@@ -121,118 +120,6 @@ impl Availability {
     }
 }
 
-/// Hard ceilings for one provider page. A provider may stop sooner, but must never exceed
-/// any non-zero ceiling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SearchBudget {
-    pub max_results: usize,
-    pub max_bytes: usize,
-    pub max_work: usize,
-}
-
-impl SearchBudget {
-    pub const PALETTE: Self = Self {
-        max_results: 48,
-        max_bytes: 48 * 1024,
-        max_work: 4_096,
-    };
-}
-
-/// An opaque provider-owned continuation. The revision is carried alongside the
-/// provider-local payload, so a result page can never silently advance across a changed
-/// ordering.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SearchCursor {
-    pub revision: String,
-    pub token: String,
-}
-
-/// One bounded answer from a [`Provider`]. `stale_cursor` is a protocol outcome rather
-/// than an empty page: callers restart explicitly, preserving the distinction between
-/// "there are no more hits" and "the source changed while you were paging".
-#[derive(Clone)]
-pub struct SearchPage<Row> {
-    pub revision: String,
-    pub results: Vec<Row>,
-    pub next_cursor: Option<SearchCursor>,
-    pub exhausted: bool,
-    pub stale_cursor: bool,
-    pub budget_exhausted: bool,
-}
-
-impl<Row: std::fmt::Debug> std::fmt::Debug for SearchPage<Row> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SearchPage")
-            .field("revision", &self.revision)
-            .field("results", &self.results)
-            .field("next_cursor", &self.next_cursor)
-            .field("exhausted", &self.exhausted)
-            .field("stale_cursor", &self.stale_cursor)
-            .field("budget_exhausted", &self.budget_exhausted)
-            .finish()
-    }
-}
-
-impl<Row> SearchPage<Row> {
-    pub fn exhausted(revision: impl Into<String>, results: Vec<Row>) -> Self {
-        Self {
-            revision: revision.into(),
-            results,
-            next_cursor: None,
-            exhausted: true,
-            stale_cursor: false,
-            budget_exhausted: false,
-        }
-    }
-
-    /// The last page when `next_token` is `None`; otherwise a page its budget cut short,
-    /// continuing at that token.
-    pub fn continuing(
-        revision: impl Into<String>,
-        results: Vec<Row>,
-        next_token: Option<String>,
-    ) -> Self {
-        let revision = revision.into();
-        let exhausted = next_token.is_none();
-        Self {
-            next_cursor: next_token.map(|token| SearchCursor {
-                revision: revision.clone(),
-                token,
-            }),
-            revision,
-            results,
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
-    }
-
-    pub fn stale(revision: impl Into<String>) -> Self {
-        Self {
-            revision: revision.into(),
-            results: Vec::new(),
-            next_cursor: None,
-            exhausted: false,
-            stale_cursor: true,
-            budget_exhausted: false,
-        }
-    }
-}
-
-/// Portable display metadata; implement on a host row without moving its callbacks.
-pub trait SearchRow {
-    fn kind(&self) -> &ResourceKind;
-    fn score(&self) -> i32;
-    fn title(&self) -> &str;
-    fn subtitle(&self) -> Option<&str>;
-    fn shortcut(&self) -> Option<&str> {
-        None
-    }
-    /// How far the hit is from the person; see [`Availability`].
-    fn availability(&self) -> Availability {
-        Availability::OnDevice
-    }
-}
 /// One contiguous run of same-kind results, as [`group_by_kind`] arranges them.
 #[derive(Clone, Debug)]
 pub struct KindGroup<Row> {
@@ -247,21 +134,6 @@ pub fn query_input_is_bounded(needle: &str) -> bool {
         .take(super::MAX_SEARCH_QUERY_SCALARS.saturating_add(1))
         .count()
         <= super::MAX_SEARCH_QUERY_SCALARS
-}
-/// Whether a search of `scope` asks the provider `provider_id`: only a search of one app
-/// narrows, to that app's own providers and the ones that keep to the app in front.
-pub fn scope_allows(
-    scope: &Scope,
-    provider_id: &str,
-    active_provider_id: Option<&str>,
-    narrows_to_active_app: bool,
-) -> bool {
-    match scope {
-        Scope::InApp(_) => {
-            active_provider_id.is_none_or(|id| id == provider_id || narrows_to_active_app)
-        }
-        Scope::WindowGroup(_) | Scope::Workspace | Scope::Everywhere => true,
-    }
 }
 /// The package id in full names exactly one app, so an exact id is as strong as the name;
 /// a shared id prefix names a publisher and stays below an exact name.
@@ -912,31 +784,6 @@ pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKi
     });
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "Ranking normalizes integer priorities into approximate floating-point scores, not durable identifiers."
-)]
-pub fn rank<Row: SearchRow>(rows: Vec<(Row, i32)>) -> Vec<Row> {
-    let mut merged: Vec<(Row, f32)> = rows
-        .into_iter()
-        .map(|(row, top)| {
-            let top = top.max(1);
-            debug_assert!(
-                row.score() <= top,
-                "provider exceeded its declared maximum score"
-            );
-            let strength = row.score() as f32 / top as f32;
-            (row, strength)
-        })
-        .collect();
-    order_hits(&mut merged, |row| (row.kind(), row.availability()));
-    merged.into_iter().map(|(r, _)| r).collect()
-}
-
-pub fn group<Row: SearchRow>(ranked: Vec<Row>, row_budget: usize) -> Vec<KindGroup<Row>> {
-    group_by_kind(ranked, SearchRow::kind, row_budget)
-}
-
 /// Ranked hits arranged into contiguous per-kind groups and trimmed to a `row_budget`
 /// shared round-robin ([`trim_groups`]): a palette paints ~10 rows, and an outscoring
 /// kind (forty file hits) can otherwise push a correctly-ranked app off the bottom.
@@ -1051,38 +898,6 @@ pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> Comma
     .group(group)
     .group_total(total)
 }
-pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<CommandEntry> {
-    let mut entries = Vec::new();
-    for group in groups {
-        for row in &group.results {
-            let mut entry = CommandEntry::new(format!("result:{}", entries.len()), row.title())
-                .group(group.kind.display_label())
-                .group_total(group.total)
-                .icon(icon_for_kind(row.kind()));
-            if let Some(subtitle) = row.subtitle() {
-                entry = entry.description(subtitle);
-            }
-            if let Some(shortcut) = row.shortcut() {
-                entry = entry.keybinding(shortcut);
-            }
-            entries.push(entry);
-        }
-    }
-    entries
-}
-
-/// Whether a person may take `spec` from a palette row now: offered to people, available
-/// in the window's state, and asking no more than a row can collect
-/// ([`tilo_actions::ActionSpec::takes_a_row_answer`]). What a row cannot collect (a
-/// record, a person, several arguments) is picked where it lives, by the surface that
-/// owns that pick.
-#[must_use]
-pub fn a_row_a_person_can_take(spec: &tilo_actions::ActionSpec) -> bool {
-    spec.contract.offered_to_people()
-        && spec.contract.availability.is_available()
-        && spec.takes_a_row_answer()
-}
-
 pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     use crate::icons::Icon;
     use ResourceKind as K;
@@ -1100,139 +915,5 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
         K::Video => Icon::Film,
         K::Playlist => Icon::List,
         K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Query<'a> {
-    pub needle: &'a str,
-    pub scope: &'a Scope,
-    pub active_provider_id: Option<&'a str>,
-    pub wanted_kinds: &'a [ResourceKind],
-}
-pub trait Provider<Host, Row: SearchRow> {
-    fn id(&self) -> &str;
-    fn resource_kinds(&self) -> &[ResourceKind];
-    fn max_score(&self) -> i32 {
-        MAX_PROVIDER_SCORE
-    }
-    /// Whether this provider keeps to the focused app under a [`Scope::InApp`] search,
-    /// answering only with that app's own rows.
-    fn narrows_to_active_app(&self) -> bool {
-        false
-    }
-    fn revision(&self, _host: &Host, _query: &Query<'_>) -> String {
-        "static".into()
-    }
-    fn query_page(
-        &self,
-        host: &Host,
-        query: &Query<'_>,
-        cursor: Option<&SearchCursor>,
-        budget: SearchBudget,
-    ) -> SearchPage<Row>;
-    fn resolve(&self, host: &Host, id: &str, query: &Query<'_>) -> Option<Row>;
-}
-/// Registration order survives equal-strength ties.
-pub struct Registry<'a, Host, Row: SearchRow> {
-    providers: Vec<&'a dyn Provider<Host, Row>>,
-}
-impl<Host, Row: SearchRow> Default for Registry<'_, Host, Row> {
-    fn default() -> Self {
-        Self {
-            providers: Vec::new(),
-        }
-    }
-}
-impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn register(&mut self, provider: &'a dyn Provider<Host, Row>) {
-        self.providers.push(provider);
-    }
-    pub fn query(&self, host: &Host, query: &Query<'_>) -> Vec<Row> {
-        if !query_input_is_bounded(query.needle) {
-            return Vec::new();
-        }
-        let mut rows = Vec::new();
-        for provider in &self.providers {
-            if !scope_allows(
-                query.scope,
-                provider.id(),
-                query.active_provider_id,
-                provider.narrows_to_active_app(),
-            ) {
-                continue;
-            }
-            let wanted: Vec<_> = provider
-                .resource_kinds()
-                .iter()
-                .filter(|k| query.wanted_kinds.is_empty() || query.wanted_kinds.contains(k))
-                .cloned()
-                .collect();
-            if wanted.is_empty() {
-                continue;
-            }
-            let routed = Query {
-                wanted_kinds: &wanted,
-                ..query.clone()
-            };
-            let page = provider.query_page(host, &routed, None, SearchBudget::PALETTE);
-            if page.stale_cursor {
-                continue;
-            }
-            rows.extend(
-                page.results
-                    .into_iter()
-                    .map(|row| (row, provider.max_score())),
-            );
-        }
-        rank(rows)
-    }
-    pub fn query_grouped(
-        &self,
-        host: &Host,
-        query: &Query<'_>,
-        row_budget: usize,
-    ) -> Vec<KindGroup<Row>> {
-        group(self.query(host, query), row_budget)
-    }
-    pub fn resolve(
-        &self,
-        host: &Host,
-        provider_id: &str,
-        id: &str,
-        query: &Query<'_>,
-    ) -> Option<Row> {
-        let provider = self.providers.iter().find(|p| p.id() == provider_id)?;
-        if !scope_allows(
-            query.scope,
-            provider_id,
-            query.active_provider_id,
-            provider.narrows_to_active_app(),
-        ) {
-            return None;
-        }
-        let wanted: Vec<_> = provider
-            .resource_kinds()
-            .iter()
-            .filter(|k| query.wanted_kinds.is_empty() || query.wanted_kinds.contains(k))
-            .cloned()
-            .collect();
-        if wanted.is_empty() {
-            return None;
-        }
-        provider
-            .resolve(
-                host,
-                id,
-                &Query {
-                    needle: "",
-                    wanted_kinds: &wanted,
-                    ..query.clone()
-                },
-            )
-            .filter(|r| wanted.contains(r.kind()))
     }
 }

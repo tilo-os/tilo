@@ -160,21 +160,6 @@ impl SignalMeter {
 }
 
 impl Widget for SignalMeter {
-    /// Strength as bars of its own, named and counted for a reader.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.attr(
-            "aria-label",
-            format!(
-                "{}, {}/{}",
-                self.level.name(),
-                self.level.filled(),
-                SIGNAL_BARS
-            ),
-        );
-        cx.picture();
-    }
-
     crate::described!();
 
     fn build_layout(

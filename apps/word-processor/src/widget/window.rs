@@ -88,10 +88,6 @@ impl ui::content_zoom::ContentZoom for WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(
         dyn ui::collaboration::presences::Presences,
         dyn ui::undo::LocalUndo,

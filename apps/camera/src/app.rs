@@ -2632,10 +2632,6 @@ impl CameraApp {
 }
 
 impl Widget for CameraApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources

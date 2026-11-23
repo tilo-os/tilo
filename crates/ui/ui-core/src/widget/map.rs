@@ -2035,13 +2035,6 @@ impl Map {
 }
 
 impl Widget for Map {
-    /// The ground as its picture, the pins with what they hold.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-        cx.children();
-    }
-
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }

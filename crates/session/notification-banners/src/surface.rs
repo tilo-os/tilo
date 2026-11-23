@@ -530,39 +530,6 @@ impl Widget for BannerSurface {
         "NotificationBanners"
     }
 
-    /// Each banner as a card of its own words, with the choices and the close it paints as real
-    /// buttons where they stand.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("aside");
-        let state = self.state.borrow();
-        let stack = &state.stack;
-        let theme = cx.theme().clone();
-        let feed = stack.feed();
-        for (id, rect) in stack.banner_rects() {
-            let Some(banner) = feed.banner(id) else {
-                continue;
-            };
-            let words = &banner.notification;
-            let body = if words.show_preview && !words.body.is_empty() {
-                format!("{}\n{}", words.title, words.body)
-            } else {
-                words.title.clone()
-            };
-            let look = ui::composition::TextLook::new(
-                body,
-                &theme.text(ui::TextRole::Body),
-                Some(theme.tokens.colors.text_primary),
-            )
-            .with_max_lines(Some(3));
-            let card = cx.part(&format!("banner:{id}"), "NotificationBanner", rect);
-            card.tag = Some("article");
-            card.own = Some(ui::composition::Own::Text(look));
-        }
-        if let Some(access) = stack.accessibility() {
-            cx.controls("banner-control", &access);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,

@@ -775,10 +775,6 @@ impl RoomCanvas {
 }
 
 impl Widget for RoomCanvas {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

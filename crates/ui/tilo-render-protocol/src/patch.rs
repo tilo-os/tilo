@@ -784,6 +784,16 @@ pub enum ToApp {
     History {
         open: bool,
     },
+    /// What the person does from now on serves `call`, the invocation they signed for it, as the
+    /// member `invoker` names (a stamp's invoker): each change it makes keeps the call, for the
+    /// holders that check it. An empty call ends it: what follows is the window's own. A window
+    /// shown on a web page sends it around each of its reader's acts. The call is carried as its
+    /// JSON, as its argument is.
+    Serving {
+        #[serde(with = "serde_bytes")]
+        call: Vec<u8>,
+        invoker: Option<String>,
+    },
 }
 
 /// Largest batch either side sends or accepts.

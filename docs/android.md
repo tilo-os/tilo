@@ -260,7 +260,7 @@ emulator is for what only Android shows: the activity lifecycle, touch, the
 input method, choosers and insets. With an `x86_64` AVD running:
 
 ```bash
-tilo-app run --platform android --device emulator-5554 apps/calendar
+tilo-app run --platform android --device emulator-5554 apps/calculator
 adb -s emulator-5554 shell input tap X Y            # physical pixels
 adb -s emulator-5554 exec-out screencap -p > shot.png
 ```

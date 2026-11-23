@@ -169,10 +169,6 @@ impl TwoWindows {
 }
 
 impl crate::widget::Widget for TwoWindows {
-    /// Its two tiles, each where the strip puts it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
     fn build_layout(
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,

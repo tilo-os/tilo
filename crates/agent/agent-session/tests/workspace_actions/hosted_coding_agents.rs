@@ -10,8 +10,10 @@ use ui::tilo_workspace_agent::NewCoding;
 /// A stand-in for Claude Code. It says its session at once, takes `--resume`, and for each
 /// message: `wait for the word` makes a file named `waiting` in its folder and works until one
 /// named `go` stands there; `where do you work` says its folder, its branch and the session it
-/// took up; `list your tilo tools` asks Tilo's MCP server; anything else is asked of its model,
-/// whose words it says.
+/// took up; `list your tilo tools` asks Tilo's MCP server; `in chat words` asks its model in
+/// chat completions; `knock without the word` asks this computer's endpoint without its run's
+/// secret, and says the status it got; anything else is asked of its model in Messages, whose
+/// words it says.
 const STAND_IN: &str = r#"trap '' PIPE
 session="stand-in-$$" resumed="" mcp=""
 while [ $# -gt 0 ]; do
@@ -58,6 +60,18 @@ while IFS= read -r line; do
       post "$mcp" '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
       if [[ $body == *tilo_read* ]]; then says "tilo lists tilo_read"; else says "tilo lists no tools"; fi
       finished "listed"
+      ;;
+    *"in chat words"*)
+      post "$ANTHROPIC_BASE_URL/v1/chat/completions" "{\"model\":\"stand-in\",\"messages\":[{\"role\":\"user\",\"content\":\"$text\"}]}"
+      [[ $body =~ \"content\":\"([^\"]*)\" ]]
+      says "${BASH_REMATCH[1]}"
+      finished "asked"
+      ;;
+    *"knock without the word"*)
+      rest=${ANTHROPIC_BASE_URL#http://}
+      post "http://${rest%%/*}/not-the-word/model/v1/messages" "{}"
+      says "${answer%%$'\n'*}"
+      finished "knocked"
       ;;
     *)
       post "$ANTHROPIC_BASE_URL/v1/messages" "{\"model\":\"stand-in\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"$text\"}]}"
@@ -269,6 +283,36 @@ async fn a_coding_agent_starts_on_its_persons_word_hears_them_while_it_works_sto
     agents.look(&workspace).await.unwrap();
     let listed = reply_of(&workspaces, &workspace, &tools, "fixer").await;
     assert_eq!(listed.text, "tilo lists tilo_read");
+
+    // The same model answers in chat completions, and nothing answers without the run's word.
+    let chat = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "in chat words: what about the sign-up form?"),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    assert_eq!(
+        reply_of(&workspaces, &workspace, &chat, "fixer").await.text,
+        "The form has no label."
+    );
+    let knocked = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "knock without the word"),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    assert_eq!(
+        reply_of(&workspaces, &workspace, &knocked, "fixer")
+            .await
+            .text,
+        "HTTP/1.1 404 Not Found"
+    );
 
     // Its person stops it while it works: its process ends, and its item says who stopped it.
     let stopped = writes_in(

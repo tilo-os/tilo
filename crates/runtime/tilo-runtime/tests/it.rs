@@ -16,13 +16,19 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "daemon_flows.rs"]
+mod daemon_flows;
 #[path = "device_actions.rs"]
 mod device_actions;
 #[path = "device_host.rs"]
 mod device_host;
+/// The one fixture a test reaches a device's daemon through.
+mod host;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
 #[path = "session_api_connect.rs"]
 mod session_api_connect;
+#[path = "workspace_list.rs"]
+mod workspace_list;

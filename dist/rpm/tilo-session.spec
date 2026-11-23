@@ -204,8 +204,6 @@ install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
 install -Dpm 0755 bin/tilo-runtime            %{buildroot}%{_bindir}/tilo-runtime
 install -Dpm 0755 bin/tilolang-process          %{buildroot}%{_bindir}/tilolang-process
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
-install -Dpm 0755 bin/tilo-server-admin %{buildroot}%{_libexecdir}/tilo/tilo-server-admin
-ln -s ../libexec/tilo/tilo-server-admin %{buildroot}%{_bindir}/tilo-server-admin
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_libexecdir}/tilo/tilo-launcher
 ln -s ../libexec/tilo/tilo-launcher %{buildroot}%{_bindir}/tilo-launcher
@@ -255,8 +253,6 @@ install -Dpm 0755 apps/bin/tilo-model-manager %{buildroot}%{_libexecdir}/tilo/ti
 ln -s ../libexec/tilo/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manager
 install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_libexecdir}/tilo/tilo-model-gateway
 ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
-install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_libexecdir}/tilo/tilo-model-http
-ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-package-service %{buildroot}%{_libexecdir}/tilo-package-service
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
@@ -283,7 +279,7 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
 # Files readiness and normal same-person enrollment are first-party tools.
 # Keep automatic ELF requirements enabled for these host executables; only the
 # separately signed private app/runtime stores are excluded above.
-for program in fs tilo-server-admin; do
+for program in fs; do
     test -x %{buildroot}%{_bindir}/$program
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
@@ -359,8 +355,6 @@ done
 %{_bindir}/tilo-runtime
 %{_bindir}/tilolang-process
 %{_bindir}/fs
-%{_bindir}/tilo-server-admin
-%{_libexecdir}/tilo/tilo-server-admin
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_libexecdir}/tilo/tilo-launcher
@@ -393,8 +387,6 @@ done
 %{_libexecdir}/tilo/tilo-model-manager
 %{_bindir}/tilo-model-gateway
 %{_libexecdir}/tilo/tilo-model-gateway
-%{_bindir}/tilo-model-http
-%{_libexecdir}/tilo/tilo-model-http
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-package-service
 %{_libexecdir}/tilo-ush

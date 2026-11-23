@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod window;
+
 /// Where a page of a workspace's app is: `/w/<workspace>/<app>`, and
 /// `/w/<workspace>/<app>/<target>` for one thing it shows (a note).
 /// `/w/<workspace>` is the workspace itself: the apps a member opens there.
@@ -186,6 +188,11 @@ pub enum PageAsk {
         id: u32,
         target: Option<String>,
         action: PageAction,
+        /// The call its person signed for it, naming the page's app: whose the change the act
+        /// makes is, which the serving device checks and every holder of the change checks
+        /// again. `None` for an act signed by no key of theirs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
     },
 }
 
@@ -203,6 +210,16 @@ pub enum PageAction {
     Select {
         anchor: u32,
         focus: u32,
+    },
+    /// One step up of a slider or a stepper, as its arrow key takes it.
+    Increment,
+    /// One step down.
+    Decrement,
+    /// The page's window is `width` by `height` CSS pixels: the view lays itself out at that
+    /// size, as a window does at the size it is given, and the page shows it there.
+    Resize {
+        width: u32,
+        height: u32,
     },
 }
 
@@ -356,6 +373,7 @@ mod tests {
                 id: 7,
                 target: Some("notes.block-text:b1".into()),
                 action: PageAction::Value("Milk".into()),
+                signed: None,
             }
         );
         let ask: PageAsk =

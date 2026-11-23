@@ -2800,6 +2800,9 @@ mod motion_source_tests;
 #[cfg(all(test, feature = "native"))]
 mod held_input_tests;
 
+#[cfg(all(test, feature = "native", unix))]
+mod press_after_input_tests;
+
 #[cfg(test)]
 mod manual_composition_tests;
 

@@ -3968,10 +3968,6 @@ include!("app_events.rs");
 include!("app_scroll_input.rs");
 
 impl Widget for PdfApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.picture();
-    }
-
     ui::provides!(
         dyn ui::widget::Findable,
         dyn ui::widget::controls::ActionControls

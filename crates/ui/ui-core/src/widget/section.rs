@@ -521,28 +521,6 @@ struct CountPill {
 }
 
 impl Widget for CountPill {
-    /// A count in its quiet pill.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, TextLook, rgba8};
-        let theme = cx.theme();
-        let m = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| HeaderMetrics::new(theme));
-        cx.element("span");
-        let raised = theme.tokens.colors.surfaces.raised;
-        cx.ground(Ground {
-            fill: Some(rgba8(raised)),
-            edge: Some(rgba8(crate::surface::edge_on(raised))),
-            radius: self.rect.height() / 2.0,
-            inset: [0.0; 2],
-        });
-        let mut look = TextLook::new(self.label.clone(), &m.count, Some(theme.text_dim))
-            .with_max_lines(Some(1));
-        look.align = "center";
-        cx.text(look);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -627,13 +605,6 @@ impl Chevron {
 }
 
 impl Widget for Chevron {
-    /// Which way the section opens: its paint, with nothing to read of its own.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.attr("aria-hidden", "true");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -747,12 +718,6 @@ impl HeaderRow {
 }
 
 impl Widget for HeaderRow {
-    /// A heading and what stands beside it: its title's own heading, its count and its action.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("header");
-        cx.children();
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
@@ -1313,12 +1278,6 @@ impl Section {
 }
 
 impl Widget for Section {
-    /// A section of a page: its header, its rows and its footer.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        cx.children();
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
@@ -1814,48 +1773,6 @@ impl StatusLine {
 }
 
 impl Widget for StatusLine {
-    /// A quiet line of status: what it says, in its own style.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let theme = cx.theme();
-        let style = self
-            .style
-            .clone()
-            .unwrap_or_else(|| theme.text(crate::TextRole::Caption));
-        cx.element("p");
-        let line = f64::from(style.line_height_px());
-        let dot = f64::from(theme.tokens.spacing.s2);
-        let gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let (x0, y0) = (self.rect.x0, self.rect.y0);
-        let mark = cx.part(
-            "dot",
-            "Dot",
-            Rect::new(
-                x0,
-                y0 + (line - dot) / 2.0,
-                x0 + dot,
-                y0 + (line + dot) / 2.0,
-            ),
-        );
-        mark.ground = Some(crate::composition::Ground {
-            fill: Some(crate::composition::rgba8(self.status().colour(theme))),
-            edge: None,
-            radius: dot / 2.0,
-            inset: [0.0; 2],
-        });
-        mark.attrs.push(("aria-hidden", "true".into()));
-        let look = crate::composition::TextLook::new(
-            self.text.clone(),
-            &style,
-            Some(theme.tokens.colors.text_dim),
-        );
-        cx.words(
-            "text",
-            "span",
-            Rect::new(x0 + dot + gap, y0, self.rect.x1, self.rect.y1),
-            look,
-        );
-    }
-
     crate::described!();
 
     fn build_layout(
@@ -2089,82 +2006,6 @@ impl ObjectHeader {
 }
 
 impl Widget for ObjectHeader {
-    /// The thing's name over what it is, in one heading.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let theme = cx.theme();
-        cx.element("header");
-        let m = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| ObjectMetrics::new(theme));
-        let width = self.rect.width();
-        let (title_h, caption_h) =
-            crate::text_render::with_layout_renderer(theme, |text| self.block(text, &m, width));
-        let x0 = self.rect.x0 + self.text_x(&m);
-        let y0 = self.rect.y0 + (self.rect.height() - (title_h + caption_h)).max(0.0) / 2.0;
-        let lead = Rect::new(
-            self.rect.x0,
-            self.rect.center().y - m.lead / 2.0,
-            self.rect.x0 + m.lead,
-            self.rect.center().y + m.lead / 2.0,
-        );
-        match &self.lead {
-            Some(ObjectLead::Avatar {
-                name,
-                identity,
-                image,
-                square,
-            }) => {
-                let face = AvatarFace::new(name, identity).image(image.as_ref());
-                let face = if *square { face.square() } else { face };
-                let part = cx.part("lead", "Avatar", lead);
-                part.tag = Some("span");
-                face.compose(theme, lead, part);
-            }
-            Some(ObjectLead::Icon(icon)) => {
-                let side = f64::from(theme.tokens.metrics.icon_lg);
-                cx.icon(
-                    "lead",
-                    Rect::from_center_size(lead.center(), (side, side)),
-                    *icon,
-                    theme.text_dim,
-                );
-            }
-            None => {}
-        }
-        let look = crate::composition::TextLook::new(
-            self.title.clone(),
-            &m.title,
-            Some(theme.text_primary),
-        )
-        .with_max_lines(Some(1));
-        cx.words(
-            "title",
-            "h2",
-            crate::kurbo::Rect::new(x0, y0, self.rect.x1, y0 + title_h),
-            look,
-        );
-        if let Some(caption) = &self.caption {
-            let look = crate::composition::TextLook::new(
-                caption.clone(),
-                &m.caption,
-                Some(theme.text_dim),
-            )
-            .with_max_lines(Some(1));
-            cx.words(
-                "caption",
-                "p",
-                crate::kurbo::Rect::new(
-                    x0,
-                    y0 + title_h + m.tight,
-                    self.rect.x1,
-                    y0 + title_h + caption_h,
-                ),
-                look,
-            );
-        }
-    }
-
     crate::described!();
 
     fn build_layout(

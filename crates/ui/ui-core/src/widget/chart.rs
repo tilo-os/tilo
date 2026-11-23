@@ -1078,23 +1078,6 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
-    /// Its line: a picture, named by what it traces, under what it reads at the sample the
-    /// pointer is on as the page's own elements.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        let theme = cx.theme();
-        let shown = (
-            self.shown_inspection(),
-            cx.semantics()
-                .map(|node| serde_json::to_string(node).unwrap_or_default())
-                .unwrap_or_default(),
-        );
-        cx.node().painted_of(&shown);
-        if let Some(readout) = self.readout(theme) {
-            readout.compose(cx.node(), theme);
-        }
-    }
-
     crate::described!();
 
     fn build_layout(
@@ -1131,9 +1114,7 @@ impl Widget for Sparkline {
             self.painted_colour(theme),
             &self.style,
         );
-        if !crate::widget::chart_readout::readouts_left_out()
-            && let Some(readout) = self.readout(theme)
-        {
+        if let Some(readout) = self.readout(theme) {
             readout.paint(scene, transform, tr, theme);
         }
     }

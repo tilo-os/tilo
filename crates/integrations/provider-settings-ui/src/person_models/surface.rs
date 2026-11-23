@@ -95,12 +95,6 @@ impl<R: Resource> ModelsSurface<R> {
 impl<R: Resource> Widget for ModelsSurface<R> {
     ui::forward_to_composed!(composed);
 
-    /// The page it composed, where its own layout stands it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn Any> {
         Some(self)
     }

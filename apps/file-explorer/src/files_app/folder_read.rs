@@ -380,6 +380,7 @@ impl super::FilesState {
                     // The entry was just made: what is typed is its name, and a reader is told so.
                     self.rename_input
                         .set_accessible_name(t("files-tree-new-file-name"));
+                    self.naming_field_name = Some(t("files-tree-new-file-name"));
                 }
             }
         }

@@ -3,7 +3,6 @@
 //! The app's environment is meant to be a closed set — a list of variables the launcher
 //! puts there, beside the binds that make each mean something.
 
-use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::run::{LaunchOptions, launch_with_captured};
@@ -263,33 +262,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The shared objects `executables` load, which must include `libgstreamer`.
-fn native_closure(executables: &[&std::path::Path]) -> Vec<PathBuf> {
-    let mut libraries = std::collections::BTreeSet::new();
-    for executable in executables {
-        let report = std::process::Command::new("ldd")
-            .arg(executable)
-            .output_locked()
-            .unwrap();
-        assert!(report.status.success());
-        let report = String::from_utf8(report.stdout).unwrap();
-        assert!(!report.contains("not found"), "{report}");
-        libraries.extend(
-            report
-                .split_whitespace()
-                .filter(|word| word.starts_with('/') && !word.ends_with(':'))
-                .map(PathBuf::from),
-        );
-    }
-    assert!(
-        libraries.iter().any(|path| path
-            .file_name()
-            .is_some_and(|name| name == "libgstreamer-1.0.so.0")),
-        "{libraries:?}"
-    );
-    libraries.into_iter().collect()
-}
-
 /// The real native library relocates its lookup beside the signed runtime.
 #[test]
 fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
@@ -320,7 +292,13 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
     let mut env = ScopedEnv::new();
     env.set("LC_ALL", "C");
     env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
-    let libraries = native_closure(&[inspect, launch]);
+    let libraries = crate::support::native_closure(&[inspect, launch]);
+    assert!(
+        libraries.iter().any(|path| path
+            .file_name()
+            .is_some_and(|name| name == "libgstreamer-1.0.so.0")),
+        "{libraries:?}"
+    );
     let runtime = root.path().join("runtime");
     let identity = runtime_bundle::Identity::generate();
     let key = root.path().join("fixture-identity.json");

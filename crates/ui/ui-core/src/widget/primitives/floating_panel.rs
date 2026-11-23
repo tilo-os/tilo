@@ -450,12 +450,6 @@ impl FloatingPanel {
 }
 
 impl Widget for FloatingPanel {
-    /// Its head, body and foot, over their own floating ground.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

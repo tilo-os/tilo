@@ -3745,15 +3745,6 @@ fn chip_hover_tint(ground: vello::peniko::Color, alpha: u8) -> vello::peniko::Co
 }
 
 impl Widget for TabBar {
-    /// A tab bar as a page shows it: its picture, and each tab a real tab over its pill.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        // Its pills as painted — each place's icon, its lift and the line under the one in
-        // front — with a real tab over each, named and chosen as a reader hears it.
-        cx.element("div");
-        cx.picture();
-        cx.targets();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

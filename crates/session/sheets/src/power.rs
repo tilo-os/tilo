@@ -500,59 +500,6 @@ impl ui::widget::controls::ActionControls for PowerMenu {
 impl Widget for PowerMenu {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    /// The menu it offers, as a page shows it: a caption, then a real button per choice with its
-    /// name and what it does, where the menu stands each.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("section");
-        if !self.menu.is_open() {
-            return;
-        }
-        let theme = cx.theme().clone();
-        let colors = &theme.tokens.colors;
-        if let Some(rect) = self.menu.item_rect(0) {
-            let title = cx.part("title", "PowerMenuTitle", rect);
-            title.tag = Some("h2");
-            title.own = Some(ui::composition::Own::Text(
-                ui::composition::TextLook::new(
-                    t("power-menu-title"),
-                    &theme.text(ui::TextRole::Caption),
-                    Some(colors.text_dim),
-                )
-                .with_max_lines(Some(1)),
-            ));
-        }
-        let body_style = theme.text(ui::TextRole::Body);
-        for (index, effect) in self.shown.iter().enumerate() {
-            let Some(rect) = self.menu.item_rect(index.saturating_add(1)) else {
-                continue;
-            };
-            let part = cx.part(&format!("row:{index}"), "PowerMenuRow", rect);
-            part.tag = Some("button");
-            part.focusable = true;
-            let label = effect.label();
-            part.semantics = Some(
-                AccessNode::new(Role::Button)
-                    .with_name(label.clone())
-                    .with_description(self.detail(*effect))
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            part.own = Some(ui::composition::Own::Face(ui::composition::Face {
-                icon: None,
-                label: Some(
-                    ui::composition::TextLook::new(label, &body_style, Some(colors.text_primary))
-                        .with_max_lines(Some(1)),
-                ),
-                detail: None,
-                trailing: None,
-                fill: Some(ui::composition::rgba8(colors.surfaces.overlay)),
-                edge: None,
-                radius: f64::from(theme.tokens.radii.item),
-                pad: f64::from(theme.tokens.spacing.s3),
-                gap: 0.0,
-                spread: false,
-            }));
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

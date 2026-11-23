@@ -4,10 +4,11 @@
 //!
 //! Claude Code runs printing and reading one JSON object a line (its `stream-json` formats), so
 //! a message reaches it on its input while it works, and what it says arrives as it says it.
-//! Its model is whatever answers at `ANTHROPIC_BASE_URL` in Anthropic's Messages protocol: the
-//! run's own model endpoint, answered by the workspace's model ([`super::endpoint`]). The token
-//! beside it is a word, not a credential: the program refuses to start without one, and the
-//! endpoint is reached only through its run's own secret path.
+//! Its model is whatever answers at `ANTHROPIC_BASE_URL` in Anthropic's Messages protocol: this
+//! computer's one model endpoint, answered by the workspace's model
+//! ([`crate::agents::endpoint`]). The token beside it is a word, not a credential: the program
+//! refuses to start without one, and the endpoint is reached only through its run's own secret
+//! path.
 //!
 //! It asks nobody before it edits or runs something in its working copy: nobody sits at its
 //! terminal, and its person let it work there. What it does in Tilo goes through Tilo's MCP
@@ -30,14 +31,7 @@ pub struct Start {
     pub instruction: Option<String>,
 }
 
-/// Where a run's harness reaches its host.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Endpoints {
-    /// The base address its model answers at.
-    pub model: String,
-    /// The address of Tilo's MCP server for its turn.
-    pub tilo: String,
-}
+pub use crate::agents::endpoint::Endpoints;
 
 /// A harness's program: what is started, and what it is handed in its environment.
 #[derive(Clone, Debug, PartialEq, Eq)]

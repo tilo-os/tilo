@@ -12,7 +12,7 @@
 #
 # A paired server also waits its turn among its person's servers: the server
 # daemon restarts it only while it holds the update lease of the person's admin
-# workspace, after it handed its work to the other holders (`tilo-server-admin
+# workspace, after it handed its work to the other holders (`tilo-server
 # rollout prepare`), and lets the lease go once this machine runs the update
 # and passed its health verdict (`rollout booted`). A generation the boot loader
 # took back keeps the lease, so the person's other servers never start it.
@@ -24,7 +24,7 @@ BOOTC="${TILO_SERVER_UPDATE_BOOTC:-/usr/bin/bootc}"
 FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
 WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
-ADMIN="${TILO_SERVER_UPDATE_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
+SERVER_CLI="${TILO_SERVER_UPDATE_CLI:-/usr/libexec/tilo/tilo-server}"
 CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
 ROLLBACK="${TILO_SERVER_UPDATE_ROLLBACK:-/usr/libexec/tilo/tilo-rollback}"
 ROLLBACK_COMMON="${TILO_SERVER_UPDATE_ROLLBACK_COMMON:-/usr/libexec/tilo-rollback-common}"
@@ -58,7 +58,7 @@ fi
 # lease is done, and the next server may take its turn.
 if [ "$paired" = yes ]; then
   booted="$(field booted-digest)"
-  [ -z "$booted" ] || log "$("$ADMIN" rollout booted "$booted")"
+  [ -z "$booted" ] || log "$("$SERVER_CLI" rollout booted "$booted")"
 fi
 
 # Its rollback floor may move past older generations now, which takes an
@@ -75,7 +75,7 @@ if [ "$paired" = yes ] && [ -n "${booted:-}" ] && [ -x "$ROLLBACK" ] && [ -r "$R
   if [ -n "$dev" ] && [ -n "$generation" ]; then
     request="$(mktemp)"
     if "$ROLLBACK" floor-request --device "$dev" --out "$request" >/dev/null 2>&1; then
-      said="$("$ADMIN" rollout floor "$generation" "$booted" "$("$UPDATES" current)" \
+      said="$("$SERVER_CLI" rollout floor "$generation" "$booted" "$("$UPDATES" current)" \
         --authority "$FLOOR_AUTHORITY" --request "$request" --approvals "$APPROVALS")"
       code=$?
       log "$said"
@@ -95,7 +95,7 @@ fi
 "$WINDOW" || exit 0
 
 if [ "$paired" = yes ]; then
-  said="$("$ADMIN" rollout prepare "$(field staged-digest)")"
+  said="$("$SERVER_CLI" rollout prepare "$(field staged-digest)")"
   code=$?
   log "$said"
   [ "$code" -eq 0 ] || exit 0

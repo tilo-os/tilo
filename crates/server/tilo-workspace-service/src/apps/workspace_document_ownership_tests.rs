@@ -30,6 +30,7 @@ mod workspace_document_ownership {
                 continuation_instance: Some(91),
                 launch_ticket: None,
                 windowless: false,
+                opened_for: None,
             },
         )
         .unwrap();
@@ -144,7 +145,7 @@ mod workspace_document_ownership {
                     channel.route_access = RouteAccess::ReadOnly;
                     channel
                 };
-                let tasks = CrdtRoute::record("so.tilo.lang.tasks", &cluster, "");
+                let tasks = CrdtRoute::record("so.tilo.tasks", &cluster, "");
                 let channel = read(&tasks);
                 let context = channel
                     .document_read_context()
@@ -154,7 +155,7 @@ mod workspace_document_ownership {
                     .err();
                 assert!(refused.is_some(), "the launch keeps no record of Tasks");
                 let elsewhere = CrdtRoute::record(
-                    "so.tilo.lang.tasks",
+                    "so.tilo.tasks",
                     tilo_desktop_model::WorkspaceId::new().to_string(),
                     "",
                 );

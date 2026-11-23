@@ -86,6 +86,19 @@ tilo_test_env::scenario! {
         );
         let clock = "view look(m: Mail) {\n    text(\"{now}\")\n}\n";
         assert_eq!(codes(&with_mail(clock)), ["E049"]);
+        // A moment's day in a named zone is the same everywhere: no clock and no host zone, so a
+        // view draws it and an action reads it without declaring `uses time`.
+        let zoned = "view look(m: Mail) {\n    text(\"{m.at.day_in(\\\"Europe/Berlin\\\")}\")\n}\n";
+        assert_eq!(codes(&with_mail(zoned)), Vec::<String>::new());
+        let in_action =
+            "action stamp(m: Mail) {\n    m.day = m.at.day_in(\"Europe/Berlin\")\n}\n";
+        assert_eq!(codes(&with_mail(in_action)), Vec::<String>::new());
+        let wall = "action stamp(m: Mail) {\n    m.at = Time.from_wall(\"Europe/Berlin\", \"2026-11-24T09:00\") ?? now\n}\n";
+        // `from_wall` names the zone its text is read in, so the read is no effect either.
+        assert!(
+            codes(&with_mail(wall)).iter().all(|c| c == "E121"),
+            "`?? now` still reads the clock"
+        );
     }
 
     phase an_effect_word_is_one_of_web_random_and_time;

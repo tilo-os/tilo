@@ -7995,14 +7995,6 @@ impl BlockStackLeaf {
 }
 
 impl Widget for BlockStackLeaf {
-    /// The leaf is the editor's stack, so a page shows the editor's document: the same blocks
-    /// the editor composes itself, wherever this leaf is the root of the page's tree.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        if let Some(editor) = self.editor() {
-            editor.composed_html(cx);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -8598,10 +8590,6 @@ impl Widget for BlockEditor {
         dyn ui::widget::find_bar::Findable,
         dyn ui::widget::TextFits
     );
-
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        self.composed_html(cx);
-    }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -11639,9 +11627,6 @@ pub use callout::CalloutKind;
 
 #[path = "block_editor_list_marker.rs"]
 mod list_marker;
-
-#[path = "block_editor_composition.rs"]
-mod composition;
 
 #[cfg(test)]
 #[path = "block_editor_list_callout_tests.rs"]

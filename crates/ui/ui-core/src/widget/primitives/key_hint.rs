@@ -175,37 +175,6 @@ impl KeyHints {
 }
 
 impl crate::widget::Widget for KeyHints {
-    /// The keys to press and what they do, one hint after another.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        let theme = cx.theme();
-        cx.element("div");
-        let style = theme.text(crate::TextRole::Caption);
-        let line = f64::from(style.line_height_px());
-        let count = self.hints.len().max(1);
-        let width = self.rect.width() / crate::num::f64_of_usize(count);
-        for (index, hint) in self.hints.iter().enumerate() {
-            let x0 = self.rect.x0 + width * crate::num::f64_of_usize(index);
-            let mut keys = hint.keys.join(" ");
-            if !hint.label.is_empty() {
-                if !keys.is_empty() {
-                    keys.push_str("  ");
-                }
-                keys.push_str(&hint.label);
-            }
-            if keys.is_empty() {
-                continue;
-            }
-            let look = TextLook::new(keys, &style, Some(theme.text_dim)).with_max_lines(Some(1));
-            cx.words(
-                &format!("hint:{index}"),
-                "kbd",
-                Rect::new(x0, self.rect.y0, x0 + width, self.rect.y0 + line),
-                look,
-            );
-        }
-    }
-
     crate::described!();
 
     fn build_layout(

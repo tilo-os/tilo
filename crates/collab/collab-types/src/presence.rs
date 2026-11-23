@@ -20,7 +20,7 @@ pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,
-    identity_rgb, user_color,
+    identity_color, identity_rgb, member_color, user_color,
 };
 pub use key::{
     AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,

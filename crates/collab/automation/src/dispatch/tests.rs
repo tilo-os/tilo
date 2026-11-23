@@ -92,6 +92,42 @@ fn as_shortcut(shortcut: &Shortcut) -> [Armed<'_>; 1] {
     }]
 }
 
+/// A trigger saved before its app was renamed still fires: the change names the kind now, and
+/// the saved kind is read through the package's earlier id.
+#[test]
+fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
+    tilo_action_policy::earlier::register("so.tilo.tasks", ["so.tilo.lang.tasks"]);
+    let saved = TriggerSpec::ResourceChanged {
+        kind: "tl.so.tilo.lang.tasks.Task".into(),
+        actions: vec![],
+        fields: vec![],
+        by: ActorFilter::Anyone,
+    };
+    let shortcut = program(vec![saved]);
+    let mut event = post(person("bob"), &"b".repeat(64), None);
+    event.kind = "tl.so.tilo.tasks.Task".into();
+    let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+    assert_eq!(
+        out.firings.len(),
+        1,
+        "the trigger saved under the earlier kind fired: {:#?}",
+        out
+    );
+    // A kind that only starts like an earlier id is another app's: it fires nothing.
+    let other = TriggerSpec::ResourceChanged {
+        kind: "tl.so.tilo.lang.tasksx.Task".into(),
+        actions: vec![],
+        fields: vec![],
+        by: ActorFilter::Anyone,
+    };
+    let shortcut = program(vec![other]);
+    let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+    assert!(
+        out.firings.is_empty(),
+        "another app's kind stays as written"
+    );
+}
+
 tilo_test_env::scenario! {
     fn a_firing_carries_the_event_that_fired_it;
 

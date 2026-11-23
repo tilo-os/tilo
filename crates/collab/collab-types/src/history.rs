@@ -31,6 +31,21 @@ impl HistoryEntryId {
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
+
+    /// The id as the wire and a document key spell it: lower-case hex
+    /// ([`tilo_actions::remote::workspace_activity::entry_hex`]).
+    #[must_use]
+    pub fn hex(&self) -> String {
+        tilo_actions::remote::workspace_activity::entry_hex(&self.0)
+    }
+
+    /// The id [`Self::hex`] spells, in either case. `None` on anything that
+    /// is not exactly 32 hex characters, so a corrupted document key is
+    /// skipped rather than resolving to a wrong change.
+    #[must_use]
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        tilo_actions::remote::workspace_activity::entry_id(hex).map(Self)
+    }
 }
 
 /// A delegated agent on a workspace's roster, as the session verified it: its
@@ -294,6 +309,31 @@ mod tests {
             std::time::SystemTime::UNIX_EPOCH,
             seq,
         )
+    }
+
+    tilo_test_env::scenario! {
+        /// A history id reads as the lower-case hex a document key and the wire spell it, and
+        /// only exactly that many hex digits, in either case, read back as an id.
+        fn a_history_id_round_trips_through_its_hex;
+
+        phase it_spells_lower_case_and_reads_either_case;
+        {
+            let mut bytes = [0u8; 16];
+            bytes[0] = 0xab;
+            bytes[15] = 0xcd;
+            let id = HistoryEntryId(bytes);
+            assert_eq!(id.hex(), format!("ab{}cd", "0".repeat(28)));
+            assert_eq!(HistoryEntryId::from_hex(&id.hex()), Some(id));
+            assert_eq!(HistoryEntryId::from_hex(&id.hex().to_ascii_uppercase()), Some(id));
+        }
+
+        phase junk_reads_as_no_id;
+        {
+            assert_eq!(HistoryEntryId::from_hex("nope"), None);
+            assert_eq!(HistoryEntryId::from_hex(&"z".repeat(32)), None);
+            assert_eq!(HistoryEntryId::from_hex(&"a".repeat(31)), None);
+            assert_eq!(HistoryEntryId::from_hex(&"a".repeat(34)), None);
+        }
     }
 
     tilo_test_env::scenario! {

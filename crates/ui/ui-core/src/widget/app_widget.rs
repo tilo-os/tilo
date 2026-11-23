@@ -907,10 +907,6 @@ mod component_adapter {
     }
 
     impl Widget for BoundAppWidget {
-        /// The component's root, as its content.
-        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            cx.children();
-        }
         crate::provides!(
             dyn crate::AppWidget,
             dyn crate::widget::FullscreenProvider,

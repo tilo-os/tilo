@@ -738,12 +738,6 @@ impl FieldBody {
 }
 
 impl Widget for Form {
-    /// A form as a page's own, its fields composed inside it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("form");
-        cx.children();
-    }
-
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -849,12 +843,6 @@ impl Widget for Form {
     }
 }
 impl Widget for FormSection {
-    /// A section of a form, its fields composed inside it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        cx.children();
-    }
-
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -1049,12 +1037,6 @@ impl Widget for FormSection {
     }
 }
 impl Widget for Field {
-    /// One field: its label, its control and its help, composed as they stand.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -1289,11 +1271,6 @@ impl Field {
     }
 }
 impl Widget for FieldBody {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
         (child_index == 0)
             .then(|| self.names_content.clone())

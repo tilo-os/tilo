@@ -557,6 +557,9 @@ impl SurfaceWindow {
                 role: target.role.clone(),
                 identity: target.identity.clone(),
                 action,
+                // A surface app's input reaches it on this same connection, so what came
+                // before the press is already in order.
+                after_input: None,
             }))
             .map_err(|_| format!("{} is not running", self.name))
     }

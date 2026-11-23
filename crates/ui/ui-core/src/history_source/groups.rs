@@ -31,7 +31,7 @@ use automerge::{AutoCommit, ObjType, ReadDoc, Value};
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{GroupNameRequest, NamedRange, from_hex16, hex16};
+use crate::widget::history_group::{GroupNameRequest, NamedRange};
 pub use collaboration::history_source::{GROUPS_KEY, is_group_marker};
 use tilo_automerge::read::int_at;
 
@@ -65,7 +65,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let Some(hex) = key.strip_prefix(GROUPS_KEY) else {
             continue;
         };
-        let Some(start) = from_hex16(hex) else {
+        let Some(start) = HistoryEntryId::from_hex(hex) else {
             continue;
         };
         let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, &key) else {
@@ -74,7 +74,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let Some(label) = doc.str_at(&rec, "label") else {
             continue;
         };
-        let end = doc.str_at(&rec, "end").and_then(|s| from_hex16(&s));
+        let end = doc.str_at(&rec, "end").and_then(|s| HistoryEntryId::from_hex(&s));
         let by = doc.str_at(&rec, "by");
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
         // so the conversion never loses a sign; `checked_add` only guards
@@ -126,7 +126,7 @@ pub fn name_range_by(
     label: &str,
     by: &str,
 ) -> String {
-    let key = format!("{GROUPS_KEY}{}", hex16(start));
+    let key = format!("{GROUPS_KEY}{}", HistoryEntryId::hex(start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
     // Replacing the whole record rather than patching fields keeps a rename and
@@ -137,7 +137,7 @@ pub fn name_range_by(
     };
     let _ = doc.put(&rec, "label", label);
     if let Some(e) = end {
-        let _ = doc.put(&rec, "end", hex16(e));
+        let _ = doc.put(&rec, "end", HistoryEntryId::hex(e));
     }
     let _ = doc.put(&rec, "by", by);
     let _ = doc.put(&rec, "at", at);
@@ -166,7 +166,7 @@ pub fn close_range(doc: &mut AutoCommit, document_id: &str, end: &HistoryEntryId
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return false;
     };
-    doc.put(&rec, "end", hex16(end)).is_ok()
+    doc.put(&rec, "end", HistoryEntryId::hex(end)).is_ok()
 }
 
 /// Remove a name. The changes it covered stay; only the band goes.
@@ -309,11 +309,11 @@ fn named_range_resource(
     doc: &AutoCommit,
     document_id: &str,
 ) -> Option<(HistoryEntryId, Option<HistoryEntryId>)> {
-    let start = document_id.strip_prefix(GROUPS_KEY).and_then(from_hex16)?;
+    let start = document_id.strip_prefix(GROUPS_KEY).and_then(HistoryEntryId::from_hex)?;
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return None;
     };
-    let end = doc.str_at(&rec, "end").and_then(|value| from_hex16(&value));
+    let end = doc.str_at(&rec, "end").and_then(|value| HistoryEntryId::from_hex(&value));
     Some((start, end))
 }
 

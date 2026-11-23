@@ -26,7 +26,7 @@ use tilo_server_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RES
 use crate::engine::ServiceAnswer;
 
 /// The daemon's actions, as the desktop asks them: what changes a workspace, founds, joins or
-/// leaves one, and what its governance and the host answer.
+/// leaves one, and what its key access, membership and the host answer.
 pub trait ShellAsks: Send + Sync {
     /// Invoke `action` of the account resource `resource` (`account/workspaces#create` and the
     /// rest) with `arguments`, answered with its output.
@@ -38,7 +38,7 @@ pub trait ShellAsks: Send + Sync {
     ) -> ServiceAnswer;
 
     /// Invoke `request` as the person on this device, answered with its output once it settled:
-    /// a workspace's governance action, or one of the host's own operations.
+    /// a workspace's key access and membership action, or one of the host's own operations.
     fn invoke(&self, request: tilo_actions::remote::InvokeRequest) -> ServiceAnswer;
 }
 
@@ -268,10 +268,10 @@ impl WorkspaceView {
     }
 
     /// # Errors
-    /// `workspace` names no workspace this device holds, or its governance names no owner.
+    /// `workspace` names no workspace this device holds, or its membership names no owner.
     pub fn owner_of(&self, workspace: &str) -> Result<String, String> {
         self.with_named(workspace, |reading| reading.owner.clone())?
-            .ok_or_else(|| "the workspace's governance names no owner".to_owned())
+            .ok_or_else(|| "the workspace's membership names no owner".to_owned())
     }
 
     #[must_use]
@@ -371,7 +371,7 @@ impl WorkspaceView {
         founded
     }
 
-    /// Ask `workspace`'s governance action `action` with `arguments`, as the person on this
+    /// Ask `workspace`'s key access and membership action `action` with `arguments`, as the person on this
     /// device: the daemon answers it where it keeps the workspace, and forwards it to the device
     /// keeping it otherwise.
     #[must_use]

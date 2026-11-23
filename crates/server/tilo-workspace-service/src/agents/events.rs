@@ -207,28 +207,6 @@ struct Inner {
     running: Mutex<BTreeMap<String, BTreeMap<String, Running>>>,
 }
 
-/// The resource the event `event` is, as what is made from it names it: the
-/// ask its instruction makes of its person's assistant is made from it, so
-/// what reads the ask knows which event asked.
-#[must_use]
-pub fn resource_of(event: &str) -> crate::asks::ResourceRef {
-    crate::asks::ResourceRef {
-        doc: workspace_events::RESOURCE.to_owned(),
-        item: Some(event.to_owned()),
-        ty: workspace_events::KIND.to_owned(),
-    }
-}
-
-/// The event `resource` is ([`resource_of`]), where it is one.
-#[must_use]
-pub fn event_named(resource: &crate::asks::ResourceRef) -> Option<&str> {
-    if resource.doc == workspace_events::RESOURCE {
-        resource.item.as_deref()
-    } else {
-        None
-    }
-}
-
 /// The events of this server's workspaces: every one it keeps runs for as
 /// long as this, or a clone of it, is held.
 #[derive(Clone)]
@@ -239,13 +217,16 @@ pub struct WorkspaceEvents {
 impl WorkspaceEvents {
     /// Run every event kept in its workspace's store, and keep new ones
     /// there. Their steps are answered by this server
-    /// ([`super::assistant`]): where it `asks`, as a server that keeps its
-    /// agents working does, an instruction an event hands over asks its
-    /// author's assistant. `runner` runs each event's program. Called on the runtime the events
-    /// work on.
+    /// ([`super::assistant`]): with `actions`, the device's dispatch,
+    /// an instruction an event hands over starts a turn of its author's
+    /// assistant. `runner` runs each event's program. Called on the runtime the events work on.
     #[must_use]
-    pub fn start(workspaces: Workspaces, asks: bool, runner: Arc<dyn Runner>) -> Self {
-        Self::start_behind(workspaces, asks, None, runner)
+    pub fn start(
+        workspaces: Workspaces,
+        actions: Option<crate::agents::EngineActions>,
+        runner: Arc<dyn Runner>,
+    ) -> Self {
+        Self::start_behind(workspaces, actions, None, runner)
     }
 
     /// [`Self::start`], with `before` put in front of what answers each
@@ -254,7 +235,7 @@ impl WorkspaceEvents {
     #[must_use]
     pub fn start_behind(
         workspaces: Workspaces,
-        asks: bool,
+        actions: Option<crate::agents::EngineActions>,
         before: Option<super::initiative::Before>,
         runner: Arc<dyn Runner>,
     ) -> Self {
@@ -263,7 +244,7 @@ impl WorkspaceEvents {
             let steps = assistant::host_steps(workspaces.clone());
             Arc::new(move |_: &Definition| Arc::clone(&steps))
         };
-        let starting_turns = || -> StepsFor {
+        let starting_turns = |actions: crate::agents::EngineActions| -> StepsFor {
             let workspaces = workspaces.clone();
             Arc::new(move |event: &Definition| {
                 let kind = match event.tells_as() {
@@ -273,6 +254,7 @@ impl WorkspaceEvents {
                 };
                 assistant::steps_starting_turns(
                     workspaces.clone(),
+                    actions.clone(),
                     Starter {
                         name: event.name.clone(),
                         kind,
@@ -280,7 +262,7 @@ impl WorkspaceEvents {
                 )
             })
         };
-        let steps = if asks { starting_turns() } else { plain() };
+        let steps = actions.map_or_else(plain, starting_turns);
         let steps: StepsFor = match before {
             Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
             None => steps,
@@ -372,19 +354,17 @@ impl WorkspaceEvents {
         Ok(Running { stored, kept, task })
     }
 
-    /// What `person` (their root, hex) calls their event `event` of
-    /// `workspace`, and how what it starts is told; `None` for an event this
-    /// server does not keep for them.
+    /// Whether an event of `workspace` this server keeps has the id `event`.
+    /// For the server's own code, which carries out turns with no caller to
+    /// weigh: an action is answered as the workspace's policy decides it
+    /// instead.
     #[must_use]
-    pub fn told_as(&self, workspace: &str, event: &str, person: &str) -> Option<(String, Kind)> {
+    pub fn keeps(&self, workspace: &str, event: &str) -> bool {
         self.inner
             .running
             .lock_recover()
-            .get(workspace)?
-            .get(event)
-            .map(|running| &running.stored)
-            .filter(|stored| stored.person == person)
-            .map(|stored| (stored.definition.name.clone(), stored.definition.tells_as()))
+            .get(workspace)
+            .is_some_and(|theirs| theirs.contains_key(event))
     }
 
     /// Answer `message` for `workspace_id`: the actions' rows, or one

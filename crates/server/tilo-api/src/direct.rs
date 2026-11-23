@@ -591,27 +591,24 @@ mod tests {
     }
 
     impl crate::session::Here for Desktop {
-        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+        fn workspaces(&self, _: &tilo_user_identity::DeviceCert) -> Vec<crate::session::Workspace> {
             vec![crate::session::held(WORKSPACE.into(), "Release".into())]
         }
 
-        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
+        fn enter(
+            &self,
+            workspace: &str,
+            _: &crate::grant_key::GrantKey,
+        ) -> Result<crate::session::Reached, String> {
             if workspace != WORKSPACE {
                 return Err(format!("no workspace {workspace} here"));
             }
             self.entered.lock().unwrap().push(workspace.to_owned());
             let provider: crate::session::Provider = std::sync::Arc::new(self.actions.clone());
-            let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
-                std::sync::Arc::clone(&provider),
-                tilo_actions::remote::Caller::local_person("ada"),
-            );
             Ok(crate::session::Reached {
                 provider,
                 person: "ada".into(),
-                tasks: std::sync::Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
-                    Some("ada"),
-                    std::sync::Arc::new(catalogue),
-                )),
+                tasks: None,
             })
         }
     }

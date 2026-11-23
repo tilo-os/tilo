@@ -7,7 +7,7 @@ use base64::Engine as _;
 use tilolang_app::app::TlApp;
 use ui::a11y::{Action, Role};
 use ui::composition::page::{Page, Patch};
-use ui::composition::{Composed, Composition, Own};
+use ui::composition::{Composed, Composition};
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
@@ -129,23 +129,26 @@ fn rows_under_a_row_stand_below_it(composition: &Composition) {
 fn charts_show_their_marks(composition: &Composition, shown: &str) {
     let painted: Vec<(&str, &str)> = nodes(composition)
         .into_iter()
-        .filter_map(|node| match &node.own {
-            Some(Own::Painted { picture, .. }) => Some((
+        .filter_map(|node| {
+            let picture = node.picture.as_ref()?;
+            Some((
                 node.path.as_str(),
                 picture
+                    .data
                     .as_deref()
                     .unwrap_or_else(|| panic!("{} is drawn for the page", node.path)),
-            )),
-            _ => None,
+            ))
         })
         .collect();
     assert!(
-        painted.iter().any(|(path, _)| path.ends_with("#marks")),
+        nodes(composition).into_iter().any(|node| {
+            node.picture.is_some() && matches!(node.widget.as_str(), "Chart" | "Sparkline")
+        }),
         "the page shows a chart's marks: {painted:?}"
     );
     for (path, picture) in painted {
         assert!(
-            shown.contains("<img data-p=") && shown.contains(picture),
+            shown.contains("<img class=\"tilo-paint\"") && shown.contains(picture),
             "the page shows {path}'s picture"
         );
         let png = picture

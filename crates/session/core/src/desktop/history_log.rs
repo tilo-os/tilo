@@ -85,10 +85,10 @@ pub fn register_authors(
                 ui::history_source::short_id(&identity),
                 rgb,
             ),
-            None => ui::widget::HistoryAuthor::new(
+            None => ui::history_source::author_coloured(
                 name.clone(),
-                ui::history_source::stable_hue(&identity),
                 ui::history_source::short_id(&identity),
+                ui::presence::identity_color(name),
             ),
         };
         directory.register(actor, author);

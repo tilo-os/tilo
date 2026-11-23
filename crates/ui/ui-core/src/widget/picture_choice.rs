@@ -401,29 +401,6 @@ impl Widget for PictureChoice {
         false
     }
 
-    /// A choice among pictures as a page's own radio group of tiles: each tile a
-    /// button holding the widget's paint of it, named by its label.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        cx.element("div");
-        for (index, option) in self.options.iter().enumerate() {
-            let rect = self.target_rect(index);
-            let part = cx.part(&format!("option:{index}"), "PictureChoice", rect);
-            part.tag = Some("button");
-            part.semantics = Some(
-                AccessNode::new(Role::RadioButton)
-                    .with_name(option.label.clone())
-                    .with_action_target(self.option_id(index))
-                    .with_state(
-                        AccessState::new()
-                            .checked(self.selected == Some(index))
-                            .disabled(!self.enabled),
-                    ),
-            );
-            part.painted(crate::a11y::hash_key(&option.label));
-        }
-    }
-
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

@@ -9,11 +9,6 @@ pub(super) struct FieldLabel {
     pub(super) parts: Parts,
 }
 impl Widget for FieldLabel {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }

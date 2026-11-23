@@ -13,8 +13,8 @@ test-support = ["dep:tilo-test-env", "dep:tilo-resource"]
 [dependencies]
 # The turn every agent works through: what a turn asks of these tools, and how the model reads
 # their answers.
-tilo-agent-turn = { path = "../../integrations/agent-turn" }
-agent-provider-config = { path = "../../integrations/provider-config" }
+tilo-agent-turn = { path = "../../agent/agent-turn" }
+agent-provider-config = { path = "../../agent/provider-config" }
 # What every Tilo app publishes (its surface), for the apps a hosted workspace's programs compile
 # against: data only, no app links the server that serves them.
 app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
@@ -26,8 +26,6 @@ hex.workspace = true
 libc.workspace = true
 # A task's programs run in a tilolang host started for them: its api, and the sealed blob its apps
 # arrive in.
-runtime-portal = { path = "../../runtime/runtime-portal" }
-tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
@@ -39,7 +37,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 tilo-rt.workspace = true
-tilo-session-actions = { path = "../../session/session-actions" }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
@@ -51,10 +48,6 @@ tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
-
-# A task's host is a Linux program started with its api: it runs nowhere else.
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["process", "std"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

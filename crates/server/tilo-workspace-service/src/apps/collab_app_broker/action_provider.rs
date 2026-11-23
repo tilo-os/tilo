@@ -47,7 +47,8 @@ mod readiness;
 mod shortcut_run;
 mod workspace_nodes;
 use app_admission::{
-    connect_request, invitation_request, own_history_request, own_view_lookup, reference_request,
+    connect_request, invitation_request, own_history_request, own_view_lookup, programs_request,
+    reference_request,
 };
 use directory::bridge_error;
 
@@ -650,6 +651,7 @@ impl AppBrokerState {
                     || reference_request(request)
                     || invitation_request(request)
                     || connect_request(request)
+                    || programs_request(request)
                 {
                     Some(person.clone())
                 } else {
@@ -1674,6 +1676,12 @@ impl AppBrokerState {
         if query.canonical_route.is_some() {
             return Pending::ready(self.canonical_provider_page(caller, query));
         }
+        if let Some(page) = self
+            .provided()
+            .and_then(|providers| providers.query(caller, query.clone()))
+        {
+            return page;
+        }
         if let (Some(action), Some(provider)) = (&query.action, &query.provider) {
             return Pending::ready(self.named_action_page(caller, provider, action));
         }
@@ -1752,7 +1760,10 @@ impl AppBrokerState {
         if query.provider.is_none() {
             page.providers = providers;
         }
-        Pending::ready(Ok(page))
+        match self.provided() {
+            Some(provided) => provided.listed(caller, query, page),
+            None => Pending::ready(Ok(page)),
+        }
     }
 
     /// Admit `request` for `caller`, or report the invocation already
@@ -1852,6 +1863,16 @@ impl AppBrokerState {
             return Pending::ready(
                 self.invoke_shortcut_run(caller, origin, workspace, shortcut, request),
             );
+        }
+        // A provider this device's embedder registered answers here exactly as it answers another
+        // device's call, admitted in the same place.
+        if let Some(answer) = self
+            .services
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.invoke(caller, request.clone()))
+        {
+            return answer;
         }
         if let Some(steps) =
             super::host_steps::for_provider(&self.services, &request.target.provider)
@@ -2902,12 +2923,23 @@ impl AppBrokerState {
             .and_then(|log| log.get(caller, id).copied())
     }
 
+    /// The providers this device's embedder registered, when it hands the broker any.
+    fn provided(&self) -> Option<&crate::workspaces::providers::Providers> {
+        self.services.providers.as_ref()
+    }
+
     /// The latest state of an invocation `caller` admitted.
     pub fn action_observe(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
+        if let Some(state) = self
+            .provided()
+            .and_then(|providers| providers.observe(caller, id))
+        {
+            return state;
+        }
         let job = self.remote_job(caller, id)?;
         let state = InvocationState::new(*id, self.invocation_status(job)?)
             .with_untrusted(self.untrusted_job(job));
@@ -2930,6 +2962,12 @@ impl AppBrokerState {
         id: &tilo_actions::InvocationId,
         mut seen: tokio::sync::watch::Receiver<u64>,
     ) -> Option<Pending<()>> {
+        if let Some(change) = self
+            .provided()
+            .and_then(|providers| providers.next_change(caller, id))
+        {
+            return change;
+        }
         self.remote_job(caller, id)?;
         let (changed, change) = pending();
         let wait = async move {
@@ -3011,6 +3049,12 @@ impl AppBrokerState {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
+        if let Some(cancelled) = self
+            .provided()
+            .and_then(|providers| providers.cancel(caller, id))
+        {
+            return cancelled;
+        }
         let Some(job) = self.remote_job(caller, id) else {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };

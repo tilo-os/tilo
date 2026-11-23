@@ -1870,6 +1870,13 @@ impl DesktopPolicy {
         self.handle.read(|tree| tab_of(tree, window))
     }
 
+    /// The window drawing `tab`'s content, once it mapped: what the input sent to that window
+    /// is read by, and so what a control the shell presses in it comes after.
+    #[must_use]
+    pub fn window_of_tab(&self, tab: TabId) -> Option<u64> {
+        self.handle.read(|tree| window_of(tree, tab))
+    }
+
     /// The tab each window an app keeper shows stands in: what its keeper is told, so the window
     /// takes that tab again after the desktop restarts in place. A tab keeps its id wherever it
     /// moves in its workspace, and the workspace's layout keeps it across restarts.

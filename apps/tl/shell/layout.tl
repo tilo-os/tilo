@@ -69,6 +69,10 @@ type LayoutWorkspace (origin: session.layout_workspace) {
     name: Text merge register
     /// Whether it is the workspace in front, which the shell shows.
     current: Bool
+    /// Where the workspace opens as a page on the web (`/w/<workspace>/desktop`), when the shell
+    /// is served there: what its card links to. Empty on a device, where switching shows the
+    /// workspace in the same layout.
+    home: Text merge register
 }
 
 /// Someone else here in the workspace in front: a person or an agent.

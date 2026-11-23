@@ -28,10 +28,10 @@ pub fn reading(
     open_links: Vec<u64>,
 ) -> WorkspaceReading {
     let now = tilo_clock::wall();
-    let governance = peer.governance();
+    let membership = peer.governance();
     let person = hex::encode(reader.person);
-    let members = governance.governed_members(now).unwrap_or_default();
-    let owner = Some(governance.owner_user_public_key())
+    let members = membership.governed_members(now).unwrap_or_default();
+    let owner = Some(membership.owner_user_public_key())
         .filter(|owner| *owner != [0; 32])
         .map(hex::encode);
     let labels: BTreeMap<[u8; 32], String> = peer
@@ -39,7 +39,7 @@ pub fn reading(
         .into_iter()
         .map(|certificate| (certificate.device_public_key, certificate.device_label))
         .collect();
-    let admitted: BTreeSet<[u8; 32]> = governance
+    let admitted: BTreeSet<[u8; 32]> = membership
         .governed_access(now)
         .map(|access| access.member_devices.into_iter().collect())
         .unwrap_or_default();
@@ -77,10 +77,10 @@ pub fn reading(
         || people
             .iter()
             .any(|member| !member.removed && member.id.person_id() == Some(person.as_str()));
-    let may_invite = governance.may_invite(reader.signer, now);
+    let may_invite = membership.may_invite(reader.signer, now);
     WorkspaceReading {
         id: workspace.to_string(),
-        name: governance
+        name: membership
             .workspace_name()
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty()),
@@ -89,17 +89,17 @@ pub fn reading(
         roster_devices,
         people,
         members,
-        policy: governance.governed_policy().ok(),
+        policy: membership.governed_policy().ok(),
         administers: peer
             .workspace()
             .check_workspace_administration(reader.device, now)
             .is_ok(),
         may_invite,
         invite_refused: !may_invite,
-        may_invite_administrator: governance.may_invite_administrator(reader.signer, now),
+        may_invite_administrator: membership.may_invite_administrator(reader.signer, now),
         invitable_roles: Role::ASSIGNABLE
             .into_iter()
-            .filter(|role| governance.may_invite_role(reader.signer, *role, now))
+            .filter(|role| membership.may_invite_role(reader.signer, *role, now))
             .collect(),
         not_deletable,
         reads_whole,
@@ -119,7 +119,7 @@ pub fn reading(
     }
 }
 
-/// The devices keeping the workspace `peer` holds, by the label each signed, as its governance
+/// The devices keeping the workspace `peer` holds, by the label each signed, as its membership
 /// names them.
 fn holders(peer: &StatePeer) -> Vec<Holder> {
     let mut holders: Vec<Holder> = peer
@@ -151,8 +151,8 @@ fn holders(peer: &StatePeer) -> Vec<Holder> {
 }
 
 /// A device keeping the workspace `peer` holds other than `own`, and where it is reached: the
-/// address that device signed into the workspace's governance. What a device asks the workspace's
-/// governance of when it keeps none of it itself.
+/// address that device signed into the workspace's membership. What a device asks the workspace's
+/// key access and membership of when it keeps none of it itself.
 #[must_use]
 pub fn keeping_device_elsewhere(
     peer: &StatePeer,

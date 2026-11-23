@@ -153,6 +153,15 @@ type Shell {
     /// says once, quietly, what it is for ("Click anywhere and say what you want"); the first
     /// ask puts that away for good, on every device the person uses.
     canvas_asked: Bool = false
+    /// Whether the report picker stands over the windows: the person is choosing the window a
+    /// report about a problem is about (`feedback.tl`).
+    reporting: Bool = false
+    /// The windows the report being made is about, in the order they were picked: the shell's own
+    /// record of what the person pointed at, so a report is about something they can read back.
+    report_picks: List<ReportPick>
+    /// The outline of the rectangle the person dragged over the picker, as `x, y, width, height`
+    /// in canvas pixels: empty while no drag stands.
+    report_area: List<Int>
 }
 
 /// One part of the top bar, in the person's order.

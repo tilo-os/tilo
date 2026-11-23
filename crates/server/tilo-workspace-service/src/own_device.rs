@@ -3,7 +3,7 @@
 //! own that the device certifies, so the device's engine and the service never number changes
 //! from one count.
 //!
-//! The service holds the workspaces the device founded and the member copies of the ones it
+//! The service holds the workspaces the device governs and the member copies of the ones it
 //! joined, writing as the device in them, and takes part in their key groups through the
 //! device's key service: it asks that service for a group's keys, and hands what its members
 //! send for the groups to a sink of the embedder's, so the service and the device never found
@@ -39,17 +39,21 @@ const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait()
 pub struct Device<'a> {
     pub cert: &'a DeviceCert,
     pub signer: &'a Arc<dyn DeviceSigner>,
+    /// The device itself, when its service acts as it rather than under a key of its own: a
+    /// server, whose people's devices address the workspaces it keeps to its device key.
+    pub itself: Option<ServiceIdentity>,
 }
 
 /// Open the workspace service `device` keeps under `store`, on `endpoint`, its groups kept by
-/// `groups`. Each workspace it holds is decided by that workspace's signed member list, never by
-/// the device holding it. `configure` adjusts the service's configuration beyond
+/// `groups`: one that governs the workspaces it founds where `governs`, else one that holds only
+/// the workspaces the device joined. `configure` adjusts the service's configuration beyond
 /// what every device's service shares.
 ///
-/// The service's member copies act as `device`, and that is set here rather than left to the
+/// The service's member copies act as `device`, and that is set here rather than left to each
 /// embedder: a device that holds a member copy syncs it with the device serving it, and a
 /// service opened without its device keeps the copy and never syncs it. Every device's service
-/// is opened through here, so none of them can diverge.
+/// is opened through here, so none of them can diverge; only a server, which serves other
+/// people's workspaces and joins none as a member, configures it away.
 ///
 /// # Errors
 /// The device cannot certify the service's own key, or the service's store cannot be opened.
@@ -58,19 +62,84 @@ pub async fn open(
     device: Device<'_>,
     endpoint: iroh::Endpoint,
     groups: DeviceKeyGroups,
+    governs: bool,
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<WorkspaceService, ServiceError> {
-    let identity = ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?;
-    // A person's own device takes nobody else's work.
-    let mut config = configure(ServiceConfig::new(
-        store,
-        tilo_server_protocol::WorkSetting::none(),
-    ));
-    config.member = Some(Arc::new(MemberDevice {
-        cert: device.cert.clone(),
-        signer: Arc::clone(device.signer),
-    }));
-    WorkspaceService::open(config, identity, endpoint, Some(groups)).await
+    let identity = match device.itself {
+        Some(itself) => itself,
+        None => ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?,
+    };
+    // A person's own device takes nobody else's work, and its member copies act as it; a
+    // server's `configure` says otherwise.
+    let config = configure(ServiceConfig {
+        member: Some(Arc::new(MemberDevice {
+            cert: device.cert.clone(),
+            signer: Arc::clone(device.signer),
+        })),
+        ..ServiceConfig::new(store, tilo_server_protocol::WorkSetting::none())
+    });
+    if governs {
+        WorkspaceService::open(config, identity, endpoint, Some(groups)).await
+    } else {
+        WorkspaceService::open_joining(config, identity, endpoint, Some(groups)).await
+    }
+}
+
+/// Where a device keeps its workspace service's store, below the device's directory.
+const SERVICE: &str = "service";
+/// Where a device's key service keeps its sealed group state, below the device's directory.
+const GROUPS: &str = "groups";
+
+/// A device's workspace service and the key service beside it, as [`open_in`] opened them.
+pub struct Opened {
+    pub service: WorkspaceService,
+    pub keys: KeyService,
+}
+
+/// The key sealing a device's group state: derived from the device key, which the device keeps
+/// beside it.
+#[must_use]
+pub fn vault_key(key: &ed25519_dalek::SigningKey) -> key_group::VaultKey {
+    key_group::VaultKey::new(blake3::derive_key(
+        "tilo device workspace key vault v1",
+        &key.to_bytes(),
+    ))
+}
+
+/// Open `device`'s workspace service and the key service beside it in the device's directory
+/// `dir`, on `endpoint`, its group state sealed with `vault` ([`vault_key`]) and what the groups'
+/// members seal checked against `seal_checks`. Every device keeps them in this one layout, a
+/// server among them; `governs` and `configure` are as [`open`] takes them.
+///
+/// # Errors
+/// The key service's state or the service's store cannot be opened.
+pub async fn open_in(
+    dir: &std::path::Path,
+    device: Device<'_>,
+    vault: key_group::VaultKey,
+    endpoint: iroh::Endpoint,
+    governs: bool,
+    seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
+    configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
+) -> Result<Opened, ServiceError> {
+    let keys = KeyService::open(
+        "tilo-device-groups",
+        &dir.join(GROUPS),
+        vault,
+        Arc::clone(device.signer),
+        seal_checks,
+    )?;
+    let service = open(
+        dir.join(SERVICE),
+        device,
+        endpoint,
+        keys.groups(),
+        governs,
+        configure,
+    )
+    .await?;
+    keys.attach(service.workspaces());
+    Ok(Opened { service, keys })
 }
 
 /// How long one workspace's member copy is waited for as the device takes it in.

@@ -15,11 +15,6 @@ name = "tilo-model-gateway"
 path = "src/main.rs"
 required-features = ["server"]
 
-[[bin]]
-name = "tilo-model-http"
-path = "src/http_main.rs"
-required-features = ["server"]
-
 [[test]]
 name = "socket_activation"
 path = "tests/socket_activation.rs"
@@ -28,7 +23,7 @@ required-features = ["server"]
 [features]
 default = []
 runtime-client = ["tilo-model-client/runtime-client"]
-# Hosted-provider relay and HTTP adapter, without in-process inference.
+# Hosted-provider relay, without in-process inference.
 server = [
     "dep:tilo-clock",
     "dep:accounts",

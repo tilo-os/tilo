@@ -3,9 +3,17 @@ use super::readings::Governance;
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
-use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_agent_session::worker::ViewReadPolicy;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
+
+/// An existing verified source snapshot, for view discovery only.
+pub struct ViewDocument {
+    /// Replayed snapshot; never returned in the public metadata response.
+    pub bytes: Vec<u8>,
+    /// Content revision for catalogue freshness.
+    pub revision: String,
+}
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -201,11 +209,15 @@ impl Workspaces {
                 "this host takes part in no channel of the source's workspace".into()
             });
         }
-        let retained = self.inner.records.view_channel(
-            runtime.workspace_id(),
-            neighbour_wire::app_document_group(&source.app_id, &source.document),
-            MAX_VIEW_DOCUMENT_BYTES,
-        )?;
+        let retained = self
+            .inner
+            .records
+            .view_channel(
+                runtime.workspace_id(),
+                neighbour_wire::app_document_group(&source.app_id, &source.document),
+                MAX_VIEW_DOCUMENT_BYTES,
+            )
+            .await?;
         let bytes = replay_source(source, keys.as_ref(), primary_governor, retained)?;
         runtime
             .view_read_policy(caller, &source.app_id, &source.document)

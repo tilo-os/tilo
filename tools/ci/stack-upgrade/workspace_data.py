@@ -168,9 +168,7 @@ def fill() -> dict:
         messages=[{"id": str(uuid.uuid4()), "account": "upgrade", "folder": "inbox", "label": mail,
                    "read": False, "starred": True}],
     )
-    contacts = next((path for path in rows(workspace, "contacts") if path.endswith("Contacts 2")),
-                    "contacts/Contacts 2")
-    act(workspace, f"{contacts}#new-contact", name="Grace Customer")
+    act(workspace, "contacts#new-contact", name="Grace Customer")
     event = "Upgrade review meeting"
     act(workspace, "calendar/Calendar#new-event",
         event={"title": event, "start": "2026-11-23T10:00", "end": "2026-11-23T11:00"})

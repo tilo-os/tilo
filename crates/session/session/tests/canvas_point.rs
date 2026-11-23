@@ -1605,7 +1605,7 @@ fn the_agents_open_of_an_apps_root_stands_its_place_view() {
     wait_for(&mut session, "the turn placed", |session| {
         canvas_box(session, "chat.workspace.turns:")
     });
-    let tasks = root_of(&session, "so.tilo.lang.tasks");
+    let tasks = root_of(&session, "so.tilo.tasks");
     session
         .invoke_in_turn(
             &crate::common::agent("assistant"),
@@ -1618,7 +1618,7 @@ fn the_agents_open_of_an_apps_root_stands_its_place_view() {
     let placed = wait_for(&mut session, "the tasks placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.tasks"))
+            .find(|place| place.resource.contains("so.tilo.tasks"))
     });
     // The views Tasks publishes for its root: the one marked for a place (`place view`), and its
     // default view, the whole app.

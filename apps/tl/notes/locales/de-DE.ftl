@@ -2,6 +2,8 @@
 
 d-so-tilo-notes = Notizen
 
+d-so-tilo-notes-keywords = note, memo, memos, notebook, journal, markdown, notepad, textedit, apple notes, google keep, onenote, obsidian, notiz, notizbuch, aufzeichnungen, zettel, merkzettel, tagebuch, notizen machen
+
 d-mavvhka7 = Notiz
     .doc = Eine Notiz: ein Titel, ein Text, die Notiz, unter der sie steht, und ihre Schlagwörter.
     .noun = { $count ->
@@ -78,13 +80,33 @@ d-6fwsh5ui = Text hinzufügen
     .did = hat einer Notiz etwas hinzugefügt
 
 d-gc34cbhl = Notiz ablegen
-    .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `t` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
+    .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `tag` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
+
+d-j33acdci = Neues Schlagwort
+    .doc = Legt ein Schlagwort des Notizbuchs mit dem Namen `name` an oder gibt das schon so benannte: der Name ist das, woran Menschen, Agenten und Skripte ein Schlagwort erkennen.
+    .w-a-tag-needs-a-name = Ein Schlagwort braucht einen Namen
 
 d-7ow26bju = Verschlagworten
     .doc = Gibt einer Notiz ein Schlagwort.
+    .w-a-tag-needs-a-name = Ein Schlagwort braucht einen Namen
 
 d-3u3bevec = Schlagwort entfernen
     .doc = Nimmt ein Schlagwort von einer Notiz.
+
+d-ja7xx6nf = Umbenennen
+    .doc = Benennt ein Schlagwort des Notizbuchs um: jede Notiz, die den alten Namen trägt, trägt den neuen.
+    .w-a-tag-needs-a-name = Ein Schlagwort braucht einen Namen
+    .w-the-notebook-has-that-tag = Das Notizbuch hat dieses Schlagwort
+
+d-6hqlshe7 = Löschen
+    .doc = Löscht ein Schlagwort des Notizbuchs: keine Notiz trägt den Namen mehr, und das Notizbuch führt es nicht mehr auf.
+
+d-eec4pye2 = Schlagwörter aus Notizen übernehmen
+    .doc = Führt die Schlagwörter auf, die die Notizen des Notizbuchs tragen, jedes einmal: was ein Notizbuch braucht, das geschrieben wurde, bevor das Notizbuch seine Schlagwörter aufführte, und was ein Start hinterließ, der Schlagwörter direkt an Notizen schrieb.
+
+d-3ngyieqa = In der Notiz suchen
+    .doc = Findet die Wörter `text` in einer Notiz, unabhängig von der Groß- und Kleinschreibung, und antwortet mit jedem Absatz, der sie enthält, samt seiner Stelle in der Notiz und seinen Wörtern: was die Suchleiste des Fensters zeigt, erreichbar für einen Agenten oder die Palette, die die Notiz kennt, aber nicht, wo in ihr zu suchen ist.
+    .w-type-something-to-find = Zum Suchen etwas eingeben
 
 d-jkqp27g7 = Reagieren
     .doc = Fügt deine Reaktion mit einem Emoji zu einer Notiz hinzu oder nimmt sie zurück, wenn du damit reagiert hattest: ein Druck auf einen ihrer Chips oder die Wahl aus dem, den ihr Hinzufügen-Knopf geöffnet hat.
@@ -92,7 +114,7 @@ d-jkqp27g7 = Reagieren
 d-jkqp27g7-emoji = Emoji
 
 d-4s5iqnfo = Bild einfügen
-    .doc = Setzt ein Bild in eine Notiz, dort wo ihre Worte enden: die Person wählt die Datei, und die Notiz behält die Adresse ihres Inhalts statt des Bildes, und den Namen, unter dem es aufgenommen wurde.
+    .doc = Setzt ein Bild in eine Notiz, dort wo ihre Worte enden, beschrieben durch `alt` für einen Leser, der es nicht sehen kann: die Person wählt die Datei, und die Notiz behält die Adresse ihres Inhalts statt des Bildes, und den Namen, unter dem es aufgenommen wurde.
     .did = fügte ein Bild hinzu
 
 d-xptsjaii = Markdown exportieren
@@ -123,6 +145,12 @@ d-cn43mwee = Verschieben nach~present
 
 d-7in2x6ql = Danach verschieben~present
 
+d-ureyllbi = Neues Schlagwort~present
+
+d-mapbyngl = Schlagwort~present
+
+d-2f5tmgbl = Schlagwort umbenennen~present
+
 d-ojfhuiuf = Untergeordnete hinzufügen
     .w-new-sub-note = Untergeordnete Notiz
 
@@ -139,10 +167,16 @@ d-tmqqtkeb = Notizen
 
 d-akcqjax3 = Notizbuch
     .w-outline = Gliederung
+    .w-tags = Schlagwörter
+    .w-no-tags-yet = Noch keine Schlagwörter
+    .w-new-tag = Neues Schlagwort
     .w-reacted-in-the-native-notes = In der nativen Notizen-App reagiert: { $reacted }
     .w-write-something = Etwas schreiben
     .w-image = Bild
     .w-page = Seite
+
+d-aikvtwt5 = Notizen mit Schlagwort
+    .w-nothing-carries-yet = Noch trägt nichts { $name }
 
 d-x4im3xs5 = Notizbuchkopf
 
@@ -205,11 +239,33 @@ d-qymo5lg2-title = Titel
 
 d-qymo5lg2-body = Text
 
+d-qymo5lg2-parent = Übergeordnet
+
+d-qymo5lg2-after = Danach
+
 d-6fwsh5ui-text = Text
 
 d-gc34cbhl-title = Titel
 
+d-gc34cbhl-tag = Schlagwort
+
+d-j33acdci-name = Name
+
+d-7ow26bju-name = Name
+
+d-3u3bevec-name = Name
+
+d-ja7xx6nf-tag = Schlagwort
+
+d-ja7xx6nf-wanted = Gewünscht
+
+d-6hqlshe7-tag = Schlagwort
+
+d-3ngyieqa-text = Text
+
 d-4s5iqnfo-image = Bild
+
+d-4s5iqnfo-alt = Alternativtext
 
 d-h3zczsen-file = Datei
 
@@ -229,6 +285,33 @@ d-2od7mwir = Geändert
 
 d-qgq6mcy7 = Zur Seite gelegt
     .doc = Notizen, die aus der früheren Notizen-App übernommen wurden und die sie nicht mehr zeigte: eine Seite, deren übergeordnete Seite gelöscht wurde, hier außerhalb des Baums bewahrt statt verworfen.
+
+d-dq2mnb22 = Schlagwörter
+    .doc = Die Schlagwörter, die die Notizen des Notizbuchs tragen, jedes ein Name, an dem Notizen hängen: eine Notiz behält ihre Schlagwörter als Wörter, und das Notizbuch führt die Liste, in der eine Person sie benennt, umbenennt und löscht.
+
+d-qj3f52qw = Schlagwort
+    .doc = Ein Schlagwort des Notizbuchs: ein Name, den Notizen tragen, einmal aufgeführt, damit eine Person es an einer Stelle liest, umbenennt und löscht, und jede Notiz, die es trägt, folgt.
+    .noun = { $count ->
+        [one] Schlagwort
+       *[other] Schlagwörter
+    }
+
+d-itadoh74 = Name
+
+d-cvwcei36 = Gefunden
+    .doc = Eine Stelle in einer Notiz, an der die gesuchten Wörter stehen: der Absatz, in dem sie stehen, von der ersten der Notiz an gezählt, und seine Wörter.
+    .noun = { $count ->
+        [one] Treffer
+       *[other] Treffer
+    }
+
+d-dxxdlopq = Bei
+    .doc = Der Absatz, von der ersten der Notiz an gezählt (1).
+
+d-2vlaqp45 = Wörter
+    .doc = Die Wörter des Absatzes.
+
+d-cvwcei36-filter-at = Bei
 
 d-qvjedq2v = Früheres Notizbuch übernehmen
     .doc = Das Notizbuch, das die frühere Notizen-App vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jede Seite als Notiz, unter der Notiz, unter der ihre Seite stand, und in der Reihenfolge, in der ihre Seiten dort standen, mit Titel, Text, Schlagwörtern und der Kennung ihrer Seite.

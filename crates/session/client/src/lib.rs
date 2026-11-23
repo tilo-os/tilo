@@ -24,6 +24,7 @@ pub mod arrivals;
 pub mod client;
 mod clock;
 pub mod content;
+pub mod daemon_documents;
 /// A device's entry into its person's workspaces: the one the CLI, agents, the API server and the
 /// page all take.
 pub mod device;

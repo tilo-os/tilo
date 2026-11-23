@@ -708,7 +708,49 @@ impl Workspaces {
             Some(Ok(_))
         )
     }
+}
 
+/// Ask the key holders of `workspace`'s own group to admit this host's device, and wait until it
+/// holds the group's keys: `true` once it does, `false` when the device takes part in no group of
+/// the workspace or nothing will ever say its keys changed. Reading a sealed record never asks
+/// (it waits for keys the device is due, [`crate::documents::Sealing::Due`]), so a device that
+/// only reads what was written before it arrived must ask, however long it waits.
+#[cfg_attr(
+    not(feature = "device-keys"),
+    allow(
+        dead_code,
+        reason = "sealed histories are followed only where they are read"
+    )
+)]
+pub(super) async fn wait_for_group_keys(device: &DeviceKeys, workspace: &str) -> bool {
+    // The first ask starts the device's part in the group; the key service keeps asking on its
+    // own after the wait, so a wait that ends first leaves nothing undone.
+    if let Some(Err(error)) = device
+        .group_keys(workspace, collab_types::EVERY_MEMBER, true)
+        .await
+    {
+        tracing::debug!(%workspace, %error, "a workspace's group has not admitted this device yet");
+    }
+    // Where the keys stood when last looked at: a change after that look ends the wait at once,
+    // so keys that arrive between a look and the wait are not missed.
+    let mut seen = 0;
+    loop {
+        match device
+            .group_keys(workspace, collab_types::EVERY_MEMBER, false)
+            .await
+        {
+            Some(Ok(_)) => return true,
+            None => return false,
+            Some(Err(_)) => {}
+        }
+        let Some(next) = device.keys_changed(workspace, seen).await else {
+            return false;
+        };
+        seen = next;
+    }
+}
+
+impl Workspaces {
     /// Everything the governor's copy holds of `record` of `app` in
     /// `workspace`: its cleartext base and, for a sealed record, every write
     /// of its history opened with the channel's keys this server holds, none

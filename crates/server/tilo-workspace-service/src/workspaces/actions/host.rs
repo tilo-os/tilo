@@ -27,8 +27,8 @@ use tilo_server_session::workspaces::{
     CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
     HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES,
-    PERSONAL_DEVICE_NAME, PersonalList, Refusal, StandingPage, UNHOST_WORKSPACE, WorkspaceLabels,
-    WorkspaceListing, check_labels, labelled,
+    PERSONAL_DEVICE_NAME, PersonalList, Refusal, StandingPage, UNHOST_WORKSPACE, WEB_SERVE,
+    WorkspaceLabels, WorkspaceListing, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -61,7 +61,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -294,6 +294,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
         },
         ServiceOperation::ListRecoveryKeys,
     ),
+    (
+        Verb {
+            id: WEB_SERVE,
+            label: "Serve this server's web UI",
+            check: WEB_SERVE,
+            kind: roles::GOVERNANCE_KIND,
+            params: web_serve_params,
+        },
+        ServiceOperation::ServeWeb,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -338,6 +348,14 @@ fn admit_server_params() -> Vec<ActionParam> {
             "Where the server is dialled, as its endpoint advertises it (JSON).",
         ),
     ]
+}
+
+fn web_serve_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "serving",
+        ParamType::Boolean,
+        "Whether this server serves its own web UI.",
+    )]
 }
 
 fn plan_machine_params() -> Vec<ActionParam> {
@@ -759,6 +777,45 @@ impl Workspaces {
         })
     }
 
+    /// Serve this device's own web UI as `serving` asks, and keep the choice in `device`'s
+    /// entry among its person's servers, which every device of theirs reads and which its
+    /// next start follows. A device with no entry there serves or stops all the same: the
+    /// choice is only kept where the document names it.
+    async fn serve_web_invoke(
+        &self,
+        device: &DeviceCert,
+        serving: bool,
+    ) -> Result<Value, ActionCallError> {
+        self.serve_web(serving).map_err(|error| refused(&error))?;
+        // Stopping aborts the listener's tasks; letting them run drops what answers on the
+        // address before this answers, so a page that asks now is not served.
+        tokio::task::yield_now().await;
+        let device_key = device.device_public_key;
+        let kept = crate::workspaces::servers::read(self)
+            .await
+            .is_ok_and(|servers| {
+                servers
+                    .servers
+                    .get(&crate::workspaces::servers::device_id(&device_key))
+                    .is_some()
+            });
+        if kept {
+            let served = if serving {
+                String::new()
+            } else {
+                crate::workspaces::servers::WEB_SERVED[1].to_owned()
+            };
+            crate::workspaces::servers::apply(
+                self,
+                crate::workspaces::servers::Servers::SET_WEB
+                    .with((crate::workspaces::servers::device_id(&device_key), served)),
+            )
+            .await
+            .map_err(|error| refused(&error))?;
+        }
+        Ok(serde_json::json!({ "serving": serving }))
+    }
+
     /// Run the host operation `request` names for `caller` on `device`, the
     /// certificate the server's handshake verified for it, asked in the
     /// workspace `workspace_id` carries: an agent's call as its grants there
@@ -839,6 +896,14 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Box::pin(machine::admit_server(self, &args)).await
+            }
+            ServiceOperation::ServeWeb => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let serving = args
+                    .boolean("serving")?
+                    .ok_or_else(|| invalid("`serving` is required"))?;
+                self.serve_web_invoke(device, serving).await
             }
             _ => Err(ActionCallError::UnknownAction),
         }

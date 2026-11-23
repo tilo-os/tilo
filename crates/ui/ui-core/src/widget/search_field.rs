@@ -904,12 +904,6 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
-    /// A search box as a page's own: the field it holds, composed with it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("search");
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -1276,12 +1270,6 @@ impl Filtered {
 }
 
 impl Widget for Filtered {
-    /// The filter field and what it narrows, composed as they stand.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.field.set_platform_conventions(conventions);

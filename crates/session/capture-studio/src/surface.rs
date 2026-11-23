@@ -827,20 +827,6 @@ impl Widget for StudioSurface {
         "CaptureStudio"
     }
 
-    /// The bar is drawn over what it captures: a page shows a picture of it, with its controls as
-    /// buttons where they stand. The editor, while it is up, is what a page shows instead.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        if let Some(markup) = &self.markup {
-            markup.widget.html(cx);
-            return;
-        }
-        cx.element("div");
-        cx.picture();
-        if let Some(access) = self.accessibility() {
-            cx.controls("capture", &access);
-        }
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("capture-studio")
     }

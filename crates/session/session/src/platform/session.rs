@@ -664,12 +664,20 @@ impl Session {
         let intents = Rc::new(RefCell::new(Vec::new()));
         // Where this device's own workspace service is installed, and what its roles read from:
         // every role here reads what its workspaces hold through it.
-        let (workspace_service, document_reads) = crate::broker_services::session_documents_on(
-            tilo_workspace_service::service::ServiceSlot::default(),
+        let workspace_service = tilo_workspace_service::service::ServiceSlot::default();
+        // The shell link the device's daemon handed this session when it started it: the
+        // session's own reads and writes go there, and its apps are vouched for on it.
+        let daemon_link =
+            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
+        if let Err(reason) = &daemon_link {
+            tracing::error!(%reason, "this session reads and writes no workspace");
+        }
+        let (document_reads, writes, daemon_writes) = crate::broker_services::session_documents(
+            daemon_link.clone(),
+            tilo_rt::app().handle().clone(),
         );
-        let writes = crate::broker_services::session_writes(workspace_service.clone());
-        // A write the service takes to a layout or a view has it read again off the loop.
-        desktops.follow_writes(workspace_service.clone());
+        // A write the daemon takes to a layout or a view has it read again off the loop.
+        desktops.follow_writes(daemon_writes.clone());
         let engine = activity.open_engine(&options, &handle, document_reads.clone(), &writes);
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
@@ -731,7 +739,7 @@ impl Session {
             resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
-        let (sync, documents, resources) = start_collaboration(
+        let sync = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
@@ -948,6 +956,14 @@ impl Session {
         if let Some(engine) = &engine {
             session_services.keep_engine(std::sync::Arc::clone(engine));
         }
+        // A task's host is started as every tilolang process here is.
+        if let Some(processes) = options
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.processes())
+        {
+            session_services.keep_processes(processes);
+        }
         // Until the first pass says whether the person has workspaces of their own, an ask of the
         // workspace the shell started with waits: that workspace is founded the moment it is known
         // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
@@ -957,12 +973,13 @@ impl Session {
         {
             session_services.keep_founding(std::collections::BTreeSet::from([seed.to_string()]));
         }
+        let task_program_host =
+            std::sync::Arc::new(crate::task_programs_host::TaskProgramHost::new(
+                std::sync::Arc::clone(&session_services),
+            ));
         let task_programs = Some(std::sync::Arc::new(
-            crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
-                crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(
-                    &session_services,
-                )),
-            )),
+            crate::task_programs::TaskPrograms::new(std::sync::Arc::clone(&task_program_host)
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // layout, its undo, the windows and the notices, which the REPL already calls.
@@ -973,6 +990,8 @@ impl Session {
                 as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
         let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
             std::sync::Arc::clone(&steps),
+            Some(std::sync::Arc::clone(&task_program_host)
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
         if engine.is_some() {
@@ -1263,8 +1282,8 @@ impl Session {
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
-                documents,
-                resources,
+                daemon: daemon_link,
+                daemon_writes,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
@@ -1280,6 +1299,11 @@ impl Session {
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
+        // The person's own line calls through the broker this session serves, as their own click
+        // does, so what it reads and changes is decided where it lands.
+        if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
+            task_program_host.keep_state(broker);
+        }
         // An action an app publishes, named by a search row, a link or a
         // person's card, is delivered through the broker: the app starts for
         // it when it is closed, and the action reaches it wherever it runs.
@@ -1415,10 +1439,6 @@ impl Session {
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
-                workspaces: (
-                    workspace_service.clone(),
-                    automation_runtime.handle().clone(),
-                ),
             },
         );
 
@@ -1809,7 +1829,7 @@ impl Session {
             document_reads,
             document_writes: writes,
             held_stores: crate::engine_records::held_stores(workspace_service),
-            app_stores: Cell::default(),
+            app_stores: RefCell::default(),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),

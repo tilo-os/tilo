@@ -20,10 +20,10 @@ spec.loader.exec_module(artifact)
 
 
 class HttpArtifactContractTests(unittest.TestCase):
-    def test_http_binary_is_required_and_content_hashed(self):
-        self.assertIn('tilo-model-http', artifact.REQUIRED)
-        with tempfile.TemporaryDirectory(prefix='model-http-artifact-') as temporary:
-            binary = Path(temporary) / 'tilo-model-http'
+    def test_gateway_binary_is_required_and_content_hashed(self):
+        self.assertIn('tilo-model-gateway', artifact.REQUIRED)
+        with tempfile.TemporaryDirectory(prefix='model-gateway-artifact-') as temporary:
+            binary = Path(temporary) / 'tilo-model-gateway'
             original = b'\x7fELFhttp-binary-placeholder'
             binary.write_bytes(original)
             record, header = artifact.file_record(binary)

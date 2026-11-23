@@ -2072,10 +2072,6 @@ fn fixture_desktop_flow(available: bool) -> DesktopFlow {
 }
 
 impl Widget for SetupApp {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

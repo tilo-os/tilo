@@ -196,41 +196,6 @@ impl ShortcutRecorder {
 
 impl Widget for ShortcutRecorder {
     crate::described!();
-    /// A recorded chord as a page's own button: its keycaps' words, and the
-    /// default it is measured against.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Face, TextLook};
-        cx.element("button");
-        let theme = cx.theme();
-        let colors = &theme.tokens.colors;
-        let style = theme.text(crate::tokens::TextRole::Body);
-        // No shortcut reads as the word for none, quietly, never as a keycap of a dash.
-        let (chord, ink) = if self.value.is_empty() {
-            (
-                crate::i18n::widget_format("widget-shortcut-none", &[]),
-                colors.text_dim,
-            )
-        } else {
-            (self.value.clone(), colors.text_primary)
-        };
-        cx.face(Face {
-            icon: crate::composition::glyph(
-                crate::icons::Icon::Keyboard,
-                16.0,
-                colors.text_dim,
-                false,
-            ),
-            label: Some(TextLook::new(chord, &style, Some(ink)).with_max_lines(Some(1))),
-            detail: None,
-            trailing: None,
-            fill: None,
-            edge: None,
-            radius: f64::from(theme.tokens.radii.control),
-            pad: 8.0,
-            gap: 6.0,
-            spread: true,
-        });
-    }
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 

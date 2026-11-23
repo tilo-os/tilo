@@ -22,6 +22,8 @@ pub mod i18n;
 pub mod page;
 
 pub mod resource;
+#[cfg(unix)]
+pub mod shown_on_page;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod updates;
 

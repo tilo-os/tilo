@@ -99,7 +99,7 @@ entry in the admin workspace says which key its floor counter takes approvals
 from.
 
 After a server's update boots healthy, `tilo-server-update-apply` calls
-`floor-request` and hands the statement to the daemon (`tilo-server-admin
+`floor-request` and hands the statement to the daemon (`tilo-server
 rollout floor`), which posts it in the admin workspace as a typed request
 naming the generation and the image it booted. Another of the person's devices
 that opens the floor key answers it by itself: it checks the server is one of

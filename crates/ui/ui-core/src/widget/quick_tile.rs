@@ -625,50 +625,6 @@ impl crate::widget::controls::ActionControls for QuickTile {
 }
 
 impl Widget for QuickTile {
-    /// The switch as its icon and words, with its details beside them when it has any.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::a11y::{AccessNode, Role};
-        use crate::composition::{Face, TextLook};
-        let theme = cx.theme();
-        let m = self
-            .metrics
-            .clone()
-            .unwrap_or_else(|| TileMetrics::of(theme));
-        cx.element("div");
-        let icon = self.icon.glyph(m.glyph, theme.text_primary, false);
-        let label = TextLook::new(self.label.clone(), &m.label, Some(theme.text_primary))
-            .with_max_lines(Some(1));
-        let detail = (!self.detail.is_empty()).then(|| {
-            TextLook::new(self.detail.clone(), &m.detail, Some(theme.text_dim))
-                .with_max_lines(Some(1))
-        });
-        cx.face(Face {
-            icon,
-            label: Some(label),
-            detail,
-            trailing: None,
-            fill: None,
-            edge: None,
-            radius: 0.0,
-            pad: 0.0,
-            gap: m.gap,
-            spread: false,
-        });
-        if let Some(details) = &self.details {
-            let rect = crate::kurbo::Rect::new(
-                self.rect.x1 - m.trailing,
-                self.rect.y0,
-                self.rect.x1,
-                self.rect.y1,
-            );
-            let look = TextLook::new(details.clone(), &m.detail, Some(theme.text_dim))
-                .with_max_lines(Some(1));
-            let part = cx.words("details", "button", rect, look);
-            part.semantics = Some(AccessNode::new(Role::Button).with_name(details.clone()));
-        }
-        cx.selected(self.on);
-    }
-
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     #[allow(

@@ -435,12 +435,6 @@ fn item_of(row: &Row) -> (MenuItem, Option<String>) {
 }
 
 impl Widget for WindowMenuSurface {
-    /// The menu it shows, with its rows, their icons and their shortcuts.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         let followed = self.follow();
         Self::deliver();

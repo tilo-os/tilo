@@ -211,68 +211,6 @@ impl<'a> BarChipFace<'a> {
         FaceStack::in_face(self.height_of(theme)).width(self.faces.len() + self.overflow)
     }
 
-    /// The chip as a page shows it ([`crate::composition::Face`]), on `ground`, in the inks and
-    /// geometry [`Self::paint`] paints it with; `None` for a chip of faces or of more than one
-    /// glyph, which shows as its paint.
-    pub(crate) fn composed(
-        &self,
-        theme: &Theme,
-        ground: Color,
-    ) -> Option<crate::composition::Face> {
-        use crate::composition::{Face, TextLook, rgba8};
-        if !self.faces.is_empty() || self.overflow > 0 || self.icons.len() > 1 {
-            return None;
-        }
-        let colors = &theme.tokens.colors;
-        let control = BarControlFace::new(self.name)
-            .open(self.open)
-            .pressed(self.pressed)
-            .hovered(self.hovered)
-            .focused(self.focused);
-        let lift = control.fill(theme, ground);
-        let fill = match (lift, self.tone) {
-            (Some(lift), Some(tone)) => Some(over(tone.multiply_alpha(0.15), lift)),
-            (None, Some(tone)) => Some(tone.multiply_alpha(0.15)),
-            (lift, None) => lift,
-        };
-        let lit = self.open || self.hovered || self.pressed;
-        let ink = if lit {
-            colors.ink_on(ground, colors.text_primary, 4.5)
-        } else {
-            colors.ink_on(ground, colors.text_dim, 3.0)
-        };
-        let label_ink = colors.ink_on(ground, colors.text_primary, 4.5);
-        let icon = Self::icon_size(theme);
-        let leading = match self.icons.first() {
-            Some(i) => Some(i.glyph(icon, ink, false)?),
-            None => None,
-        };
-        let trailing = match self.trailing {
-            Some(i) => Some(i.glyph(icon, ink, false)?),
-            None => None,
-        };
-        let alone = self.label.is_empty() && self.trailing.is_none();
-        Some(Face {
-            icon: leading,
-            label: (!self.label.is_empty()).then(|| {
-                TextLook::new(
-                    self.label.to_owned(),
-                    &Self::label_style(theme),
-                    Some(label_ink),
-                )
-                .with_max_lines(Some(1))
-            }),
-            detail: None,
-            trailing,
-            fill: fill.map(rgba8),
-            edge: None,
-            radius: f64::from(theme.tokens.radii.control),
-            pad: if alone { 0.0 } else { Self::pad(theme) },
-            gap: Self::gap(theme),
-            spread: false,
-        })
-    }
-
     /// Paint the chip in `rect` (its width from [`Self::width`], its height
     /// [`Self::height`]) on `ground`.
     #[must_use]

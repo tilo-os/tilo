@@ -159,12 +159,6 @@ struct Mark {
 }
 
 impl Widget for Mark {
-    /// The mark is drawn: a page shows it as a picture of it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -299,12 +293,6 @@ impl AboutSheet {
 }
 
 impl Widget for AboutSheet {
-    /// The sheet it shows, where the sheet stands.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

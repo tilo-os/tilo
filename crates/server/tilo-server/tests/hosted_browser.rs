@@ -1773,10 +1773,11 @@ async fn an_environment_hears_its_own_record_and_no_other() {
 /// What the workspace's store keeps that `device` wrote, as each write's
 /// channel and encoded message. The workspace keeps its own governance beside
 /// it, which is not counted.
-fn written_by(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8; 32], Vec<u8>)> {
+async fn written_by(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8; 32], Vec<u8>)> {
     server
         .workspace_documents()
         .retained(WS)
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter(|kept| kept.author == device)
@@ -1836,7 +1837,7 @@ async fn an_environment_writes_its_record_and_no_other() {
     // store is read until the write is there, however long a loaded server takes.
     let retained = tilo_test_env::within("the window's write is kept", async {
         loop {
-            let kept = written_by(&fixture.server.server, device);
+            let kept = written_by(&fixture.server.server, device).await;
             if !kept.is_empty() {
                 return kept;
             }
@@ -2430,7 +2431,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
             .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
         "a session that writes its shell as any session does is not cut for it: {after:?}"
     );
-    let retained = written_by(&fixture.server.server, device);
+    let retained = written_by(&fixture.server.server, device).await;
     assert!(
         !retained.iter().any(|(_, body)| body
             .windows(b"a shell layout".len())

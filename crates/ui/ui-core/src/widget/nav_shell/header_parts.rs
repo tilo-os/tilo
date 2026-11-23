@@ -111,17 +111,6 @@ impl HeaderTitle {
 }
 
 impl Widget for HeaderTitle {
-    /// The page's title as a heading of the bar, unless the page shows it
-    /// itself.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("h2");
-        let Some(title) = self.title.as_deref().filter(|_| !self.covered) else {
-            return;
-        };
-        let theme = cx.theme();
-        header_row::compose_title_in(cx, theme, self.rect, title, self.shown_count());
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

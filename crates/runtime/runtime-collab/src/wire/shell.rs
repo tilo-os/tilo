@@ -1,15 +1,16 @@
-//! The person's shell on the device's broker.
+//! The person's shell on the daemon's dispatch.
 //!
 //! A desktop session never enters its person's workspaces itself: the device's daemon holds
-//! them, and the session is its client. The daemon's broker admits the session's connection by
-//! the account the kernel names at its other end, as that account's person's shell, beside the
-//! apps it admits by their launch. A shell connection asks three things of the daemon:
+//! them, and the session is its client. The daemon admits a shell by its launch, as it admits an
+//! app: it makes a link for one shell, a connection it opened itself with a one-use secret, and
+//! hands it to the shell it starts ([`SHELL_FD_ENV`]). A process that holds no link, whatever
+//! account it runs as, is not the shell. A shell connection asks three things of the daemon:
 //!
 //! - the documents of the workspaces the device holds, read for the device itself and written as
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
 //!   `DeviceWrites` ask, and the daemon signs and seals each write with the device's key, so the
 //!   shell holds no key of any workspace;
-//! - an action of a workspace's governance or of the host itself, as a typed
+//! - a key access or membership action of a workspace, or one of the host itself, as a typed
 //!   `tilo_actions::remote::InvokeRequest` ([`ShellCall::Invoke`]): the daemon answers it from a
 //!   workspace it keeps, and forwards it to the workspace's keeping device over tilo-actions/1
 //!   otherwise;
@@ -19,10 +20,33 @@
 
 use serde::{Deserialize, Serialize};
 
-/// What a shell's connection opens with, before its first call: it asks to be the shell of the
-/// account the kernel names at its other end. As long as an app's launch marker, which it is
-/// told apart from.
+/// What a shell link opens with, before its first call: as long as an app's launch marker, which
+/// it is told apart from. The one-use secret the daemon made for the link follows it.
 pub const SHELL_MAGIC: &[u8; 4] = b"QSH1";
+
+/// How many bytes the one-use secret of a shell link takes.
+pub const SHELL_SECRET_BYTES: usize = 32;
+
+/// Names the descriptor of the shell link the daemon handed the shell it started.
+pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
+
+/// What a connection the shell opens for one of the apps it launched begins with, followed by the
+/// one-use secret the daemon answered the shell's [`ShellCall::Vouch`] with: the daemon admits the
+/// connection as the app that vouch named. As long as [`SHELL_MAGIC`].
+pub const VOUCH_MAGIC: &[u8; 4] = b"QSV1";
+
+/// The app a shell vouches for ([`ShellCall::Vouch`]): one the shell launched and admitted on its
+/// own connection, in the workspace that launch named. The connection the vouch admits then
+/// carries that app's calls on its documents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vouch {
+    pub app: String,
+    pub workspace: String,
+    /// The window the app runs in, as the shell's launch named it.
+    pub window: Option<u64>,
+    /// The app runs with no window: it takes its actions on its records, never an open.
+    pub windowless: bool,
+}
 
 /// What a shell asks of the device's documents and actions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,13 +95,111 @@ pub enum ShellCall {
         workspace: String,
         documents: Vec<(String, String)>,
     },
-    /// Invoke an action as the shell's person on this device: a workspace's governance
-    /// (`RemoteActionTarget::workspace_governance`) or the host's own operations. The request is
+    /// Invoke an action as the shell's person on this device: a workspace's key access and
+    /// membership (`RemoteActionTarget::workspace_governance`) or the host's own operations. The request is
     /// `tilo_actions::remote::InvokeRequest` as JSON.
     Invoke { request: String },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.
     Writes,
+    /// Run a resource store command (`tilo_resource_store::wire::Command` JSON) on `app`'s
+    /// resources in `workspace`, as the device's person: what an app the shell runs in its own
+    /// process reads and writes its resources with.
+    Resources {
+        workspace: String,
+        app: String,
+        command: String,
+    },
+    /// Keep or release an account's sign-in in a workspace's vault, or forget the account.
+    Vault(VaultCall),
+    /// Admit one connection as the app `Vouch` names, which the shell launched: answered with the
+    /// one-use secret that connection opens with after [`VOUCH_MAGIC`].
+    Vouch(Vouch),
+    /// Record the receipt of an effect an action the shell ran had, in its workspace, as this
+    /// device's: `tilo_peer_state::owner_commit::OwnerCommitRequest` JSON of an effect receipt.
+    Receipt { request: String },
+    /// Whether the device records the receipts of effects in `workspace`: it does in a workspace
+    /// it joined, each device in its own slice of it.
+    KeepsReceipts { workspace: String },
+    /// Whether the member whose device `certificate` names (`tilo_user_identity::DeviceCert` JSON)
+    /// may read `app`'s `resource` of `workspace`: decided at the resource, for an agent the shell
+    /// admitted itself, before the shell reads it for that agent.
+    Authorizes {
+        workspace: String,
+        app: String,
+        resource: String,
+        certificate: String,
+    },
+}
+
+/// A shell's ask of a workspace's vault and accounts. The vault opens on this device alone, so the
+/// shell asks, and is answered only what the person who asks may have.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VaultCall {
+    /// Keep `password` as the sign-in of the account titled `title`, replacing the entry `item`
+    /// names when it names one, as the person `person` asks from their device `device`. Answered
+    /// with the entry's reference (`vault.item:<id>`).
+    Keep {
+        workspace: String,
+        person: [u8; 32],
+        device: [u8; 32],
+        item: Option<String>,
+        title: String,
+        username: String,
+        /// The servers the sign-in is for, and nowhere else.
+        places: Vec<String>,
+        password: String,
+    },
+    /// Release the sign-in of the entry `item` to `app`, as `person` asks from `device`. Answered
+    /// with the secret.
+    Release {
+        workspace: String,
+        person: [u8; 32],
+        device: [u8; 32],
+        app: String,
+        item: String,
+    },
+    /// Forget the account `account` from the workspace's accounts. Answered `true` when the
+    /// workspace had it.
+    Forget { workspace: String, account: String },
+}
+
+impl std::fmt::Debug for VaultCall {
+    /// Names the call and what it is about, never the password it carries.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Keep {
+                workspace, title, ..
+            } => write!(
+                formatter,
+                "Keep {{ workspace: {workspace}, title: {title} }}"
+            ),
+            Self::Release {
+                workspace,
+                app,
+                item,
+                ..
+            } => write!(
+                formatter,
+                "Release {{ workspace: {workspace}, app: {app}, item: {item} }}"
+            ),
+            Self::Forget { workspace, account } => write!(
+                formatter,
+                "Forget {{ workspace: {workspace}, account: {account} }}"
+            ),
+        }
+    }
+}
+
+/// What a [`VaultCall`] is answered with: an entry's reference, a released secret, or whether an
+/// account was forgotten. Never shown in a log.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultAnswer(pub String);
+
+impl std::fmt::Debug for VaultAnswer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("VaultAnswer(..)")
+    }
 }
 
 /// The daemon's answer to a [`ShellCall`].
@@ -85,7 +207,7 @@ pub enum ShellCall {
 pub enum ShellReply {
     /// A [`ShellCall::Read`].
     Read(ShellRead),
-    /// A [`ShellCall::Readable`] or [`ShellCall::Holds`].
+    /// A [`ShellCall::Readable`], [`ShellCall::Holds`] or [`ShellCall::KeepsReceipts`].
     Is(bool),
     /// A [`ShellCall::Listing`]: `(app, route)` of each document.
     Listing(Vec<(String, String)>),
@@ -105,6 +227,22 @@ pub enum ShellReply {
     /// the app's primary). `None` when the device took more than it kept told, so the shell reads
     /// everything it follows again.
     Writes(Option<Vec<DocumentWritten>>),
+    /// A [`ShellCall::Resources`]: the store's `tilo_resource_store::wire::Reply` as JSON, or why
+    /// the command was not run.
+    Resources(Result<String, String>),
+    /// A [`ShellCall::Vault`]: what the call is answered with, or why it was refused.
+    Vault(Result<VaultAnswer, String>),
+    /// A [`ShellCall::Vouch`]: the daemon's socket the vouched connection opens on, and the secret
+    /// it opens with.
+    Vouched {
+        socket: std::path::PathBuf,
+        secret: [u8; SHELL_SECRET_BYTES],
+    },
+    /// A [`ShellCall::Receipt`]: the receipt as the workspace took it
+    /// (`tilo_peer_state::owner_commit::OwnerCommitReceipt` JSON), or why it took none.
+    Receipted(Result<String, String>),
+    /// A [`ShellCall::Authorizes`]: allowed, or why not.
+    Authorized(Result<(), String>),
 }
 
 /// What the device holds of one document, as `tilo_peer_state::workspace_documents::DocumentRead`.

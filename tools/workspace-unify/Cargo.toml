@@ -150,7 +150,6 @@ doc = false
 "calculator" = { path = "../../apps/calculator", default-features = false, features = [] }
 "calculator-model" = { path = "../../apps/calculator-model", default-features = false, features = [] }
 "calculator-model-wasm" = { path = "../../apps/calculator-model-wasm", default-features = false, features = [] }
-"calendar" = { path = "../../apps/calendar", default-features = false, features = ["default", "live"] }
 "calendar-model" = { path = "../../apps/calendar-model", default-features = false, features = ["live", "store"] }
 "calendar-model-wasm" = { path = "../../apps/calendar-model-wasm", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
@@ -221,9 +220,6 @@ doc = false
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
-"contacts" = { path = "../../apps/contacts", default-features = false, features = [] }
-"contacts-model" = { path = "../../apps/contacts-model", default-features = false, features = [] }
-"contacts-model-wasm" = { path = "../../apps/contacts-model-wasm", default-features = false, features = [] }
 "containers" = { path = "../../apps/containers", default-features = false, features = [] }
 "containers-model" = { path = "../../apps/containers-model", default-features = false, features = [] }
 "containers-model-wasm" = { path = "../../apps/containers-model-wasm", default-features = false, features = [] }
@@ -2813,7 +2809,6 @@ doc = false
 "calculator" = { path = "../../apps/calculator", default-features = false, features = [] }
 "calculator-model" = { path = "../../apps/calculator-model", default-features = false, features = [] }
 "calculator-model-wasm" = { path = "../../apps/calculator-model-wasm", default-features = false, features = [] }
-"calendar" = { path = "../../apps/calendar", default-features = false, features = ["default", "live"] }
 "calendar-model" = { path = "../../apps/calendar-model", default-features = false, features = ["live", "store"] }
 "calendar-model-wasm" = { path = "../../apps/calendar-model-wasm", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
@@ -2884,9 +2879,6 @@ doc = false
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
-"contacts" = { path = "../../apps/contacts", default-features = false, features = [] }
-"contacts-model" = { path = "../../apps/contacts-model", default-features = false, features = [] }
-"contacts-model-wasm" = { path = "../../apps/contacts-model-wasm", default-features = false, features = [] }
 "containers" = { path = "../../apps/containers", default-features = false, features = [] }
 "containers-model" = { path = "../../apps/containers-model", default-features = false, features = [] }
 "containers-model-wasm" = { path = "../../apps/containers-model-wasm", default-features = false, features = [] }

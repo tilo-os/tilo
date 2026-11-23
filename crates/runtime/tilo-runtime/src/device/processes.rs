@@ -45,7 +45,8 @@ use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenRequest, Packet as _, ToProcess,
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenedFile, Packet as _, TaskFds,
+    TaskRequest, ToProcess,
 };
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
@@ -74,11 +75,31 @@ const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
 /// How many of its last error lines a process that ended without saying why is reported by.
 const SAID_LINES: usize = 8;
 
-/// What identifies one process: one workspace and one app, on the runtimes its package names.
+/// Where the hosts of a workspace's agent tasks keep what they compile, beside its apps': no app
+/// id starts with a dot.
+const TASK_STORAGE: &str = ".tasks";
+
+/// What the windows a workspace's views show on web pages are granted to write: nothing an app
+/// or a task keeps.
+const PAGE_STORAGE: &str = ".pages";
+
+/// A process that runs no app's instances: an agent task's host, or the window of a view shown on
+/// a web page.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Alone {
+    Task(String),
+    /// The page window's start, numbered apart from every other.
+    Page(u64),
+}
+
+/// What identifies one process: one workspace and one app, on the runtimes its package names; or
+/// one process of its own ([`Alone`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct HostKey {
     workspace: String,
     app: String,
+    /// What the process runs instead of instances, for one that takes none.
+    alone: Option<Alone>,
     /// The tilolang runtime and the Tilo runtime it runs on: an instance runs only in a process of
     /// the runtimes its package names.
     runtime: String,
@@ -133,9 +154,8 @@ pub struct Instance {
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
     pub reveal: Option<String>,
-    /// What the window opens: a file, as content the instance reads from the content store, or a
-    /// link it hands its package's `open-link`.
-    pub open: Option<OpenRequest>,
+    /// The file the window opens, as content the instance reads from the content store.
+    pub open: Option<OpenedFile>,
     /// What the person may do in the app, projected from the workspace's policy.
     pub access: Option<tilo_action_policy::MemberAccess>,
     /// The person's formats and language, as the session resolved them: what the instance writes
@@ -198,6 +218,7 @@ impl Processes {
         let mut processes: Vec<_> = self
             .running()
             .iter()
+            .filter(|(key, _)| key.alone.is_none())
             .map(|(key, process)| {
                 let mut instances: Vec<u64> = process.instances.keys().copied().collect();
                 instances.sort_unstable();
@@ -213,7 +234,8 @@ impl Processes {
     /// week's first day, their date and clock styles), and their windows read their words in the
     /// language, where they stand. A process started later is handed them with its first instance.
     pub fn locale_changed(&self, locale: &runtime_portal::process_link::Locale) {
-        for (key, process) in self.running().iter() {
+        // A task's host takes nothing after its task.
+        for (key, process) in self.running().iter().filter(|(key, _)| key.alone.is_none()) {
             if let Err(error) = ToProcess::Locale(locale.clone()).send(&process.socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next instance
                 // starts another.
@@ -237,7 +259,7 @@ impl Processes {
         access: impl Fn(&str) -> Option<tilo_action_policy::MemberAccess>,
     ) {
         for (key, process) in self.running().iter() {
-            if key.workspace != workspace {
+            if key.workspace != workspace || key.alone.is_some() {
                 continue;
             }
             let app = key.app.clone();
@@ -294,6 +316,7 @@ impl Processes {
         let key = HostKey {
             workspace: instance.workspace.clone(),
             app: instance.app.clone(),
+            alone: None,
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
@@ -432,6 +455,7 @@ impl Processes {
         let runs_in = HostKey {
             workspace: key.workspace.clone(),
             app: app.to_owned(),
+            alone: key.alone.clone(),
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
@@ -539,7 +563,7 @@ impl Processes {
                 }
             }
         }
-        let mut process = self.start(key)?;
+        let mut process = self.start(key, None)?;
         send_instance(&process.socket, request, fds)?;
         process
             .instances
@@ -550,6 +574,77 @@ impl Processes {
         Ok(true)
     }
 
+    /// Start a host of its own for the agent task `request`, handed `fds`: a tilolang process
+    /// started like every other ([`spawn_host`]), on the tilolang and Tilo runtimes `runs_on`
+    /// (those the apps installed here run on, [`super::package_runs::task_runtimes`]), in the same
+    /// sandbox as an app's process and granted less: its own storage, and nothing any
+    /// app kept. It takes no other task and no instance, and it is followed like every process
+    /// here until it ends: once the API closes the task's program connection, or with this
+    /// process, whose end of its socket is its lifeline.
+    ///
+    /// # Errors
+    /// The process did not start, or did not take the task.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the process is started and kept in one hold, so its follow never misses it"
+    )]
+    pub fn start_task(
+        self: &Arc<Self>,
+        request: TaskRequest,
+        fds: TaskFds,
+        (runtime, app_runtime): (String, String),
+    ) -> std::io::Result<()> {
+        let key = HostKey {
+            workspace: request.workspace.clone(),
+            app: String::new(),
+            alone: Some(Alone::Task(request.task.clone())),
+            runtime,
+            app_runtime,
+        };
+        let mut running = self.running();
+        let process = self.start(&key, None)?;
+        let (workspace, task) = (request.workspace.clone(), request.task.clone());
+        ToProcess::Task { request, fds }.send(&process.socket)?;
+        // It takes nothing more: it ends once its task did.
+        // SAFETY: shutting down the writing half of a socket this device owns.
+        let _ = unsafe { libc::shutdown(process.socket.as_raw_fd(), libc::SHUT_WR) };
+        running.insert(key, process);
+        tracing::info!(%workspace, %task, "a task's host started");
+        Ok(())
+    }
+
+    /// Show the view `view` of `app` in `workspace` on a web page: its window, started in the
+    /// sandbox every tilolang process here runs in ([`spawn_host`]), on the runtimes the app's
+    /// package names and granted none of what the app keeps, holding the view's patch connection
+    /// and its end of the page's link. The answer is the device's end of that link: the window
+    /// ends once it is closed, and is followed like every process here until it has.
+    ///
+    /// # Errors
+    /// The app does not verify, or its window did not start.
+    pub(crate) fn show_page(
+        self: &Arc<Self>,
+        app: &str,
+        workspace: &str,
+        view: crate::apps::OpenedView,
+    ) -> std::io::Result<std::os::unix::net::UnixStream> {
+        let verified = (self.verifies)(workspace, app).map_err(std::io::Error::other)?;
+        let key = HostKey {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            alone: Some(Alone::Page(
+                self.generations.fetch_add(1, Ordering::Relaxed),
+            )),
+            runtime: verified.runtime,
+            app_runtime: verified.app_runtime,
+        };
+        let mut running = self.running();
+        let process = self.start(&key, Some((view.patch, view.page)))?;
+        running.insert(key, process);
+        drop(running);
+        tracing::info!(%workspace, %app, "a view's page window started");
+        Ok(view.link)
+    }
+
     /// Where the process `key` keeps what its instances keep.
     fn storage(&self, key: &HostKey) -> std::io::Result<PathBuf> {
         let dir = self
@@ -557,7 +652,11 @@ impl Processes {
             .join("tilo")
             .join("tilolang-processes")
             .join(&key.workspace)
-            .join(&key.app);
+            .join(match &key.alone {
+                Some(Alone::Task(_)) => TASK_STORAGE,
+                Some(Alone::Page(_)) => PAGE_STORAGE,
+                None => &key.app,
+            });
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -566,6 +665,9 @@ impl Processes {
     /// and the native app it replaced wrote: the directory of that app's documents in the
     /// workspace, and where it lies beneath that store's root. `None` where it kept nothing.
     fn earlier(&self, key: &HostKey) -> Option<(PathBuf, PathBuf)> {
+        if key.alone.is_some() {
+            return None;
+        }
         let root = launcher::appdir::host_app_dir(
             &self.data_home,
             &launcher::appdir::workspace_slug(Some(&key.workspace)),
@@ -577,9 +679,14 @@ impl Processes {
         dir.is_dir().then_some((dir, under))
     }
 
-    /// Start the process `key`, with its socket at the launch kind's descriptor, and follow it on a
-    /// thread of its own until it ends.
-    fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
+    /// Start the process `key`, with its socket at the launch kind's descriptor (a `page` window
+    /// with its patch connection and page link besides), and follow it on a thread of its own
+    /// until it ends.
+    fn start(
+        self: &Arc<Self>,
+        key: &HostKey,
+        page: Option<(OwnedFd, OwnedFd)>,
+    ) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
         let earlier = self.earlier(key);
         let (ours, mut child) = spawn_host(
@@ -589,6 +696,7 @@ impl Processes {
             earlier
                 .as_ref()
                 .map(|(dir, under)| (dir.as_path(), under.as_path())),
+            page,
         )?;
         let tag = format!("{} {}", key.workspace, key.app);
         let said = child.stderr.take().map(|stderr| {
@@ -697,14 +805,20 @@ impl Processes {
     }
 }
 
-/// Start the tilolang host `key` with its `storage` and `earlier` grant: the one place a host
-/// starts, and the only one that names the platform's launcher (`tilo-launcher tilolang-process`).
+/// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
+/// kept (the directory, and where the host sees it beneath its mount), on its process link: the
+/// one place a host is started, and the only one that names the platform. On Linux the launcher
+/// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
+/// its sandbox; a `page` window's patch connection and page link go to it as descriptors 3 and 4,
+/// and it keeps the link while the window runs.
 fn spawn_host(
     launcher: &Path,
     key: &HostKey,
     storage: &Path,
     earlier: Option<(&Path, &Path)>,
+    page: Option<(OwnedFd, OwnedFd)>,
 ) -> std::io::Result<(OwnedFd, std::process::Child)> {
+    use std::os::unix::process::CommandExt as _;
     let mut command = std::process::Command::new(launcher);
     command
         .arg(launcher::run::tilolang_process::SUBCOMMAND)
@@ -721,9 +835,36 @@ fn spawn_host(
             .arg("--earlier-under")
             .arg(under);
     }
+    if let Some((patch, page)) = &page {
+        command.arg("--page");
+        let handed = [(patch.as_raw_fd(), 3), (page.as_raw_fd(), 4)];
+        // SAFETY: only async-signal-safe calls between fork and exec: each descriptor is moved
+        // above both slots first, so neither placement overwrites the other, then placed without
+        // close-on-exec.
+        unsafe {
+            command.pre_exec(move || {
+                let mut moved = [(0, 0); 2];
+                for (slot, (from, to)) in moved.iter_mut().zip(handed) {
+                    let fd = libc::fcntl(from, libc::F_DUPFD_CLOEXEC, 16);
+                    if fd < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    *slot = (fd, to);
+                }
+                for (from, to) in moved {
+                    if libc::dup2(from, to) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
     // Read here: what it said last is why it ended when it could not say so itself.
     command.stderr(std::process::Stdio::piped());
-    runtime_portal::process_link::spawn(command)
+    let spawned = runtime_portal::process_link::spawn(command);
+    drop(page);
+    spawned
 }
 
 /// The hash of an encoded module: whether a process runs that build already.
@@ -739,35 +880,19 @@ type Said = Option<std::io::Result<std::thread::JoinHandle<VecDeque<String>>>>;
 
 /// Relay each line `stderr` says to the session's log under `tag`, and answer the last ones once
 /// it ends.
-fn last_lines(mut stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
+fn last_lines(stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
+    use std::io::BufRead as _;
     let mut last = VecDeque::with_capacity(SAID_LINES);
-    let mut chunk = [0_u8; 4096];
-    let mut lines = wire_frame::BoundedLines::new(wire_frame::LINE_BYTES);
-    let mut keep = |bytes: &[u8], truncated: bool| {
-        let mut line = String::from_utf8_lossy(bytes).into_owned();
-        if truncated {
-            line.push_str("… [truncated]");
-        }
-        tracing::info!(
-            target: tilo_startup_metrics::APP_OUTPUT_TARGET,
-            "[tilolang-process {tag}] {line}"
-        );
+    for line in std::io::BufReader::new(stderr).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        tracing::info!(target: tilo_startup_metrics::APP_OUTPUT_TARGET, "[tilolang-process {tag}] {line}");
         if last.len() == SAID_LINES {
             last.pop_front();
         }
         last.push_back(line);
-    };
-    loop {
-        let read = match stderr.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
-        };
-        let bytes = chunk.get(..read).unwrap_or_default();
-        lines.push(bytes, &mut keep);
     }
-    lines.finish(keep);
     last
 }
 
@@ -825,6 +950,7 @@ mod tests {
         HostKey {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
+            alone: None,
             runtime: "tilolang@1".to_owned(),
             app_runtime: "tilo@1".to_owned(),
         }
@@ -1056,74 +1182,207 @@ mod tests {
         );
     }
 
+    /// An agent task's host is started as every tilolang process here is, through the launcher's
+    /// tilolang process kind, and granted less than an app's: its own storage, and nothing the
+    /// workspace's apps kept on this device. It is handed its task and nothing after it, so it
+    /// ends with the task, and the device follows it until it has: nothing else keeps it.
     #[test]
-    fn last_lines_cuts_an_overlong_line_and_keeps_the_line_after_it() {
-        /// Streams `remaining` copies of `b'a'`, then `tail`, in 4 KiB chunks,
-        /// with an `Interrupted` error before the first chunk.
-        struct HugeThenShort {
-            remaining: usize,
-            tail: &'static [u8],
-            interrupted: bool,
-        }
-
-        impl std::io::Read for HugeThenShort {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                if !self.interrupted {
-                    self.interrupted = true;
-                    return Err(std::io::ErrorKind::Interrupted.into());
-                }
-                if self.remaining > 0 {
-                    let count = buf.len().min(4096).min(self.remaining);
-                    if let Some(slot) = buf.get_mut(..count) {
-                        slot.fill(b'a');
-                    }
-                    self.remaining = self.remaining.saturating_sub(count);
-                    return Ok(count);
-                }
-                if self.tail.is_empty() {
-                    return Ok(0);
-                }
-                let count = buf.len().min(self.tail.len());
-                if let (Some(dst), Some(src)) = (buf.get_mut(..count), self.tail.get(..count)) {
-                    dst.copy_from_slice(src);
-                }
-                self.tail = self.tail.get(count..).unwrap_or_default();
-                Ok(count)
-            }
-        }
-
-        const BOUND: usize = wire_frame::LINE_BYTES;
-        const MARK: &str = "… [truncated]";
-        let reader = HugeThenShort {
-            remaining: 1024 * 1024,
-            tail: b"\nshort\n",
-            interrupted: false,
-        };
-        let kept = last_lines(reader, "ws app");
-        assert_eq!(kept.len(), 2, "kept both the cut line and the short line");
-        for line in &kept {
-            assert!(
-                line.len() <= BOUND.saturating_add(MARK.len()),
-                "kept line length {} exceeds bound + mark",
-                line.len()
-            );
-        }
-        assert_eq!(
-            kept.front().map(String::as_str),
-            Some(format!("{}{MARK}", "a".repeat(BOUND)).as_str())
+    fn a_tasks_host_starts_through_the_launcher_granted_less_than_an_app() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
+        let home = tempfile::tempdir().expect("a device's home");
+        // What Notes kept of the workspace, which only Notes' own process is granted.
+        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
+        // A launcher that says what it was asked to start, and holds the link it was handed
+        // until the device lets go of it.
+        let asked = home.path().join("asked");
+        let handed = home.path().join("handed");
+        let launcher = home.path().join("tilo-launcher");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec cat > '{}'\n",
+                asked.display(),
+                handed.display()
+            ),
+        )
+        .expect("the launcher is written");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+            .expect("the launcher runs");
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            launcher,
+            Box::new(|_, _| Err("no app is started here".to_owned())),
         );
-        assert_eq!(kept.back().map(String::as_str), Some("short"));
+
+        let (_api, program) = std::os::unix::net::UnixStream::pair().expect("a program link");
+        let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", b"[]")
+            .expect("the task's apps");
+        processes
+            .start_task(
+                TaskRequest {
+                    task: "run-1".to_owned(),
+                    workspace: WORKSPACE.to_owned(),
+                    person: Some("ada".to_owned()),
+                    apps_len: 2,
+                    documents_under: std::collections::BTreeMap::new(),
+                    changed_at_document: std::collections::BTreeSet::new(),
+                },
+                TaskFds {
+                    program: program.into(),
+                    apps,
+                },
+                (
+                    "tilolang/0.1.0+tilolang".to_owned(),
+                    "tilo-runtime/2026.10.1".to_owned(),
+                ),
+            )
+            .expect("the task's host starts");
+        assert!(
+            processes.instances().is_empty(),
+            "a task's host runs no app's instance"
+        );
+
+        // It ends once it read its task: the device said nothing more. Its follow forgets it.
+        let ends_by = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !processes.running().is_empty() {
+            assert!(
+                std::time::Instant::now() < ends_by,
+                "the task's host outlived its task"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let asked = std::fs::read_to_string(&asked).expect("the launcher was asked");
+        let storage = home
+            .path()
+            .join("tilo/tilolang-processes")
+            .join(WORKSPACE)
+            .join(TASK_STORAGE);
+        assert_eq!(
+            asked.lines().collect::<Vec<_>>(),
+            [
+                launcher::run::tilolang_process::SUBCOMMAND,
+                "--runtime",
+                "tilolang/0.1.0+tilolang",
+                "--app-runtime",
+                "tilo-runtime/2026.10.1",
+                "--storage",
+                &storage.display().to_string(),
+            ],
+            "the launcher's tilolang process, granted its own storage and nothing an app kept"
+        );
+        assert!(
+            !asked.contains(&kept.display().to_string()),
+            "nothing Notes kept is granted to a task's host"
+        );
+        assert!(
+            std::fs::metadata(&handed).expect("the link was read").len() > 0,
+            "the task was handed over the link"
+        );
     }
 
+    /// A view shown on a web page gets a window of its own, started through the launcher's
+    /// tilolang process on the runtimes the app's package names, granted none of what the app
+    /// kept, and holding the view's patch connection and the page's link. The device answers its
+    /// end of that link, the window answers on it, and closing it ends the window.
     #[test]
-    fn last_lines_keeps_reading_past_non_utf8_bytes() {
-        let reader = std::io::Cursor::new(b"bad \xff\xfe bytes\nafter\n".to_vec());
-        let kept = last_lines(reader, "ws app");
-        assert_eq!(kept.len(), 2, "non-UTF-8 must not stop reading: {kept:?}");
-        assert_eq!(
-            kept.front().map(String::as_str),
-            Some("bad \u{FFFD}\u{FFFD} bytes")
+    fn a_page_window_starts_through_the_launcher_and_ends_with_its_link() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::PermissionsExt as _;
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a2";
+        let home = tempfile::tempdir().expect("a device's home");
+        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
+        // A launcher that says what it was asked to start, then stands in for the window: it
+        // answers on the view's patch connection and on the page's link, and reads the link
+        // until the device lets go of it.
+        let asked = home.path().join("asked");
+        let launcher = home.path().join("tilo-launcher");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n[ -S /proc/self/fd/3 ] && [ -S /proc/self/fd/4 ] || exit 3\nprintf patch >&3\nprintf drawn >&4\ncat <&4 >/dev/null\n",
+                asked.display()
+            ),
+        )
+        .expect("the launcher is written");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+            .expect("the launcher runs");
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            launcher,
+            Box::new(|_, app| {
+                Ok(VerifiedInstance {
+                    runtime: "tilolang/0.1.0+tilolang".to_owned(),
+                    app_runtime: format!("tilo-runtime/2026.10.1+{app}"),
+                    publisher: [0; 32],
+                    module: runtime_portal::process_link::Module::default(),
+                })
+            }),
         );
-        assert_eq!(kept.back().map(String::as_str), Some("after"));
+
+        let (patch, mut instance) =
+            std::os::unix::net::UnixStream::pair().expect("a patch connection");
+        let (link, page) = std::os::unix::net::UnixStream::pair().expect("a page link");
+        let mut link = processes
+            .show_page(
+                NOTES,
+                WORKSPACE,
+                crate::apps::OpenedView {
+                    patch: patch.into(),
+                    page: page.into(),
+                    link,
+                },
+            )
+            .expect("the page's window starts");
+        let mut answered = [0; 5];
+        link.read_exact(&mut answered)
+            .expect("the window answers its page");
+        assert_eq!(&answered, b"drawn");
+        instance
+            .read_exact(&mut answered)
+            .expect("the window holds the view's patch connection");
+        assert_eq!(&answered, b"patch");
+        assert!(
+            processes.instances().is_empty(),
+            "a page window runs no instance of its own"
+        );
+        assert_eq!(
+            processes.running().len(),
+            1,
+            "it is followed as every process here"
+        );
+
+        // The device lets go of the page: the window ends, and its follow forgets it.
+        link.write_all(b"bye").expect("the link is open");
+        drop(link);
+        let ends_by = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !processes.running().is_empty() {
+            assert!(
+                std::time::Instant::now() < ends_by,
+                "the page's window outlived its link"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let asked = std::fs::read_to_string(&asked).expect("the launcher was asked");
+        let storage = home
+            .path()
+            .join("tilo/tilolang-processes")
+            .join(WORKSPACE)
+            .join(PAGE_STORAGE);
+        assert_eq!(
+            asked.lines().collect::<Vec<_>>(),
+            [
+                launcher::run::tilolang_process::SUBCOMMAND,
+                "--runtime",
+                "tilolang/0.1.0+tilolang",
+                "--app-runtime",
+                "tilo-runtime/2026.10.1+so.tilo.notes",
+                "--storage",
+                &storage.display().to_string(),
+                "--page",
+            ],
+            "the launcher's tilolang process on the app's runtimes, granted nothing the app kept"
+        );
+        assert!(!asked.contains(&kept.display().to_string()));
     }
 }

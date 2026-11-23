@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Book` is the app's `contacts.book` at `contacts/<resource>`, read with
+`Labeled` is the app's `tl.so.tilo.contacts.Labeled` at `contacts/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,403 +20,430 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "MergeField",
+    "Labeled",
     "Address",
     "Contact",
-    "GroupEntry",
-    "Labeled",
-    "MergeField",
-    "Endpoint",
-    "Person",
-    "Projected",
+    "Group",
     "Book",
     "Contacts",
-    "Identities",
-    "NewContactArgs",
-    "AddContactsArgs",
-    "DeleteContactArgs",
-    "MergeContactsArgs",
-    "ProjectContactArgs",
-    "RemoveContactArgs",
-    "ConfirmEndpointArgs",
-    "ConfirmAccountArgs",
-    "ReplaceEndpointArgs",
-    "ReplaceAccountArgs",
-    "ProjectPhonesArgs",
-    "ProjectEmailsArgs",
-    "ProjectContactsArgs",
-    "ForgetEndpointArgs",
+    "RenameArgs",
+    "FavoriteArgs",
+    "RemovePhoneArgs",
+    "RemoveEmailArgs",
+    "RemoveAddressArgs",
+    "UngroupArgs",
+    "GroupArgs",
+    "DeleteArgs",
+    "MergeIntoArgs",
+    "ConfirmArgs",
+    "ChangeArgs",
+    "ForgetArgs",
+    "ShareArgs",
+    "UnshareArgs",
 ]
 
-class Address(TypedDict):
-    id: str
-    label: str
-    street: str
-    city: str
-    region: str
-    postal: str
-    country: str
+MergeField = Literal["name", "org", "role", "website", "birthday", "notes"]
+"""What a merge may take from the card that goes: the values each card keeps one of. Numbers, mailboxes, addresses and groups always come over; these are the person's to choose."""
 
-class Contact(TypedDict):
-    id: str
-    first: str
-    last: str
-    org: str
-    title: str
-    website: str
-    birthday: Any | None
-    notes: str
-    phones: list[Entry[Labeled]]
-    emails: list[Entry[Labeled]]
-    addresses: list[Entry[Address]]
-    groups: list[Entry[GroupEntry]]
-    favorite: bool
-    photo: str
-
-class GroupEntry(TypedDict):
-    id: str
-    value: str
-
-class Labeled(TypedDict):
-    id: str
-    label: str
-    value: str
-
-MergeField = Literal["First", "Last", "Organization", "Title", "Website", "Birthday", "Notes"]
-
-class Endpoint(TypedDict):
-    service: str
-    recipient: str
-    scope: str
-    revision: str
-    removed: bool
-
-class Person(TypedDict):
-    label: str
-    removed: bool
-    phones: list[str]
-    emails: list[str]
-    photo: str
-    endpoints: list[Entry[Endpoint]]
-
-class Projected(TypedDict):
-    person: str
-    label: str
-    phones: list[str]
-    emails: list[str]
-    photo: str
-
-NewContactArgs = TypedDict("NewContactArgs", {
+RenameArgs = TypedDict("RenameArgs", {
     "name": "str",
 })
-"""The arguments of `new-contact`."""
+"""The arguments of `rename`."""
 
-AddContactsArgs = TypedDict("AddContactsArgs", {
-    "contacts": "list[Contact]",
+FavoriteArgs = TypedDict("FavoriteArgs", {
+    "on": NotRequired["bool | None"],
 })
-"""The arguments of `add-contacts`."""
+"""The arguments of `favorite`."""
 
-DeleteContactArgs = TypedDict("DeleteContactArgs", {
-    "contact": "str",
+RemovePhoneArgs = TypedDict("RemovePhoneArgs", {
+    "phone": "Labeled",
 })
-"""The arguments of `delete-contact`."""
+"""The arguments of `remove_phone`."""
 
-MergeContactsArgs = TypedDict("MergeContactsArgs", {
-    "contact": "str",
-    "source": "str",
-    "take_from_source": "list[MergeField]",
-    "merged": NotRequired["Contact | None"],
+RemoveEmailArgs = TypedDict("RemoveEmailArgs", {
+    "mail": "Labeled",
 })
-"""The arguments of `merge-contacts`."""
+"""The arguments of `remove_email`."""
 
-ProjectContactArgs = TypedDict("ProjectContactArgs", {
-    "person": "str",
-    "label": "str",
+RemoveAddressArgs = TypedDict("RemoveAddressArgs", {
+    "address": "Address",
 })
-"""The arguments of `project-contact`."""
+"""The arguments of `remove_address`."""
 
-RemoveContactArgs = TypedDict("RemoveContactArgs", {
-    "person": "str",
+UngroupArgs = TypedDict("UngroupArgs", {
+    "name": "str",
 })
-"""The arguments of `remove-contact`."""
+"""The arguments of `ungroup`."""
 
-ConfirmEndpointArgs = TypedDict("ConfirmEndpointArgs", {
-    "person": "str",
-    "endpoint": "str",
-    "service": "str",
-    "recipient": "str",
+GroupArgs = TypedDict("GroupArgs", {
+    "c": "Contact",
+    "name": "str",
 })
-"""The arguments of `confirm-endpoint`."""
+"""The arguments of `group`."""
 
-ConfirmAccountArgs = TypedDict("ConfirmAccountArgs", {
-    "person": "str",
-    "endpoint": "str",
-    "service": "str",
-    "scope": "str",
-    "recipient": "str",
-    "revision": "str",
+DeleteArgs = TypedDict("DeleteArgs", {
+    "c": "Contact",
 })
-"""The arguments of `confirm-account`."""
+"""The arguments of `delete`."""
 
-ReplaceEndpointArgs = TypedDict("ReplaceEndpointArgs", {
-    "person": "str",
-    "previous": "str",
-    "endpoint": "str",
-    "service": "str",
-    "recipient": "str",
+MergeIntoArgs = TypedDict("MergeIntoArgs", {
+    "keep": "Contact",
+    "goes": "Contact",
+    "take": NotRequired["list[MergeField] | None"],
 })
-"""The arguments of `replace-endpoint`."""
+"""The arguments of `merge_into`."""
 
-ReplaceAccountArgs = TypedDict("ReplaceAccountArgs", {
-    "person": "str",
-    "previous": "str",
-    "endpoint": "str",
+ConfirmArgs = TypedDict("ConfirmArgs", {
+    "d": "Any",
+    "person": "Any",
     "service": "str",
     "scope": "str",
-    "recipient": "str",
-    "revision": "str",
+    "account": "str",
 })
-"""The arguments of `replace-account`."""
+"""The arguments of `confirm`."""
 
-ProjectPhonesArgs = TypedDict("ProjectPhonesArgs", {
-    "person": "str",
-    "phones": "list[str]",
+ChangeArgs = TypedDict("ChangeArgs", {
+    "d": "Any",
+    "person": "Any",
+    "endpoint": "Any",
+    "service": "str",
+    "scope": "str",
+    "account": "str",
 })
-"""The arguments of `project-phones`."""
+"""The arguments of `change`."""
 
-ProjectEmailsArgs = TypedDict("ProjectEmailsArgs", {
-    "person": "str",
-    "emails": "list[str]",
+ForgetArgs = TypedDict("ForgetArgs", {
+    "d": "Any",
+    "person": "Any",
+    "endpoint": "Any",
 })
-"""The arguments of `project-emails`."""
+"""The arguments of `forget`."""
 
-ProjectContactsArgs = TypedDict("ProjectContactsArgs", {
-    "people": "list[Projected]",
-    "removed": "list[str]",
+ShareArgs = TypedDict("ShareArgs", {
+    "d": "Any",
+    "person": "Any",
+    "c": "Contact",
 })
-"""The arguments of `project-contacts`."""
+"""The arguments of `share`."""
 
-ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
-    "person": "str",
-    "endpoint": "str",
+UnshareArgs = TypedDict("UnshareArgs", {
+    "d": "Any",
+    "person": "Any",
 })
-"""The arguments of `forget-endpoint`."""
+"""The arguments of `unshare`."""
 
-class Book(Resource):
-    """Contacts — `contacts.book`."""
-    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
-    def export_vcard_content(self,
+class Labeled(Resource):
+    """Labeled — `tl.so.tilo.contacts.Labeled`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    fzyd2a52: str  # label
+    b4cilqkx: str  # value
+
+
+class Address(Resource):
+    """Address — `tl.so.tilo.contacts.Address`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    @property
+    def _5iipld72(self) -> str:
+        """label (`5iipld72` on the wire)."""
+        return self.fields["5iipld72"]
+
+    @_5iipld72.setter
+    def _5iipld72(self, value: str) -> None:
+        self.edit("5iipld72", value=value)
+    zpxsouby: str  # street
+    txsphfy2: str  # city
+    g55zwvsh: str  # region
+    xuayok2l: str  # postal
+    xlbwdlve: str  # country
+
+
+class Contact(Resource):
+    """Contact — `tl.so.tilo.contacts.Contact`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    zut4kvim: str  # name
+    rfhxkccf: str  # org
+    @property
+    def _7wq5grnt(self) -> str:
+        """role (`7wq5grnt` on the wire)."""
+        return self.fields["7wq5grnt"]
+
+    @_7wq5grnt.setter
+    def _7wq5grnt(self, value: str) -> None:
+        self.edit("7wq5grnt", value=value)
+    dg7b4wfh: str  # website
+    fc62qk5v: str | None  # birthday
+    @property
+    def _4lfazbdq(self) -> str:
+        """notes (`4lfazbdq` on the wire)."""
+        return self.fields["4lfazbdq"]
+
+    @_4lfazbdq.setter
+    def _4lfazbdq(self, value: str) -> None:
+        self.edit("4lfazbdq", value=value)
+    lurugxra: list[Entry[Labeled]]  # phones
+    hfbs4gxe: list[Entry[Labeled]]  # emails
+    orxuftuv: list[Entry[Address]]  # addresses
+    vea52w55: list[str]  # groups
+    ur3qshor: bool  # favorite
+    kvhikhu4: str  # photo
+
+    def rename(self, *, name: str) -> None:
+        """Renames a contact."""
+        return self.action("rename", name=name)
+
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename", items)
+
+    def favorite(self,
         *,
-        contact: str | None = None,
-        name: str | None = None,
+        on: bool | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Adds a contact to favorites, or takes them off."""
         args: dict[str, Any] = {}
-        if contact is not None:
-            args["contact"] = contact
-        if name is not None:
-            args["name"] = name
-        return self.action("export-vcard-content", **args)
+        if on is not None:
+            args["on"] = on
+        return self.action("favorite", **args)
+
+    def favorite_many(self, items: list[FavoriteArgs]) -> list[dict[str, Any]]:
+        """Runs `favorite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("favorite", items)
+
+    def add_phone(self,
+        *,
+        number: str | None = None,
+        label: str | None = None,
+    ) -> Labeled:
+        """Gives a contact a phone number, as the number `number` and the kind `label` where the caller knows them already. Addressed from the card's own button, both are empty for the person to fill in."""
+        args: dict[str, Any] = {}
+        if number is not None:
+            args["number"] = number
+        if label is not None:
+            args["label"] = label
+        return self.action("add_phone", **args)
+
+    def remove_phone(self, *, phone: Labeled) -> None:
+        """Takes one of a contact's phone numbers away."""
+        return self.action("remove_phone", phone=phone)
+
+    def remove_phone_many(self, items: list[RemovePhoneArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_phone` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_phone", items)
+
+    def add_email(self,
+        *,
+        address: str | None = None,
+        label: str | None = None,
+    ) -> Labeled:
+        """Gives a contact a mailbox, as the `address` and the kind `label` where the caller knows them already. Addressed from the card's own button, both are empty for the person to fill in."""
+        args: dict[str, Any] = {}
+        if address is not None:
+            args["address"] = address
+        if label is not None:
+            args["label"] = label
+        return self.action("add_email", **args)
+
+    def remove_email(self, *, mail: Labeled) -> None:
+        """Takes one of a contact's mailboxes away."""
+        return self.action("remove_email", mail=mail)
+
+    def remove_email_many(self, items: list[RemoveEmailArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_email` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_email", items)
+
+    def add_address(self) -> Address:
+        """Gives a contact a postal address to fill in."""
+        return self.action("add_address")
+
+    def remove_address(self, *, address: Address) -> None:
+        """Takes one of a contact's addresses away."""
+        return self.action("remove_address", address=address)
+
+    def remove_address_many(self, items: list[RemoveAddressArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_address` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_address", items)
+
+    def ungroup(self, *, name: str) -> None:
+        """Takes a contact out of a group."""
+        return self.action("ungroup", name=name)
+
+    def ungroup_many(self, items: list[UngroupArgs]) -> list[dict[str, Any]]:
+        """Runs `ungroup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ungroup", items)
+
+    def export_contact(self) -> Any:
+        """A contact as a file: their card, named for them."""
+        return self.action("export_contact")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"export_vcard_content"})
+    __actions__ = frozenset({"rename", "rename_many", "favorite", "favorite_many", "add_phone", "remove_phone", "remove_phone_many", "add_email", "remove_email", "remove_email_many", "add_address", "remove_address", "remove_address_many", "ungroup", "ungroup_many", "export_contact"})
+
+
+class Group(Resource):
+    """Group — `tl.so.tilo.contacts.Group`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    jn6l7z6v: str  # name
+
+
+class Book(Resource):
+    """Book — `tl.so.tilo.contacts.Book`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    qfj7l6eu: list[Entry[Contact]]  # contacts
+    uyyz5pg2: list[Entry[Group]]  # groups
+
+    def new_contact(self,
+        *,
+        name: str | None = None,
+    ) -> Contact:
+        """A new contact, named by what is typed where they were made; a book's entry gives the name it takes, so nothing is left called 'No name yet' by a person who typed one."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("new_contact", **args)
+
+    def group(self,
+        *,
+        c: Contact,
+        name: str,
+    ) -> None:
+        """Puts a contact in a group, making the group the book's place if it is new: the same group however it is spelled, so 'Work' and 'work' are one place."""
+        return self.action("group", c=c, name=name)
+
+    def group_many(self, items: list[GroupArgs]) -> list[dict[str, Any]]:
+        """Runs `group` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("group", items)
+
+    def new_group(self, *, name: str) -> Group:
+        """Starts a group the book offers as a place, with nobody in it yet."""
+        return self.action("new_group", name=name)
+
+    def delete(self, *, c: Contact) -> None:
+        """Deletes a contact from the book."""
+        return self.action("delete", c=c)
+
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete", items)
+
+    def merge_into(self,
+        *,
+        keep: Contact,
+        goes: Contact,
+        take: list[MergeField] | None = None,
+    ) -> None:
+        """Merges the card that goes into the one that stays: every number, mailbox, address and group of both is the card that stays, the fields `take` names come from the card that goes, and the card that goes is deleted. One change, so undo brings both cards back."""
+        args: dict[str, Any] = {}
+        args["keep"] = keep
+        args["goes"] = goes
+        if take is not None:
+            args["take"] = take
+        return self.action("merge_into", **args)
+
+    def merge_into_many(self, items: list[MergeIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `merge_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("merge_into", items)
+
+    def export_book(self) -> Any:
+        """Every contact as one vCard file, which another address book reads whole."""
+        return self.action("export_book")
+
+    def import_vcard(self, *, file: Any) -> int:
+        """Imports the contacts a vCard file holds into the book, each card a contact of its own, and answers how many were added. A file whose cards cannot be read adds nothing and changes nothing: what it says is the refusal."""
+        return self.action("import_vcard", file=file)
+
+    def add_contacts(self, *, cards: str) -> int:
+        """The cards `cards`, the words of a vCard file, as contacts of this book, and how many named somebody: what an importer, an agent or a script hands a book in one call."""
+        return self.action("add_contacts", cards=cards)
+
+    def add_card(self, *, card: str) -> Contact | None:
+        """The contact a vCard card says, made in the book, or none for a card that names nobody. Its rows are filled after it stands in the book, as every resource's are."""
+        return self.action("add_card", card=card)
+
+    def find_for_address(self, *, address: str) -> Contact | None:
+        """The contact the book holds for `address`, as an action: what a person, an agent or another app asks before they write to it. Nothing is changed and nothing is guessed from a name."""
+        return self.action("find_for_address", address=address)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_contact", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "import_vcard", "add_contacts", "add_card", "find_for_address"})
 
 
 class Contacts(Resource):
-    """Contacts — `contacts.contacts`."""
-    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
-    contacts: list[Entry[Contact]]
-    @property
-    def removed(self) -> list[str]:
-        """Read only."""
-        return self.fields["removed"]
-
-    def new_contact(self, *, name: str) -> None:
-        """Runs the app's action."""
-        return self.action("new-contact", name=name)
-
-    def new_contact_many(self, items: list[NewContactArgs]) -> list[dict[str, Any]]:
-        """Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("new-contact", items)
-
-    def add_contacts(self, *, contacts: list[Contact]) -> None:
-        """Runs the app's action."""
-        return self.action("add-contacts", contacts=contacts)
-
-    def add_contacts_many(self, items: list[AddContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("add-contacts", items)
-
-    def delete_contact(self, *, contact: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete-contact", contact=contact)
-
-    def delete_contact_many(self, items: list[DeleteContactArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-contact", items)
-
-    def merge_contacts(self,
+    """Contacts — `tl.so.tilo.contacts`."""
+    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    def confirm(self,
         *,
-        contact: str,
-        source: str,
-        take_from_source: list[MergeField],
-        merged: Contact | None = None,
+        d: Any,
+        person: Any,
+        service: str,
+        scope: str,
+        account: str,
     ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["contact"] = contact
-        args["source"] = source
-        args["take_from_source"] = take_from_source
-        if merged is not None:
-            args["merged"] = merged
-        return self.action("merge-contacts", **args)
+        """Binds `account` of `service` to the person: the directory's `confirm-endpoint`, or `confirm-account` where the service names an account scope."""
+        return self.action("confirm", d=d, person=person, service=service, scope=scope, account=account)
 
-    def merge_contacts_many(self, items: list[MergeContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("merge-contacts", items)
+    def confirm_many(self, items: list[ConfirmArgs]) -> list[dict[str, Any]]:
+        """Runs `confirm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("confirm", items)
+
+    def change(self,
+        *,
+        d: Any,
+        person: Any,
+        endpoint: Any,
+        service: str,
+        scope: str,
+        account: str,
+    ) -> None:
+        """Changes the account an association names, under the directory's rule that a changed address needs review before anything is sent to it."""
+        return self.action("change", d=d, person=person, endpoint=endpoint, service=service, scope=scope, account=account)
+
+    def change_many(self, items: list[ChangeArgs]) -> list[dict[str, Any]]:
+        """Runs `change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("change", items)
+
+    def forget(self,
+        *,
+        d: Any,
+        person: Any,
+        endpoint: Any,
+    ) -> None:
+        """Takes an association away: messages from that account stop reaching this contact, and what was already received is unchanged."""
+        return self.action("forget", d=d, person=person, endpoint=endpoint)
+
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget", items)
+
+    def share(self,
+        *,
+        d: Any,
+        person: Any,
+        c: Contact,
+    ) -> None:
+        """Shares this card with the workspace's apps, under the person it is: the name, the numbers and the mailboxes another app reads of a contact before it writes to them."""
+        return self.action("share", d=d, person=person, c=c)
+
+    def share_many(self, items: list[ShareArgs]) -> list[dict[str, Any]]:
+        """Runs `share` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("share", items)
+
+    def unshare(self,
+        *,
+        d: Any,
+        person: Any,
+    ) -> None:
+        """Takes the contact out of the directory, leaving its card in the book: what the apps read of it stops naming it."""
+        return self.action("unshare", d=d, person=person)
+
+    def unshare_many(self, items: list[UnshareArgs]) -> list[dict[str, Any]]:
+        """Runs `unshare` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("unshare", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_contact", "new_contact_many", "add_contacts", "add_contacts_many", "delete_contact", "delete_contact_many", "merge_contacts", "merge_contacts_many"})
-
-
-class Identities(Resource):
-    """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
-    people: list[Entry[Person]]
-
-    def project_contact(self,
-        *,
-        person: str,
-        label: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-contact", person=person, label=label)
-
-    def project_contact_many(self, items: list[ProjectContactArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-contact", items)
-
-    def remove_contact(self, *, person: str) -> None:
-        """Runs the app's action."""
-        return self.action("remove-contact", person=person)
-
-    def remove_contact_many(self, items: list[RemoveContactArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-contact", items)
-
-    def confirm_endpoint(self,
-        *,
-        person: str,
-        endpoint: str,
-        service: str,
-        recipient: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
-
-    def confirm_endpoint_many(self, items: list[ConfirmEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("confirm-endpoint", items)
-
-    def confirm_account(self,
-        *,
-        person: str,
-        endpoint: str,
-        service: str,
-        scope: str,
-        recipient: str,
-        revision: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
-
-    def confirm_account_many(self, items: list[ConfirmAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("confirm-account", items)
-
-    def replace_endpoint(self,
-        *,
-        person: str,
-        previous: str,
-        endpoint: str,
-        service: str,
-        recipient: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
-
-    def replace_endpoint_many(self, items: list[ReplaceEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("replace-endpoint", items)
-
-    def replace_account(self,
-        *,
-        person: str,
-        previous: str,
-        endpoint: str,
-        service: str,
-        scope: str,
-        recipient: str,
-        revision: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
-
-    def replace_account_many(self, items: list[ReplaceAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("replace-account", items)
-
-    def project_phones(self,
-        *,
-        person: str,
-        phones: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-phones", person=person, phones=phones)
-
-    def project_phones_many(self, items: list[ProjectPhonesArgs]) -> list[dict[str, Any]]:
-        """Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-phones", items)
-
-    def project_emails(self,
-        *,
-        person: str,
-        emails: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-emails", person=person, emails=emails)
-
-    def project_emails_many(self, items: list[ProjectEmailsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-emails", items)
-
-    def project_contacts(self,
-        *,
-        people: list[Projected],
-        removed: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-contacts", people=people, removed=removed)
-
-    def project_contacts_many(self, items: list[ProjectContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-contacts", items)
-
-    def forget_endpoint(self,
-        *,
-        person: str,
-        endpoint: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("forget-endpoint", person=person, endpoint=endpoint)
-
-    def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget-endpoint", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"project_contact", "project_contact_many", "remove_contact", "remove_contact_many", "confirm_endpoint", "confirm_endpoint_many", "confirm_account", "confirm_account_many", "replace_endpoint", "replace_endpoint_many", "replace_account", "replace_account_many", "project_phones", "project_phones_many", "project_emails", "project_emails_many", "project_contacts", "project_contacts_many", "forget_endpoint", "forget_endpoint_many"})
+    __actions__ = frozenset({"confirm", "confirm_many", "change", "change_many", "forget", "forget_many", "share", "share_many", "unshare", "unshare_many"})
 
 

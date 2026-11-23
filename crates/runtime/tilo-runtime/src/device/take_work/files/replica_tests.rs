@@ -390,7 +390,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // workspace's work.
     let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(&member.workspace().unwrap()).unwrap();
 
     // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[51; 32]);
@@ -506,7 +506,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let scenario = profile.parent().unwrap().to_path_buf();
     let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(&member.workspace().unwrap()).unwrap();
     let operator = SigningKey::from_bytes(&[61; 32]);
     let shell = certificate(
         &operator,
@@ -723,7 +723,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     let said = profile.with_extension("log");
     let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
-        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
+        tilo_identity::broker::trusted_current_device(&member.workspace().unwrap()).unwrap();
     let operator = SigningKey::from_bytes(&[71; 32]);
     let shell = certificate(
         &operator,
@@ -1056,7 +1056,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
 /// The Files tree the workspace founded on `daemon` keeps, its own record and every chunk it
 /// lists: `None` until it keeps the tree's record.
 fn kept_tree(daemon: &Daemon) -> Option<fs_protocol::tree::Tree> {
-    let workspace = collab_types::WorkspaceId::parse(daemon.workspace())?;
+    let workspace = collab_types::WorkspaceId::parse(&daemon.workspace().ok()?)?;
     let read = |record: &str| {
         daemon
             .serving()
@@ -1091,7 +1091,7 @@ fn wait_for_kept_file(daemon: &Daemon, size: usize, what: &str) {
         assert!(
             started.elapsed() <= bound,
             "{what}: the tree holds {tree:?}; the folder's sync says {:?}",
-            daemon.joined_files_status(daemon.workspace())
+            daemon.joined_files_status(&daemon.workspace().unwrap())
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -1113,7 +1113,7 @@ fn a_computer_with_no_login_keeps_its_files_in_the_workspace_founded_on_it() {
     {
         let daemon = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
         assert_eq!(
-            daemon.joined_files_folder(daemon.workspace()),
+            daemon.joined_files_folder(&daemon.workspace().unwrap()),
             Some(folder.clone()),
             "the founded workspace's files are shown at its folder"
         );

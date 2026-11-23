@@ -761,30 +761,6 @@ impl<C: Widget> FloatingWindow<C> {
 }
 
 impl<C: Widget + 'static> Widget for FloatingWindow<C> {
-    /// Its title and its close control, over what it holds.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        if !self.open {
-            return;
-        }
-        cx.element("section");
-        let theme = cx.theme().clone();
-        let title = crate::composition::TextLook::new(
-            self.title.clone(),
-            &theme.text(crate::tokens::TextRole::Label),
-            Some(theme.tokens.colors.text_primary),
-        )
-        .with_max_lines(Some(1));
-        let part = cx.part("title", "FloatingTitle", self.title_bar_rect());
-        part.tag = Some("h2");
-        part.own = Some(crate::composition::Own::Text(title));
-        cx.targets();
-        let body = self.content_area();
-        if !body.is_zero_area() {
-            let part = cx.part("body", "FloatingContent", body);
-            part.painted(self.paint_generation);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

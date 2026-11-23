@@ -171,10 +171,6 @@ impl Column {
 }
 
 impl Widget for Column {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGuarded,

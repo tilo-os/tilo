@@ -145,6 +145,25 @@ pub(super) struct FloatingRuntime {
     /// event came ([`App::record_sideways_wheel`]).
     #[cfg(feature = "native")]
     pub sideways_gesture: Option<SidewaysGesture>,
+    /// The controls the shell pressed before the input that came before them was
+    /// handed to this window, oldest first: each runs once it has been
+    /// ([`HeldPress::after`]).
+    #[cfg(feature = "native")]
+    pub held_presses: std::collections::VecDeque<HeldPress>,
+}
+
+/// A control of the window's content the shell pressed after input it had sent the
+/// window which the window has not handled yet: the serial of that input, and the
+/// control.
+#[cfg(feature = "native")]
+pub(super) struct HeldPress {
+    /// The serial of the newest input the shell had sent this window before the
+    /// press: the press runs once the window has handled it.
+    pub after: u32,
+    pub name: String,
+    pub role: String,
+    pub identity: Option<String>,
+    pub action: crate::window_targets::TargetAction,
 }
 
 /// Who owns a sideways wheel gesture for all of its events.
@@ -241,6 +260,8 @@ impl FloatingRuntime {
             sideways: 0.0,
             #[cfg(feature = "native")]
             sideways_gesture: None,
+            #[cfg(feature = "native")]
+            held_presses: std::collections::VecDeque::new(),
         }
     }
 }
@@ -361,6 +382,60 @@ impl App {
     #[cfg(all(feature = "native", feature = "test-support"))]
     pub fn test_pump_floating_service(&mut self) -> bool {
         self.pump_floating_surface_service()
+    }
+
+    /// Run one message the shell would have written, as the window's own pump runs it.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn test_deliver_host_message(&mut self, message: crate::floating_surface::FloatingSurfaceHostMessage) {
+        self.apply_floating_host_messages(vec![message]);
+    }
+
+    /// Press the control `name` of this window's content as the shell asks, in its place among
+    /// the window's own input: `after_input` names the serial of the input the shell sent the
+    /// window before the press ([`FloatingSurfaceHostMessage::PressTarget`]), and while the
+    /// window has not handled that input yet the press waits for it, so a save reads every
+    /// character typed before it.
+    #[cfg(feature = "native")]
+    pub(super) fn receive_press(
+        &mut self,
+        name: &str,
+        role: &str,
+        identity: Option<&str>,
+        action: crate::window_targets::TargetAction,
+        after_input: Option<u32>,
+    ) {
+        if let Some(after) = after_input.filter(|serial| !self.floating.window_bar.handled(*serial))
+        {
+            self.floating.held_presses.push_back(HeldPress {
+                after,
+                name: name.to_owned(),
+                role: role.to_owned(),
+                identity: identity.map(str::to_owned),
+                action,
+            });
+            return;
+        }
+        self.press_window_target(name, role, identity, action);
+    }
+
+    /// Run the presses the window can take now: each whose input came before it has been
+    /// handled, oldest first.
+    #[cfg(feature = "native")]
+    pub(super) fn deliver_held_presses(&mut self) {
+        while let Some(next) = self.floating.held_presses.front() {
+            if !self.floating.window_bar.handled(next.after) {
+                return;
+            }
+            let Some(press) = self.floating.held_presses.pop_front() else {
+                return;
+            };
+            self.press_window_target(
+                &press.name,
+                &press.role,
+                press.identity.as_deref(),
+                press.action,
+            );
+        }
     }
 
     /// A queued request is insufficient: the compositor must have applied it
@@ -1213,8 +1288,9 @@ impl App {
                     role,
                     identity,
                     action,
+                    after_input,
                 } => {
-                    self.press_window_target(name, role, identity.as_deref(), *action);
+                    self.receive_press(name, role, identity.as_deref(), *action, *after_input);
                 }
                 FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
                     if self.input.window_focused && !self.activate_test_id(test_id) {

@@ -31,7 +31,7 @@ use tilolang_tilo::runtime::{ResourceRef, Value};
 use crate::common::{Api, PERSON, until, wait_for};
 
 /// The Tasks app, as its package names it.
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 
 /// A task the tasks app's first scenario seeded.
 const SEEDED_TASK: &str = "Take the bins out";

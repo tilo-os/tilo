@@ -294,15 +294,9 @@ pub(super) async fn has_collab_launch_marker(
     Ok(peeked_marker(stream).await? == launcher::services::COLLAB_LAUNCH_MAGIC)
 }
 
-/// Whether the peer on `stream` opens as a person's shell
-/// ([`runtime_collab::wire::shell::SHELL_MAGIC`]), peeked without consuming it.
-pub(super) async fn has_shell_marker(stream: &tokio::net::UnixStream) -> Result<bool, BrokerError> {
-    Ok(peeked_marker(stream).await? == *runtime_collab::wire::shell::SHELL_MAGIC)
-}
-
 /// The first bytes the peer on `stream` sent, as long as a marker, without consuming them: waited
 /// for as long as the peer has not begun, and for `LAUNCH_MARKER_COMPLETION` once it has.
-async fn peeked_marker(
+pub(super) async fn peeked_marker(
     stream: &tokio::net::UnixStream,
 ) -> Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()], BrokerError> {
     let incomplete =

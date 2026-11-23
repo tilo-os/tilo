@@ -1868,45 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calendar"
-version = "0.1.0"
-dependencies = [
- "account-credentials",
- "accounts",
- "app-fleet",
- "calendar-model",
- "fnv",
- "hex",
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "test-http",
- "tilo-accounts-engine",
- "tilo-actions",
- "tilo-app",
- "tilo-app-package",
- "tilo-automerge-fork",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-dav",
- "tilo-document",
- "tilo-files",
- "tilo-rich-text",
- "tilo-test-env",
- "tilo-timezone-engine",
- "tilo-vello",
- "tilo-winit",
- "toml 1.0.6+spec-1.1.0",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "calendar-model"
 version = "0.1.0"
 dependencies = [
@@ -2223,6 +2184,69 @@ dependencies = [
  "cipher 0.5.2",
  "poly1305 0.9.1",
  "zeroize",
+]
+
+[[package]]
+name = "chat"
+version = "0.1.0"
+dependencies = [
+ "chat",
+ "chat-model",
+ "durable-store",
+ "emoji",
+ "fnv",
+ "image",
+ "jiff",
+ "neighbour-wire",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-app-package",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-content",
+ "tilo-document",
+ "tilo-emoji-engine",
+ "tilo-files",
+ "tilo-model-client",
+ "tilo-paths",
+ "tilo-reference",
+ "tilo-rich-text",
+ "tilo-test-env",
+ "tilo-vello",
+ "tilo-view",
+ "tilo-view-macros",
+ "tilo-winit",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "chat-model"
+version = "0.1.0"
+dependencies = [
+ "moderation-model",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-document",
+ "tilo-feedback",
+ "tilo-reference",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "chat-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "chat-model",
+ "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2740,7 +2764,6 @@ dependencies = [
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
- "fnv",
  "fs-protocol",
  "getrandom 0.4.3",
  "hex",
@@ -2998,53 +3021,6 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
-
-[[package]]
-name = "contacts"
-version = "0.1.0"
-dependencies = [
- "contacts-model",
- "image",
- "pim-lines",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tilo-app",
- "tilo-app-package",
- "tilo-automerge-fork",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-files",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "contacts-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "unicode-normalization",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "contacts-model-wasm"
-version = "0.1.0"
-dependencies = [
- "contacts-model",
- "tilo-model-guest",
- "workspace-hack",
-]
 
 [[package]]
 name = "containers"
@@ -4149,6 +4125,7 @@ dependencies = [
 name = "discord"
 version = "0.1.0"
 dependencies = [
+ "chat",
  "data-encoding",
  "discord",
  "discord-wire",
@@ -4161,7 +4138,6 @@ dependencies = [
  "tilo-net",
  "tilo-reference",
  "tilo-test-env",
- "tilo-workspace-service",
  "workspace-hack",
 ]
 
@@ -4183,6 +4159,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "chat",
  "collab-types",
  "davey",
  "discord",
@@ -7748,7 +7725,7 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "calendar",
+ "calendar-model",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
@@ -15449,7 +15426,7 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "bounded-command",
- "calendar",
+ "calendar-model",
  "collab-types",
  "desktop-policy",
  "hex",
@@ -17293,13 +17270,12 @@ dependencies = [
  "blake3",
  "bytes",
  "calculator",
- "calendar",
  "camera",
  "canvas",
+ "chat",
  "chip-design",
  "clocks",
  "collab-types",
- "contacts",
  "diffmerge",
  "discord",
  "ebook",
@@ -17343,18 +17319,14 @@ dependencies = [
  "snippets",
  "speed-test",
  "tasks",
- "tasks-model",
  "tempfile",
  "terminal",
- "test-http",
  "test-server",
  "themes",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-session",
- "tilo-api",
  "tilo-app",
- "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -17364,17 +17336,11 @@ dependencies = [
  "tilo-content",
  "tilo-content-types",
  "tilo-desktop-model",
- "tilo-desktop-search",
- "tilo-desktop-surface",
- "tilo-doc",
- "tilo-doc-codecs",
- "tilo-environment",
+ "tilo-feedback-transport",
  "tilo-files",
  "tilo-fs",
  "tilo-live",
  "tilo-lock",
- "tilo-mcp",
- "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-paths",
@@ -17385,14 +17351,11 @@ dependencies = [
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",
- "tilo-session-actions",
  "tilo-session-client",
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-video-render",
- "tilo-workspace-directory",
  "tilo-workspace-service",
- "tilolang-cli",
  "tilolang-tilo",
  "tilolang-web",
  "tokio",
@@ -17401,7 +17364,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "typst-editor",
- "ush",
  "uuid",
  "video-editor",
  "video-player",
@@ -17504,6 +17466,7 @@ dependencies = [
  "tilo-content-device",
  "tilo-desktop-model",
  "tilo-failure",
+ "tilo-feedback",
  "tilo-files",
  "tilo-history",
  "tilo-lock",
@@ -18470,6 +18433,7 @@ name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tilo-app-id",
  "tilo-automerge-fork",
  "tilo-resource",
@@ -18682,7 +18646,7 @@ dependencies = [
  "agent-provider-config",
  "blake3",
  "calculator",
- "calendar",
+ "chat",
  "collab-types",
  "desktop-policy",
  "ed25519-dalek 3.0.0",
@@ -18706,6 +18670,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-failure",
+ "tilo-feedback-transport",
  "tilo-resource",
  "tilo-session-core",
  "tilo-shell-surface",
@@ -19235,6 +19200,61 @@ version = "0.1.0"
 [[package]]
 name = "tilo-failure"
 version = "0.1.0"
+
+[[package]]
+name = "tilo-feedback"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "durable-store",
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-app-id",
+ "tilo-automerge-fork",
+ "tilo-feedback-review",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback-review"
+version = "0.1.0"
+dependencies = [
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-sort",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback-transport"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chat",
+ "collab-types",
+ "collaboration",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app-state",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-content",
+ "tilo-feedback",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilo-ui",
+ "workspace-hack",
+]
 
 [[package]]
 name = "tilo-file-provider"
@@ -19859,8 +19879,6 @@ dependencies = [
  "fs-protocol",
  "hex",
  "libc",
- "runtime-portal",
- "rustix 1.1.6",
  "serde",
  "serde_json",
  "tilo-action-policy",
@@ -19871,10 +19889,8 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
- "tilo-render-protocol",
  "tilo-resource",
  "tilo-rt",
- "tilo-session-actions",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -20079,11 +20095,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
- "tilo-net",
  "tilo-rt",
  "tilo-test-env",
  "tokio",
- "web-sys",
  "wire-frame",
  "workspace-hack",
  "zeroize",
@@ -20176,9 +20190,9 @@ dependencies = [
  "calculator-model-wasm",
  "calendar-model-wasm",
  "camera-model-wasm",
+ "chat-model-wasm",
  "clocks-model-wasm",
  "console-model-wasm",
- "contacts-model-wasm",
  "containers-model-wasm",
  "db-client-model-wasm",
  "diffmerge-model-wasm",
@@ -21316,6 +21330,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-catalogue",
+ "app-fleet",
  "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -21372,6 +21387,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-render-protocol",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",
@@ -21590,8 +21606,8 @@ dependencies = [
  "app-cli",
  "base64 0.22.1",
  "blake3",
- "bounded-command",
  "bytes",
+ "chat",
  "clap",
  "collab-types",
  "collaboration",
@@ -21657,9 +21673,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-fs",
- "tilo-fs-client",
  "tilo-identity",
- "tilo-identity-client",
  "tilo-live",
  "tilo-lock",
  "tilo-mcp",
@@ -21772,6 +21786,7 @@ dependencies = [
  "tilo-workspace-join",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -21846,6 +21861,7 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
+ "chat",
  "collab-types",
  "collaboration",
  "compat-catalogue",
@@ -21935,6 +21951,7 @@ dependencies = [
  "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-failure",
+ "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",
  "tilo-fs",
@@ -22004,6 +22021,7 @@ dependencies = [
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tilo-workspace-service",
+ "tilolang-calendar",
  "tilolang-cli",
  "tilolang-mail",
  "tilolang-process",
@@ -22051,6 +22069,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fake-model-providers",
@@ -22071,6 +22090,8 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "rand_core 0.10.0",
+ "runtime-collab",
+ "runtime-portal",
  "rustls",
  "serde",
  "serde_json",
@@ -23338,6 +23359,7 @@ dependencies = [
  "blake3",
  "bytes",
  "calendar-model",
+ "chat",
  "collab-types",
  "collaboration",
  "ed25519-dalek 3.0.0",
@@ -23438,7 +23460,6 @@ dependencies = [
  "tilo-web-search",
  "tilo-workspace-agent",
  "tilo-workspace-keys",
- "tilolang-tilo",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -23528,10 +23549,13 @@ dependencies = [
  "tilo-content",
  "tilo-failure",
  "tilo-files",
+ "tilo-media",
  "tilo-render-protocol",
+ "tilo-server-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilolang",
+ "tilolang-calendar",
  "tilolang-mail",
  "tilolang-process",
  "tilolang-tilo",
@@ -23542,6 +23566,31 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-calendar"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "calendar-model",
+ "jiff",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-http",
+ "tilo-action-policy",
+ "tilo-dav",
+ "tilo-document",
+ "tilo-net",
+ "tilo-test-env",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -27882,7 +27931,6 @@ dependencies = [
  "calculator",
  "calculator-model",
  "calculator-model-wasm",
- "calendar",
  "calendar-model",
  "calendar-model-wasm",
  "calloop",
@@ -27908,6 +27956,9 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305 0.10.1",
  "chacha20poly1305 0.11.0",
+ "chat",
+ "chat-model",
+ "chat-model-wasm",
  "chinese-number",
  "chinese-variant",
  "chip-design",
@@ -27962,9 +28013,6 @@ dependencies = [
  "const-oid 0.10.2",
  "const-oid 0.9.6",
  "constant_time_eq",
- "contacts",
- "contacts-model",
- "contacts-model-wasm",
  "containers",
  "containers-model",
  "containers-model-wasm",
@@ -29076,6 +29124,9 @@ dependencies = [
  "tilo-extension",
  "tilo-face",
  "tilo-failure",
+ "tilo-feedback",
+ "tilo-feedback-review",
+ "tilo-feedback-transport",
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",

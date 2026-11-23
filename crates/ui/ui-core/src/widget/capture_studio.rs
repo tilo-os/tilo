@@ -1932,14 +1932,6 @@ fn overlap(a: Rect, b: Rect) -> f64 {
 }
 
 impl Widget for CaptureStudio {
-    /// Its overlay as it draws it, every control it names a button over it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if !self.open {
-            return;
-        }
-        cx.painted_targets(self.paint_generation);
-    }
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,

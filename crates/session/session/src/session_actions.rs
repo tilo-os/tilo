@@ -14,6 +14,11 @@
 //! never shared: its rows are read on the pass and handed here, and an invocation is handed
 //! to the session's API ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered
 //! on the pass, as the API's own calls are.
+//!
+//! One step is not on the loop: the person's own tilolang line (`session:programs#run-line`,
+//! [`wire::RUN_LINE`]). It runs in the session's program host as the person
+//! ([`Programs`](crate::platform::programs::Programs)), so it makes no frame wait, and the
+//! person may stop it while it runs.
 #![cfg_attr(
     target_arch = "wasm32",
     allow(
@@ -30,11 +35,14 @@ use tilo_actions::{ActionDescriptor, ActionFailure};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
+use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
 use crate::platform::steps::SessionSteps;
 
 /// The session's own actions, as the broker's catalogue names them.
 pub(crate) struct SessionActions {
     steps: Arc<dyn SessionSteps>,
+    /// The session's program host: where the person's own line runs, off the loop.
+    programs: Option<Arc<dyn Programs>>,
     /// The rows the session's own API offered on its last pass: what the catalogue lists.
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the layout from off its thread.
@@ -45,10 +53,12 @@ pub(crate) struct SessionActions {
 }
 
 impl SessionActions {
-    /// The session's actions, whose rows the session hands over on each pass through `steps`.
-    pub(crate) fn new(steps: Arc<dyn SessionSteps>) -> Self {
+    /// The session's actions, whose rows the session hands over on each pass through `steps`,
+    /// and whose person's line runs through `programs`.
+    pub(crate) fn new(steps: Arc<dyn SessionSteps>, programs: Option<Arc<dyn Programs>>) -> Self {
         Self {
             steps,
+            programs,
             rows: std::sync::RwLock::default(),
             read_at: std::sync::Mutex::default(),
         }
@@ -79,6 +89,67 @@ impl SessionActions {
     }
 }
 
+const LINE: tilo_actions::ActionParam = tilo_actions::ActionParam::required(
+    "line",
+    tilo_actions::ParamType::Text,
+    "The tilolang line to run as you.",
+);
+const LINE_PARAMS: &[tilo_actions::ActionParam] = &[LINE];
+
+/// The person's own line, described for the broker's catalogue: a background step, which the
+/// person may stop while it runs. The line itself only reads: every change it makes is its own
+/// invocation, decided where it lands, and credited to the person.
+fn line_descriptor() -> ActionDescriptor {
+    use tilo_session_core::desktop::i18n::t;
+    let mut contract = tilo_actions::ActionContract {
+        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["text", "person_text", "failed"],
+            }),
+        },
+        ..tilo_actions::ActionContract::view()
+    };
+    // A line runs as the person who typed it, never as an agent: agents' listings leave it out.
+    contract.set_audience(tilo_actions::Audience::People);
+    ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: tilo_actions::ActionAddress::new(wire::PROGRAMS_RESOURCE, wire::RUN_LINE),
+        resource_kind: wire::PROGRAMS_RESOURCE.into(),
+        resource_label: t("programs-resource"),
+        action_label: t("programs-run-line"),
+        keywords: Vec::new(),
+        icon: None,
+        description: Some(t("programs-run-line-detail")),
+        locus: tilo_actions::ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::View,
+        contract,
+        input: tilo_actions::InputSpec::None,
+        params: LINE_PARAMS.to_vec(),
+        view: None,
+    }
+}
+
+/// The line `slot` carries, as the broker sent it.
+fn line_of(slot: Option<&str>) -> Result<String, String> {
+    let Some(slot) = slot else {
+        return Err("a line takes its text: `line`".into());
+    };
+    let json = slot
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .ok_or("a line takes its arguments by name")?;
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(json).map_err(|error| error.to_string())?;
+    arguments
+        .get("line")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "a line takes its text: `line`".into())
+}
+
 impl HostStepServices for SessionActions {
     fn provider(&self) -> &'static str {
         wire::PROVIDER
@@ -89,14 +160,23 @@ impl HostStepServices for SessionActions {
     }
 
     fn descriptors(&self) -> Vec<ActionDescriptor> {
-        self.offered()
+        let mut described: Vec<ActionDescriptor> = self
+            .offered()
             .into_iter()
             .map(|placed| placed.action)
-            .collect()
+            .collect();
+        described.push(line_descriptor());
+        described
     }
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        self.offered()
+        let mut rows = self.offered();
+        rows.push(tilo_actions::api::PlacedAction {
+            parent: String::new(),
+            has_children: false,
+            action: line_descriptor(),
+        });
+        rows
     }
 
     /// A turn's step: decided by the turn that asked for it, exactly as an app's action the
@@ -107,6 +187,11 @@ impl HostStepServices for SessionActions {
     }
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+        if request.address.resource == wire::PROGRAMS_RESOURCE
+            && request.address.action == wire::RUN_LINE
+        {
+            return self.start_line(request);
+        }
         let argument = request.argument.map(str::to_owned);
         let (done, asked) = pending();
         // The place the ask is in: an agent's turn is the conversation the person wrote in, and
@@ -137,6 +222,47 @@ impl HostStepServices for SessionActions {
             })
             .map(Option::unwrap_or_default)
         }))
+    }
+}
+
+impl SessionActions {
+    /// Run the person's own line: off the loop, in the session's program host, and as them.
+    fn start_line(
+        &self,
+        request: &HostStepRequest<'_>,
+    ) -> Result<Pending<HostStepOutcome>, String> {
+        let actor = request.actor;
+        if actor.is_agent() {
+            return Err("a line runs as the person at this device, never as an agent".into());
+        }
+        let Some(person) = actor.member().person_id() else {
+            return Err("a line runs as the person at this device".into());
+        };
+        let program = line_of(request.argument)?;
+        let Some(programs) = &self.programs else {
+            return Err("this desktop runs no tilolang programs".into());
+        };
+        programs.run(ProgramRequest {
+            workspace: request.workspace,
+            provider: None,
+            caller: ProgramCaller::Person { person },
+            group: request
+                .group
+                .cloned()
+                .unwrap_or_else(|| tilo_actions::WorkGroup {
+                    id: wire::PROGRAMS_RESOURCE.to_owned(),
+                    label: None,
+                    // The person's own REPL, as their API's program sessions are: what the line
+                    // does is grouped there, and nothing an agent did is.
+                    kind: "api".into(),
+                    declared_id: None,
+                    session: None,
+                }),
+            program,
+            confirm: false,
+            this: None,
+            stop: Some(Arc::clone(&request.stop)),
+        })
     }
 }
 
@@ -180,6 +306,241 @@ mod tests {
         Err(ActionCallError::Refused {
             reason: "the session did not answer".to_owned(),
         })
+    }
+
+    /// The line `line`, as a composer asks it: the session's own provider, running it as the
+    /// person who typed it.
+    #[cfg(target_os = "linux")]
+    fn run_line(line: &str) -> tilo_actions::remote::InvokeRequest {
+        tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            on_behalf_of: None,
+            target: tilo_actions::remote::session_actions::run_line_target(),
+            argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                "line".to_owned(),
+                serde_json::json!(line),
+            )])),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// What the line `request` answered as `person`, running the session until the invocation
+    /// ends: its output, or why it ended otherwise.
+    #[cfg(target_os = "linux")]
+    fn ended_line(
+        session: &mut crate::Session,
+        person: &Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let broker = session
+            .action_broker()
+            .expect("the session serves its actions");
+        answered(session, || {
+            broker.action_invoke_local_person(person, request)
+        })
+        .expect("the broker admits the person's line");
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            session.step(Duration::from_millis(1)).expect("a frame");
+            if let Some(state) = broker.action_observe(person, &request.invocation)
+                && state.update.is_terminal()
+            {
+                return match state.update {
+                    tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                        Ok(output.value.unwrap_or_default())
+                    }
+                    tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                        Err(ActionCallError::Refused {
+                            reason: error.message,
+                        })
+                    }
+                    tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                        Err(ActionCallError::Refused {
+                            reason: message.unwrap_or_else(|| "stopped".to_owned()),
+                        })
+                    }
+                    _ => Err(ActionCallError::Unanswered),
+                };
+            }
+        }
+        Err(ActionCallError::Refused {
+            reason: "the line never ended".to_owned(),
+        })
+    }
+
+    /// A headless session whose workspace the person at this device governs, with its own broker:
+    /// the shell's own actions are enough for a line to change something.
+    #[cfg(target_os = "linux")]
+    fn line_session(
+        state: &std::path::Path,
+        app_wire: &std::path::Path,
+        person: &str,
+        workspace: &str,
+    ) -> crate::Session {
+        let mut session = power_session(state, app_wire, person, workspace, Vec::new());
+        for _ in 0..4 {
+            session.step(Duration::from_millis(1)).expect("a frame");
+        }
+        session
+    }
+
+    /// The person's own line runs as them: what it changes lands, and History credits it to the
+    /// person, never an agent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_runs_as_the_person_and_what_it_changes_is_theirs() {
+        const WORKSPACE: &str = "3b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5f";
+        let line =
+            "session.place_found(text: \"Displays\", view: .none, x: .some(40), y: .some(40))";
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        let person = Caller::local_person(person_id.clone()).in_workspace(WORKSPACE);
+
+        // A shell whose layout was never stored opens its record with the first change to it:
+        // the layout as it was opened is no step of anyone's, as a layout opened from the store's
+        // is none (`crates/session/core/src/layout/document.rs`, `acted`).
+        let opening = ended_line(&mut session, &person, &run_line(line))
+            .expect("the line runs as the person");
+        assert_eq!(opening["failed"], serde_json::json!(false), "{opening}");
+        assert!(
+            !session.layout().borrow_mut().undo(&person_id),
+            "the layout as it was opened is no step of the person's: {opening}"
+        );
+
+        // The line's next change is a step of the layout's, and the step is the person's: their
+        // own invocation, through their own api, so History credits them and they take it back.
+        let answer = ended_line(&mut session, &person, &run_line(line))
+            .expect("the line runs as the person");
+        assert_eq!(answer["failed"], serde_json::json!(false), "{answer}");
+        assert_eq!(
+            answer["answer"]["changed"],
+            serde_json::json!(1),
+            "the line changed the layout: {answer}"
+        );
+        assert_eq!(
+            answer["answer"]["history"][0]["resource"],
+            serde_json::json!("shell:layout"),
+            "the change it recorded is the layout's: {answer}"
+        );
+        assert!(
+            session.layout().borrow_mut().undo(&person_id),
+            "the person takes back what the line did: {answer}"
+        );
+    }
+
+    /// A line that does not parse is answered with where it went wrong, never run.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_that_does_not_parse_is_answered_with_its_place() {
+        const WORKSPACE: &str = "4b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b50";
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
+
+        let answer = ended_line(&mut session, &person, &run_line("session.new_strip("))
+            .expect("a line that does not parse is still an answer");
+        assert_eq!(answer["failed"], serde_json::json!(true), "{answer}");
+        let said = answer["person_text"]
+            .as_str()
+            .filter(|said| !said.is_empty())
+            .or_else(|| answer["text"].as_str())
+            .unwrap_or_default();
+        assert!(
+            said.contains("1:"),
+            "the answer names the line and column it went wrong at: {answer}"
+        );
+    }
+
+    /// A person who is no member of the workspace cannot have a line run there, and hears the
+    /// system's word for it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_in_a_workspace_the_person_is_no_member_of_is_refused() {
+        const WORKSPACE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b51";
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        let stranger =
+            Caller::local_person("a-person-this-workspace-does-not-know").in_workspace(WORKSPACE);
+
+        let broker = session
+            .action_broker()
+            .expect("the session serves its actions");
+        let refused = answered(&mut session, || {
+            broker.action_invoke(&stranger, None, None, &run_line("session.new_strip()"))
+        });
+        assert!(
+            matches!(
+                refused,
+                Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+            ),
+            "the line is refused in the system's words: {refused:?}"
+        );
+    }
+
+    /// A line the person stops while it runs makes no change and reads cancelled.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_the_person_stops_ends_cancelled_and_makes_no_change() {
+        const WORKSPACE: &str = "6b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b52";
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
+        let strips = session.layout().borrow().reading().strips.len();
+        let broker = session
+            .action_broker()
+            .expect("the session serves its actions");
+        let request = run_line("session.new_strip(name: \"Never\")");
+
+        // The line's calls are the session's own, which run on its pass: it has made none yet.
+        answered(&mut session, || {
+            broker.action_invoke_local_person(&person, &request)
+        })
+        .expect("the broker admits the person's line");
+        answered(&mut session, || {
+            broker.action_cancel(&person, &request.invocation)
+        })
+        .expect("the person stops the line");
+
+        let deadline = tilo_test_env::hang_deadline();
+        let mut ended = None;
+        while std::time::Instant::now() < deadline {
+            session.step(Duration::from_millis(1)).expect("a frame");
+            if let Some(state) = broker.action_observe(&person, &request.invocation)
+                && state.update.is_terminal()
+            {
+                ended = Some(state.update);
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                ended,
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ),
+            "a stopped line reads cancelled: {ended:?}"
+        );
+        assert_eq!(
+            session.layout().borrow().reading().strips.len(),
+            strips,
+            "the stopped line made no change"
+        );
     }
 
     /// The session's own actions are its broker's: the person at this device is offered the
@@ -239,12 +600,15 @@ mod tests {
         );
 
         // What the broker lists is what the session publishes: every row names a resource the
-        // session's own API holds.
+        // session's own API holds, but the person's line, which is a host step of the session's
+        // own and not a resource its services read.
         let published = published(&session);
         for row in &page.rows {
             let action = row.action.as_ref().expect("a row offers its action");
             assert!(
-                published.contains(&action.address.resource),
+                published.contains(&action.address.resource)
+                    || action.address.resource
+                        == tilo_actions::remote::session_actions::PROGRAMS_RESOURCE,
                 "the row names a resource the session publishes: {action:?}"
             );
         }

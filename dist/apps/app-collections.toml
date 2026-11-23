@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-notes", "tl-tube", "tl-photos"]
+include = ["*", "tl-calendar", "tl-notes", "tl-tube", "tl-photos"]
 
 [collections.desktop]
 extends = ["default"]
@@ -41,8 +41,6 @@ model-providers = ["runtime-engine"]
 # sign-in reaches, from their engine libraries beside the runtime.
 calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
-# The contact directory from its engine library beside the runtime.
-contacts = ["runtime-engine"]
 messages = ["runtime-engine"]
 # The spreadsheet formula engine from its engine library beside the runtime.
 sheets = ["runtime-engine"]

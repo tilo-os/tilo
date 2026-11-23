@@ -77,6 +77,7 @@ fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {
         role: role.to_owned(),
         identity: None,
         action,
+        after_input: None,
     })
     .expect("a shell-ui frame");
     frame.push(b'\n');

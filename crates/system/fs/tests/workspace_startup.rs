@@ -55,24 +55,13 @@ tilo_test_env::scenario! {
 
 struct Profile {
     dir: tempfile::TempDir,
-    admin: std::path::PathBuf,
 }
 
 impl Profile {
-    fn new(admin_exit: u8) -> Self {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().expect("isolated fixture");
-        let admin = dir.path().join("admin");
-        std::fs::write(
-            &admin,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\necho readiness-stdout-must-stay-private\nexit {admin_exit}\n"
-            ),
-        )
-        .expect("write admin stand-in");
-        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755))
-            .expect("make admin stand-in executable");
-        Self { dir, admin }
+    fn new() -> Self {
+        Self {
+            dir: tempfile::tempdir().expect("isolated fixture"),
+        }
     }
 
     fn path(&self, relative: &str) -> std::path::PathBuf {
@@ -92,16 +81,42 @@ impl Profile {
         .expect("write a kept document");
     }
 
-    fn admin_argv(&self) -> Option<Vec<String>> {
-        let recorded = std::fs::read_to_string(self.dir.path().join("admin.argv")).ok()?;
-        Some(recorded.lines().map(str::to_string).collect())
+    /// A certified device of a person at `identity`, as a machine that joined
+    /// leaves it: the production check the launch runs reads these.
+    fn identity(&self) {
+        self.identity_at(&self.path("identity"));
+    }
+
+    fn identity_at(&self, root: &std::path::Path) {
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let paths = tilo_device_identity::IdentityPaths::under(root);
+        paths.ensure_directories().expect("identity directories");
+        let person = root_key.verifying_key().to_bytes();
+        tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &person)
+            .expect("write person");
+        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
+            .expect("write device key");
+        let mut cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "fixture".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root_key).expect("sign the device");
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
+            .expect("write the certificate");
     }
 
     fn launch(&self, overrides: &[(&str, &str)]) -> std::process::Output {
         let mut command = Command::new(tilo_test_env::package_binary!("fs"));
         command
-            .args(["serve-primary", "--dry-run", "--admin-binary"])
-            .arg(&self.admin)
+            .args(["serve-primary", "--dry-run"])
             .env("HOME", self.dir.path())
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_DATA_HOME", self.path("data"))
@@ -131,14 +146,10 @@ tilo_test_env::scenario! {
 
     phase primary_launch_without_a_saved_namespace_creates_nothing;
     {
-        let profile = Profile::new(0);
+        let profile = Profile::new();
         let output = profile.launch(&[]);
         assert_not_ready(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
-        assert!(
-            profile.admin_argv().is_none(),
-            "no identity check without saved state"
-        );
         assert!(!profile.path("state").exists());
         assert!(!profile.path("run").exists());
         assert!(!profile.path("identity").exists());
@@ -146,7 +157,8 @@ tilo_test_env::scenario! {
 
     phase primary_launch_resumes_from_the_workspace_service_without_a_kept_tree;
     {
-        let profile = Profile::new(0);
+        let profile = Profile::new();
+        profile.identity();
         std::fs::create_dir_all(profile.path("run/tilo/services")).expect("create services dir");
         let _service =
             std::os::unix::net::UnixListener::bind(profile.path("run/tilo/services/files-tree.sock"))
@@ -157,7 +169,6 @@ tilo_test_env::scenario! {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(profile.admin_argv().is_some(), "the identity check ran");
         assert!(
             !profile.cache().join("namespace").exists(),
             "the tree arrives with the first mount, from the workspace service"
@@ -166,11 +177,10 @@ tilo_test_env::scenario! {
 
     phase primary_launch_refused_by_the_identity_check_never_mounts;
     {
-        let profile = Profile::new(1);
+        let profile = Profile::new();
         profile.save_namespace();
         let output = profile.launch(&[]);
         assert_not_ready(&output);
-        assert!(profile.admin_argv().is_some());
         assert!(!profile.cache().join("mount").exists());
         assert!(!profile.path("run").exists());
         assert_eq!(
@@ -181,7 +191,7 @@ tilo_test_env::scenario! {
 
     phase primary_launch_refuses_a_kept_tree_that_is_not_a_directory;
     {
-        let profile = Profile::new(0);
+        let profile = Profile::new();
         std::fs::create_dir_all(profile.cache()).expect("create cache");
         std::fs::write(profile.path("elsewhere"), b"namespace").expect("write target");
         std::os::unix::fs::symlink(profile.path("elsewhere"), profile.cache().join("namespace"))
@@ -193,18 +203,18 @@ tilo_test_env::scenario! {
 
     phase primary_launch_rejects_relative_paths;
     {
-        let profile = Profile::new(0);
+        let profile = Profile::new();
         profile.save_namespace();
         let output = profile.launch(&[("XDG_STATE_HOME", "relative")]);
         assert_not_ready(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("must be absolute"));
-        assert!(profile.admin_argv().is_none());
     }
 
     phase primary_launch_gives_the_daemon_the_paths_the_identity_check_saw;
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let profile = Profile::new(0);
+        let profile = Profile::new();
+        profile.identity();
         profile.save_namespace();
         let output = profile.launch(&[]);
         assert!(
@@ -247,14 +257,6 @@ tilo_test_env::scenario! {
                 text(profile.path("run/tilo/services/identity.sock")),
             ]
         );
-        assert_eq!(
-            profile.admin_argv().expect("identity check ran"),
-            [
-                "files-workspace-check".to_string(),
-                "--identity-root".into(),
-                text(profile.path("identity")),
-            ]
-        );
         for dir in [cache.join("mount"), run] {
             let mode = std::fs::metadata(&dir)
                 .expect("private dir")
@@ -263,10 +265,11 @@ tilo_test_env::scenario! {
             assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
         }
         assert!(
-            !profile.path("identity").exists(),
-            "launch never mints identity"
+            profile.path("identity/device/cert.bin").exists(),
+            "the launch reads the identity it was given and mints none"
         );
-        let defaults = Profile::new(0);
+        let defaults = Profile::new();
+        defaults.identity_at(&defaults.path(".local/share/tilo"));
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files/namespace"))
             .expect("create kept tree");
@@ -286,10 +289,6 @@ tilo_test_env::scenario! {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            defaults.admin_argv().expect("identity check ran")[2],
-            text(defaults.path(".local/share/tilo"))
         );
         let argv: Vec<String> = serde_json::from_slice(&output.stdout).expect("argv JSON");
         assert_eq!(

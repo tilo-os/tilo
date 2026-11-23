@@ -595,7 +595,10 @@ fn launched_in(bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) -> S
 
 /// A person at a Tasks window over `bus`'s workspace, settled on the Inbox: the place the
 /// seeded tasks wait in.
-fn opened_at_rest_in(bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) -> Session {
+pub(super) fn opened_at_rest_in(
+    bus: &Rc<tilolang_process::testing::Bus>,
+    route: &RouteSpec,
+) -> Session {
     let mut session = launched_in(bus, route);
     session.settle();
     show_inbox(&mut session);

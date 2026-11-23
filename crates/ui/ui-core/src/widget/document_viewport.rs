@@ -1114,12 +1114,6 @@ fn content_extent(w: &dyn Widget) -> (f64, f64) {
 }
 
 impl Widget for DocumentViewport {
-    /// The page it holds, panned and zoomed in its box.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     crate::provides!(dyn crate::content_zoom::ContentZoom);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

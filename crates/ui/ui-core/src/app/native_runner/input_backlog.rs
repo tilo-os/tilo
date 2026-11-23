@@ -20,7 +20,9 @@ const REFRESHES_WITHOUT_A_FRAME: u32 = 4;
 /// Input waiting for its turn, and the time input took since the last frame.
 #[derive(Debug, Default)]
 pub(super) struct InputBacklog {
-    queue: VecDeque<(WindowId, WindowEvent)>,
+    /// Each event with the serial of the input it is, when it is input: what the shell is told
+    /// the window handled once the event is routed, never while it waits.
+    queue: VecDeque<(WindowId, WindowEvent, Option<u32>)>,
     spent: Duration,
     since: Option<Instant>,
 }
@@ -42,14 +44,14 @@ impl InputBacklog {
 
     /// Queue `event` for `window` behind the input before it; a wheel delta
     /// that continues the one last in line joins it.
-    pub(super) fn push(&mut self, window: WindowId, event: WindowEvent) {
-        if let Some((last_window, last)) = self.queue.back_mut()
+    pub(super) fn push(&mut self, window: WindowId, event: WindowEvent, serial: Option<u32>) {
+        if let Some((last_window, last, _)) = self.queue.back_mut()
             && *last_window == window
             && merge(last, &event)
         {
             return;
         }
-        self.queue.push_back((window, event));
+        self.queue.push_back((window, event, serial));
     }
 
     /// Route waiting input in order while the frame's `budget` lasts, by the clock `now`. Before
@@ -59,7 +61,7 @@ impl InputBacklog {
         budget: Duration,
         wake_ends: bool,
         now: impl Fn() -> Instant,
-        mut route: impl FnMut(WindowId, WindowEvent),
+        mut route: impl FnMut(WindowId, WindowEvent, Option<u32>),
     ) {
         let start = now();
         if self.since.is_none_or(|since| {
@@ -81,11 +83,11 @@ impl InputBacklog {
             {
                 break;
             }
-            let Some((window, event)) = self.queue.pop_front() else {
+            let Some((window, event, serial)) = self.queue.pop_front() else {
                 break;
             };
             let started = now();
-            route(window, event);
+            route(window, event, serial);
             self.spent = self
                 .spent
                 .saturating_add(now().saturating_duration_since(started));
@@ -188,7 +190,7 @@ mod tests {
     /// Everything that may go now, in order, as wheel distances (`None`: not a wheel).
     fn routed(backlog: &mut InputBacklog, wake_ends: bool) -> Vec<Option<f64>> {
         let mut out = Vec::new();
-        backlog.route(Duration::MAX, wake_ends, crate::time::now, |_, event| {
+        backlog.route(Duration::MAX, wake_ends, crate::time::now, |_, event, _| {
             out.push(match event {
                 WindowEvent::MouseWheel {
                     delta: MouseScrollDelta::PixelDelta(at),
@@ -211,37 +213,37 @@ mod tests {
         {
             let mut backlog = InputBacklog::default();
             for dy in [-3.0, -4.0, -5.0] {
-                backlog.push(WindowId::dummy(), pixels(dy, TouchPhase::Moved));
+                backlog.push(WindowId::dummy(), pixels(dy, TouchPhase::Moved), None);
                 assert!(routed(&mut backlog, false).is_empty(), "the sum waits for the wake's end");
             }
             assert_eq!(routed(&mut backlog, true), [Some(-12.0)]);
-            backlog.push(WindowId::dummy(), lines(-1.0));
-            backlog.push(WindowId::dummy(), lines(-1.0));
+            backlog.push(WindowId::dummy(), lines(-1.0), None);
+            backlog.push(WindowId::dummy(), lines(-1.0), None);
             assert_eq!(routed(&mut backlog, true), [Some(-2.0)]);
         }
 
         phase another_event_or_kind_hands_the_sum_on_first_and_keeps_the_order;
         {
             let mut backlog = InputBacklog::default();
-            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved));
-            backlog.push(WindowId::dummy(), pixels(-4.0, TouchPhase::Moved));
-            backlog.push(WindowId::dummy(), pixels(0.0, TouchPhase::Ended));
+            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved), None);
+            backlog.push(WindowId::dummy(), pixels(-4.0, TouchPhase::Moved), None);
+            backlog.push(WindowId::dummy(), pixels(0.0, TouchPhase::Ended), None);
             assert_eq!(routed(&mut backlog, false), [Some(-7.0), Some(0.0)]);
-            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved));
-            backlog.push(WindowId::dummy(), lines(-1.0));
+            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved), None);
+            backlog.push(WindowId::dummy(), lines(-1.0), None);
             assert_eq!(routed(&mut backlog, false), [Some(-3.0)], "lines do not join pixels");
             assert_eq!(routed(&mut backlog, true), [Some(-1.0)]);
-            backlog.push(WindowId::dummy(), lines(-1.0));
-            backlog.push(WindowId::dummy(), WindowEvent::Focused(false));
+            backlog.push(WindowId::dummy(), lines(-1.0), None);
+            backlog.push(WindowId::dummy(), WindowEvent::Focused(false), None);
             assert_eq!(routed(&mut backlog, false), [Some(-1.0), None]);
         }
 
         phase a_gesture_start_is_never_summed;
         {
             let mut backlog = InputBacklog::default();
-            backlog.push(WindowId::dummy(), pixels(-2.0, TouchPhase::Started));
+            backlog.push(WindowId::dummy(), pixels(-2.0, TouchPhase::Started), None);
             assert_eq!(routed(&mut backlog, false), [Some(-2.0)], "a start routes at once");
-            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved));
+            backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved), None);
             assert!(routed(&mut backlog, false).is_empty());
         }
 
@@ -260,8 +262,9 @@ mod tests {
                     &Key::Character("a".into()),
                     ElementState::Pressed,
                 ),
+                None,
             );
-            backlog.route(Duration::MAX, true, || clock.get(), |_, _| {
+            backlog.route(Duration::MAX, true, || clock.get(), |_, _, _| {
                 clock.set(clock.get() + Duration::from_millis(1));
             });
             assert!(
@@ -297,7 +300,7 @@ mod tests {
             ));
             frame.borrow_mut().set_coalesce_input_frames(true);
             frame.borrow_mut().root_mut::<TextInput>().set_focus(true);
-            let route = |_: WindowId, event: WindowEvent| {
+            let route = |_: WindowId, event: WindowEvent, _: Option<u32>| {
                 frame.borrow_mut().send_host_event(&event);
                 clock.set(clock.get() + per_event);
             };
@@ -309,7 +312,11 @@ mod tests {
             for letter in typed.chars() {
                 for state in [ElementState::Pressed, ElementState::Released] {
                     let key = Key::Character(letter.to_string().into());
-                    backlog.push(WindowId::dummy(), crate::synthetic_input::key_input(&key, state));
+                    backlog.push(
+                        WindowId::dummy(),
+                        crate::synthetic_input::key_input(&key, state),
+                        None,
+                    );
                     backlog.route(budget, false, now, route);
                 }
             }

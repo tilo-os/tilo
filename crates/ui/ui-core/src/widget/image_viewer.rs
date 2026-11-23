@@ -181,12 +181,6 @@ impl ImageViewer {
 }
 
 impl Widget for ImageViewer {
-    /// The picture, panned and zoomed as its paint shows it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

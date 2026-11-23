@@ -123,12 +123,6 @@ impl Switch {
 }
 
 impl Widget for Switch {
-    /// The part it shows, where the part's own layout stands it.
-    fn html(&self, cx: &mut ui_core::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

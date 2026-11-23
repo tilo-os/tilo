@@ -68,6 +68,9 @@ pub(super) struct LocalAppConnection {
     /// An instance of the app the host runs with no window
     /// ([`crate::apps::services::AuthenticatedApplicationLaunch::windowless`]).
     pub(super) windowless: bool,
+    /// The caller the host opened this instance's view for
+    /// ([`crate::apps::services::AuthenticatedApplicationLaunch::opened_for`]).
+    pub(super) opened_for: Option<tilo_actions::remote::Caller>,
     process: PeerProcess,
     /// What Files hands over on its connection's descriptor stream: the only
     /// app whose selected objects this broker takes. Other apps' descriptors
@@ -238,6 +241,7 @@ impl LocalAppConnection {
                 workspace_id,
                 continuation_instance: launch.continuation_instance,
                 windowless: launch.windowless,
+                opened_for: launch.opened_for,
                 process,
                 connected: AtomicBool::new(true),
             })

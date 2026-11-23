@@ -1,0 +1,489 @@
+{
+  "app": "contacts",
+  "said": "Contacts",
+  "tl": {
+    "id": "so.tilo.contacts",
+    "package": "contacts"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Contacts on an empty address book",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "New contact"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "add",
+      "said": "Add a contact named Ada Lovelace",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "New contact"
+            ]
+          },
+          {
+            "form": {
+              "field": "First name",
+              "text": "Ada"
+            }
+          },
+          {
+            "form": {
+              "field": "Last name",
+              "text": "Lovelace"
+            }
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "click_any": [
+              {
+                "prefix": "New contact"
+              }
+            ]
+          },
+          {
+            "type": "Ada Lovelace"
+          },
+          {
+            "key": "Enter"
+          }
+        ]
+      }
+    },
+    {
+      "id": "edit",
+      "said": "Open the contact and give it an email address and where they work",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Ada Lovelace"
+            ]
+          },
+          {
+            "press_any": [
+              "Edit contact"
+            ]
+          },
+          {
+            "press_any": [
+              "Add email"
+            ]
+          },
+          {
+            "form": {
+              "field": "Email 1",
+              "text": "ada@example.org"
+            }
+          },
+          {
+            "form": {
+              "field": "Organization",
+              "text": "Analytical Engines"
+            }
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Ada Lovelace"
+            ]
+          },
+          {
+            "wait_for": "Where they work"
+          },
+          {
+            "press_any": [
+              "Add email"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Email address"
+              }
+            ]
+          },
+          {
+            "type": "ada@example.org"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Where they work"
+              }
+            ]
+          },
+          {
+            "type": "Analytical Engines"
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "edit-stuck",
+      "said": "The organization and the address are on the contact after typing, with nothing to save",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "ada@example.org"
+            ]
+          },
+          {
+            "offered": [
+              "Analytical Engines"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "search",
+      "said": "Find the contact through the system's search",
+      "ops": [
+        {
+          "search": {
+            "tl": "Ada Lovelace"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "search-open",
+      "said": "Open the contact the search found",
+      "ops": [
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "title": "Ada Lovelace"
+          }
+        }
+      ]
+    },
+    {
+      "id": "from-mail",
+      "said": "In Mail, open the person who wrote a message in Contacts",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Open contact"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "favorite",
+      "said": "Make the contact a favorite and find it under Favorites",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Favorite"
+            ]
+          },
+          {
+            "press_any": [
+              "Favorites"
+            ]
+          },
+          {
+            "wait_for": "Ada Lovelace"
+          }
+        ]
+      }
+    },
+    {
+      "id": "group",
+      "said": "Put the contact in a group, which the sidebar then offers as a place",
+      "ops": {
+        "tl": [
+          {
+            "click_any": [
+              {
+                "prefix": "Add to a group"
+              }
+            ]
+          },
+          {
+            "type": "Work"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait_for": "Work"
+          }
+        ]
+      }
+    },
+    {
+      "id": "import-vcard-with-photo",
+      "said": "Import a vCard whose PHOTO is written inline, and the card it makes shows the picture",
+      "ops": {
+        "tl": [
+          {
+            "file": {
+              "name": "Grace.vcf",
+              "text": "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nORG:US Navy\r\nEMAIL;TYPE=work:grace@example.org\r\nPHOTO;ENCODING=b;TYPE=JPEG:QUJD\r\nEND:VCARD\r\n"
+            }
+          },
+          {
+            "press_any": [
+              "File"
+            ]
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "menuitem": "Import vCards…"
+              }
+            }
+          },
+          {
+            "press_any": [
+              {
+                "menuitem": "Import vCards…"
+              }
+            ]
+          },
+          {
+            "choose": {
+              "name": "Grace.vcf"
+            }
+          },
+          {
+            "wait_for": {
+              "prefix": "Grace Hopper"
+            }
+          },
+          {
+            "questions": true
+          },
+          {
+            "targets": true
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "export-vcard",
+      "said": "Export the book as a vCard through the person's own save chooser",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "File"
+            ]
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "menuitem": "Export all contacts…"
+              }
+            }
+          },
+          {
+            "press_any": [
+              {
+                "menuitem": "Export all contacts…"
+              }
+            ]
+          },
+          {
+            "choose": {
+              "name": "Contacts.vcf"
+            }
+          },
+          {
+            "questions": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "merge-duplicate",
+      "said": "A second card with the same mailbox is offered as the same person, and merging keeps one card and both cards' rows",
+      "ops": {
+        "tl": [
+          {
+            "click_any": [
+              {
+                "prefix": "New contact"
+              }
+            ]
+          },
+          {
+            "type": "Ada Duplicate"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait_for": "Ada Duplicate"
+          },
+          {
+            "press_any": [
+              "Ada Duplicate"
+            ]
+          },
+          {
+            "press_any": [
+              "Add email"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Email address"
+              }
+            ]
+          },
+          {
+            "type": "ada@example.org"
+          },
+          {
+            "press_any": [
+              "Ada Lovelace"
+            ]
+          },
+          {
+            "wait_for": "Possibly the same person"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Take their organization"
+              }
+            ]
+          },
+          {
+            "press_any": [
+              "Merge into this card"
+            ]
+          },
+          {
+            "wait_for": "Ada Lovelace"
+          },
+          {
+            "targets": true
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "connected-accounts",
+      "said": "The contact's Connected accounts section offers the review that binds a service account, and its share controls",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Ada Lovelace"
+            ]
+          },
+          {
+            "offered": [
+              {
+                "prefix": "Service, such as Messages"
+              }
+            ]
+          },
+          {
+            "offered": [
+              {
+                "prefix": "Account address or identifier"
+              }
+            ]
+          },
+          {
+            "offered": [
+              "Review this account"
+            ]
+          },
+          {
+            "offered": [
+              "Share this card with the apps"
+            ]
+          },
+          {
+            "offered": [
+              "Stop sharing this card"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "connected-accounts-row",
+      "said": "A directory entry the workspace already holds shows its account with the controls that change and forget it (needs a person the workspace's apps know; offered controls are recorded)",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Change"
+            ]
+          },
+          {
+            "offered": [
+              "Remove association"
+            ]
+          },
+          {
+            "offered": [
+              "Associated"
+            ]
+          },
+          {
+            "offered": [
+              "Needs review"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same contact in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ]
+    }
+  ]
+}

@@ -281,12 +281,12 @@ fn a_card_dragged_within_its_list_and_into_another_lands_where_it_was_dropped() 
 #[test]
 fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     use crate::change_marks::{RUN, action_id, chroma_in, marks, published_with, run, settle};
-    let mut app = super::Session::new("so.tilo.lang.tasks", "ada");
+    let mut app = super::Session::new("so.tilo.tasks", "ada");
     settle(&mut app);
     // What a person adds in the list's entry waits in the inbox, and the window shows it there.
     crate::change_marks::choose(&mut app, "Inbox");
-    let root = super::root_id(&app, "so.tilo.lang.tasks");
-    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let root = super::root_id(&app, "so.tilo.tasks");
+    let tasks = format!("tl:so.tilo.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let titled = |title: &str| {
         let mut args = serde_json::Map::new();
@@ -326,7 +326,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let mut which = serde_json::Map::new();
     which.insert(
         "t".to_owned(),
-        crate::change_marks::reference("so.tilo.lang.tasks", &mut app, "Book the dentist"),
+        crate::change_marks::reference("so.tilo.tasks", &mut app, "Book the dentist"),
     );
     app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which)
         .unwrap();
@@ -396,12 +396,12 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     use crate::change_marks::{action_id, choose, named, published_with, run, settle};
     use crate::history_window::{after, press_history, shoot, shows_history, times};
     let _settled = ui::motion::testing::settled();
-    let mut app = super::Session::new("so.tilo.lang.tasks", "ada");
+    let mut app = super::Session::new("so.tilo.tasks", "ada");
     settle(&mut app);
     // The task a person adds waits in the inbox, which the window shows it in.
     choose(&mut app, "Inbox");
-    let root = super::root_id(&app, "so.tilo.lang.tasks");
-    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let root = super::root_id(&app, "so.tilo.tasks");
+    let tasks = format!("tl:so.tilo.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let mut titled = serde_json::Map::new();
     titled.insert("title".to_owned(), "Call the landlord".into());
@@ -891,11 +891,11 @@ fn bo_writing(app: &mut super::Session, task: &str, at: usize) -> [f64; 4] {
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
 fn a_task_of_adas(title: &str) -> (super::Session, String) {
     use crate::change_marks::{action_id, settle};
-    let mut app = super::Session::new("so.tilo.lang.tasks", "ada");
+    let mut app = super::Session::new("so.tilo.tasks", "ada");
     settle(&mut app);
     crate::change_marks::choose(&mut app, "Inbox");
-    let root = super::root_id(&app, "so.tilo.lang.tasks");
-    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let root = super::root_id(&app, "so.tilo.tasks");
+    let tasks = format!("tl:so.tilo.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let mut args = serde_json::Map::new();
     args.insert("title".to_owned(), title.into());

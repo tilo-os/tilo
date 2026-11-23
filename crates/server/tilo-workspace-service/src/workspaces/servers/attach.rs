@@ -20,19 +20,12 @@
 //! makes, so a caller that wants to know what it did reads it too.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
 
 use super::{Server, Servers, person_workspace_id, read};
 use crate::workspaces::Workspaces;
-
-/// How often a holder looks for a server the document names besides the
-/// changes its watches hear: a change another holder wrote reaches this copy
-/// without its write watch, and a machine's own enrollment arrives the same
-/// way.
-pub const NAMED_TICK: Duration = Duration::from_secs(2);
 
 /// The workspaces this device handed to a server, and the ones it detached it
 /// from, by workspace id.
@@ -178,8 +171,6 @@ impl Workspaces {
         };
         let admin = person_workspace_id(&self.serving_certificate().user_public_key);
         runtime.spawn(async move {
-            let mut again = tokio::time::interval(NAMED_TICK);
-            again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 let Some(inner) = workspaces.upgrade() else {
                     return;
@@ -210,7 +201,6 @@ impl Workspaces {
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
-                    _ = again.tick() => {}
                 }
             }
         });

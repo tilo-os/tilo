@@ -14,7 +14,6 @@ mod hosted;
 mod inspector_sheet;
 mod listed_actions;
 mod nothing_listed;
-mod page;
 mod page_title;
 mod places;
 mod replan;

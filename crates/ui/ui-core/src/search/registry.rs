@@ -91,12 +91,6 @@ impl SearchRegistry {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    fn rank_key(query: &str, r: &SearchResult) -> i32 {
-        r.score
-            .saturating_mul(PROVIDER_BIAS_WEIGHT)
-            .saturating_add(result_relevance(query, r))
-    }
-
     fn dedupe_key(result: &SearchResult) -> String {
         result.action_address().map_or_else(
             || format!("legacy\0{}\0{}", result.kind, result.action_id),
@@ -109,7 +103,7 @@ impl SearchRegistry {
         mut results: Vec<SearchResult>,
         limit: usize,
     ) -> Vec<SearchResult> {
-        results.sort_by_cached_key(|result| std::cmp::Reverse(Self::rank_key(query, result)));
+        rank_results(query, &mut results);
         let mut seen = HashSet::new();
         results.retain(|result| seen.insert(Self::dedupe_key(result)));
         results.truncate(limit);
@@ -145,16 +139,7 @@ impl SearchRegistry {
     /// Groups appear in the order their **best** result ranks; within a group, results
     /// stay in ranked order.
     pub fn query_grouped(&self, query: &str) -> Vec<SearchGroup> {
-        let ranked = self.query(query);
-        let mut groups: Vec<SearchGroup> = Vec::new();
-        for r in ranked {
-            if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
-                g.results.push(r);
-            } else {
-                groups.push(SearchGroup::new(r.kind.clone(), vec![r]));
-            }
-        }
-        groups
+        group_results(self.query(query), 0)
     }
 
     /// Caps each group to `per_group_cap` results, so no single busy provider floods the
@@ -172,21 +157,39 @@ impl SearchRegistry {
         } else {
             self.query_limited(query, merge_limit)
         };
-        let mut groups: Vec<SearchGroup> = Vec::new();
-        for result in ranked {
-            if let Some(group) = groups.iter_mut().find(|group| group.kind == result.kind) {
-                group.results.push(result);
-            } else {
-                groups.push(SearchGroup::new(result.kind.clone(), vec![result]));
-            }
-        }
-        if per_group_cap > 0 {
-            for g in &mut groups {
-                g.results.truncate(per_group_cap);
-            }
-        }
-        groups
+        group_results(ranked, per_group_cap)
     }
+}
+
+/// Order `results` best first for `query`: a provider's own score, weighted, then how the
+/// query meets the title each shows ([`result_relevance`]). Equal results keep their order,
+/// so ties keep provider registration order.
+pub fn rank_results(query: &str, results: &mut [SearchResult]) {
+    results.sort_by_cached_key(|result| {
+        std::cmp::Reverse(
+            result
+                .score
+                .saturating_mul(PROVIDER_BIAS_WEIGHT)
+                .saturating_add(result_relevance(query, result)),
+        )
+    });
+}
+
+/// Ranked `results` in groups of one [`SearchResult::kind`] each, the groups in the order
+/// their best result ranks and each keeping its results' ranked order, to at most
+/// `per_group_cap` results (none when it is 0).
+pub fn group_results(ranked: Vec<SearchResult>, per_group_cap: usize) -> Vec<SearchGroup> {
+    let mut groups: Vec<SearchGroup> = Vec::new();
+    for result in ranked {
+        if let Some(group) = groups.iter_mut().find(|group| group.kind == result.kind) {
+            if per_group_cap == 0 || group.results.len() < per_group_cap {
+                group.results.push(result);
+            }
+        } else {
+            groups.push(SearchGroup::new(result.kind.clone(), vec![result]));
+        }
+    }
+    groups
 }
 
 #[cfg(test)]

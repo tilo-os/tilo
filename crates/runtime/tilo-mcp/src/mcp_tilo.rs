@@ -68,8 +68,8 @@ fn waited_for_the_task(what: &str) -> String {
     )
 }
 
-/// Where an API starts the tilolang host of a task: the session, which launches it as every
-/// tilolang host is launched, its author the task.
+/// Where an API asks for the tilolang host of a task: the device running the API, which starts
+/// it as it starts every tilolang process, in that process's sandbox, and ends it with the task.
 #[cfg(unix)]
 pub trait TaskHosts: Send + Sync {
     /// Start the host of the task `task` (the agent run) in `workspace`: the API's end of the task's

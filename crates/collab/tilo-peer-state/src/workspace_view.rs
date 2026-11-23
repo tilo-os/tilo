@@ -1,5 +1,5 @@
 //! How each workspace the device holds stands, for the person's shell: published by the device's
-//! daemon as resources the shell watches on its broker connection
+//! daemon as resources the shell watches on its connection to the daemon's dispatch
 //! (`runtime_collab::wire::shell`), never read from a copy of its own.
 //!
 //! The person's workspaces are listed at [`LIST`] (`account/workspaces`, an entry per workspace,
@@ -97,9 +97,9 @@ pub struct Holder {
 )]
 pub struct WorkspaceReading {
     pub id: String,
-    /// The workspace's one name, as its governance records it.
+    /// The workspace's one name, as its membership records it.
     pub name: Option<String>,
-    /// Who governs it, as the person id its governance names.
+    /// Who governs it, as the person id its membership names.
     pub owner: Option<String>,
     /// Its members' person ids.
     pub roster: Vec<String>,
@@ -112,7 +112,7 @@ pub struct WorkspaceReading {
     pub administers: bool,
     /// The person may invite into it.
     pub may_invite: bool,
-    /// The governance the device holds refuses the person inviting; `false` while the device has
+    /// The membership the device holds refuses the person inviting; `false` while the device has
     /// no committed view of it yet.
     pub invite_refused: bool,
     pub may_invite_administrator: bool,

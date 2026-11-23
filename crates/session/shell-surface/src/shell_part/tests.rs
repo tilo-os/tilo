@@ -28,11 +28,13 @@ fn reading() -> LayoutReading {
                 key: "1".to_owned(),
                 name: "Home".to_owned(),
                 current: true,
+                home: String::new(),
             },
             LayoutWorkspaceReading {
                 key: "2".to_owned(),
                 name: "Studio".to_owned(),
                 current: false,
+                home: String::new(),
             },
         ],
         ..LayoutReading::default()
@@ -491,6 +493,7 @@ fn the_workspaces_menu_stands_while_the_layout_changes_under_it() {
         key: "3".to_owned(),
         name: "Garden".to_owned(),
         current: true,
+        home: String::new(),
     });
     for workspace in &mut reading.workspaces {
         workspace.current = workspace.key == "3";
@@ -777,6 +780,7 @@ fn one_window_layout() -> LayoutReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),
             current: true,
+            home: String::new(),
         }],
         rows: vec![LayoutRowReading {
             key: "r1".to_owned(),

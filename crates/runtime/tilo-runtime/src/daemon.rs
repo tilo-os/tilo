@@ -313,13 +313,14 @@ fn serve_device(
         // ending before it could take the workspace in.
         let search = Arc::new(OnceLock::new());
         search_once_held(&session, &search)?;
+        // A person who signs in from now on has their workspace here (the one their desktop
+        // hands over, or one founded for them now) and a link their shell is admitted by.
+        native
+            .seats
+            .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
         let endpoint = Endpoint {
             session_factory: admitted_per_connection(&session),
-            status: Status {
-                version: 1,
-                pid: std::process::id(),
-                workspace: session.workspace().to_owned(),
-            },
+            status: status_of(&session),
             search,
             media: session.media(),
             other_devices: session.other_devices(),
@@ -337,6 +338,109 @@ fn serve_device(
             crate::device::Ended::LoggedIn(device) => entered = Some(*device),
         }
     }
+}
+
+/// What the native endpoint says `session` serves: asking founds nothing, so a desktop about to
+/// hand its workspaces over may ask.
+fn status_of(session: &Arc<Daemon>) -> Arc<dyn Fn() -> Status + Send + Sync> {
+    let session = Arc::downgrade(session);
+    Arc::new(move || Status {
+        version: 1,
+        pid: std::process::id(),
+        workspace: session
+            .upgrade()
+            .and_then(|session| session.first_workspace().map(str::to_owned))
+            .unwrap_or_default(),
+    })
+}
+
+/// What the daemon does for its person's shells: the link a session root starts at their
+/// sign-in is admitted by, and the shell it starts itself when it runs as their own account.
+struct PersonShells(std::sync::Weak<Daemon>);
+
+impl PersonShells {
+    fn daemon(&self) -> io::Result<Arc<Daemon>> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))
+    }
+}
+
+impl crate::seats::Shells for PersonShells {
+    fn arrived(&self, importing: bool) -> io::Result<UnixStream> {
+        let daemon = self.daemon()?;
+        if !importing && let Err(error) = daemon.workspace() {
+            tracing::warn!(%error, "the person who signed in has no workspace here yet");
+        }
+        daemon.shell_link()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn start(
+        &self,
+        args: Vec<std::ffi::OsString>,
+        env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) -> io::Result<std::process::Child> {
+        /// The shell, installed beside this daemon.
+        const SHELL: &str = "tilo-session";
+        let daemon = self.daemon()?;
+        let program = std::env::current_exe()?
+            .parent()
+            .map(|dir| dir.join(SHELL))
+            .filter(|program| program.is_file())
+            .ok_or_else(|| {
+                io::Error::other(format!("{SHELL} is not installed beside tilo-runtime"))
+            })?;
+        let mut command = std::process::Command::new(program);
+        command
+            .args(args)
+            .env_clear()
+            .envs(env.into_iter().filter(|(name, _)| shell_reads(name)))
+            .stdin(std::process::Stdio::null());
+        daemon.start_shell(command)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn start(
+        &self,
+        _: Vec<std::ffi::OsString>,
+        _: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) -> io::Result<std::process::Child> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the shell starts on its own on this computer",
+        ))
+    }
+}
+
+/// Whether the shell the daemon starts is handed the variable `name` the account asked it with:
+/// what places it in the person's session (their display, bus, directories, language) and Tilo's
+/// own settings, never one that loads code into it (`LD_PRELOAD`), which would hand its link to
+/// whoever asked.
+#[cfg(target_os = "linux")]
+fn shell_reads(name: &std::ffi::OsStr) -> bool {
+    const NAMED: [&str; 14] = [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PATH",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "TERM",
+        "DISPLAY",
+        "XAUTHORITY",
+        "GLIBC_TUNABLES",
+        "GNOME_KEYRING_CONTROL",
+        "SSH_AUTH_SOCK",
+    ];
+    const PREFIXED: [&str; 5] = ["XDG_", "WAYLAND_", "DBUS_", "LC_", "TILO_"];
+    name.to_str().is_some_and(|name| {
+        NAMED.contains(&name)
+            || (PREFIXED.iter().any(|prefix| name.starts_with(prefix))
+                && name != runtime_collab::wire::shell::SHELL_FD_ENV)
+    })
 }
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
@@ -392,11 +496,11 @@ impl Native {
                 ))
             }),
             // No workspace is served on it.
-            status: Status {
+            status: Arc::new(|| Status {
                 version: 1,
                 pid: std::process::id(),
                 workspace: String::new(),
-            },
+            }),
             search: Arc::new(OnceLock::new()),
             media: None,
             other_devices: None,
@@ -432,10 +536,7 @@ impl Native {
     /// account the daemon does not serve is answered the device's own actions alone.
     fn accept(self: &Arc<Self>, listener: &UnixListener) -> io::Result<()> {
         accept(listener, |stream, slot| {
-            let seated = Seated {
-                seat: self.seats.seat(&stream),
-                seats: Arc::clone(&self.seats),
-            };
+            let seated = Seated::new(self.seats.seat(&stream), Arc::clone(&self.seats));
             self.take(stream, slot, seated)
         })
     }
@@ -503,7 +604,8 @@ fn accept(
 /// What every native connection is served with.
 pub(crate) struct Endpoint<H> {
     session_factory: tilo_mcp::SessionFactory<H>,
-    status: Status,
+    /// What the endpoint says it serves, asked once a connection's session is made.
+    status: Arc<dyn Fn() -> Status + Send + Sync>,
     /// Opens the host search results another process was handed, once host search started.
     search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
     /// Where answers read the content actions produced.
@@ -529,11 +631,7 @@ pub(crate) fn agents_endpoint(
         .map_or_else(|| "agent".to_owned(), |device| device.agent);
     Endpoint {
         session_factory: daemon.agent_sessions(&name),
-        status: Status {
-            version: 1,
-            pid: std::process::id(),
-            workspace: daemon.workspace().to_owned(),
-        },
+        status: status_of(daemon),
         search: Arc::new(OnceLock::new()),
         media: daemon.media(),
         other_devices: daemon.other_devices(),
@@ -556,7 +654,7 @@ fn admitted_per_connection(
         let daemon = session
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-        let factory = daemon.mcp_session_factory(daemon.workspace())?;
+        let factory = daemon.mcp_session_factory(&daemon.workspace()?)?;
         made.get_or_init(|| factory)()
     })
 }
@@ -586,7 +684,8 @@ fn search_once_held(
                 };
                 match daemon.action_provider() {
                     Ok(host) => {
-                        match crate::os_search::start(host, daemon.workspace(), daemon.actor()) {
+                        let workspace = daemon.workspace().unwrap_or_default();
+                        match crate::os_search::start(host, &workspace, daemon.actor()) {
                             Ok(started) => {
                                 let _ = search.set(started);
                             }
@@ -638,7 +737,7 @@ impl<H> Clone for Endpoint<H> {
     fn clone(&self) -> Self {
         Self {
             session_factory: Arc::clone(&self.session_factory),
-            status: self.status.clone(),
+            status: Arc::clone(&self.status),
             search: Arc::clone(&self.search),
             media: self.media.clone(),
             other_devices: self.other_devices.clone(),
@@ -703,7 +802,18 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             return;
         }
+        // A connection that asks the seats (who it is, a shell started or waited for) is
+        // answered by them alone: asking founds the person no workspace, so a shell started for
+        // a desktop about to hand its own over finds that one.
+        let asks_the_seats =
+            serde_json::from_slice::<Value>(&first).is_ok_and(|request| Seats::asks(&request));
         let input = io::Cursor::new(first).chain(reader);
+        if let Some(seated) = seated.filter(|_| asks_the_seats) {
+            if let Err(error) = serve_seat(&stream, input, seated) {
+                tracing::debug!(%error, "native seat client disconnected");
+            }
+            return;
+        }
         let server = match (self.session_factory)() {
             Ok(server) => Arc::new(server.with_media(self.media.clone()).with_devices(
                 self.other_devices.clone().map(|other_devices| {
@@ -718,10 +828,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let visit = self.agents.as_ref().map(Presence::visit);
         let agent = self.agents.as_deref().zip(visit.as_ref());
         if let Err(error) = serve_connection(
-            stream,
+            &stream,
             input,
             &server,
-            &self.status,
+            &(self.status)(),
             &self.search,
             seated,
             agent,
@@ -738,11 +848,35 @@ impl Drop for ConnectionSlot {
     }
 }
 
+/// Answer one native connection that asks the seats alone ([`Seats::asks`]).
+fn serve_seat(
+    stream: &UnixStream,
+    input: impl Read + Send + 'static,
+    seated: &Seated,
+) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
+    let input = spawn_reader(input)?;
+    let answer = |value: Value| {
+        seated.answer(&value).unwrap_or_else(|| {
+            Answer::InOrder(Box::pin(async {
+                Ok(Some(
+                    json!({"error": "a connection that asks the seats asks them alone"}),
+                ))
+            }))
+        })
+    };
+    let ended = serve_lines(runtime, input, &mut &*stream, answer, None);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    ended
+}
+
 /// Answer one native connection: the daemon's own requests in order, and
 /// MCP requests as [`serve_lines`] does, overlapping one another. An `agent`'s connection hears
 /// first what [`Presence::answer_first`] answers.
 fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
-    mut stream: UnixStream,
+    stream: &UnixStream,
     input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
     status: &Status,
@@ -758,8 +892,8 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     let input = spawn_reader(input)?;
     let status = serde_json::to_value(status).map_err(io::Error::other)?;
     let answer = |value: Value| {
-        if let Some(answer) = seated.and_then(|seated| seated.seats.answer(seated.seat, &value)) {
-            return Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
+        if let Some(answer) = seated.and_then(|seated| seated.answer(&value)) {
+            return answer;
         }
         if value.get("method").and_then(Value::as_str) == Some(tilo_api::daemon::PEER_STATUS) {
             // Asked by `tilo status`: what this device holds, answered beside the MCP methods.
@@ -795,7 +929,13 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
             }
         })
     };
-    let ended = serve_lines(runtime, input, &mut stream, answer, None);
+    // Each answer is written whole, so a descriptor it carries (the link `seats#signed-in` hands
+    // root) goes with its line.
+    let mut writer = io::BufWriter::new(crate::seats::Handing {
+        stream,
+        handed: seated.map(|seated| &*seated.handed),
+    });
+    let ended = serve_lines(runtime, input, &mut writer, answer, None);
     // The reader thread holds a clone of the socket: shut it, so the reader
     // sees its end and the client its connection close.
     let _ = stream.shutdown(std::net::Shutdown::Both);

@@ -227,7 +227,8 @@ impl JoinedChannel {
             route.cluster_id,
             caller,
         )
-        .serving(self.state.delivered_to(self.peer_id));
+        .serving(self.state.delivered_to(self.peer_id))
+        .opened_for(self.opened_for());
         Ok(service.command(&context, command))
     }
 
@@ -261,8 +262,18 @@ impl JoinedChannel {
             route.app_id,
             route.cluster_id,
             caller,
-        );
+        )
+        .opened_for(self.opened_for());
         Ok(service.open(&context, query))
+    }
+
+    /// The caller the host opened this connection's view for, when it opened one for a caller
+    /// of the device's dispatch ([`native_media::LocalAppConnection::opened_for`]).
+    pub(super) fn opened_for(&self) -> Option<tilo_actions::remote::Caller> {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .and_then(|local| local.opened_for.clone())
     }
 
     /// What this host says of the `actions` the window shows, as the person this channel was
@@ -865,15 +876,23 @@ pub(super) async fn drive_connection(
         peer_id,
     };
     let mut stream = stream;
-    // A person's shell, where this broker answers one, opens with its own marker.
-    if worker.is_none()
-        && let Some(shell) = state.services.shell.clone()
-        && super::socket::has_shell_marker(&stream).await?
-    {
-        return super::shell::serve(stream, shell).await;
-    }
     let local_media = if worker.is_none() {
-        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+        // A person's shell, where this host answers one, opens with its own marker, and so does
+        // a connection it opens for one of its apps; any other is an app the launcher started.
+        let mut vouching = false;
+        if let Some(shell) = state.services.shell.clone() {
+            let marker = super::socket::peeked_marker(&stream).await?;
+            if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
+                return super::shell::serve(stream, shell).await;
+            }
+            vouching = marker == *runtime_collab::wire::shell::VOUCH_MAGIC;
+        }
+        let admitted = if vouching {
+            super::shell::vouched(&mut stream, &state.services).await
+        } else {
+            authenticate_launcher_handoff(&mut stream, &state.services).await
+        };
+        match admitted {
             Ok(AuthenticatedHandoff {
                 local_media,
                 launch,
@@ -911,6 +930,7 @@ pub(super) async fn drive_connection(
     let handed_descriptors = local_media
         .as_ref()
         .and_then(|local| local.descriptors.clone());
+    let daemon = super::router::daemon_for(&state.services, local_media.as_deref()).await;
     let app_worker = local_media
         .as_ref()
         .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
@@ -931,6 +951,16 @@ pub(super) async fn drive_connection(
     // Files hands over the objects it selects on its own connection; the
     // broker keeps them for the request naming them. Every other peer's
     // descriptors are closed on receipt.
+    if let Some(daemon) = daemon {
+        return super::router::serve_routed(
+            connection,
+            outgoing,
+            stream,
+            handed_descriptors,
+            daemon,
+        )
+        .await;
+    }
     let served = if let Some(received) = handed_descriptors {
         let (reader, writer) = tokio::io::split(
             runtime_portal::descriptors::DescriptorStream::receiving(stream, received),

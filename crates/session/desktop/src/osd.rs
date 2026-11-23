@@ -1226,12 +1226,6 @@ impl Widget for OsdSlab {
         dyn ui::host_operation::ResourceOperations
     );
 
-    /// The pill it draws is a gauge: a page shows it as a picture of it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

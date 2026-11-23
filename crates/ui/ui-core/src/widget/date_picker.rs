@@ -395,24 +395,6 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    /// A date as a page's own `<input type=date>`: the day it holds, in the
-    /// form the widget reads back.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, InputKind};
-        cx.control(Control::Entry {
-            input: InputKind::Date,
-            text: self.selected.to_string(),
-            placeholder: String::new(),
-            min: None,
-            max: None,
-            step: None,
-            steppers: false,
-            increase: None,
-            decrease: None,
-            secret: false,
-        });
-    }
-
     crate::described!();
 
 

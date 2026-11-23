@@ -252,8 +252,8 @@ pub fn verify_invocation(
 /// # Errors
 ///
 /// The first check that fails, as [`InvocationError`]:
-/// [`InvocationError::NotInvoker`] when the person who signed is none the
-/// change names.
+/// [`InvocationError::NotInvoker`] when another person signed than the one
+/// the change names.
 pub fn verify_recorded(
     context: &tilo_actions::ActionContext,
     workspace: &str,
@@ -280,21 +280,141 @@ pub fn verify_recorded(
     if call.argument_signed() == Some(false) {
         return Err(StatementMismatch::Arguments.into());
     }
+    // The change stays inside what the call named: its resource, or the type of it a caller that
+    // knows only the app names, and the action it names when the change says which verb it ran.
+    // A host that ran another resource's action for the call, or another action on it, is refused
+    // here.
+    if let Some(resource) = &context.resource {
+        let named = &statement.target.address.resource;
+        if &resource.kind != named && &resource.id != named {
+            return Err(StatementMismatch::Target.into());
+        }
+    } else if context.what.is_some() {
+        return Err(StatementMismatch::Target.into());
+    }
+    if let Some(tilo_actions::Did::Verb(verb)) = &context.what
+        && verb.action.action != statement.target.address.action
+    {
+        return Err(StatementMismatch::Target.into());
+    }
     let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
-    // The signer is a person the change names: the invoker, the person it works for, or one
-    // further down its chain who bounds that work (the person an agent belongs to when it
-    // answers someone else, the starter's person of a sub-agent). Each of them bounds what the
-    // change may do, so naming the signer among them gives it nothing more.
     let person = hex::encode(cert.user_public_key);
-    let names_signer = context
-        .invoker
-        .as_ref()
-        .is_some_and(|invoker| invoker.acting.people().contains(&person.as_str()));
+    let names_signer = context.invoker.as_ref().is_some_and(|invoker| {
+        [
+            invoker.acting.person_id(),
+            invoker.acting.acted_for_person(),
+        ]
+        .contains(&Some(&person))
+    });
     if !names_signer {
         return Err(InvocationError::NotInvoker);
     }
     agent_signed(invoker, &cert)?;
     Ok(Some(cert))
+}
+
+/// Check the invocation a resource store's change keeps in its stamp, as a peer reading the
+/// change in `workspace` does, and return the certificate of the caller who asked. `Ok(None)` for
+/// a change that keeps none: the host made it of its own accord.
+///
+/// The change stays inside what the call named: it is the `app` whose page the caller acted on,
+/// and its invocation is the one signed.
+///
+/// # Errors
+///
+/// The first check that fails, as [`InvocationError`].
+pub fn verify_stamp(
+    stamp: &collab_types::Stamp,
+    workspace: &str,
+    app: &str,
+    revocations: &RevocationList,
+) -> Result<Option<DeviceCert>, InvocationError> {
+    let Some(call) = stamp.signed.as_deref() else {
+        return Ok(None);
+    };
+    let signed = &call.signed;
+    check_signature(signed)?;
+    let statement = signed.statement();
+    if statement.workspace != workspace {
+        return Err(StatementMismatch::Workspace.into());
+    }
+    if stamp.invocation != statement.invocation.0.to_string() {
+        return Err(StatementMismatch::Invocation.into());
+    }
+    // The page's call names the app whose page it is: the change must be that app's.
+    if statement.target.address.resource != app {
+        return Err(StatementMismatch::Target.into());
+    }
+    if call.argument_signed() == Some(false) {
+        return Err(StatementMismatch::Arguments.into());
+    }
+    let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
+    let person = hex::encode(cert.user_public_key);
+    let names_signer = stamp
+        .invoked_by()
+        .and_then(|actor| {
+            actor
+                .member_id()
+                .and_then(|member| member.person_id())
+                .map(str::to_owned)
+        })
+        .is_some_and(|named| named == person);
+    if !names_signer {
+        return Err(InvocationError::NotInvoker);
+    }
+    Ok(Some(cert))
+}
+
+/// Check the call a page's reader signed for what they did on the page of `app` in `workspace`,
+/// as the device serving the page does before the act runs, and return their certificate: the
+/// signature, that it names this workspace and this app, that its arguments are the act `asked`
+/// (`{id, target, action}`, as the page sent it), its freshness at `now_ns`, and the
+/// certificate's chain, validity and revocation. Every holder of the change checks it again
+/// ([`verify_stamp`]).
+///
+/// # Errors
+///
+/// The first check that fails, as [`InvocationError`].
+pub fn verify_page_call(
+    call: &tilo_actions::remote::SignedCall,
+    workspace: &str,
+    app: &str,
+    asked: (u32, Option<&str>, &crate::page::PageAction),
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, InvocationError> {
+    #[derive(serde::Deserialize)]
+    struct Act {
+        id: u32,
+        target: Option<String>,
+        action: crate::page::PageAction,
+    }
+    let signed = &call.signed;
+    check_signature(signed)?;
+    let statement = signed.statement();
+    if statement.workspace != workspace {
+        return Err(StatementMismatch::Workspace.into());
+    }
+    if statement.target.address.resource != app {
+        return Err(StatementMismatch::Target.into());
+    }
+    let (id, target, action) = asked;
+    let names_act = match &call.argument {
+        Some(tilo_actions::remote::InvokeArgument::Json(object)) => serde_json::from_value::<Act>(
+            serde_json::Value::Object(object.clone()),
+        )
+        .is_ok_and(|signed| {
+            signed.id == id && signed.target.as_deref() == target && &signed.action == action
+        }),
+        _ => false,
+    };
+    if !names_act || call.argument_signed() != Some(true) {
+        return Err(StatementMismatch::Arguments.into());
+    }
+    if !statement.fresh_at(now_ns) {
+        return Err(InvocationError::Stale);
+    }
+    signer_of(signed, workspace, revocations, now_ns)
 }
 
 /// Check `request` in `workspace` as [`verify_invocation`] does, for the agent `agent` acting
@@ -785,69 +905,50 @@ mod tests {
             assert_eq!(kept(&by_agent, &helper, true), Ok(Some(agent)));
         }
 
-        phase a_person_further_down_the_chain_signs_and_the_chain_still_bounds_the_change;
-        // Ada's agent answers Bo, and Ada's device signs: Ada is named, so the signature checks,
-        // but the change may do only what Bo and Ada both may. Bo may not touch mail.
+        phase a_change_outside_the_calls_target_is_refused;
         {
-            use tilo_action_policy::{
-                ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
-                WorkspacePolicy,
-            };
-            let (ada_root, _) = UserIdentity::generate("Ada", 1);
-            let (bo_root, _) = UserIdentity::generate("Bo", 1);
-            let (eve_root, _) = UserIdentity::generate("Eve", 1);
-            let ada = hex::encode(ada_root.verifying_key().to_bytes());
-            let bo = hex::encode(bo_root.verifying_key().to_bytes());
-            let laptop = SigningKey::from_bytes(&[21; 32]);
-            let ada_device = cert_of(&ada_root, &laptop, None);
-            let eve_device = cert_of(&eve_root, &SigningKey::from_bytes(&[22; 32]), None);
-            let answering_bo = Acting::handed_agent("scout", bo.as_str()).agent_of(ada.as_str());
-            let kept = |asked: &InvokeRequest| {
-                verify_recorded(
-                    &tilo_actions::ActionContext {
-                        source_invocation: Some(asked.invocation),
-                        signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
-                        invoker: Some(tilo_actions::ActionInvoker::admitted(&answering_bo)),
-                        ..tilo_actions::ActionContext::default()
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let cert = cert_of(&root, &key, None);
+            let asked = signed(&request(), &cert, &key, NOW);
+            let acting = Acting::person(hex::encode(cert.user_public_key));
+            let change = |id: &str, kind: &str, action: &str| {
+                let mut context = tilo_actions::ActionContext {
+                    source_invocation: Some(asked.invocation),
+                    signed: tilo_actions::remote::SignedCall::of(&asked).map(Box::new),
+                    invoker: Some(tilo_actions::ActionInvoker::admitted(&acting)),
+                    resource: Some(tilo_actions::ActionResource {
+                        id: id.into(),
+                        kind: kind.into(),
+                        label: String::new(),
+                    }),
+                    ..tilo_actions::ActionContext::default()
+                };
+                context.what = Some(tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                    action: tilo_actions::ActionKey {
+                        app: "so.tilo.notes".into(),
+                        kind: "note".into(),
+                        action: action.into(),
                     },
-                    WORKSPACE,
-                    &RevocationList::new(),
-                )
+                    args: std::collections::BTreeMap::new(),
+                }));
+                context
             };
-            let by_ada = signed(&request(), &ada_device, &laptop, NOW);
-            assert_eq!(kept(&by_ada), Ok(Some(ada_device)));
-            // A person the chain does not name signs nothing in it.
-            let by_eve = signed(&request(), &eve_device, &SigningKey::from_bytes(&[22; 32]), NOW);
-            assert_eq!(kept(&by_eve), Err(InvocationError::NotInvoker));
-
-            let mut policy = WorkspacePolicy::new(WORKSPACE, ada.as_str());
-            policy.members.insert(bo.clone(), Role::Editor);
-            let mut policy = policy.with_current_roles();
-            let mail = TreePath::workspace(WORKSPACE).app("mail");
-            policy.grants.push(Grant::new(
-                "bo-no-mail",
-                Grantee::person(bo.as_str()),
-                mail.clone(),
-                KindSet::ALL,
-                Answer::Deny,
-                Grantee::person(ada.as_str()),
-            ));
-            let archive = mail.kind("mail.message").resource("m1").action("archive");
-            let notes = TreePath::workspace(WORKSPACE).app("notes").action("append");
-            let cx = Context::at(NOW);
-            let signer = MemberAccess::person(policy, ada.as_str());
+            let none = RevocationList::new();
+            // The call's own resource and action are inside it; another of either is not.
             assert_eq!(
-                signer.answer(&archive, ActionKind::Undoable, &cx),
-                Answer::Allow,
-                "Ada may archive mail"
+                verify_recorded(&change("note:1", "note", "rename"), WORKSPACE, &none),
+                Ok(Some(cert))
             );
-            let change = signer.invoked_by(&answering_bo);
-            assert_eq!(
-                change.answer(&archive, ActionKind::Undoable, &cx),
-                Answer::Deny,
-                "her signature gives the change nothing Bo may not do"
-            );
-            assert_eq!(change.answer(&notes, ActionKind::Undoable, &cx), Answer::Allow);
+            for outside in [
+                change("note:2", "note", "rename"),
+                change("note:1", "note", "delete"),
+            ] {
+                assert_eq!(
+                    verify_recorded(&outside, WORKSPACE, &none),
+                    Err(InvocationError::Mismatch(StatementMismatch::Target))
+                );
+            }
         }
 
         phase one_invocation_id_names_one_request;
@@ -869,6 +970,46 @@ mod tests {
                 replay.admit(other.signed.as_ref().unwrap(), NOW + 2),
                 Err(InvocationError::Replayed)
             );
+        }
+
+        phase a_page_call_checks_only_for_the_act_it_names;
+        {
+            use crate::page::PageAction;
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let cert = cert_of(&root, &key, None);
+            let act = serde_json::json!({"id": 7, "target": "notes.block-text:b1", "action": {"value": "Milk"}});
+            let mut asked = request();
+            asked.target = RemoteActionTarget {
+                provider: "notes".into(),
+                address: ActionAddress::new("notes", "act"),
+            };
+            asked.argument = InvokeArgument::Json(act.as_object().unwrap().clone());
+            let call = tilo_actions::remote::SignedCall::of(&signed(&asked, &cert, &key, NOW)).unwrap();
+            let none = RevocationList::new();
+            let milk = PageAction::Value("Milk".into());
+            let check = |call: &tilo_actions::remote::SignedCall, app: &str, act: (u32, Option<&str>, &PageAction)| {
+                verify_page_call(call, WORKSPACE, app, act, &none, NOW)
+            };
+            assert_eq!(check(&call, "notes", (7, Some("notes.block-text:b1"), &milk)), Ok(cert));
+            // Another element, other text, or another app's page: not what was signed.
+            let mismatch = Err(InvocationError::Mismatch(StatementMismatch::Arguments));
+            assert_eq!(check(&call, "notes", (8, Some("notes.block-text:b1"), &milk)), mismatch);
+            let eggs = PageAction::Value("Eggs".into());
+            assert_eq!(check(&call, "notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
+            assert_eq!(
+                check(&call, "mail", (7, Some("notes.block-text:b1"), &milk)),
+                Err(InvocationError::Mismatch(StatementMismatch::Target))
+            );
+            // The argument swapped under the signature.
+            let mut swapped = call;
+            swapped.argument = Some(InvokeArgument::Json(
+                serde_json::json!({"id": 7, "target": "notes.block-text:b1", "action": {"value": "Eggs"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ));
+            assert_eq!(check(&swapped, "notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
         }
     }
 }

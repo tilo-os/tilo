@@ -27,7 +27,7 @@ pub mod waiting;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 
-use tilo_actions::{ActionAddress, Availability, ResourceSpec};
+use tilo_actions::{ActionAddress, ResourceSpec};
 use ui::search::{PagePoll, PendingToken, SearchQuery};
 
 use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
@@ -317,22 +317,12 @@ fn index(resources: &[ResourceSpec]) -> BTreeMap<String, &ResourceSpec> {
     out
 }
 
-/// Whether a row may offer `contract`'s action: it reaches people and has something to act on now.
-///
-/// An action with nothing to act on (an event's `Invite` with no event selected, a sheet's `Close`
-/// with it shut) takes no row at all, not even for its own name: a row that can only say why it
-/// cannot run stands where a row that would do something should be, and the person who typed its
-/// name meant the thing that works.
-fn offered(contract: &tilo_actions::ActionContract) -> bool {
-    contract.offered_to_people() && matches!(contract.availability, Availability::Available)
-}
-
 fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> {
     let spec = resource
         .actions
         .iter()
         .find(|spec| spec.id == action)
-        .filter(|spec| offered(&spec.contract))?;
+        .filter(|spec| spec.contract.a_person_can_take_now())?;
     Some(ActionTarget {
         resource: resource.id.clone(),
         resource_kind: resource.kind.clone(),
@@ -593,7 +583,7 @@ impl Source for Published {
                 published
                     .actions
                     .iter()
-                    .filter(|action| offered(&action.contract))
+                    .filter(|action| action.contract.a_person_can_take_now())
                     .map(move |action| (published, action))
             })
             .collect();
@@ -1498,6 +1488,7 @@ impl Source for Switches {
 mod tests {
     use super::*;
     use crate::model::search;
+    use tilo_actions::Availability;
 
     fn apps() -> Applications {
         Applications::new(vec![

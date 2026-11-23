@@ -127,12 +127,6 @@ impl DisclosureBand {
 }
 
 impl Widget for DisclosureBand {
-    /// The band's content, moving in and out of its place.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     crate::described!();
 
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {

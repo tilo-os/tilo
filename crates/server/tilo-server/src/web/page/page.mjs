@@ -16,19 +16,17 @@ const MAX_FRAME = 8 * 1024 * 1024;
 // (`tilo_server_protocol::page::QUESTION_PATCH_ID`).
 const QUESTION_PATCH = '4294967295';
 
-// ---- BLAKE3 of one block (the handshake's digests are 59 bytes) ----
+// ---- BLAKE3 (the handshake's digests and an act's signed call) ----
 
 const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
 const PERMUTE = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+const CHUNK_START = 1, CHUNK_END = 2, PARENT = 4, ROOT = 8;
 
-/** BLAKE3 of `input`, at most one 64-byte block: the digest a handshake signs. */
-export function blake3Block(input) {
-  if (input.length > 64) throw new RangeError('one block at most');
-  const block = new Uint8Array(64);
-  block.set(input);
-  let m = Array.from({length: 16}, (_, i) => new DataView(block.buffer).getUint32(i * 4, true));
-  // CHUNK_START | CHUNK_END | ROOT
-  const v = [...IV, IV[0], IV[1], IV[2], IV[3], 0, 0, input.length, 1 | 2 | 8];
+/** BLAKE3's compression of one 64-byte `block` (as 16 words): the first eight words of what it
+ * outputs, the chaining value. */
+function compress(cv, block, counter, length, flags) {
+  let m = block;
+  const v = [...cv, IV[0], IV[1], IV[2], IV[3], counter >>> 0, Math.floor(counter / 2 ** 32), length, flags];
   const rotr = (x, n) => ((x >>> n) | (x << (32 - n))) >>> 0;
   const g = (a, b, c, d, x, y) => {
     v[a] = (v[a] + v[b] + x) >>> 0; v[d] = rotr(v[d] ^ v[a], 16);
@@ -43,9 +41,39 @@ export function blake3Block(input) {
     g(2, 7, 8, 13, m[12], m[13]); g(3, 4, 9, 14, m[14], m[15]);
     m = PERMUTE.map(i => m[i]);
   }
+  return Array.from({length: 8}, (_, i) => (v[i] ^ v[i + 8]) >>> 0);
+}
+
+const words = (bytes, at, length) => {
+  const block = new Uint8Array(64);
+  block.set(bytes.subarray(at, at + length));
+  const view = new DataView(block.buffer);
+  return Array.from({length: 16}, (_, i) => view.getUint32(i * 4, true));
+};
+
+/** BLAKE3 of `input`. */
+export function blake3(input) {
+  // What a node of the tree outputs, compressed last: as a chaining value, or with ROOT, the hash.
+  const output = (cv, block, counter, length, flags) => extra => compress(cv, block, counter, length, flags | extra);
+  const chunk = index => {
+    const start = index * 1024;
+    const length = Math.min(1024, input.length - start);
+    const blocks = Math.max(1, Math.ceil(length / 64));
+    let cv = IV;
+    for (let b = 0; b < blocks - 1; b++) cv = compress(cv, words(input, start + b * 64, 64), index, 64, b === 0 ? CHUNK_START : 0);
+    const last = length - (blocks - 1) * 64;
+    return output(cv, words(input, start + (blocks - 1) * 64, last), index, last, (blocks === 1 ? CHUNK_START : 0) | CHUNK_END);
+  };
+  // A subtree's left half holds the largest power of two of its chunks that leaves the right one.
+  const tree = (first, count) => {
+    if (count === 1) return chunk(first);
+    const left = 2 ** Math.floor(Math.log2(count - 1));
+    return output(IV, [...tree(first, left)(0), ...tree(first + left, count - left)(0)], 0, 64, PARENT);
+  };
+  const root = tree(0, Math.max(1, Math.ceil(input.length / 1024)))(ROOT);
   const out = new Uint8Array(32);
   const view = new DataView(out.buffer);
-  for (let i = 0; i < 8; i++) view.setUint32(i * 4, (v[i] ^ v[i + 8]) >>> 0, true);
+  root.forEach((word, i) => view.setUint32(i * 4, word, true));
   return out;
 }
 
@@ -190,11 +218,61 @@ export function serverNonce(ack) {
 
 /** The third message: this device's signature over the server's challenge. */
 export async function ack2(sign, nonce) {
-  const digest = blake3Block(Uint8Array.from([...CLIENT_TAG, ...nonce]));
+  const digest = blake3(Uint8Array.from([...CLIENT_TAG, ...nonce]));
   const signature = await sign(digest);
   const w = new Writer();
   w.varint(signature.length); w.raw(signature);
   return w.done();
+}
+
+// ---- An act, signed by the person's device ----
+// What the device serving the page checks before the act runs, and every holder of the change it
+// makes checks again (`signed_invocation.rs`): the statement's exact bytes, its BLAKE3, signed
+// under the invocation domain.
+
+const INVOCATION_DOMAIN = new TextEncoder().encode('tilo-invocation-v1\0');
+const ARGUMENTS_DOMAIN = new TextEncoder().encode('tilo-invocation-arguments-v1\0');
+
+/** `value` as JSON with every object's keys sorted: the form the arguments are hashed in. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function u64(n) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(n), true);
+  return out;
+}
+
+/** The call `device` signs for `act` (`{id, target, action}`) on the page of `app` in
+ * `workspace`: the signed statement, as the wire carries it, with the act as its argument.
+ * Its issue time is a whole second, which a number holds exactly. */
+export async function signedAct(device, workspace, app, act,
+  {invocation = crypto.randomUUID(), issuedAtNs = Math.floor(Date.now() / 1000) * 1e9} = {}) {
+  const encoder = new TextEncoder();
+  const bytes = [];
+  const text = value => { const encoded = encoder.encode(value); bytes.push(...u64(encoded.length), ...encoded); };
+  const arguments_ = blake3(Uint8Array.from([...ARGUMENTS_DOMAIN, 2, ...encoder.encode(canonical(act))]));
+  const signer = Uint8Array.from(device.cert.device_public_key);
+  text(workspace);
+  bytes.push(...uuidBytes(invocation));
+  text(app); text(app); text('act');
+  bytes.push(...arguments_, 0, ...u64(issuedAtNs), ...signer);
+  const signature = await device.sign(Uint8Array.from([...INVOCATION_DOMAIN, ...blake3(Uint8Array.from(bytes))]));
+  const cert = new Writer();
+  writeCert(cert, device.cert);
+  return {
+    signed: {
+      workspace, invocation, target: {provider: app, address: {resource: app, action: 'act'}},
+      arguments: hex(arguments_), on_behalf_of: null, issued_at_ns: issuedAtNs,
+      signer: hex(signer), signature: hex(signature), signer_cert: hex(cert.done()),
+    },
+    argument: {Json: act},
+  };
 }
 
 // ---- Frames: a little-endian u32 length, then the bytes ----
@@ -315,6 +393,8 @@ function start() {
     }
   } catch { /* none kept */ }
   let link = null;
+  // The device the page's session is in as, which signs its acts.
+  let signer = null;
   let composing = false;
   let unanswered = 0;
   let lastSelection = '';
@@ -400,10 +480,22 @@ function start() {
 
   const numberOf = element => Number(element.closest('[data-p]')?.dataset.p);
 
+  // An act on an app's page goes signed by the device this page is in as: whose the change it
+  // makes is. Acts are signed one after another, so they are asked in the order they were made.
+  let signing = Promise.resolve();
   const act = (element, action) => {
     const id = numberOf(element);
     if (!Number.isFinite(id)) return;
-    ask({act: {id, target: element.dataset.t ?? null, action}});
+    const asked = {id, target: element.dataset.t ?? null, action};
+    const by = signer;
+    if (!config.address.app || !by) { ask({act: asked}); return; }
+    signing = signing.then(async () => {
+      const signed = await signedAct(by, config.address.workspace, config.address.app, asked).catch(error => {
+        console.warn('page: signing an act', error);
+        return null;
+      });
+      ask({act: signed ? {...asked, signed} : asked});
+    });
   };
 
   const editing = element => element?.matches?.('input,textarea,[contenteditable]') ?? false;
@@ -531,6 +623,24 @@ function start() {
     field.focus({preventScroll: true});
   };
 
+  // The view lays itself out at the page's size, as a window does at its own, so where its
+  // widgets stand is where the page shows them: told when the page is shown and when the
+  // browser's window changes size.
+  let sized = null;
+  let sizing = null;
+  const resized = () => {
+    const width = Math.round(page.clientWidth || innerWidth);
+    const height = Math.round(page.clientHeight || innerHeight);
+    const said = `${width}x${height}`;
+    if (said === sized || !width || !height) return;
+    sized = said;
+    ask({act: {id: 0, target: null, action: {resize: {width, height}}}});
+  };
+  addEventListener('resize', () => {
+    clearTimeout(sizing);
+    sizing = setTimeout(resized, 150);
+  });
+
   const show = ({title, css, body}) => {
     const held = typingHeld();
     appTitle = title;
@@ -552,6 +662,8 @@ function start() {
     editable(page);
     focusAsked();
     typingBack(held);
+    sized = null;
+    resized();
     // Shown again under a field being typed in: its text is sent from here,
     // so what the person wrote lands on the document they are looking at.
     const kept = held && page.querySelector(held.key);
@@ -639,12 +751,18 @@ function start() {
     if (!element || !page.contains(element)) return;
     const action = element.dataset.a;
     if (action === 'activate') {
+      // A link that names an address opens it: the browser's own step, as a link on any
+      // page. A link naming the view's target (`data-t`) is an ask, as a press on a row is.
+      if (element.tagName === 'A' && element.getAttribute('href') && !element.dataset.t) return;
       event.preventDefault();
       // What is typed next is not for the field the person clicked away from.
       const active = document.activeElement;
       if (editing(active) && !element.contains(active)) active.blur();
       handOver(element);
       act(element, 'activate');
+    } else if (action === 'toggle' && !element.matches('input')) {
+      event.preventDefault();
+      act(element, 'toggle');
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});
     } else if (action === 'back') {
@@ -659,6 +777,23 @@ function start() {
     }
   });
   // A form's Enter runs what its own button runs; the browser never sends it.
+  // A slider steps with its arrow keys, and an element that acts without being a button
+  // presses with Enter or Space, as a native control does.
+  page.addEventListener('keydown', event => {
+    const element = event.target;
+    if (!element?.dataset || !page.contains(element) || editing(element)) return;
+    const action = element.dataset.a;
+    if (action === 'slider') {
+      const step = {ArrowRight: 'increment', ArrowUp: 'increment', ArrowLeft: 'decrement', ArrowDown: 'decrement'}[event.key];
+      if (!step) return;
+      event.preventDefault();
+      act(element, step);
+    } else if ((action === 'activate' || action === 'toggle') && !element.matches('button,a')
+      && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      act(element, action);
+    }
+  });
   page.addEventListener('submit', event => {
     event.preventDefault();
     const run = event.target.querySelector('button[type=submit][data-a=activate]');
@@ -814,6 +949,7 @@ function start() {
       const opened = await session(config, device).catch(() => null);
       if (!opened) continue;
       link = opened;
+      signer = device;
       ask({open: addressOf()});
       let answer;
       while ((answer = await link.next().catch(() => null))) {
@@ -822,6 +958,7 @@ function start() {
       }
       link.close();
       link = null;
+      signer = null;
       unanswered = 0;
       sent.length = 0;
       redone.length = 0;

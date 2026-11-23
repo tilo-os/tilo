@@ -704,13 +704,6 @@ fn px(value: f64) -> f32 {
 }
 
 impl<R: Resource> Widget for Each<R> {
-    /// The rows it mounts, where the list stands them; the list itself carries its role and its
-    /// scroll, and each row is the widget its own content makes.
-    fn html(&self, cx: &mut ui_core::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.stale.replace(false) {
             self.reconcile();

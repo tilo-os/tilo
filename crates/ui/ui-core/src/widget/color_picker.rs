@@ -899,43 +899,6 @@ impl Widget for ColorPicker {
         false
     }
 
-    /// A colour as a page's own: the `<input type=color>` holding it, and the
-    /// swatches it offers beside it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption, InputKind};
-        cx.control(Control::Entry {
-            input: InputKind::Colour,
-            text: self.hex_string(),
-            placeholder: String::new(),
-            min: None,
-            max: None,
-            step: None,
-            steppers: false,
-            increase: None,
-            decrease: None,
-            secret: false,
-        });
-        if !self.swatches.is_empty() {
-            let options = self
-                .swatches
-                .iter()
-                .enumerate()
-                .map(|(index, swatch)| {
-                    ControlOption::new(swatch.spoken_name())
-                        .with_colour(swatch.color)
-                        .with_target(format!("{TARGET_SWATCH}{index}"))
-                        .selected(Self::same_rgb(swatch.color, self.color))
-                })
-                .collect();
-            cx.control(Control::Choices {
-                list: "radiogroup",
-                item: "radio",
-                label: None,
-                options,
-            });
-        }
-    }
-
     crate::described!();
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {

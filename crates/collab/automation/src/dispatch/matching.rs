@@ -160,7 +160,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
             // Housekeeping fires only a trigger that names its action: a
             // record's readers marking it read change nothing a trigger on
             // the record's changes acts on.
-            change.kind == *kind
+            fires_on_kind(change.kind.as_str(), kind)
                 && actor_counts(*by, &change.actor)
                 && (filter.is_empty() || filter.holds(&ChangeFilter::subject(change)))
                 && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
@@ -293,6 +293,13 @@ fn inputs(shortcut: &Shortcut, event: Event<'_>) -> Map<String, Value> {
 /// Whether field-edit `path` (`channels.c1.name`) matches `pattern`
 /// (`channels.*.name`, or a prefix such as `channels`).
 #[must_use]
+/// Whether a change to `kind` is a change to the kind a trigger saved as `saved` names: the
+/// same kind, or the kind it is now when the app was renamed since the trigger was saved.
+fn fires_on_kind(kind: &str, saved: &str) -> bool {
+    kind == saved
+        || tilo_action_policy::earlier::held_current_kind(saved).is_some_and(|now| now == kind)
+}
+
 pub fn field_matches(pattern: &str, path: &str) -> bool {
     let mut path = path.split('.');
     pattern.split('.').all(|wanted| {

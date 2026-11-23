@@ -236,7 +236,7 @@ impl Runtime {
         self.add_catalogues(&compiled.wasm, crate::words::WordsRole::Used);
         self.check_exports(&hash, &compiled.meta)?;
         let lines = tilolang::meta::lines_from_wasm(&compiled.wasm);
-        let pkg = crate::registry::Package::with_lines(hash, compiled.meta.clone(), &lines)
+        let pkg = crate::registry::Package::library(hash, compiled.meta.clone(), &lines)
             .map_err(RuntimeError::Package)?;
         self.core
             .registry
@@ -1098,10 +1098,16 @@ impl Runtime {
             })
     }
 
-    /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
+    /// Signatures of every loaded app, for discovery ([`catalogue`](mod@crate::catalogue)).
+    /// The standard library is loaded beside them and is no app: what it declares is the code
+    /// an app calls, never something a program names an app for.
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
-        let metas: Vec<&Meta> = pkgs.iter().map(|p| &p.meta).collect();
+        let metas: Vec<&Meta> = pkgs
+            .iter()
+            .filter(|p| !p.library)
+            .map(|p| &p.meta)
+            .collect();
         catalogue(&metas)
     }
 
@@ -1158,6 +1164,12 @@ impl Runtime {
     /// paste reads off it. Until it is set, nothing copies and nothing pastes.
     pub fn set_clipboard(&self, host: impl crate::clipboard::ClipboardHost + 'static) {
         *self.core.clipboard.borrow_mut() = Some(Box::new(host));
+    }
+
+    /// The host a notice is raised to: the desktop's notifications show it, a test's record
+    /// keeps it. The notice is the record the run wrote either way; a host hears each once.
+    pub fn set_notices(&self, host: impl crate::notify::Notices + 'static) {
+        *self.core.notices.borrow_mut() = Some(Box::new(host));
     }
 
     /// Where `model_call` goes.

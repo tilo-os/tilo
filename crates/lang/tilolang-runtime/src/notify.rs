@@ -29,6 +29,13 @@ pub fn record_id(key: &str) -> String {
     format!("notice:{}", blake3::hash(key.as_bytes()).to_hex())
 }
 
+/// What a host does with a notice a run raises: the desktop shows it as a notification, a test
+/// records it. The record is written either way; a host that is set hears each notice once, as
+/// the run raises it, and never one a replay reads from its journal again.
+pub trait Notices {
+    fn raised(&self, notice: &Notice);
+}
+
 /// Something a person is told, as the runtime writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {

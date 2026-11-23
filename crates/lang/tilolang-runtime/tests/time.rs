@@ -116,6 +116,62 @@ view clocks() {
     text("c {Time("2026-10-29T14:05:00Z").clock()}")
 }
 
+/// A wall-clock time as a named zone resolves it, the person's own clock and zone no part of it.
+fn wall(zone: Text, text: Text) -> Text {
+    if let at = Time.from_wall(zone, text) {
+        at.iso()
+    } else {
+        "none"
+    }
+}
+
+/// A moment as the reader's own clock writes its time of day.
+fn clock_of(zone: Text, text: Text) -> Text {
+    if let at = Time.from_wall(zone, text) {
+        at.clock()
+    } else {
+        "none"
+    }
+}
+
+/// A wall-clock time as the zone it names resolves it.
+view from_walls() {
+    // The spring gap: 02:30 never happened in Berlin, so it is the first minute after it.
+    text("a {wall(\"Europe/Berlin\", \"2026-03-29T02:30\")}")
+    // The autumn fold: 02:30 happened twice, and the earlier instant is the one taken.
+    text("b {wall(\"Europe/Berlin\", \"2026-10-25T02:30\")}")
+    text("c {wall(\"America/Los_Angeles\", \"2026-11-01T01:30\")}")
+    text("d {wall(\"UTC\", \"2026-11-24T09:00\")}")
+    // A floating time is nine where the reader is, so it reads nine on their clock in any zone.
+    text("e {clock_of(\"floating\", \"2026-07-01T09:00\")}")
+    text("f {wall(\"Mars/Base\", \"2026-11-24T09:00\")}")
+    text("g {wall(\"Europe/Berlin\", \"2026-07-01T09:00\")}")
+    text("h {wall(\"Europe/Berlin\", \"tomorrow\")}")
+}
+
+/// A moment's day in named zones: the same moment read where people there are, whatever the
+/// person's own zone and clock.
+view zones() {
+    // The moments are named: a calendar literal inside a sentence reads better named.
+    let late = 2026-10-29T23:30Z
+    let evening = 2026-10-29T22:30Z
+    let november = 2026-11-01T06:30Z
+    let spring = 2026-03-29T01:30Z
+    let july = 2026-07-01T22:30Z
+    text("a {late.day_in(\"Europe/Berlin\")}")
+    text("b {evening.day_in(\"America/Los_Angeles\")}")
+    text("c {november.day_in(\"Europe/Berlin\")}")
+    text("d {spring.day_in(\"Europe/Berlin\")}")
+    text("e {july.day_in(\"Europe/Berlin\")}")
+    text("f {late.day_in(\"Asia/Tokyo\")}")
+}
+
+/// A floating moment's day is the reader's own day.
+view floating_day() {
+    let late = 2026-10-29T23:30Z
+    text("{late.day_in(\"floating\")}")
+}
+
 view read_back(b: Board) {
     for l in b.logs {
         text("{l.at} {l.stamp} {l.seconds}")
@@ -407,6 +463,62 @@ view span_label(span: Duration) {
         for (i, sheet) in [&utc, &east, &west, &berlin].into_iter().enumerate() {
             assert_eq!(sheet.view("agreed"), ["on today 1"], "case {i}");
         }
+    }
+
+    /// A moment's day in a named zone is where people there were at that instant: the zone's own
+    /// rules decide it, so two people whose clocks and zones differ read it alike, and no `now`
+    /// or host zone reaches it.
+    #[test]
+    fn a_moment_reads_its_day_in_a_named_zone() {
+        let utc = Sheet::in_zone(0, None);
+        assert_eq!(
+            utc.bare("zones"),
+            [
+                // Berlin is an hour ahead in late October: 23:30Z is already the next day.
+                "a 2026-10-30",
+                // Los Angeles is seven hours behind, still in its summer time: the same evening.
+                "b 2026-10-29",
+                "c 2026-11-01",
+                // Berlin sprang forward at 01:00Z that day: a wall time after it is two hours on.
+                "d 2026-03-29",
+                // In July Berlin is two hours ahead, so 22:30Z is the next day's half past
+                // midnight.
+                "e 2026-07-02",
+                "f 2026-10-30",
+            ]
+        );
+        // The person's own zone and clock play no part in the named zones' days.
+        let west = Sheet::in_zone(-7 * 3600, Some("America/Los_Angeles"));
+        assert_eq!(west.bare("zones"), utc.bare("zones"));
+        // A floating moment's day is each reader's own.
+        assert_eq!(utc.bare("floating_day"), ["2026-10-29"]);
+        let berlin = Sheet::in_zone(3600, Some("Europe/Berlin"));
+        assert_eq!(berlin.bare("floating_day"), ["2026-10-30"]);
+    }
+
+    /// A wall-clock time reads as the named zone resolves it — the earlier instant of a fold, the
+    /// first real minute out of a gap — and two people in different zones read it alike.
+    #[test]
+    fn a_wall_clock_time_reads_as_its_zone_resolves_it() {
+        let utc = Sheet::in_zone(0, None);
+        assert_eq!(
+            utc.bare("from_walls"),
+            [
+                "a 2026-03-29T01:00:00Z",
+                "b 2026-10-25T00:30:00Z",
+                "c 2026-11-01T08:30:00Z",
+                "d 2026-11-24T09:00:00Z",
+                // A floating time is nine where the reader is, on their own clock.
+                "e 09:00",
+                // A zone this build does not know, and words that name no wall time, answer none.
+                "f none",
+                "g 2026-07-01T07:00:00Z",
+                "h none",
+            ]
+        );
+        // The person's own zone and clock play no part in it.
+        let east = Sheet::in_zone(2 * 3600, Some("Europe/Berlin"));
+        assert_eq!(east.bare("from_walls"), utc.bare("from_walls"));
     }
 
     /// Text a program builds by interpolation names a day or a moment the way the person reads

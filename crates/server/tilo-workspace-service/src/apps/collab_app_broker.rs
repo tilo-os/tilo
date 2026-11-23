@@ -106,6 +106,9 @@ mod published;
 mod published_invocation;
 mod resolved_invocation;
 mod route_holds;
+mod router;
+#[cfg(test)]
+mod router_tests;
 #[cfg_attr(
     not(test),
     allow(

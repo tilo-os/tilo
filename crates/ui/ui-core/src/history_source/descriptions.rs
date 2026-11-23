@@ -24,7 +24,6 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, ReadDoc, Value};
 
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{from_hex16, hex16};
 pub use collaboration::history_source::{DESCRIPTIONS_KEY, is_description_marker};
 
 /// A description is one short sentence; past this it is a paragraph that
@@ -37,7 +36,7 @@ pub const MAX_DESCRIPTION_LEN: usize = 160;
 pub fn read_descriptions(doc: &AutoCommit) -> HashMap<HistoryEntryId, String> {
     let mut out = HashMap::new();
     for key in doc.keys(automerge::ROOT) {
-        let Some(id) = key.strip_prefix(DESCRIPTIONS_KEY).and_then(from_hex16) else {
+        let Some(id) = key.strip_prefix(DESCRIPTIONS_KEY).and_then(HistoryEntryId::from_hex) else {
             continue;
         };
         let Ok(Some((Value::Object(ObjType::Map), record))) = doc.get(automerge::ROOT, &key) else {
@@ -77,7 +76,7 @@ pub fn write_description(
     if !is_acceptable(text) {
         return false;
     }
-    let key = format!("{DESCRIPTIONS_KEY}{}", hex16(id));
+    let key = format!("{DESCRIPTIONS_KEY}{}", HistoryEntryId::hex(id));
     if doc.get(automerge::ROOT, &key).ok().flatten().is_some() {
         return false;
     }

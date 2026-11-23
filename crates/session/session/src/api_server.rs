@@ -22,8 +22,22 @@ struct Desktop {
     services: Arc<SessionServices>,
 }
 
+impl Desktop {
+    /// Whether `key` is this desktop's person's: the only keys its API serves, on a socket only
+    /// their own programs reach.
+    fn persons(&self, key: &tilo_user_identity::DeviceCert) -> bool {
+        hex::encode(key.user_public_key) == self.services.person()
+    }
+}
+
 impl tilo_api::session::Here for Desktop {
-    fn workspaces(&self) -> Vec<tilo_api::session::Workspace> {
+    fn workspaces(
+        &self,
+        key: &tilo_user_identity::DeviceCert,
+    ) -> Vec<tilo_api::session::Workspace> {
+        if !self.persons(key) {
+            return Vec::new();
+        }
         self.services
             .workspaces()
             .into_iter()
@@ -31,12 +45,17 @@ impl tilo_api::session::Here for Desktop {
             .collect()
     }
 
-    fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
-        if !self
-            .services
-            .workspaces()
-            .iter()
-            .any(|[id, _]| id == workspace)
+    fn enter(
+        &self,
+        workspace: &str,
+        key: &tilo_api::grant_key::GrantKey,
+    ) -> Result<tilo_api::session::Reached, String> {
+        if !self.persons(key.cert())
+            || !self
+                .services
+                .workspaces()
+                .iter()
+                .any(|[id, _]| id == workspace)
         {
             return Err("no such workspace".into());
         }
@@ -45,7 +64,7 @@ impl tilo_api::session::Here for Desktop {
         Ok(tilo_api::session::Reached {
             provider: Arc::new(api),
             person: self.services.person().to_owned(),
-            tasks: person_tasks(&self.services),
+            tasks: person_tasks(&self.services).map(|tasks| tasks as Arc<dyn tilo_mcp::TaskHosts>),
         })
     }
 }

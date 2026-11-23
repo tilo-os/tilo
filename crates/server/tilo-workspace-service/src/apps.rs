@@ -24,7 +24,6 @@ pub mod local_document_action;
 /// Nearby Send published as a resource: the devices in reach, the offers another
 /// device made, and the actions that answer them.
 pub mod nearby_send;
-pub mod owner_commits;
 pub mod policy_clock;
 pub mod published_authorization;
 /// The route an app's traffic is addressed on, the same on every host.

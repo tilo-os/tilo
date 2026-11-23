@@ -28,13 +28,8 @@ use tilo_session_client::device::Device as Entered;
 use tilo_workspace_service::apps::services::{GrantRecording, WorkspaceAuthority, WorkspaceGrants};
 use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::own_device::{self, KeyService};
-use tilo_workspace_service::service::WorkspaceService;
+use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
-
-/// Where the service keeps its store, below the device's directory.
-const SERVICE: &str = "service";
-/// Where the key service keeps its sealed group state, below the device's directory.
-const GROUPS: &str = "groups";
 
 /// What the device's workspace service is opened with.
 pub(crate) struct Opening<'a> {
@@ -44,10 +39,16 @@ pub(crate) struct Opening<'a> {
     pub(crate) identity: DeviceIdentity,
     /// The endpoint, bound under the device's key, every link of the device runs on.
     pub(crate) endpoint: iroh::Endpoint,
+    /// Whether the service founds and governs workspaces here: on a computer with no login.
+    pub(crate) governs: bool,
     /// What the groups' members seal is checked against: the apps' channels.
     pub(crate) seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     /// What answers the person's keys' record actions in a workspace governed here.
     pub(crate) apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+    /// What the service keeps beyond a device's own, on a server.
+    pub(crate) configure: Option<Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'a>>,
+    /// The device itself, when the service acts as it: on a server.
+    pub(crate) itself: Option<tilo_workspace_service::service::ServiceIdentity>,
 }
 
 /// Every workspace this computer takes part in, through the workspace service this device runs.
@@ -84,30 +85,43 @@ impl ServiceWorkspaces {
             key,
             identity,
             endpoint,
+            governs,
             seal_checks,
             apps,
+            configure,
+            itself,
         } = opening;
-        let keys = KeyService::open(
-            "tilo-device-groups",
-            &dir.join(GROUPS),
-            vault_key(key),
-            Arc::clone(&identity.signer),
-            seal_checks,
-        )
-        .map_err(|error| format!("this device's key service: {error}"))?;
-        let service = own_device::open(
-            dir.join(SERVICE),
+        let own_device::Opened { service, keys } = own_device::open_in(
+            dir,
             own_device::Device {
                 cert: &identity.device_cert,
                 signer: &identity.signer,
+                itself,
             },
+            own_device::vault_key(key),
             endpoint.clone(),
-            keys.groups(),
-            |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
+            governs,
+            seal_checks,
+            |config| {
+                let config = ServiceConfig { apps, ..config };
+                match configure {
+                    Some(configure) => configure(config),
+                    // A person's computer serves its workspaces at once, on the network or off
+                    // it: the service names its address in them once a relay answers, so
+                    // starting never waits out a net report. One with no relays names none.
+                    None => ServiceConfig {
+                        reaching: if tilo_endpoint_reachability::relays().relays.is_empty() {
+                            tilo_workspace_service::Reaching::OnItsOwn
+                        } else {
+                            tilo_workspace_service::Reaching::WhenNeeded
+                        },
+                        ..config
+                    },
+                }
+            },
         )
         .await
         .map_err(|error| format!("this device's workspace service: {error}"))?;
-        keys.attach(service.workspaces());
         let mut opened = Self::unopened(Arc::new(service), identity, endpoint);
         opened.keys = Some(keys);
         Ok(Arc::new(opened))
@@ -259,11 +273,6 @@ impl ServiceWorkspaces {
     pub(crate) fn holds(&self, workspace: WorkspaceId) -> bool {
         let copies = self.copies().clone();
         block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
-    }
-
-    /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
-    pub(crate) async fn keeps(&self, workspace: WorkspaceId) -> bool {
-        copy_of(self.copies(), workspace).await.is_some()
     }
 
     /// What reads `workspace`'s policy as this device's copy of it holds it now, `None` while the
@@ -427,6 +436,31 @@ impl ServiceWorkspaces {
         self.copies()
             .admit_execution(workspace, actor, cert, presentation)
             .await
+    }
+
+    /// Admit a run of the key `key` (certified by `cert`) in `workspace`: the key enters the
+    /// workspace as a device of this computer's person, keeping the grant its certificate
+    /// carries, and its run acts as the key itself, proving it holds the key.
+    pub(crate) async fn admit_key(
+        &self,
+        workspace: &str,
+        key: &SigningKey,
+        cert: &tilo_user_identity::DeviceCert,
+    ) -> Result<Arc<SessionAdmission>, String> {
+        self.copies()
+            .enter(workspace, cert)
+            .await
+            .map_err(|error| error.to_string())?;
+        let join = tilo_identity_client::collaboration_join_digest(workspace)
+            .map_err(|error| error.to_string())?;
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace.into(),
+            device_certificate: serde_json::to_vec(cert).map_err(|error| error.to_string())?,
+            proof: ed25519_dalek::Signer::sign(key, &join).to_bytes().to_vec(),
+        }
+        .encode()
+        .map_err(|error| error.to_string())?;
+        self.copies().admit_key(workspace, cert, presentation).await
     }
 
     /// Re-check every run admitted to `workspace`.
@@ -659,15 +693,6 @@ async fn copy_of(
     }
 }
 
-/// The key sealing the device's group state: derived from the device key, which this computer
-/// keeps beside it.
-fn vault_key(key: &SigningKey) -> key_group::VaultKey {
-    key_group::VaultKey::new(blake3::derive_key(
-        "tilo device workspace key vault v1",
-        &key.to_bytes(),
-    ))
-}
-
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
     /// What a launch into `workspace` hands its apps: the sandbox its
     /// governance records, whether this device governs it or holds it as a
@@ -782,6 +807,7 @@ impl ServiceWorkspaces {
             tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &identity.signer,
+                itself: None,
             },
             endpoint.clone(),
             tilo_workspace_service::own_device::key_groups(
@@ -790,6 +816,7 @@ impl ServiceWorkspaces {
                 None,
                 None,
             ),
+            true,
             // The fixture's endpoint names no address anywhere: nothing will,
             // so opening does not wait for one.
             |config| tilo_workspace_service::service::ServiceConfig {
@@ -844,9 +871,12 @@ impl ServiceWorkspaces {
             key: &key,
             identity,
             endpoint,
+            governs: true,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+            configure: None,
+            itself: None,
         })
         .await
         .unwrap();
@@ -871,8 +901,11 @@ impl ServiceWorkspaces {
             key,
             identity: DeviceIdentity::kept(cert.clone(), key.clone()),
             endpoint,
+            governs: false,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
+            configure: None,
+            itself: None,
         })
         .await
     }

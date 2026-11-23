@@ -785,7 +785,7 @@ mod open_with_tests {
 mod command_path_tests {
     use super::*;
     use crate::model::Entry;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     #[cfg(target_os = "linux")]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -838,7 +838,7 @@ mod command_path_tests {
             context_menu_exposes_the_sort_section_including_type();
             context_select_targets_the_clicked_row_not_a_stale_selection();
             a_screen_reader_opens_a_rows_menu_on_the_row_it_names();
-            context_menu_checks_new_file_on_templates_existing();
+            context_menu_offers_new_file_with_or_without_templates();
             large_text_view_menu_clamps_inside_the_live_window();
         }
 
@@ -2429,6 +2429,123 @@ mod command_path_tests {
         assert!(ahead.commit, "Enter with it asks for it to be made");
     }
 
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow walked end to end: the empty file, its field in the controls, and a template chosen under it"
+    )]
+    fn new_file_names_it_in_the_published_field_and_makes_it_empty_or_from_a_template() {
+        // A new person has no templates, and New file still names a file: the press opens the
+        // same field a page names a new file in, published by its name, and Enter makes what
+        // was typed. With a template, it is offered under the field and makes its copy.
+        crate::i18n::set_locale("en-US");
+        let names_in = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let work = tempfile::tempdir().unwrap();
+        let templates = tempfile::tempdir().unwrap();
+        let widget = FileExplorerWidget::new();
+        widget.state().templates = crate::templates::Catalog::new(
+            Some(templates.path().to_path_buf()),
+            ui::WakeHandle::detached(),
+        );
+        widget.state().navigate(work.path().to_path_buf());
+        assert!(
+            widget.state().apply_command(FileCommand::NewFile),
+            "New file runs with no templates"
+        );
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        driver.relayout();
+        assert!(
+            driver.a11y_node_named("Name of the new file").is_some(),
+            "the field is published by the name a walk and an agent find it by"
+        );
+        driver.type_text("notes.txt");
+        driver.key("Enter");
+        assert_eq!(
+            names_in(work.path()),
+            ["notes.txt"],
+            "the typed name is the file's, and the proposal left nothing behind"
+        );
+        assert!(
+            std::fs::read(work.path().join("notes.txt"))
+                .unwrap()
+                .is_empty(),
+            "the new file is empty"
+        );
+
+        let work = tempfile::tempdir().unwrap();
+        let templates = tempfile::tempdir().unwrap();
+        std::fs::write(templates.path().join("Doc.md"), b"template body").unwrap();
+        let catalog = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                    let catalog = crate::templates::Catalog::new(
+                        Some(templates.path().to_path_buf()),
+                        ui::WakeHandle::detached(),
+                    );
+                    let _ = catalog.templates();
+                    catalog
+                })
+                .join()
+                .unwrap()
+        });
+        tilo_test_env::wait_until("the template to be listed", || {
+            catalog.templates() == [templates.path().join("Doc.md")]
+        });
+        let widget = FileExplorerWidget::new();
+        widget.state().templates = catalog;
+        widget.state().navigate(work.path().to_path_buf());
+        assert!(widget.state().apply_command(FileCommand::NewFile));
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        driver.relayout();
+        let field = driver
+            .a11y_node_named("Name of the new file")
+            .expect("the field stands with the template in the folder");
+        let item = driver
+            .a11y_node_named("New Doc")
+            .expect("the template is offered under the field");
+        let field_bounds = driver.a11y_node(field).and_then(|node| node.bounds());
+        let item_bounds = driver.a11y_node(item).and_then(|node| node.bounds());
+        assert!(
+            field_bounds
+                .is_some_and(|field| { item_bounds.is_some_and(|item| item.y0 >= field.y1) }),
+            "the template is offered under the field, not over it"
+        );
+        driver
+            .perform_a11y_action(item, &ui::a11y::Action::Activate)
+            .expect("the template answers");
+        // The copy is read in by a worker, so its field arrives a frame or two later.
+        let mut named = false;
+        for _ in 0..400 {
+            driver.relayout();
+            if driver.a11y_node_named("Name of the new file").is_some() {
+                named = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            std::fs::read(work.path().join("Doc.md")).unwrap(),
+            b"template body",
+            "the template is copied into the folder"
+        );
+        assert!(
+            !work.path().join("New file.txt").exists(),
+            "the empty file the press made goes when a template is chosen"
+        );
+        assert!(named, "the copy takes the name field");
+    }
+
     fn new_folders_name_typed_in_a_burst_keeps_every_character() {
         let d = tempfile::tempdir().unwrap();
         let widget = FileExplorerWidget::new();
@@ -3730,27 +3847,27 @@ mod command_path_tests {
         );
     }
 
-    fn context_menu_checks_new_file_on_templates_existing() {
+    fn context_menu_offers_new_file_with_or_without_templates() {
+        // A new person has no templates, and still makes a file: the field names it, and the
+        // templates a person does have are offered under the field, not instead of it.
         let (w, _cfg) = hermetic();
-        let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label.starts_with("New file"))
+        let new_file = |spec: &[(String, Option<FileCommand>)]| {
+            spec.iter()
+                .find(|(label, _)| label.starts_with("New file"))
+                .and_then(|(_, command)| command.clone())
         };
-        let has_new_folder = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label == "New folder")
-        };
-
-        let none = w.state().context_menu_spec(&[]);
-        assert!(!has_new_file(&none), "no templates → submenu hidden");
-        assert!(has_new_folder(&none), "New Folder is always offered");
-
-        let two = w
-            .state()
-            .context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
-        assert!(
-            has_new_file(&two),
-            "templates present → New File entry shown"
+        assert_eq!(
+            new_file(&w.state().context_menu_spec()),
+            Some(FileCommand::NewFile),
+            "New file is offered with no templates"
         );
-        assert!(has_new_folder(&two));
+        assert!(
+            w.state()
+                .context_menu_spec()
+                .iter()
+                .any(|(label, _)| label == "New folder"),
+            "New folder is always offered"
+        );
     }
 
     #[cfg(unix)]
@@ -3780,7 +3897,7 @@ mod command_path_tests {
         entry.availability = crate::model::read_availability(&file);
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         assert!(spec.iter().any(|(label, command)| {
             label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
@@ -3845,7 +3962,7 @@ mod command_path_tests {
         assert!(
             widget
                 .state()
-                .context_menu_spec(&[])
+                .context_menu_spec()
                 .iter()
                 .any(|(label, command)| {
                     label == "Free local space" && *command == Some(FileCommand::FreeLocalSpace)
@@ -3953,7 +4070,7 @@ mod command_path_tests {
         .collect();
         w.state().selection.select_all(3);
 
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         assert!(spec.iter().any(|(label, command)| {
             label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
@@ -4025,7 +4142,7 @@ mod command_path_tests {
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
 
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         assert!(
             spec.iter().any(|(label, command)| {
                 label == "Pinned by parent folder" && command.is_none()
@@ -4063,7 +4180,7 @@ mod command_path_tests {
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
 
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         assert!(spec.iter().any(|(label, command)| {
             label == "Retry download" && *command == Some(FileCommand::RetryTransfer)
         }));
@@ -4162,7 +4279,7 @@ mod command_path_tests {
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
 
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         let sharing: Vec<_> = spec
             .iter()
             .filter(|(label, _)| label.starts_with("Share") || label.contains("invite link"))
@@ -4245,7 +4362,7 @@ mod command_path_tests {
         let w = FileExplorerWidget::new();
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
-        let spec = w.state().context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec();
         assert!(spec.iter().any(|(label, command)| {
             label == "Version history…" && *command == Some(FileCommand::ShowHistory)
         }));

@@ -473,20 +473,6 @@ impl Ceremony {
 }
 
 impl Widget for Ceremony {
-    /// The page it composed, where it stands it; a chooser over it is drawn, so it shows as a
-    /// picture of it with its choices as buttons.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        if let Some((_, picker)) = self.chooser.as_ref() {
-            cx.picture();
-            if let Some(access) = picker.accessibility() {
-                cx.controls("chooser", &access);
-            }
-        } else {
-            cx.children();
-        }
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow_state();
         self.follow_chooser_answer();

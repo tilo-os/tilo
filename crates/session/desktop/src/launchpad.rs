@@ -756,183 +756,9 @@ impl CollaborationLaunchpad {
 }
 
 /// The launchpad's heading, its cards and its footer, as a page shows them.
-impl CollaborationLaunchpad {
-    /// The heading: what these cards are for, and who sees the work.
-    fn compose_heading(
-        &self,
-        cx: &mut ui::composition::HtmlCx<'_>,
-        left: f64,
-        width: f64,
-        top: f64,
-    ) {
-        let theme = cx.theme();
-        let ink = theme.tokens.colors.text_primary;
-        let heading_style = theme.text(TextRole::Display);
-        let caption_style = theme.text(TextRole::Caption);
-        let heading_h = f64::from(heading_style.line_height_px());
-        let caption_h = f64::from(caption_style.line_height_px());
-        let heading_y = top - HEADING_BAND;
-        let title = cx.part(
-            "title",
-            "LaunchpadTitle",
-            Rect::new(left, heading_y, left + width, heading_y + heading_h),
-        );
-        title.tag = Some("h1");
-        title.own = Some(ui::composition::Own::Text(
-            ui::composition::TextLook::new(self.title(), &heading_style, Some(ink))
-                .with_max_lines(Some(1)),
-        ));
-        let subtitle_y = heading_y + heading_h + 3.0;
-        let subtitle = cx.part(
-            "subtitle",
-            "LaunchpadSubtitle",
-            Rect::new(left, subtitle_y, left + width, subtitle_y + 2.0 * caption_h),
-        );
-        subtitle.tag = Some("p");
-        // Two lines, so a phone wraps the sentence rather than cutting it off.
-        subtitle.own = Some(ui::composition::Own::Text(
-            ui::composition::TextLook::new(self.subtitle(), &caption_style, Some(ink))
-                .with_max_lines(Some(2)),
-        ));
-    }
-
-    /// Each card as a button with its name and what it does, the tile's lift the theme's.
-    fn compose_cards(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme();
-        let ink = theme.tokens.colors.text_primary;
-        let dim = theme.tokens.colors.text_dim;
-        let base_style = theme.text(TextRole::Body);
-        let caption_style = theme.text(TextRole::Caption);
-        let base_h = f64::from(base_style.line_height_px());
-        for (action, rect) in self
-            .cards
-            .iter()
-            .copied()
-            .zip(self.card_rects.iter().copied())
-        {
-            let key = format!("card:{}", action.slug());
-            let card = cx.part(&key, "LaunchpadCard", rect);
-            card.tag = Some("button");
-            card.focusable = true;
-            card.semantics = Some(
-                ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                    .with_name(action.label())
-                    .with_description(action.detail(self.scope))
-                    .with_state(ui::a11y::AccessState::new().focusable(true)),
-            );
-            let label = cx.part(
-                &format!("{key}:label"),
-                "LaunchpadCardLabel",
-                Rect::new(
-                    rect.x0 + 56.0,
-                    rect.y0 + 16.0,
-                    rect.x1 - 16.0,
-                    rect.y0 + 16.0 + base_h,
-                ),
-            );
-            label.own = Some(ui::composition::Own::Text(
-                ui::composition::TextLook::new(action.label(), &base_style, Some(ink))
-                    .with_max_lines(Some(1)),
-            ));
-            let detail = cx.part(
-                &format!("{key}:detail"),
-                "LaunchpadCardDetail",
-                Rect::new(
-                    rect.x0 + 56.0,
-                    rect.y0 + 47.0,
-                    rect.x1 - 16.0,
-                    rect.y1 - 6.0,
-                ),
-            );
-            detail.own = Some(ui::composition::Own::Text(
-                ui::composition::TextLook::new(
-                    action.detail(self.scope),
-                    &caption_style,
-                    Some(dim),
-                )
-                .with_max_lines(Some(2)),
-            ));
-        }
-    }
-
-    /// The way into every app, and the keys that do the same, on the footer's one line.
-    fn compose_footer(
-        &self,
-        cx: &mut ui::composition::HtmlCx<'_>,
-        left: f64,
-        last_bottom: f64,
-        width: f64,
-    ) {
-        let theme = cx.theme().clone();
-        let ink = theme.tokens.colors.text_primary;
-        let base_style = theme.text(TextRole::Body);
-        let caption_style = theme.text(TextRole::Caption);
-        let caption_h = f64::from(caption_style.line_height_px());
-        let button = self.app_button_rect();
-        let (fill, edge, face_ink) = ui::widget::face_colors(
-            &theme,
-            ui::widget::ButtonRole::Secondary,
-            ui::widget::Interaction::default(),
-        );
-        let part = cx.part("open-app", "LaunchpadOpenApp", button);
-        part.tag = Some("button");
-        part.focusable = true;
-        part.own = Some(ui::composition::Own::Face(ui::composition::Face {
-            icon: None,
-            label: Some(
-                ui::composition::TextLook::new(
-                    t("launchpad-open-app"),
-                    &base_style,
-                    Some(face_ink),
-                )
-                .with_max_lines(Some(1)),
-            ),
-            detail: None,
-            trailing: None,
-            fill: Some(ui::composition::rgba8(fill)),
-            edge: edge.map(ui::composition::rgba8),
-            radius: ui::chrome::ChromeRole::Control.radius(&theme, button.height()),
-            pad: 20.0,
-            gap: 0.0,
-            spread: false,
-        }));
-        let hint_width = (button.x0 - left - 12.0).min(width).max(0.0);
-        if hint_width > 0.0 {
-            let hint_y = last_bottom + HINT_TOP;
-            // A narrow window leaves the hint little room beside "Open an app": it wraps
-            // rather than being cut to its first few words.
-            let hint = cx.part(
-                "hint",
-                "LaunchpadHint",
-                Rect::new(left, hint_y, left + hint_width, hint_y + 2.0 * caption_h),
-            );
-            hint.own = Some(ui::composition::Own::Text(
-                ui::composition::TextLook::new(self.keyboard_hint(), &caption_style, Some(ink))
-                    .with_max_lines(Some(2)),
-            ));
-        }
-    }
-}
+impl CollaborationLaunchpad {}
 
 impl Widget for CollaborationLaunchpad {
-    /// The heading, each card as a real button holding its name and what it does, the way into
-    /// every app, and the keyboard hint, each where the grid stands it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("section");
-        let Some(first) = self.card_rects.first().copied() else {
-            return;
-        };
-        let last = self.last_card();
-        let left = first.x0;
-        let width = (last.x1 - left).max(0.0);
-        if width <= 0.0 {
-            return;
-        }
-        self.compose_heading(cx, left, width, first.y0);
-        self.compose_cards(cx);
-        self.compose_footer(cx, left, last.y1, width);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1348,124 +1174,69 @@ mod tests {
     use automerge::AutoCommit;
     use ui::widget::DrawChild;
 
-    /// Every composed node named `widget`, wherever it stands in `root`.
-    fn collect<'a>(
-        root: &'a ui::composition::Composed,
-        widget: &str,
-    ) -> Vec<&'a ui::composition::Composed> {
-        fn walk<'a>(
-            node: &'a ui::composition::Composed,
-            widget: &str,
-            found: &mut Vec<&'a ui::composition::Composed>,
-        ) {
-            if node.widget == widget {
-                found.push(node);
-            }
-            for child in &node.children {
-                walk(child, widget, found);
-            }
-        }
-        let mut found = Vec::new();
-        walk(root, widget, &mut found);
-        found
-    }
-
-    /// A phone leaves the keyboard hint little room beside "Open an app": it wraps onto the
-    /// line rather than being cut to its first few words.
+    /// The start cards are real buttons on a page, each with its name and its sentence, under
+    /// the heading's words, with the way into every app a button of its own; a press on each is
+    /// the card's own action.
     #[test]
-    fn a_narrow_launchpad_wraps_its_keyboard_hint() {
+    fn a_page_shows_the_launchpad_as_cards_of_buttons() {
         crate::i18n::ensure();
-        let pad = every_card();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            pad,
-            (320, 568),
-            Theme::default(),
-        );
-        frame.relayout();
-        frame.poll_frame().expect("a frame draws the launchpad");
-        let composition = frame.composition();
-        let hint = collect(&composition.root, "LaunchpadHint");
-        assert_eq!(hint.len(), 1, "{hint:#?}");
-        let Some(ui::composition::Own::Text(look)) = &hint[0].own else {
-            panic!("the hint is words: {:#?}", hint[0]);
-        };
-        assert_eq!(
-            look.text,
-            t("launchpad-keyboard-hint"),
-            "the hint reads whole, not cut to what fits beside the button"
-        );
-        let line = f64::from(
-            Theme::default()
-                .text(ui::tokens::TextRole::Caption)
-                .line_height_px(),
-        );
-        let [_, _, _, height] = hint[0].rect;
-        assert!(
-            height > line * 1.5,
-            "the hint keeps a second line to wrap onto: {:?}, over a line of {line}",
-            hint[0].rect
-        );
-    }
-
-    /// The start cards are real buttons on a page, each with its own name and sentence, with the
-    /// heading's words above them and the way into every app a button of its own.
-    #[test]
-    fn the_launchpad_composes_as_cards_of_buttons() {
-        crate::i18n::ensure();
-        let pad = every_card();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            pad,
+            every_card(),
             (1100, 720),
             Theme::default(),
         );
         frame.relayout();
         frame.poll_frame().expect("a frame draws the launchpad");
-        let composition = frame.composition();
-
-        let cards = collect(&composition.root, "LaunchpadCard");
+        let html = ui::composition::page::Page::new().render(&frame.composition());
+        let escape = ui::composition::page::escape;
+        assert!(
+            html.contains(&format!(
+                "<span class=\"tilo-title\">{}</span>",
+                escape(&t("launchpad-title"))
+            )),
+            "the heading's words lead the page: {html}"
+        );
         let shown: Vec<_> = LaunchpadAction::ALL
             .into_iter()
             .filter(|card| card.fits(WorkspaceScope::Shared))
             .collect();
-        assert_eq!(cards.len(), shown.len(), "{cards:#?}");
-        for (card, action) in cards.iter().zip(shown.iter().copied()) {
-            assert_eq!(card.tag, Some("button"));
-            assert!(card.focusable);
-            assert_eq!(
-                card.semantics.as_ref().and_then(|node| node.name.clone()),
-                Some(action.label())
+        assert!(!shown.is_empty());
+        let open = (LAUNCHPAD_OPEN_APP.to_owned(), t("launchpad-open-app"), None);
+        for (target, label, detail) in shown
+            .iter()
+            .map(|card| {
+                (
+                    card.target(),
+                    card.label(),
+                    Some(card.detail(WorkspaceScope::Shared)),
+                )
+            })
+            .chain(std::iter::once(open))
+        {
+            let at = html
+                .find(&format!("data-t=\"{}\"", escape(&target)))
+                .unwrap_or_else(|| panic!("{label} is on the page: {html}"));
+            let opened = html[..at].rfind('<').expect("an element");
+            let element = &html[opened
+                ..html[at..]
+                    .find("</button>")
+                    .map_or(html.len(), |end| at + end)];
+            assert!(
+                element.starts_with("<button") && element.contains("data-a=\"activate\""),
+                "{label} is a button a press acts on: {element}"
             );
+            assert!(
+                element.contains(&escape(&label)),
+                "{label} says its name: {element}"
+            );
+            if let Some(detail) = detail {
+                assert!(
+                    element.contains(&escape(&detail)),
+                    "{label} says what it does: {element}"
+                );
+            }
         }
-        let details = collect(&composition.root, "LaunchpadCardDetail");
-        assert_eq!(details.len(), shown.len());
-        assert!(
-            details
-                .iter()
-                .all(|detail| matches!(&detail.own, Some(ui::composition::Own::Text(_)))),
-            "each card says what its verb does"
-        );
-
-        let title = collect(&composition.root, "LaunchpadTitle");
-        assert_eq!(title.len(), 1);
-        assert_eq!(title[0].tag, Some("h1"));
-        assert!(
-            matches!(&title[0].own, Some(ui::composition::Own::Text(look)) if look.text == t("launchpad-title")),
-            "{:#?}",
-            title[0]
-        );
-
-        let open = collect(&composition.root, "LaunchpadOpenApp");
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].tag, Some("button"));
-        let Some(ui::composition::Own::Face(face)) = &open[0].own else {
-            panic!("the way into every app is a face: {:#?}", open[0]);
-        };
-        assert_eq!(
-            face.label.as_ref().map(|label| label.text.as_str()),
-            Some(t("launchpad-open-app").as_str())
-        );
     }
 
     fn deliver(
@@ -1592,7 +1363,7 @@ mod tests {
         // stands everywhere: the shell offers what a person can open, never a window of an app that is
         // not here.
         {
-            let only = ["so.tilo.lang.tasks"];
+            let only = ["so.tilo.tasks"];
             let installed = |app: &str| only.contains(&app);
             assert_eq!(
                 LaunchpadAction::ALL

@@ -9,11 +9,18 @@ use crate::fixtures::{Replica, ShownPlace, Workspace};
 
 pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
+pub(crate) const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
+pub(crate) const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-/// What a task's page is drawn from: the tasks and the discussion under them.
-pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
-pub(crate) const APP: &str = "so.tilo.lang.tasks";
+/// What a task's page is drawn from: the tasks, the discussion under them, and the agents it can
+/// be given to.
+pub(crate) const PACKAGES: &[(&str, &str)] = &[
+    (DISCUSSION, DISCUSSION_IDS),
+    (NOTES, NOTES_IDS),
+    (TASKS, TASKS_IDS),
+];
+pub(crate) const APP: &str = "so.tilo.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -54,6 +61,59 @@ pub(crate) fn read(r: &Replica, item: &Value, field: &str) -> Value {
     r.host.runtime().read(&item.target, field).unwrap()
 }
 
+/// Whether a task is closed: its status is done or cancelled.
+pub(crate) fn done(r: &Replica, task: &Value) -> bool {
+    let Value::Ref(task) = task else {
+        panic!("a task: {task:?}")
+    };
+    match r.host.runtime().read(&task.target, "status").unwrap() {
+        Value::Enum(case) => {
+            let meta = &r.host.package(APP).unwrap().meta;
+            let ty = meta.enums.iter().find(|ty| ty.id == case.ty).unwrap();
+            let name = &ty
+                .variants
+                .iter()
+                .find(|variant| variant.id == case.variant)
+                .unwrap()
+                .name;
+            name == "done" || name == "cancelled"
+        }
+        other => panic!("a status: {other:?}"),
+    }
+}
+
+/// The name of the case a task's status is.
+pub(crate) fn status_of(r: &Replica, task: &Value) -> String {
+    let Value::Ref(task) = task else {
+        panic!("a task: {task:?}")
+    };
+    match r.host.runtime().read(&task.target, "status").unwrap() {
+        Value::Enum(case) => {
+            let meta = &r.host.package(APP).unwrap().meta;
+            let ty = meta.enums.iter().find(|ty| ty.id == case.ty).unwrap();
+            ty.variants
+                .iter()
+                .find(|variant| variant.id == case.variant)
+                .unwrap()
+                .name
+                .clone()
+        }
+        other => panic!("a status: {other:?}"),
+    }
+}
+
+/// The value of the declared enum `ty`'s case `name`.
+pub(crate) fn case(r: &Replica, ty: &str, name: &str) -> Value {
+    let meta = &r.host.package(APP).unwrap().meta;
+    let ty = meta.enums.iter().find(|found| found.name == ty).unwrap();
+    let found = ty.variants.iter().find(|case| case.name == name).unwrap();
+    Value::Enum(tilolang_runtime::value::EnumValue {
+        ty: ty.id.clone(),
+        variant: found.id.clone(),
+        fields: std::collections::BTreeMap::new(),
+    })
+}
+
 /// The resource a field refers to, whoever's code made the reference.
 pub(crate) fn target(v: &Value) -> Option<String> {
     match v {
@@ -73,7 +133,7 @@ pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
     args
 }
 
-fn items(r: &Replica) -> Vec<Value> {
+pub(crate) fn items(r: &Replica) -> Vec<Value> {
     let root = r.host.root_of(APP).unwrap();
     match r.host.runtime().read(&root, "items").unwrap() {
         Value::List(items) => items,
@@ -129,7 +189,7 @@ tilo_test_env::scenario! {
         let (ada, root) = workspace();
         let task = call(&ada, "new_task", create(&root, "Book a haircut"));
         ada.commit();
-        let project = call(&ada, "new_project", vec![root.clone()]);
+        let project = call(&ada, "new_project", vec![root]);
         ada.commit();
         call(
             &ada,
@@ -141,9 +201,9 @@ tilo_test_env::scenario! {
         assert_eq!(target(&read(&ada, &task, "project")), target(&project));
         call(&ada, "check", vec![task.clone()]);
         ada.commit();
-        assert_eq!(read(&ada, &task, "done"), Value::Bool(true));
+        assert!(done(&ada, &task),);
         // Deleting the project sends its tasks back to the inbox; the task stays.
-        call(&ada, "remove_project", vec![root, project]);
+        call(&ada, "remove_project", vec![project]);
         ada.commit();
         assert_eq!(read(&ada, &task, "project"), Value::none());
         assert_eq!(items(&ada).len(), 1);
@@ -483,22 +543,12 @@ tilo_test_env::scenario! {
     }
 
     phase a_lists_header_counts_the_cards_it_holds;
-    // A list's header counts the cards the list holds: the open tasks filed in it, not the
-    // project's tasks, the ones it leaves out (done, or a step under a task), or another
-    // project's.
+    // A column's header counts the cards it holds: its own project's open tasks, not a step under
+    // a task, or another project's.
     {
         let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         ada.commit();
-        let packing = call(&ada, "new_section", vec![project.clone()]);
-        call(
-            &ada,
-            "rename_section",
-            vec![packing.clone(), Value::text("Packing")],
-        );
-        let booked = call(&ada, "new_section", vec![project.clone()]);
-        call(&ada, "rename_section", vec![booked, Value::text("Booked")]);
-        // Two in no section, one in Packing, and in Booked nothing yet.
         let boxes = call(
             &ada,
             "add_to",
@@ -512,33 +562,27 @@ tilo_test_env::scenario! {
         let kitchen = call(
             &ada,
             "add_to",
-            vec![
-                project.clone(),
-                Value::text("Clean the kitchen"),
-                Value::some(packing.clone()),
-            ],
+            vec![project.clone(), Value::text("Clean the kitchen"), Value::none()],
         );
-        // A step under the kitchen's task is no card of its own, a done task is no card, and a
-        // task of another project is none here.
+        call(
+            &ada,
+            "set_status",
+            vec![kitchen.clone(), case(&ada, "Status", "in_progress"), Value::Int(0)],
+        );
+        // A step under the kitchen's task is no card of its own, and a task of another project is
+        // none here.
         call(
             &ada,
             "add_subtask",
-            vec![
-                root.clone(),
-                kitchen.clone(),
-                Value::text("Wipe the shelves"),
-            ],
+            vec![kitchen.clone(),
+                Value::text("Wipe the shelves")],
         );
         let books = call(
             &ada,
             "add_to",
-            vec![
-                project.clone(),
-                Value::text("Pack the books"),
-                Value::some(packing),
-            ],
+            vec![project.clone(), Value::text("Pack the books"), Value::none()],
         );
-        call(&ada, "check", vec![books, Value::Bool(true)]);
+        call(&ada, "check", vec![books.clone(), Value::Bool(true)]);
         let van = call(&ada, "new_project", vec![root]);
         call(
             &ada,
@@ -560,15 +604,17 @@ tilo_test_env::scenario! {
         assert_eq!(
             lists(&view),
             [
-                (None, None, ids(&[&boxes, &tape])),
-                (Some("Packing".to_owned()), Some(1), ids(&[&kitchen])),
-                (Some("Booked".to_owned()), Some(0), vec![]),
+                (Some("Backlog".to_owned()), Some(2), ids(&[&boxes, &tape])),
+                (Some("Todo".to_owned()), Some(0), vec![]),
+                (Some("In progress".to_owned()), Some(1), ids(&[&kitchen])),
+                (Some("In review".to_owned()), Some(0), vec![]),
+                (Some("Done".to_owned()), Some(1), ids(&[&books])),
+                (Some("Cancelled".to_owned()), Some(0), vec![]),
             ]
         );
         for (title, count, cards) in lists(&view) {
             let Some(count) = count else {
-                assert!(title.is_none(), "a list with a heading has a count");
-                continue;
+                panic!("a column {title:?} with no count")
             };
             assert_eq!(
                 usize::try_from(count).unwrap_or(usize::MAX),
@@ -640,7 +686,7 @@ tilo_test_env::scenario! {
         call(
             &ada,
             "add_subtask",
-            vec![root.clone(), post.clone(), Value::text("Draft the post")],
+            vec![post.clone(), Value::text("Draft the post")],
         );
         ada.commit();
         let draft = task(&ada, "Draft the post");
@@ -648,7 +694,7 @@ tilo_test_env::scenario! {
             call(
                 &ada,
                 "add_subtask",
-                vec![root.clone(), draft.clone(), Value::text(title)],
+                vec![draft.clone(), Value::text(title)],
             );
             ada.commit();
         }
@@ -759,7 +805,7 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     ben.commit();
     ada.sync_with(&ben);
     for r in [&ada, &ben] {
-        assert_eq!(read(r, &task, "done"), Value::Bool(true), "{}", r.name);
+        assert!(done(r, &task), "{}", r.name);
         assert_eq!(
             target(&read(r, &task, "project")),
             target(&project),
@@ -816,16 +862,10 @@ pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) ->
 }
 
 #[test]
-fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
+fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped() {
     let (ada, root) = workspace();
-    let project = call(&ada, "new_project", vec![root.clone()]);
+    let project = call(&ada, "new_project", vec![root]);
     ada.commit();
-    let doing = call(&ada, "new_section", vec![project.clone()]);
-    call(
-        &ada,
-        "rename_section",
-        vec![doing.clone(), Value::text("Doing")],
-    );
     let mut made = Vec::new();
     for title in [
         "Order boxes",
@@ -833,8 +873,11 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
         "Pack the books",
         "Measure the bedworkspace",
     ] {
-        let t = call(&ada, "new_task", create(&root, title));
-        call(&ada, "file", vec![t.clone(), project.clone()]);
+        let t = call(
+            &ada,
+            "add_to",
+            vec![project.clone(), Value::text(title), Value::none()],
+        );
         made.push(t);
     }
     ada.commit();
@@ -853,25 +896,32 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
     assert_eq!(
         lists(&view),
         [
-            (None, None, ids(&[&boxes, &van, &books, &bedworkspace])),
-            (Some("Doing".to_owned()), Some(0), vec![]),
+            (
+                Some("Backlog".to_owned()),
+                Some(4),
+                ids(&[&boxes, &van, &books, &bedworkspace])
+            ),
+            (Some("Todo".to_owned()), Some(0), vec![]),
+            (Some("In progress".to_owned()), Some(0), vec![]),
+            (Some("In review".to_owned()), Some(0), vec![]),
+            (Some("Done".to_owned()), Some(0), vec![]),
+            (Some("Cancelled".to_owned()), Some(0), vec![]),
         ]
     );
-    let drop = |view: &mut ViewInstance, list: Option<&str>, task: &Value, at: i64| {
-        let key = key_of(view, "ui.BoardList", &|l| match list {
-            Some(list) => list_title(l).as_deref() == Some(list),
-            None => list_title(l).is_none(),
+    let drop = |view: &mut ViewInstance, list: &str, task: &Value, at: i64| {
+        let key = key_of(view, "ui.BoardList", &|l| {
+            list_title(l).as_deref() == Some(list)
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
     };
-    // Into the empty list, then a second card above it.
-    drop(&mut view, Some("Doing"), &books, 0);
-    drop(&mut view, Some("Doing"), &van, 0);
-    // Within a list: the last card to the top.
-    drop(&mut view, None, &bedworkspace, 0);
-    // Below a list's last card.
-    drop(&mut view, Some("Doing"), &boxes, 2);
+    // Into the empty column, then a second card above it.
+    drop(&mut view, "In progress", &books, 0);
+    drop(&mut view, "In progress", &van, 0);
+    // Within a column: the last card to the top.
+    drop(&mut view, "Backlog", &bedworkspace, 0);
+    // Below a column's last card.
+    drop(&mut view, "In progress", &boxes, 2);
     ada.commit();
     // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
@@ -879,16 +929,20 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
     assert_eq!(
         lists(&view),
         [
-            (None, None, ids(&[&bedworkspace])),
+            (Some("Backlog".to_owned()), Some(1), ids(&[&bedworkspace])),
+            (Some("Todo".to_owned()), Some(0), vec![]),
             (
-                Some("Doing".to_owned()),
+                Some("In progress".to_owned()),
                 Some(3),
                 ids(&[&van, &books, &boxes])
             ),
+            (Some("In review".to_owned()), Some(0), vec![]),
+            (Some("Done".to_owned()), Some(0), vec![]),
+            (Some("Cancelled".to_owned()), Some(0), vec![]),
         ]
     );
-    assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
-    assert_eq!(read(&ada, &bedworkspace, "section"), Value::none());
+    assert_eq!(status_of(&ada, &van), "in_progress");
+    assert_eq!(status_of(&ada, &bedworkspace), "backlog");
 }
 
 /// The drawn row of the task held by `item`.
@@ -945,7 +999,7 @@ fn launch_post() -> (Replica, Value) {
         call(
             &ada,
             "add_subtask",
-            vec![root.clone(), parent.clone(), Value::text(title)],
+            vec![parent.clone(), Value::text(title)],
         );
         ada.commit();
     }
@@ -1001,7 +1055,7 @@ tilo_test_env::scenario! {
         view.fire_with(&key, "check", None).unwrap();
         ada.commit();
         view.poll_patches().unwrap();
-        assert_eq!(read(&ada, &outline, "done"), Value::Bool(true));
+        assert!(done(&ada, &outline),);
     }
 
     phase a_subtask_dropped_inside_another_is_nested;
@@ -1151,12 +1205,11 @@ tilo_test_env::scenario! {
     // under it, however deep, and opening a step opens the tasks it is under while the rest stay.
     {
         let (ada, parent) = launch_post();
-        let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
         let outline = task(&ada, "Outline");
         call(
             &ada,
             "add_subtask",
-            vec![tasks, outline.clone(), Value::text("Gather facts")],
+            vec![outline.clone(), Value::text("Gather facts")],
         );
         ada.commit();
         let facts = task(&ada, "Gather facts");
@@ -1170,9 +1223,7 @@ tilo_test_env::scenario! {
             &task(&ada, "Screenshots"),
             &facts,
         ] {
-            assert_eq!(
-                read(&ada, t, "done"),
-                Value::Bool(true),
+            assert!(done(&ada, t),
                 "{:?} is done with the task over it",
                 read(&ada, t, "title")
             );
@@ -1181,21 +1232,16 @@ tilo_test_env::scenario! {
         // Opening a step at the bottom opens everything over it, and nothing beside it.
         call(&ada, "check", vec![facts.clone()]);
         ada.commit();
-        assert_eq!(read(&ada, &facts, "done"), Value::Bool(false));
-        assert_eq!(
-            read(&ada, &outline, "done"),
-            Value::Bool(false),
+        assert!(!done(&ada, &facts));
+        assert!(!done(&ada, &outline),
             "the task it is a step of opens too"
         );
-        assert_eq!(
-            read(&ada, &parent, "done"),
-            Value::Bool(false),
+        assert!(!done(&ada, &parent),
             "and the task that one is under"
         );
         for title in ["First draft", "Screenshots"] {
-            assert_eq!(
-                read(&ada, &task(&ada, title), "done"),
-                Value::Bool(true),
+            assert!(
+                done(&ada, &task(&ada, title)),
                 "{title} stays done"
             );
         }
@@ -1222,9 +1268,8 @@ tilo_test_env::scenario! {
         ada.commit();
         view.poll_patches().unwrap();
         for title in ["Write the launch post", "Outline", "First draft"] {
-            assert_eq!(
-                read(&ada, &task(&ada, title), "done"),
-                Value::Bool(true),
+            assert!(
+                done(&ada, &task(&ada, title)),
                 "{title} is done from the row's box"
             );
         }
@@ -1376,10 +1421,14 @@ pub(crate) fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, Str
         let Some(drawn) = row.of_kind("ui.ListRow").first().copied() else {
             continue;
         };
-        // The box is bound to whether the task is done: what a person sees it filled with.
+        // The box follows whether the task is done: what a person sees it filled with. A task's
+        // done is read off its status, so the row says it, rather than binding a field of its own.
         let checked = match view.bound_value(&drawn.key) {
             Some(Value::Bool(checked)) => checked,
-            other => panic!("a row's box follows whether its task is done: {other:?}"),
+            _ => match item.props.get("done") {
+                Some(Value::Bool(done)) => *done,
+                other => panic!("a row says whether its task is done: {other:?}"),
+            },
         };
         out.push((index, drawn.key.clone(), at.target.id_string(), checked));
     }
@@ -1493,7 +1542,7 @@ tilo_test_env::scenario! {
         // A press on the row's box, as the person makes it.
         view.fire_with(&key, "check", None).unwrap();
         ada.commit();
-        assert_eq!(read(&ada, &bill, "done"), Value::Bool(true), "it is done");
+        assert!(done(&ada, &bill), "it is done");
         let rows = home_list_rows(&mut view);
         assert_eq!(rows.len(), 3, "nothing left the list: {rows:?}");
         let (now, _, drawn) = home_row_of(&mut view, &of);
@@ -1507,7 +1556,7 @@ tilo_test_env::scenario! {
         let (place, key, _) = home_row_of(&mut view, &of);
         view.fire_with(&key, "check", None).unwrap();
         ada.commit();
-        assert_eq!(read(&ada, &bill, "done"), Value::Bool(false), "reopened");
+        assert!(!done(&ada, &bill), "reopened");
         let (again, _, drawn) = home_row_of(&mut view, &of);
         assert_eq!(again, place, "in the place it stood");
         assert!(!drawn, "its box drawn empty again");
@@ -1969,15 +2018,15 @@ tilo_test_env::scenario! {
         let step = call(
             &ada,
             "add_subtask",
-            vec![root.clone(), parent.clone(), Value::text("Book a room")],
+            vec![parent.clone(), Value::text("Book a room")],
         );
         call(
             &ada,
             "add_subtask",
-            vec![root.clone(), step, Value::text("Check the prices")],
+            vec![step, Value::text("Check the prices")],
         );
         ada.commit();
-        let copy = call(&ada, "duplicate", vec![root, parent.clone()]);
+        let copy = call(&ada, "duplicate", vec![parent.clone()]);
         ada.commit();
         let made = items(&ada);
         assert_eq!(
@@ -2032,7 +2081,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     call(
         &ada,
         "add_subtask",
-        vec![root.clone(), parent.clone(), Value::text("Outline")],
+        vec![parent.clone(), Value::text("Outline")],
     );
     ada.commit();
     let ben = ada.fork("ben", PACKAGES);
@@ -2042,29 +2091,20 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     call(
         &ben,
         "add_subtask",
-        vec![
-            root.clone(),
-            parent.clone(),
-            Value::text("Gather the quotes"),
-        ],
+        vec![parent.clone(), Value::text("Gather the quotes")],
     );
     ben.commit();
     ada.sync_with(&ben);
-    assert_eq!(
-        read(&ada, &parent, "done"),
-        Value::Bool(true),
-        "checked off before the step was there"
-    );
-    assert_eq!(
-        read(&ada, &task(&ada, "Gather the quotes"), "done"),
-        Value::Bool(false),
+    assert!(done(&ada, &parent), "checked off before the step was there");
+    assert!(
+        !done(&ada, &task(&ada, "Gather the quotes")),
         "the step came after the check"
     );
 
     // Outline is finished with nothing under it, so it goes; the task whose step is still open
     // stays with that step.
     assert_eq!(
-        call(&ada, "clear_done", vec![root]),
+        call(&ada, "clear_done", vec![root.clone()]),
         Value::Int(1),
         "one finished task went"
     );
@@ -2097,11 +2137,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     for title in ["Outline", "Screenshots"] {
-        call(
-            &ada,
-            "add_subtask",
-            vec![root.clone(), post.clone(), Value::text(title)],
-        );
+        call(&ada, "add_subtask", vec![post.clone(), Value::text(title)]);
         ada.commit();
     }
     let outline = task(&ada, "Outline");
@@ -2139,9 +2175,8 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     // The copy that took the change has both steps checked, so its own view code works out the
     // same folded branch: nothing of the fold travelled with the change.
     for step in [&outline, &screenshots] {
-        assert_eq!(
-            read(&ben, step, "done"),
-            Value::Bool(true),
+        assert!(
+            done(&ben, step),
             "the other copy took the step the first one checked"
         );
     }
@@ -2522,7 +2557,7 @@ tilo_test_env::scenario! {
         call(
             &ada,
             "add_subtask",
-            vec![root, booked.clone(), Value::text("Find the number")],
+            vec![booked.clone(), Value::text("Find the number")],
         );
         call(&ada, "file", vec![booked.clone(), flat]);
         ada.commit();
@@ -2582,7 +2617,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             segments,
-            ["List", "Board"],
+            ["List", "Board", "Page"],
             "the views it declares, in the order it declares them, each saying what it adds to the type's name"
         );
         let icons: Vec<Option<String>> = switch.of_kind("ui.Segment")
@@ -2591,7 +2626,11 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             icons,
-            [Some("list".to_owned()), Some("columns-2".to_owned())],
+            [
+                Some("list".to_owned()),
+                Some("columns-2".to_owned()),
+                Some("info".to_owned())
+            ],
             "each view says the glyph it reads as"
         );
         assert_eq!(
@@ -2616,10 +2655,8 @@ tilo_test_env::scenario! {
             "no action is drawn as a switch: {toggles:?}"
         );
         assert!(
-            ["New task", "New section", "Rename…"]
-                .iter()
-                .all(|label| commands.contains(&label.to_string())),
-            "and the commands beside it are buttons: {commands:?}"
+            commands.contains(&"New task".to_owned()),
+            "and the project's primary action is a button: {commands:?}"
         );
     }
 
@@ -2792,7 +2829,7 @@ tilo_test_env::scenario! {
         call(
             &ada,
             "add_subtask",
-            vec![root.clone(), parent.clone(), Value::text("Outline")],
+            vec![parent.clone(), Value::text("Outline")],
         );
         ada.commit();
         // The menu reads as asking for the title the task is made under.
@@ -2811,7 +2848,7 @@ tilo_test_env::scenario! {
         let made = call(
             &ada,
             "add_subtask",
-            vec![root, parent.clone(), Value::text("Collect the quotes")],
+            vec![parent.clone(), Value::text("Collect the quotes")],
         );
         ada.commit();
         assert_eq!(
@@ -2859,7 +2896,29 @@ tilo_test_env::scenario! {
             "indent",
             "outdent",
             "remove",
-            "place",
+            "set_status",
+            "retitle",
+            "estimate",
+            "attach",
+            "detach",
+            "import_files",
+            "import_issue",
+            "write_note",
+            "wait",
+            "resume",
+            "set_budget",
+            "session_began",
+            "session_ended",
+            "stop",
+            "set_place",
+            "set_pieces_at_once",
+            "new_tasks",
+            "set_status_many",
+            "assign_many",
+            "label_many",
+            "set_kind",
+            "involve",
+            "remove_person",
             "move_to",
         ] {
             assert!(

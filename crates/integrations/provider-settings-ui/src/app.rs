@@ -163,11 +163,6 @@ impl ProviderSurface {
 impl Widget for ProviderSurface {
     ui::forward_to_composed!(composed);
 
-    /// The panel it composed, where its own layout stands it.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

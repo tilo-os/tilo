@@ -328,12 +328,6 @@ impl WorkspaceMenu {
 }
 
 impl Widget for WorkspaceMenu {
-    /// The menu it shows, with a row per workspace and the ways to another one.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

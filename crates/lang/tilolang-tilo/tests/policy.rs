@@ -15,9 +15,9 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = crate::fixtures::TASKS_SOURCE;
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const LETTERS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.tl");
-const LETTERS_IDS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
+const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
+const APP: &str = "so.tilo.tasks";
 const WORKSPACE: &str = "workspace";
 
 fn agent() -> Caller {

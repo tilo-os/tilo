@@ -215,10 +215,6 @@ impl Described for WindowPreview {
 }
 
 impl Widget for WindowPreview {
-    /// Nothing of its own: the compositor draws the window's own pixels there.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
     fn name(&self) -> &'static str {
         "WindowPreview"
     }

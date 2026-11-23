@@ -391,6 +391,17 @@ tilo_test_env::scenario! {
         ok(
             "view w(c: C) {\n    ui.VirtualList {\n        for x in c.items {\n            let heading: Option<Date> = if let at = x.at { .some(at.day()) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}",
         );
+        // `t.day_in("Europe/Berlin")` is the day the moment falls on where people there are: a
+        // reading of the zone's own rules, the same wherever the person is.
+        ok("fn f(t: Time) -> Date {\n    t.day_in(\"Europe/Berlin\")\n}");
+        ok("fn f(t: Time) -> Date {\n    t.day_in(\"UTC\")\n}");
+        // `Time.from_wall(zone, text)`: the moment a wall-clock time names where people there are.
+        ok("fn f() -> Option<Time> {\n    Time.from_wall(\"Europe/Berlin\", \"2026-11-24T09:00\")\n}");
+        expect("E022", "fn f() -> Option<Time> {\n    Time.from_wall(\"Europe/Berlin\")\n}");
+        expect("E020", "fn f() -> Option<Time> {\n    Time.from_wall(1, 2)\n}");
+        expect("E027", "fn f(t: Time) -> Date {\n    t.day_in()\n}");
+        expect("E027", "fn f(t: Time) -> Date {\n    t.day_in(\"UTC\", \"UTC\")\n}");
+        expect("E020", "fn f(t: Time) -> Date {\n    t.day_in(1)\n}");
         // A day's `day` is the day of its month, and a moment's is the day it falls on.
         expect("E020", "fn f(d: Date) -> Date {\n    d.day()\n}");
         expect("E020", "fn f(t: Time) -> Int {\n    t.day()\n}");

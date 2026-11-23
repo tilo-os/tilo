@@ -443,30 +443,6 @@ impl DiffView {
 }
 
 impl Widget for DiffView {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        let theme = cx.theme().clone();
-        let style = theme.text(ui::tokens::TextRole::Code);
-        let mut shown = String::new();
-        for row in &self.model.rows {
-            let left = row.left.as_deref().unwrap_or("");
-            let right = row.right.as_deref().unwrap_or("");
-            let number = |line: Option<usize>| {
-                line.map_or_else(|| "    ".to_owned(), |n| format!("{n:>4} "))
-            };
-            let _ = writeln!(
-                shown,
-                "{}{left}    {}{right}",
-                number(row.left_no),
-                number(row.right_no)
-            );
-        }
-        cx.element("pre");
-        let mut look =
-            ui::composition::TextLook::new(shown, &style, Some(theme.tokens.colors.text_primary));
-        look.mono = true;
-        cx.text(look);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1232,21 +1208,4 @@ pub(crate) mod performance_tests {
 #[cfg(test)]
 mod html_tests {
     use super::*;
-
-    #[test]
-    fn the_diff_composes_both_sides_as_text() {
-        let mut view = DiffView::new();
-        view.set_inputs("before", "alpha\nbeta\n", "after", "alpha\ngamma\n");
-        let composed = ui::composition::compose_alone(&view, &Theme::dark(), "diff");
-        assert_eq!(composed.tag, Some("pre"), "a diff is preformatted lines");
-        let Some(ui::composition::Own::Text(look)) = &composed.own else {
-            panic!("the diff shows its lines as words: {composed:#?}");
-        };
-        assert!(
-            look.text.contains("gamma"),
-            "the changed line is there: {}",
-            look.text
-        );
-        assert!(look.mono);
-    }
 }

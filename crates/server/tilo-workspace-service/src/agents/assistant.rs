@@ -34,6 +34,7 @@ pub use transforms::Transforms;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::agents::EngineActions;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::Caller;
 use tilo_agent_session::bot::host_steps::{
@@ -41,7 +42,6 @@ use tilo_agent_session::bot::host_steps::{
 };
 use tilo_agent_session::bot::judging;
 use tilo_agent_session::bot::kept::Note;
-use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
@@ -91,13 +91,13 @@ pub struct Starter {
     pub kind: &'static str,
 }
 
-/// [`host_steps`] for the program `starter`, on a server whose action service
+/// [`host_steps`] for the program `starter`, on a device whose dispatch
 /// takes Chat's verbs: an instruction it hands over starts a turn of its
 /// person's assistant.
 #[must_use]
 pub fn steps_starting_turns(
     workspaces: Workspaces,
-    actions: WorkspaceActions,
+    actions: EngineActions,
     starter: Starter,
 ) -> Arc<dyn Steps> {
     Arc::new(Hosted {
@@ -149,9 +149,9 @@ pub async fn assistant_of(
 /// their assistant for an instruction where the server starts turns.
 struct Hosted {
     workspaces: Workspaces,
-    /// The server's action service and the program these answers are for,
+    /// The device's dispatch and the program these answers are for,
     /// where an instruction starts a turn.
-    turns: Option<(WorkspaceActions, Starter)>,
+    turns: Option<(EngineActions, Starter)>,
 }
 
 impl Steps for Hosted {
@@ -301,7 +301,7 @@ impl Hosted {
     fn instructed(
         &self,
         runtime: &tokio::runtime::Handle,
-        actions: &WorkspaceActions,
+        actions: &EngineActions,
         starter: &Starter,
         instruction: &Instruction,
     ) -> Result<String, StepError> {

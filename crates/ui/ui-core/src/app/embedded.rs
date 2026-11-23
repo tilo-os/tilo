@@ -451,11 +451,6 @@ impl crate::widget::SearchableWindow for EmbeddedApp {
 }
 
 impl Widget for EmbeddedApp {
-    /// The embedded app paints its own frame here: a picture of it.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("section");
-        cx.painted(self.paint_generation);
-    }
     crate::provides!(
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::widget::CompleteContentProvider,

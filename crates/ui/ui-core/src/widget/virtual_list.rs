@@ -54,8 +54,6 @@ use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
 pub use tree::{TREE_INDENT, TreeMarks, TreeMove, TreeRow};
-#[path = "virtual_list_html_tree.rs"]
-mod html_tree;
 #[path = "virtual_list_menu.rs"]
 mod menu;
 use menu::RowMenus;
@@ -659,7 +657,7 @@ impl VirtualRows {
 
     /// Scroll `key`'s row into view, leaving the keyboard where it is; whether the model
     /// holds the row.
-    fn scroll_to_key(&mut self, key: &ListKey) -> bool {
+    pub(super) fn scroll_to_key(&mut self, key: &ListKey) -> bool {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };
@@ -726,6 +724,18 @@ impl VirtualRows {
             told(key);
         }
         moved
+    }
+
+    /// Whether the row of the item `item` names stands in the window now.
+    #[must_use]
+    pub fn row_is_visible(&self, item: &str) -> bool {
+        let Some(key) = self.key_of_item(item) else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&key) else {
+            return false;
+        };
+        self.visible_range().contains(&index)
     }
 
     /// The row of the item `item` names: as its model presents it, or as the list's own naming
@@ -1633,46 +1643,6 @@ impl crate::widget::PaintedRowLifts for VirtualRows {
 }
 
 impl Widget for VirtualRows {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("ul");
-        cx.children();
-        // The rows stand in from the list's edges exactly as far as the list laid them out, so a
-        // press lands on the row drawn under it. A chosen row's tint keeps inside its own row:
-        // each row insets its ground as painted.
-        let [x, _, width, _] = cx.node().rect;
-        let (left, right) = cx
-            .node()
-            .children
-            .iter()
-            .map(|row| {
-                let start = row.rect[0];
-                let end = start + row.rect[2];
-                (start - x, (x + width) - end)
-            })
-            .reduce(|(l0, r0), (l1, r1)| (l0.min(l1), r0.min(r1)))
-            .unwrap_or((0.0, 0.0));
-        cx.flow(&format!(
-            "display:flex;flex-direction:column;padding:0 {}px 0 {}px;",
-            right.max(0.0),
-            left.max(0.0)
-        ));
-        let chosen: Vec<vello::kurbo::Rect> = self
-            .mounted
-            .iter()
-            .filter(|row| self.row_selection(row.index).selected)
-            .map(|row| row.widget.get_rect())
-            .collect();
-        if !chosen.is_empty() {
-            cx.choose_children(&chosen);
-        }
-        self.name_page_rows(&mut cx.composed.children);
-        if self.tree.is_some() {
-            let theme = cx.theme().clone();
-            let rows = std::mem::take(&mut cx.composed.children);
-            cx.composed.children = self.tree_html_rows(rows, &theme);
-        }
-    }
-
     crate::provides!(
         dyn crate::widget::PaintedRowLifts,
         dyn crate::widget::virtual_list::PaintedRowChevrons

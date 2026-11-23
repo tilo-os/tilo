@@ -81,12 +81,6 @@ impl Default for ResizeHandle {
 }
 
 impl Widget for ResizeHandle {
-    /// The border it paints, as the separator between two windows' groups.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         (!self.rect.is_zero_area()).then(|| {
             crate::a11y::AccessNode::new(crate::a11y::Role::Separator).with_bounds(self.rect)
@@ -177,25 +171,6 @@ impl Widget for ResizeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_page_gets_the_border_as_a_separator() {
-        let mut handle = ResizeHandle::new();
-        handle.set_neighbour_rects(
-            Rect::new(0.0, 0.0, 600.0, 400.0),
-            Rect::new(608.0, 0.0, 1208.0, 400.0),
-        );
-        let composed = crate::composition::compose_alone(&handle, &Theme::dark(), "resize-handle");
-        assert_eq!(composed.tag, Some("div"));
-        assert!(
-            matches!(composed.own, Some(crate::composition::Own::Painted { .. })),
-            "the rule is drawn: {composed:#?}"
-        );
-        assert_eq!(
-            composed.semantics.as_ref().map(|node| node.role),
-            Some(crate::a11y::Role::Separator)
-        );
-    }
 
     #[test]
     fn the_border_zone_is_both_edge_grips_plus_the_gap() {

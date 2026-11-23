@@ -533,6 +533,19 @@ impl HostedWindow {
         self.connected.as_ref().map(|connected| &connected.view)
     }
 
+    /// What the person does from now on serves `call`, the invocation they signed for it as its
+    /// JSON, as the member `invoker` names; an empty call ends it
+    /// ([`tilo_render_protocol::patch::ToApp::Serving`]). Nothing before the window connected.
+    pub fn serve_call(&mut self, call: Vec<u8>, invoker: Option<String>) {
+        if let Some(connected) = &mut self.connected {
+            connected.view.flush();
+            connected
+                .view
+                .tell(tilo_render_protocol::patch::ToApp::Serving { call, invoker });
+            connected.view.flush();
+        }
+    }
+
     fn take_channel(&mut self, channel: Channel, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> bool {
         let connected = channel
             .as_fd()

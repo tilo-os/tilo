@@ -107,6 +107,11 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         if let p = device.overlays.peek {
             peek_card(p)
         }
+        // Reporting a problem takes the whole screen: the windows stand as cards and the person
+        // picks what the report is about, so the picker takes the pointer until it is answered.
+        if s.reporting {
+            report_picker()
+        }
     }
 }
 

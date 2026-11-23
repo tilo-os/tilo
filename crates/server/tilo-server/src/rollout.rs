@@ -23,7 +23,7 @@
 //! restarts into the generation that failed again.
 //!
 //! The update service, `tilo-server-update-apply` as root, asks this daemon
-//! over a socket in its state root ([`SOCKET`]), through `tilo-server-admin
+//! over a socket in its state root ([`SOCKET`]), through `tilo-server
 //! rollout`, since the daemon itself may not restart the machine. A desktop
 //! never takes the lease: desktops holding a workspace together restart when
 //! their people do.
@@ -467,7 +467,7 @@ async fn answer(machine: &ServerMachine, stream: tokio::net::UnixStream) -> Resu
 }
 
 /// Ask the daemon whose state root is `state_root`, as
-/// `tilo-server-admin rollout` does.
+/// `tilo-server rollout` does.
 ///
 /// # Errors
 /// The daemon could not be reached or answered nothing readable.

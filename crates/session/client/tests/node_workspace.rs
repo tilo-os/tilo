@@ -343,6 +343,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let writes: Vec<_> = server
         .workspace_documents()
         .retained(acme.workspace_id)
+        .await
         .unwrap()
         .into_iter()
         .filter_map(

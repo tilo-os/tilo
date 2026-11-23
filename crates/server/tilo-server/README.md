@@ -27,7 +27,7 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   checkpoints every ten minutes.
 - Bounds every in-memory peer queue. A peer that cannot keep up is disconnected;
   durable traffic is then queued on disk and replayed after it reconnects.
-- Ships a `tilo-server-admin` CLI for revocations, update rollout and status.
+- Carries only the daemon verbs: `init`, `run` and `workspace`.
 
 ## Composite home-peer deployment
 
@@ -47,11 +47,9 @@ for the persistent-volume and identity requirements.
 
 ## Binaries
 
-- `tilo-server` — daemon. Systemd `Type=notify`; subcommands `init`,
-  `run`, `status`.
-- `tilo-server-admin` — helper: status, update rollout and root-signed
-  `revoke-device`. A running daemon picks revocations up as they are
-  written.
+- `tilo-server` — the daemon. Systemd `Type=notify`; subcommands `init`,
+  `run` and `workspace`. A revocation is a written record in the person's
+  workspace, which its readers apply as it reaches them.
 
 ## Shell configuration
 
@@ -106,9 +104,8 @@ What a server costs per active member is measured, not estimated:
 - **Egress counters.** The daemon counts every byte it writes to a peer
   session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
   both per workspace, and each connected session's total
-  (`Metrics::session_egress`). `tilo-server-admin status` prints them.
-  They count framed bytes before QUIC; the load bench adds what the iroh
-  endpoint actually put on UDP.
+  (`Metrics::session_egress`). They count framed bytes before QUIC; the load
+  bench adds what the iroh endpoint actually put on UDP.
 - **Presence delivery** (`tests/presence_batching.rs`): one member's presence
   reaches another in the order it was posted, a keystroke's caret and typing
   ride in the write its delta takes, and a pointer that comes to rest arrives

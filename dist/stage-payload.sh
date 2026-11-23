@@ -19,7 +19,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
 bins=(tilo-session tilo tilo-runtime tilolang-process tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
-(( ! primary_files )) || bins+=(fs tilo-server-admin)
+(( ! primary_files )) || bins+=(fs)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
 done
@@ -43,7 +43,6 @@ install -pm 0755 "$bin_dir/tilolang-process"     "$stage/bin/tilolang-process"
 install -pm 0755 "$bin_dir/tilo-runtime"         "$stage/bin/tilo-runtime"
 if (( primary_files )); then
     install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
-    install -pm 0755 "$bin_dir/tilo-server-admin" "$stage/bin/tilo-server-admin"
     install -pm 0644 "$repo_root/dist/session/tilo-files-workspace.service" "$stage/systemd-user/tilo-files-workspace.service"
 fi
 install -pm 0755 "$bin_dir/tilo-launcher"      "$stage/bin/tilo-launcher"

@@ -46,7 +46,6 @@ pub struct Staging<'a> {
 /// What a page shows other than as the browser's own elements ([`AppPage::gaps`]).
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Gaps {
-    pub fallback: BTreeMap<String, usize>,
     pub painted: BTreeMap<String, usize>,
     pub placed: BTreeMap<String, usize>,
 }
@@ -254,6 +253,36 @@ impl AppPage {
         self.page.wells = wells;
     }
 
+    /// Hand the page's views the reading of `published`, a resource the host publishes for its
+    /// shell (`session:apps`, `session:windows`, `desktop:overlays`): what a device's shell reads
+    /// of its own state, so a page's shell reads the same names and needs no branch for the web.
+    /// The page's next render shows what the reading says.
+    ///
+    /// # Errors
+    /// `published` is no resource of the platform's packages, or its reading is not the object of
+    /// fields they describe.
+    pub fn fill_reading(
+        &mut self,
+        published: &str,
+        reading: &serde_json::Value,
+    ) -> Result<(), String> {
+        let ty = tilolang_tilo::platform_apps::platform_roots()
+            .into_iter()
+            .find(|(id, _)| *id == published)
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| format!("`{published}` is no resource the platform publishes"))?;
+        let target = tilolang_tilo::runtime::ResourceRef::parse_id(published, ty)
+            .ok_or_else(|| format!("`{published}` names no resource"))?;
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the page's host is not open".to_owned())?;
+        host.runtime()
+            .set_reading(&target, &reading.to_string())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     /// What changed on the page since it was last written, after the instance took in what its
     /// origins hold now (another member moved a place): the elements to replace.
     pub fn follow(&mut self) -> Vec<Patch> {
@@ -301,10 +330,9 @@ impl AppPage {
     }
 
     /// What of the window the page cannot show as the browser's own elements, by widget, with how
-    /// many of each it holds: `fallback`, widgets with no HTML of their own, written from their
-    /// layout and role; `painted`, widgets that are their own picture, an empty `<canvas>` here
-    /// since nothing paints in a page; `placed`, containers that place their children at
-    /// rectangles of their own, which the page flows instead.
+    /// many of each it holds: `painted`, widgets that show as a picture of their paint, which
+    /// nothing paints in a page here; `placed`, containers that place their children at
+    /// rectangles of their own, which the page places at those rectangles.
     #[must_use]
     pub fn gaps(&self) -> Gaps {
         let composition = self.harness.composition();
@@ -316,13 +344,10 @@ impl AppPage {
                 let held = kind.entry(node.widget.clone()).or_default();
                 *held = held.saturating_add(1);
             };
-            if node.fallback {
-                count(&mut gaps.fallback);
-            }
-            if matches!(node.own, Some(ui::composition::Own::Painted { .. })) {
+            if node.picture.is_some() {
                 count(&mut gaps.painted);
             }
-            if !node.flows && !node.places && !node.children.is_empty() && node.own.is_none() {
+            if !node.flows && !node.children.is_empty() {
                 count(&mut gaps.placed);
             }
             stack.extend(node.children.iter());

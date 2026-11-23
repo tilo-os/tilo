@@ -291,13 +291,6 @@ impl ui::widget::AppWidget for PageView {
 }
 
 impl Widget for PageView {
-    /// Another device's page is the pixels its own renderer draws: the tile shows it as a picture
-    /// of that page, called what the tile is.
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.picture();
-    }
-
     fn name(&self) -> &'static str {
         "PageView"
     }

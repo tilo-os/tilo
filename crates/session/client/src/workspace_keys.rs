@@ -43,7 +43,7 @@ use tilo_workspace_keys::{GovernancePump, KeysConfig, SealCheckRegistry, Workspa
 use crate::engine::Engine;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 
-mod vault;
+pub mod vault;
 pub use vault::MlsVault;
 
 /// The running key service: this device's keys, and the thread that keeps their groups in step

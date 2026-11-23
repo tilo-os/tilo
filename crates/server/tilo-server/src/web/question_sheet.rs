@@ -112,6 +112,24 @@ pub(crate) fn sheet_html(questions: &[PendingConfirmation]) -> String {
     sheet
 }
 
+impl super::page::Questions for crate::certification::CertificationProtocol {
+    fn sheet(&self, person: &[u8; 32]) -> String {
+        sheet_html(&self.pending_for(person))
+    }
+
+    fn answer(&self, person: &[u8; 32], target: &str) -> Option<Result<String, String>> {
+        let (id, word) = tilo_server_protocol::page::parse_question_target(target)?;
+        let answer = answer_of(word)?;
+        Some(self.answer_for(person, id, answer).map(|()| {
+            // The answered question leaves the sheet now, though the host may still list it
+            // until its waiting call is woken.
+            let mut waiting = self.pending_for(person);
+            waiting.retain(|question| question.id != id);
+            sheet_html(&waiting)
+        }))
+    }
+}
+
 /// The answer a sheet target names (`allow-once`, `allow-always` or `deny`),
 /// or `None` for a word the sheet gave no button.
 pub(crate) fn answer_of(word: &str) -> Option<ConfirmationAnswer> {

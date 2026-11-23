@@ -5674,6 +5674,15 @@
         {
           "name": "cancel",
           "doc": "Escape let go of what was being typed: the field clears, and what it stands in goes (a caret on the canvas)."
+        },
+        {
+          "name": "begin",
+          "doc": "The field's text went from empty to non-empty: the first change, carrying the text it holds now. An entry makes the item it names here, from the first keystroke.",
+          "value": "text"
+        },
+        {
+          "name": "blur",
+          "doc": "The field lost the keyboard: an entry left empty is taken away by what listens."
         }
       ],
       "bindings": [
@@ -5721,12 +5730,17 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "step",
+          "doc": "The minutes the wheel and the chevrons step the minute cell by: a quarter hour by default.",
+          "type": "int"
         }
       ],
       "events": [
         {
-          "name": "change",
-          "doc": "The moment changed: carries the instant, at the time chosen today.",
+          "name": "changed",
+          "doc": "The time changed: carries the instant, at the time chosen today.",
           "value": "time"
         }
       ],

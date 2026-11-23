@@ -409,69 +409,6 @@ pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &
     f64::from(w)
 }
 
-/// A header title in `band` as a page shows it: the words where [`paint_title_in`] sets them
-/// and the count's quiet pill after them, where the words leave it the width.
-pub(crate) fn compose_title_in(
-    cx: &mut crate::composition::HtmlCx<'_>,
-    theme: &Theme,
-    band: Rect,
-    title: &str,
-    count: Option<usize>,
-) {
-    use crate::composition::{Ground, TextLook, rgba8};
-    if band.width() <= 0.0 || band.height() <= 0.0 {
-        return;
-    }
-    let related = f64::from(theme.tokens.spacing.rhythm.related);
-    let style = title_style(theme);
-    let (words, pill) = crate::text_render::with_layout_renderer(theme, |text| {
-        let least = least_title_width(text, theme, title);
-        let pill = count
-            .map(|count| (count, count_pill_size(text, theme, count)))
-            .filter(|(_, (w, _))| band.width() >= least + related + w);
-        let pill_width = pill.map_or(0.0, |(_, (w, _))| w + related);
-        let spare = (band.width() - pill_width).max(0.0);
-        let (w, _) = text.measure_style(title, None, &style);
-        (f64::from(w).min(spare), pill)
-    });
-    let look = TextLook::new(
-        title.to_owned(),
-        &style,
-        Some(theme.tokens.colors.text_primary),
-    )
-    .with_max_lines(Some(1));
-    // Without a count the heading is its words, taking the whole band.
-    let Some((count, (pill_w, pill_h))) = pill else {
-        cx.text(look);
-        return;
-    };
-    cx.words(
-        "title",
-        "span",
-        Rect::new(band.x0, band.y0, band.x0 + words, band.y1),
-        look,
-    );
-    let x0 = band.x0 + words + related;
-    let rect = Rect::new(
-        x0,
-        band.center().y - pill_h / 2.0,
-        x0 + pill_w,
-        band.center().y + pill_h / 2.0,
-    );
-    let fill = theme.tokens.colors.surfaces.raised;
-    let mut look = TextLook::new(count.to_string(), &count_style(theme), Some(theme.text_dim))
-        .with_max_lines(Some(1))
-        .aligned("center");
-    look.line_height = f32_of_f64(rect.height() / f64::from(look.size));
-    let part = cx.words("count", "span", rect, look);
-    part.ground = Some(Ground {
-        fill: Some(rgba8(fill)),
-        edge: Some(rgba8(crate::surface::edge_on(fill))),
-        radius: rect.height() / 2.0,
-        inset: [0.0; 2],
-    });
-}
-
 /// Paint a header title in `band`: `Heading`, primary ink, vertically centred and elided to the band;
 /// the count follows as a quiet pill in `Caption` tabular figures (the `SectionHeader::count` look).
 pub(crate) fn paint_title_in(

@@ -103,6 +103,83 @@ pub fn master_key_locator(root: &std::path::Path) -> String {
     )
 }
 
+/// The groups a desktop sealed under its own master key, before this device's daemon kept them,
+/// as the desktop hands them over once ([`carried`]).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CarriedKeys {
+    /// The key the groups' state was sealed with, in hex: derived from the desktop's master key
+    /// under the group-state domain, so it opens that state and nothing else.
+    pub sealed_with: String,
+    /// Each file of the groups' directory by its name, its bytes in hex.
+    pub groups: std::collections::BTreeMap<String, String>,
+}
+
+/// The groups the session started on `state` (its `XDG_STATE_HOME`) kept itself, with the key they
+/// were sealed with: `None` when it kept none.
+///
+/// # Errors
+/// The secret store does not answer, it lost the master key the groups were sealed with, or the
+/// groups cannot be read.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn carried(state: &std::path::Path) -> Result<Option<CarriedKeys>, String> {
+    let root = state.join("tilo/collaboration/mls");
+    let groups = root.join("groups");
+    let mut files = std::collections::BTreeMap::new();
+    match std::fs::read_dir(&groups) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|error| format!("{}: {error}", groups.display()))?;
+                if !entry
+                    .file_type()
+                    .map_err(|error| error.to_string())?
+                    .is_file()
+                {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|error| format!("{}: {error}", entry.path().display()))?;
+                files.insert(name, hex::encode(bytes));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", groups.display())),
+    }
+    let state: Arc<dyn KeyStorage> = Arc::new(tilo_workspace_keys::KeyDir::new(groups));
+    let Some(master_key) = secret_service_load(&master_key_locator(&root))? else {
+        if state.holds_key_state()? {
+            return Err(
+                "this desktop holds group state whose master key the secret store no longer keeps"
+                    .to_owned(),
+            );
+        }
+        return Ok(None);
+    };
+    let vault = MlsVault { state, master_key };
+    Ok(Some(CarriedKeys {
+        sealed_with: hex::encode(vault.group_state_key_bytes()),
+        groups: files,
+    }))
+}
+
+/// Forget what [`carried`] read under `state` once this device's daemon keeps it: the groups'
+/// directory and the master key they were sealed with, so they are carried once.
+///
+/// # Errors
+/// The directory or the key cannot be removed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn forget_carried(state: &std::path::Path) -> Result<(), String> {
+    let root = state.join("tilo/collaboration/mls");
+    match std::fs::remove_dir_all(&root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", root.display())),
+    }
+    mls_secrets()
+        .delete_blocking(&master_key_locator(&root))
+        .map_err(|error| format!("the desktop's MLS key: {error}"))
+}
+
 /// The platform secret store: the Secret Service on Linux, the login Keychain on macOS, or the
 /// sealed file store a headless machine names with `TILO_SECRETS_DIR` .
 fn mls_secrets() -> tilo_secrets::SecretStore {

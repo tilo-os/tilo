@@ -20,38 +20,39 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActCall, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
-    ActUndo, Actions, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
-    BytesLength, CallFn, CallMembers, ChangeView, ClipboardCopyImage, ClipboardCopyText,
-    ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
-    CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
-    CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
-    DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier, EditField,
-    EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
-    EventPart, EventValue, FieldChanged, FileAt, FileFiles, FileOfBytes, FileOfText, FilePart,
-    FileSize, FileText, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil,
-    FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound,
-    FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax,
-    IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode,
-    JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI,
-    ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-    ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue,
-    MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
-    MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
-    Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock,
-    RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew,
-    RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
-    ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
-    RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges,
-    SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-    StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-    StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-    StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay,
-    TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
-    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState,
-    UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI,
-    ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
-    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+    Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
+    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn,
+    ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
+    CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
+    CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
+    CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
+    Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
+    EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
+    FileAt, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
+    Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
+    FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep,
+    GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush,
+    Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
+    ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
+    ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
+    MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
+    MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PersonNamed,
+    Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+    RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+    RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+    ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
+    RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single,
+    SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps,
+    StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+    StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
+    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
+    TimeShift, TimeSpan, TimeWall, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
+    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
+    WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+    WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -154,6 +155,9 @@ pub struct Core {
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
+    /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
+    /// a test's record. Until the host sets one, a notice is only the record the run wrote.
+    pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -180,9 +184,6 @@ pub struct Core {
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
     pub view_states: RefCell<crate::view_state::ViewStates>,
-    /// Whether a view read who is in a call (`call_members(r)`): the host follows the system's
-    /// calls only for an app that shows them.
-    pub calls_read: std::cell::Cell<bool>,
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
@@ -350,6 +351,7 @@ impl Core {
             web: RefCell::new(None),
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
+            notices: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -361,7 +363,6 @@ impl Core {
             catalogues: RefCell::new(Vec::new()),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
-            calls_read: std::cell::Cell::new(false),
             clock: RefCell::new(None),
             zone: RefCell::new(None),
             week_start: RefCell::new(None),
@@ -513,18 +514,21 @@ impl Core {
             | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
             | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
             | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            // An argument a call left out before one it gives: it is no value, and the
+            // invocation has the default in its place before anything reads it.
             MissingV => self.ret_h(Value::Missing),
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
-            CollRelatives => self.ret_h(self.coll_relatives(a)?),
+            CollRelatives => {
+                self.ret_h(self.coll_relatives(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?)?)
+            }
             CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
-            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow => {
-                self.time_import(imp, a)
-            }
+            Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
+            | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
+            | TimeParse | WallClock | DateShow | Occurrences => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
@@ -545,7 +549,7 @@ impl Core {
             | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
-            | WebText | BytesLength => self.web_import(imp, a),
+            | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
@@ -555,18 +559,14 @@ impl Core {
                 self.clipboard_import(imp, a)
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
-            | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
-            | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave | ActCall => {
-                self.ui_import(imp, a)
-            }
-            EventValue | EventPart | Actions | Lenses | CallMembers | Delivery | MetaOf
-            | Versions | Links | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps
-            | VersionEnd | FieldChanged | Phrase | Word | EntryParts | Viewer => {
-                self.platform_import(imp, a)
-            }
-            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole | ActorId => {
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
+            | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt
+            | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
+            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
+            | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
+            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

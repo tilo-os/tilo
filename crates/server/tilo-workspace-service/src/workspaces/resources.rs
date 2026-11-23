@@ -30,28 +30,6 @@ use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
-#[cfg(feature = "agents")]
-mod bot_writes;
-#[cfg(feature = "agents")]
-mod packaged;
-
-/// Why [`Workspaces::record_command`] did not carry a command out.
-#[cfg(feature = "agents")]
-#[derive(Debug)]
-pub enum RecordFailure {
-    /// The workspace refused the write: whoever invoked it may not do what it names.
-    Refused(String),
-    /// It could not be carried out: the workspace is not held here, or the store refused it.
-    Failed(String),
-}
-
-#[cfg(feature = "agents")]
-impl From<String> for RecordFailure {
-    fn from(error: String) -> Self {
-        Self::Failed(error)
-    }
-}
-
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";
 const DOCS: &str = "docs";
@@ -658,16 +636,14 @@ impl GovernedWorkspace {
         } else {
             self.workspace().to_owned()
         };
-        // A write that founds its document opens the group when it has none yet, as a record's
-        // first content does on every write path: the write lands sealed rather than failing.
-        let founding = !peer.holds_document(app, &write.doc);
         let keys = self
             .device
             .as_ref()
             .ok_or("this device holds no group keys")?
-            .group_keys(&group, &write.readers, isolated || founding)
+            .group_keys(&group, &write.readers, isolated)
             .await
             .ok_or("this device holds no keys of the document's readers yet")??;
+        let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
             if !write.change.deps().is_empty() {
                 return Err("the workspace has not opened this resource's signed history".into());
@@ -959,15 +935,16 @@ impl Workspaces {
     }
 
     /// Answer an app's read `command` from the store of the workspace `state` holds, with only
-    /// the resources whose reader set `may_read` admits.
-    #[cfg(any(feature = "apps", feature = "agents"))]
+    /// what `device`'s person may read.
+    #[cfg(feature = "apps")]
     async fn resource_read(
         &self,
         state: &tokio::sync::Mutex<GovernedWorkspace>,
-        may_read: &(dyn Fn(&str) -> bool + Sync),
+        reader: &str,
         command: &tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         use tilo_resource_store::wire::{Command, Reply, read};
+        let may_read = may_read(reader.to_owned());
         let mut governed = state.lock().await;
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
@@ -989,7 +966,7 @@ impl Workspaces {
             }
             // A record the caller may not read has no versions for them.
             Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
-            _ => read(store, command, may_read).unwrap_or(Reply::Written),
+            _ => read(store, command, &may_read).unwrap_or(Reply::Written),
         };
         drop(governed);
         Ok(answer)
@@ -997,7 +974,7 @@ impl Workspaces {
 
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
-    #[cfg(any(feature = "apps", feature = "agents"))]
+    #[cfg(feature = "apps")]
     async fn put_in_place(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1068,6 +1045,8 @@ impl Workspaces {
         }
         let device = self.member_identity()?;
         let writing = command.writes();
+        // What a view's caller writes outside an invocation: each write's resource type and verb.
+        let mut unserved = Vec::new();
         if writing {
             let caller = context.caller();
             if caller.workspace() != Some(workspace)
@@ -1080,23 +1059,33 @@ impl Workspaces {
                 .acting()
                 .person_id()
                 .ok_or("this resource route has no caller-scoped signer for the write")?;
-            let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person));
-            stamp_resource_invoker(&mut command, &|invocation| {
-                context
-                    .invoker_of(invocation)
-                    .cloned()
-                    .unwrap_or_else(|| person.clone())
-            });
+            // What the app writes outside an invocation it serves is the person's at the window,
+            // or the caller's the device opened the view for.
+            let otherwise = context.viewer().map_or_else(
+                || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
+                |viewer| viewer.acting().by.clone(),
+            );
+            stamp_resource_invoker(
+                &mut command,
+                &|invocation| context.invoker_of(invocation).cloned(),
+                &otherwise,
+                &mut unserved,
+            );
         }
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         if !writing {
-            let may_read = may_read(hex::encode(device.cert.user_public_key));
-            return self.resource_read(&state, &may_read, &command).await;
+            let reader = context
+                .viewer()
+                .map_or_else(|| hex::encode(device.cert.user_public_key), viewer_reader);
+            return self.resource_read(&state, &reader, &command).await;
         }
         let governed = state.lock_owned().await;
+        if let Some(viewer) = context.viewer() {
+            may_write_as_viewer(&governed, viewer, context.app_id(), &unserved)?;
+        }
         self.write_resources(governed, device, context.app_id(), command)
             .await
     }
@@ -1144,7 +1133,7 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
-    #[cfg(any(feature = "apps", feature = "agents"))]
+    #[cfg(feature = "apps")]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -1249,121 +1238,9 @@ impl Workspaces {
             crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller);
         self.resource_command(&context, command).await
     }
-
-    /// Carry out `command` of `app`'s record of `workspace` for one of this device's own roles
-    /// (the agent engine, a bot, a bridge), with no window and no broker between them.
-    ///
-    /// A read answers everything the device holds, as the role's own runtime then decides what
-    /// each member it reads for may see. A write is signed by the device the service signs its
-    /// own roles' writes as, and keeps the invoker the role's runtime stamped on it: the member
-    /// whose action wrote it (an agent, a bot, a person whose event ran). A bot's write is
-    /// decided here under the grants the workspace holds for that bot, as every member decides
-    /// a bot's change to a record it signs itself. Only code in this process
-    /// reaches this; a caller from outside comes through [`Self::resource_command`], which
-    /// stamps who it is.
-    ///
-    /// # Errors
-    /// [`RecordFailure::Refused`] when the workspace refused a bot's write;
-    /// [`RecordFailure::Failed`] when the workspace is not held here, the store refused the
-    /// write, or the workspace refused a document's write.
-    #[cfg(feature = "agents")]
-    pub async fn record_command(
-        &self,
-        workspace: &str,
-        app: &str,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        if !command.writes() {
-            return Ok(self.resource_read(&state, &|_| true, &command).await?);
-        }
-        let mut governed = state.lock_owned().await;
-        bot_writes::decide(
-            &mut governed,
-            (
-                &self.inner.host.surfaces,
-                self.inner.host.cert.device_public_key,
-            ),
-            app,
-            &command,
-        )
-        .map_err(RecordFailure::Refused)?;
-        Ok(self
-            .write_resources(governed, self.signing_device(), app, command)
-            .await?)
-    }
 }
 
 impl Workspaces {
-    /// Every document `workspace`'s resource store keeps, whole, history and all: what a check
-    /// that something was never kept anywhere in the workspace reads.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
-    #[cfg(feature = "test-support")]
-    pub async fn store_documents(&self, workspace: &str) -> Result<Vec<Vec<u8>>, String> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let documents: Vec<String> = governed
-            .resources
-            .store_mut()
-            .index()
-            .documents()
-            .map(str::to_owned)
-            .collect();
-        let stored = documents
-            .iter()
-            .filter_map(|doc| governed.resources.document(doc))
-            .collect();
-        drop(governed);
-        Ok(stored)
-    }
-
-    /// The sealed writes of each store document of `app` that `workspace` holds, oldest first,
-    /// by document: what a member is sent of the resources a tilolang app's actions wrote.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
-    #[cfg(feature = "test-support")]
-    pub async fn store_writes(
-        &self,
-        workspace: &str,
-        app: &str,
-    ) -> Result<BTreeMap<String, Vec<collab_types::SignedOp>>, String> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        // The peer guard borrows `governed`, so each document is named before it is taken.
-        #[allow(
-            clippy::needless_collect,
-            reason = "the peer guard borrows the store the names are read from, so the names are taken first"
-        )]
-        let documents: Vec<String> = governed
-            .resources
-            .store_mut()
-            .index()
-            .documents()
-            .map(str::to_owned)
-            .collect();
-        let mut sealed = BTreeMap::new();
-        for document in documents {
-            let writes = governed.peer().publication().sealed_history(app, &document);
-            if !writes.is_empty() {
-                sealed.insert(document, writes);
-            }
-        }
-        drop(governed);
-        Ok(sealed)
-    }
-
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then
     /// each page a write here or a member's change makes different, as this device's person
     /// may read it.
@@ -1376,7 +1253,8 @@ impl Workspaces {
         context: &crate::apps::services::ResourceRequestContext,
         query: tilo_resource_store::Query,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
-        let reader = hex::encode(self.member_identity()?.cert.user_public_key);
+        let device = hex::encode(self.member_identity()?.cert.user_public_key);
+        let reader = context.viewer().map_or(device, viewer_reader);
         let state = self
             .workspace(context.workspace_id())
             .await
@@ -1388,24 +1266,28 @@ impl Workspaces {
 }
 
 /// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
-/// the invocation a write serves, when the workspace service delivered that one to the app, and the person
-/// the route certifies otherwise.
+/// the invocation a write serves, when the workspace service delivered that one to the app, and
+/// `otherwise` (the person the route certifies, or the caller its view was opened for) for any
+/// other write, whose resource type and verb are added to `unserved`.
 #[cfg(feature = "apps")]
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
-    invoker: &dyn Fn(&str) -> tilo_actions::Actor,
+    served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
+    otherwise: &tilo_actions::Actor,
+    unserved: &mut Vec<(String, String)>,
 ) {
     use tilo_resource_store::wire::Command;
-    match command {
-        Command::Put { stamp, .. }
-        | Command::Remove { stamp, .. }
-        | Command::Undo { stamp, .. }
-        | Command::Edit { stamp, .. } => {
-            stamp.invoker = tilo_resource_store::Stamp::by(&invoker(&stamp.invocation));
+    let (kind, stamp) = match command {
+        Command::Put { kind, stamp, .. }
+        | Command::Remove { kind, stamp, .. }
+        | Command::Edit { kind, stamp, .. } => (kind.as_str(), stamp),
+        Command::Undo { stamp, .. } => ("", stamp),
+        Command::Batch(commands) => {
+            for command in commands {
+                stamp_resource_invoker(command, served, otherwise, unserved);
+            }
+            return;
         }
-        Command::Batch(commands) => commands
-            .iter_mut()
-            .for_each(|command| stamp_resource_invoker(command, invoker)),
         Command::Get { .. }
         | Command::Query(_)
         | Command::Count { .. }
@@ -1421,14 +1303,71 @@ fn stamp_resource_invoker(
         | Command::PageAt { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
-        | Command::Turn { .. } => {}
+        | Command::Turn { .. } => return,
+    };
+    let invoker = served(&stamp.invocation).unwrap_or_else(|| {
+        unserved.push((kind.to_owned(), stamp.verb.clone()));
+        otherwise.clone()
+    });
+    stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
+}
+
+/// Who a view's caller reads as: a member as the person they are or act for, and a visitor, who
+/// is in no resource's reader set, as nobody ([`may_read`]).
+#[cfg(feature = "apps")]
+fn viewer_reader(viewer: &tilo_actions::remote::Caller) -> String {
+    let acting = viewer.acting();
+    acting
+        .by
+        .member_id()
+        .and_then(tilo_actions::MemberId::person_id)
+        .or_else(|| acting.acted_for_person())
+        .map(ToString::to_string)
+        .unwrap_or_default()
+}
+
+/// Refuse the writes `unserved` (each a resource type and the verb the app named it by) that the
+/// caller `viewer`, whom the device opened this view of `app` for, may not make: a view runs
+/// with its viewer's permissions, never the device's.
+#[cfg(feature = "apps")]
+fn may_write_as_viewer(
+    governed: &GovernedWorkspace,
+    viewer: &tilo_actions::remote::Caller,
+    app: &str,
+    unserved: &[(String, String)],
+) -> Result<(), String> {
+    if unserved.is_empty() {
+        return Ok(());
     }
+    let workspace = governed.workspace();
+    let policy = governed.peer().governance().governed_policy()?;
+    let acting = viewer.acting();
+    let mut granted = acting.handed_preset(workspace);
+    granted.extend(viewer.granted(&[]));
+    let authority = tilo_action_policy::Authority::of_acting(acting, &policy, &granted);
+    let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
+    for (kind, verb) in unserved {
+        let mut node = tilo_action_policy::TreePath::workspace(workspace).app(app);
+        if !kind.is_empty() {
+            node = node.resource(kind.as_str());
+        }
+        let node = node.action(verb.as_str());
+        let decided = authority.decide(&node, tilo_action_policy::ActionKind::Undoable, &cx);
+        if decided.answer != tilo_action_policy::Answer::Allow {
+            return Err(format!(
+                "the view's caller may not {verb} here: the write was refused"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.
 #[cfg(feature = "apps")]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
-    move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
+    move |readers| {
+        !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
+    }
 }
 
 // The tests write and read a device's resources through the store (`apps`) and

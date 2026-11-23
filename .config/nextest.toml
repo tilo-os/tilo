@@ -124,9 +124,9 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
-# The session's workspace-service test starts the server as the Lounge image does
-# (`tilo-server workspace --persistent` with its deployment routes), a program of
-# another package: the feature `agents` is what gives it that subcommand.
+# The session's workspace-service test starts the server through the Lounge image's
+# entrypoint, a program of another package: the feature `agents` is what it builds
+# with.
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",

@@ -1,11 +1,12 @@
-//! The layouts' reads of this device's workspace service, made off the session's loop.
+//! The layouts' reads of the device's workspaces, as its daemon keeps them, made off the session's
+//! loop.
 //!
-//! A read of a workspace's layout or of a person's view of it opens the resource in the service
+//! A read of a workspace's layout or of a person's view of it opens the resource in the daemon
 //! and merges its history there; on a busy machine that takes seconds, and a loop waiting for it
 //! reads no app's request to the window system meanwhile. Here every read runs on a thread of its
-//! own. The loop asks for a resource whenever a look wants it, and the service's notice of each
-//! write it took ([`tilo_workspace_service::workspaces::Workspaces::document_writes`]) asks for
-//! the resource it reached; an answer that differs from the last one wakes the loop, which takes
+//! own. The loop asks for a resource whenever a look wants it, and the daemon's notice of each
+//! write it took ([`tilo_session_client::daemon_documents::DaemonWritesFeed`]) asks for the
+//! resource it reached; an answer that differs from the last one wakes the loop, which takes
 //! it on its next pass. Nothing here is the resource: each answer replaces the last, and a look
 //! reads the latest one.
 
@@ -14,14 +15,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
+use runtime_collab::wire::shell::DocumentWritten;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
-use tilo_workspace_service::workspaces::ResourceWrite;
 use tokio::sync::broadcast;
 
 use super::{Key, NotRead};
 
 /// The service's notice of the writes it takes, once it is open: `None` before then.
-pub(super) type Notices = Box<dyn Fn() -> Option<broadcast::Receiver<ResourceWrite>> + Send>;
+pub(super) type Notices = Box<dyn Fn() -> Option<broadcast::Receiver<DocumentWritten>> + Send>;
 
 /// What the last read of a resource answered.
 enum Answer {
@@ -264,8 +265,8 @@ impl Reads {
 }
 
 /// Whether `write` is a write to `key`'s resource: its id on the wire is the route's.
-fn reaches(write: &ResourceWrite, (workspace, route): &Key) -> bool {
-    let ResourceWrite {
+fn reaches(write: &DocumentWritten, (workspace, route): &Key) -> bool {
+    let DocumentWritten {
         workspace: written,
         app,
         record: resource,

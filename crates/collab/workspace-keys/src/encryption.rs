@@ -771,26 +771,8 @@ impl WorkspaceKeys {
         seal_checks: Arc<dyn SealCheckRegistry>,
     ) -> std::io::Result<Self> {
         config.state.prepare().map_err(std::io::Error::other)?;
-        let held = config.state.held();
-        let kept = config.state.reader_groups();
         let mut service = Self::with_store(Some(config), directory, seal_checks);
-        for (workspace, readers) in kept {
-            service.directory.group(workspace, &readers);
-        }
-        for scope in service
-            .store
-            .as_ref()
-            .into_iter()
-            .flat_map(|store| store.state.scopes())
-        {
-            service.directory.register_scope(scope);
-        }
-        let now = tilo_clock::now();
-        for workspace in held {
-            if let Err(error) = service.open_peer(workspace, now) {
-                tracing::warn!(%error, %workspace, "group state could not be opened");
-            }
-        }
+        service.take_in_kept();
         Ok(service)
     }
 
@@ -2018,6 +2000,33 @@ impl WorkspaceKeys {
         }
     }
 
+    /// Take in what the store keeps and this service has not opened: its reader groups, the
+    /// routes of its document groups, and the state of each group it holds. What a service reads
+    /// as it opens, and again once groups kept elsewhere were written into its store.
+    fn take_in_kept(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let held = store.state.held();
+        let kept = store.state.reader_groups();
+        let scopes = store.state.scopes();
+        for (workspace, readers) in kept {
+            self.directory.group(workspace, &readers);
+        }
+        for scope in scopes {
+            self.directory.register_scope(scope);
+        }
+        let now = tilo_clock::now();
+        for workspace in held {
+            if self.peers.contains_key(&workspace) {
+                continue;
+            }
+            if let Err(error) = self.open_peer(workspace, now) {
+                tracing::warn!(%error, %workspace, "group state could not be opened");
+            }
+        }
+    }
+
     /// Open the state kept for `group`. `Ok(false)` when there is none.
     fn open_peer(&mut self, workspace: WorkspaceId, now: Instant) -> key_group::Result<bool> {
         let store = self.store.as_ref().ok_or_else(no_store)?;
@@ -2292,6 +2301,12 @@ impl SharedKeys {
             .ok()?
             .directory
             .named_readers(workspace, document)
+    }
+
+    /// Take in the groups written into this service's store since it opened, as it takes in
+    /// those it found there when it opened: a device taking in the groups its desktop kept.
+    pub fn take_in_kept(&self) {
+        self.with_service(WorkspaceKeys::take_in_kept);
     }
 
     /// Set the exact route for a group. The directory supplies the scope's

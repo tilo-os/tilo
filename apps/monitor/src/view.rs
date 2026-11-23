@@ -728,10 +728,6 @@ impl Filterable for ProcessesPane {
 }
 
 impl Widget for ProcessesPane {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     ui::provides!(dyn Filterable);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1372,10 +1368,6 @@ impl ResourcesPane {
 }
 
 impl Widget for ResourcesPane {
-    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty = true;
         self.adopt();

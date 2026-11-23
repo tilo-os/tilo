@@ -19,16 +19,7 @@ use super::collab_app_broker::{
 };
 #[cfg(test)]
 use crate::device_documents::on_its_own;
-use crate::service::ServiceSlot;
 use crate::workspaces::Workspaces;
-
-/// The workspaces a service holds, as their resources are read: the service itself, or where its
-/// embedder installs it once it opens.
-#[derive(Clone)]
-enum Held {
-    Service(Workspaces),
-    Unopened(ServiceSlot),
-}
 
 /// What the workspaces a service holds answer a resource read with.
 ///
@@ -37,34 +28,23 @@ enum Held {
 /// by the thread that calls here.
 #[derive(Clone)]
 pub struct ServiceReads {
-    held: Held,
+    workspaces: Workspaces,
 }
 
 impl ServiceReads {
     /// Reads of the resources of the workspaces `workspaces` governs.
     #[must_use]
     pub const fn new(workspaces: Workspaces) -> Self {
-        Self {
-            held: Held::Service(workspaces),
-        }
+        Self { workspaces }
     }
 
-    /// Reads of the resources of the workspaces held by the service whose embedder holds
-    /// `service`, from the moment it is: a session reads a workspace's resources here without
-    /// reaching the service's own thread.
-    #[must_use]
-    pub const fn on(service: ServiceSlot) -> Self {
-        Self {
-            held: Held::Unopened(service),
-        }
-    }
-
-    /// The workspaces to answer from, once a service holds any.
+    /// The workspaces to answer from.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "each read answers as a service that keeps no workspace yet would"
+    )]
     fn workspaces(&self) -> Option<Workspaces> {
-        match &self.held {
-            Held::Service(workspaces) => Some(workspaces.clone()),
-            Held::Unopened(service) => Some(service.service()?.workspaces().clone()),
-        }
+        Some(self.workspaces.clone())
     }
 }
 

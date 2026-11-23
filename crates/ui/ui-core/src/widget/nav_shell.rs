@@ -41,7 +41,6 @@ pub(crate) mod memory;
 mod nothing_listed;
 mod notices;
 mod open_states;
-mod page;
 mod parts;
 mod place;
 use place::{measure, place_parts};
@@ -690,10 +689,6 @@ struct InertPart;
 static INERT_PART: InertPart = InertPart;
 
 impl Widget for InertPart {
-    /// Nothing: a push screen that is not in front stands in no page either.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2791,14 +2786,6 @@ impl Frame<'_> {
 }
 
 impl Widget for NavShell {
-    /// Its columns side by side, each its header row over its body, laid out by
-    /// the page's CSS: the sidebar, the overview and the inspector at the theme's
-    /// widths, the content filling the rest. The frame decides which column a
-    /// header control belongs to and in what order; never where it stands.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        self.compose_page(cx);
-    }
-
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,

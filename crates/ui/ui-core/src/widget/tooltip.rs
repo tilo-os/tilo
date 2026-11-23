@@ -479,21 +479,6 @@ const TOOLTIP_WIDTH: f64 = 220.0;
 const TOOLTIP_HEIGHT: f64 = 28.0;
 
 impl Widget for Tooltip {
-    /// A tooltip as a page's own, which an assistive technology reads as one.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
-        cx.element("div");
-        let theme = cx.theme();
-        cx.text(
-            TextLook::new(
-                self.label.clone(),
-                &theme.text(crate::tokens::TextRole::Caption),
-                Some(theme.tokens.colors.text_primary),
-            )
-            .with_max_lines(Some(2)),
-        );
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

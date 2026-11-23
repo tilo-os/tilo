@@ -550,11 +550,15 @@ mod tests {
     struct Desktop;
 
     impl crate::session::Here for Desktop {
-        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+        fn workspaces(&self, _: &tilo_user_identity::DeviceCert) -> Vec<crate::session::Workspace> {
             Vec::new()
         }
 
-        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
+        fn enter(
+            &self,
+            workspace: &str,
+            _: &crate::grant_key::GrantKey,
+        ) -> Result<crate::session::Reached, String> {
             Err(format!("no workspace {workspace} here"))
         }
     }

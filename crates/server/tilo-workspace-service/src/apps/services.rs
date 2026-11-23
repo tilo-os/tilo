@@ -624,6 +624,10 @@ pub struct ResourceRequestContext {
     /// each with who invoked it: a write that serves one is that invoker's, an agent acting for
     /// the caller included.
     serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+    /// The caller the device opened this route's view for, when it opened one for a caller of
+    /// its dispatch: a write the app makes outside an invocation it serves is theirs, limited
+    /// to what they may do, and a read answers only what they may read.
+    opened_for: Option<tilo_actions::remote::Caller>,
 }
 
 impl ResourceRequestContext {
@@ -637,11 +641,37 @@ impl ResourceRequestContext {
             workspace_id: workspace_id.into(),
             caller,
             serving: Vec::new(),
+            opened_for: None,
         }
+    }
+
+    /// The context of a view the device opened for `opened_for`, when it opened it for a caller
+    /// of its dispatch rather than for the person at a window of its own.
+    #[must_use]
+    pub fn opened_for(mut self, opened_for: Option<tilo_actions::remote::Caller>) -> Self {
+        self.opened_for = opened_for;
+        self
+    }
+
+    /// The caller this route's view was opened for, when it was opened for one.
+    #[must_use]
+    pub const fn viewer(&self) -> Option<&tilo_actions::remote::Caller> {
+        self.opened_for.as_ref()
     }
 
     /// The context, with the invocations `serving` the workspace service delivered to its app and is
     /// waiting on, each with who invoked it.
+    /// A route's context as the broker certifies it, for a test that stands in for the broker.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn for_tests(
+        app_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        caller: tilo_actions::remote::Caller,
+    ) -> Self {
+        Self::authenticated(app_id, workspace_id, caller)
+    }
+
     pub(crate) fn serving(
         mut self,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
@@ -718,6 +748,10 @@ pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// The shell's link to the device's daemon ([`ProcessServices::device_daemon`]), or why it has
+/// none.
+pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
+
 #[derive(Clone, Default)]
 pub struct ProcessServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
@@ -749,6 +783,9 @@ pub struct ProcessServices {
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
     /// The steps the host runs itself, each under its own provider.
     pub host_steps: Vec<Arc<dyn HostStepServices>>,
+    /// The providers this device's embedder registered ([`crate::workspaces::Workspaces::provide`]):
+    /// a call on this device reaches them as another device's does.
+    pub providers: Option<crate::workspaces::providers::Providers>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index; without it apps' content is findable only while
     /// they run.
@@ -810,9 +847,15 @@ pub struct ProcessServices {
     /// The device's one store, which apps write and read their resources in; without it those
     /// commands are refused.
     pub resources: Option<Arc<dyn ResourceServices>>,
-    /// What the person's shell is answered with, on a connection admitted as that shell by its
-    /// account ([`crate::apps::shell`]); without it no connection is the shell.
+    /// What the person's shell is answered with, on a connection admitted as that shell by the
+    /// link the daemon handed it ([`crate::apps::shell`]); without it no connection is the shell.
     pub shell: Option<Arc<crate::apps::shell::ShellServices>>,
+    /// The person's shell's link to the device's daemon, which keeps the person's workspaces, or
+    /// why this shell has none: each app this host admits by its launch is joined at the daemon
+    /// too, on a connection the shell vouches for on that link, and its calls on its documents go
+    /// there; this host answers the rest. Where the shell has no link, an app's join is refused
+    /// saying why. Without it (the daemon's own dispatch) this host answers every call itself.
+    pub device_daemon: Option<DeviceDaemon>,
 }
 
 impl ProcessServices {
@@ -836,6 +879,7 @@ impl ProcessServices {
         "shortcut_library",
         "keyboard_shortcuts",
         "host_steps",
+        "providers",
         "continuations",
         "search_index",
         "document_index_changes",
@@ -864,5 +908,6 @@ impl ProcessServices {
         "hosted_workspaces",
         "resources",
         "shell",
+        "device_daemon",
     ];
 }

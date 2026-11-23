@@ -8,6 +8,8 @@ use crate::apps::BrokerError;
 struct LaunchedHere {
     app: String,
     workspace: String,
+    /// The caller the next connection's view is opened for, as the daemon opens a page's view.
+    opened_for: Mutex<Option<tilo_actions::remote::Caller>>,
 }
 impl crate::apps::services::LauncherServices for LaunchedHere {
     fn applications(&self) -> Vec<crate::apps::services::LaunchableApplication> {
@@ -37,6 +39,7 @@ impl crate::apps::services::LauncherServices for LaunchedHere {
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,
+                opened_for: self.opened_for.lock().unwrap().clone(),
             },
         ))
     }
@@ -129,6 +132,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
+                opened_for: Mutex::new(None),
             }));
             let rig = Rig::with_services(&env, services).await;
             let (app, _server, _client) = launched_app_connection(
@@ -255,6 +259,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
+                opened_for: Mutex::new(None),
             }));
             let rig = Rig::with_services(&env, services).await;
             let person =
@@ -377,6 +382,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
+                opened_for: Mutex::new(None),
             }));
             let rig = Rig::with_services(&env, services).await;
             let (window, _server, _client) = launched_app_connection(
@@ -521,6 +527,7 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
+                opened_for: Mutex::new(None),
             }));
             let journal = tempfile::tempdir().unwrap();
             let config = crate::apps::NativePeerBrokerConfig {
@@ -612,6 +619,7 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 services.launcher = Some(Arc::new(LaunchedHere {
                     app: app.to_owned(),
                     workspace: env.route.cluster_id.clone(),
+                    opened_for: Mutex::new(None),
                 }));
                 let journal = tempfile::tempdir().unwrap();
                 let config = crate::apps::NativePeerBrokerConfig {
@@ -651,6 +659,92 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 drop(launched);
                 rig.stop().await;
             }
+        })
+        .await;
+}
+
+/// A press in a view the device opened for a caller of its dispatch acts as that caller, never as
+/// the device's own person: a member the workspace lets act in the app is admitted as themselves,
+/// and one it does not is refused, although the device's person may do it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use crate::apps::test_support::{Grants as _, KindSet};
+            use tilo_actions::remote::Caller;
+            let env = Environment::new();
+            let workspace = env.route.cluster_id.clone();
+            let editor = person_id_for_root([7; 32]);
+            let stranger = person_id_for_root([5; 32]);
+            env.membership.write().workspaces[0].allow_app(
+                tilo_action_policy::Grantee::person(editor.clone()),
+                &env.route.app_id,
+                KindSet::ALL,
+            );
+            let launcher = Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                workspace: workspace.clone(),
+                opened_for: Mutex::new(None),
+            });
+            let mut services = env.membership.services();
+            services.launcher = Some(launcher.clone());
+            let rig = Rig::with_services(&env, services).await;
+            let identity = presentation(&workspace, &env.cert, &env.key);
+            let view_for = |peer: u64, person: &str| {
+                *launcher.opened_for.lock().unwrap() =
+                    Some(Caller::local_person(person).in_workspace(workspace.clone()));
+                launched_app_connection(
+                    &rig.state,
+                    &rig.directories,
+                    peer,
+                    &env.route.app_id,
+                    &workspace,
+                )
+            };
+
+            // A view opened for someone the workspace does not let act in the app: the press is
+            // refused as the workspace refuses them anything, without saying the action exists,
+            // and nothing reaches the app.
+            let (stranger_view, _server, _client) = view_for(906, &stranger);
+            let stranger_view = stranger_view
+                .join_channel(&env.route.channel_key(), &identity)
+                .await
+                .unwrap();
+            let refused = invoke(&stranger_view, id(0xd001)).await.unwrap_err();
+            assert!(refused.contains("UnknownAction"), "{refused}");
+            no_delivery(&rig).await;
+
+            // A view opened for the editor: the press is admitted, as the editor.
+            let (editor_view, _server, _client) = view_for(907, &editor);
+            let editor_view = editor_view
+                .join_channel(&env.route.channel_key(), &identity)
+                .await
+                .unwrap();
+            invoke(&editor_view, id(0xd002)).await.unwrap();
+            let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::person(editor.clone())),
+                "the press is the editor's, not the device's person's"
+            );
+
+            // What would need the editor's confirmation is refused, legibly, and never put to
+            // the device's person: nobody here may answer for the editor.
+            env.membership.write().workspaces[0].answer(
+                tilo_action_policy::Grantee::person(editor.clone()),
+                &tilo_action_policy::TreePath::root().app(&env.route.app_id),
+                KindSet::ALL,
+                tilo_action_policy::Answer::Ask,
+            );
+            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
+            rig.state
+                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
+            let refused = invoke(&editor_view, id(0xd003)).await.unwrap_err();
+            assert!(refused.contains("ConfirmationRequired"), "{refused}");
+            assert!(sheets.try_recv().is_err(), "the device's person was asked");
+            no_delivery(&rig).await;
+            drop((stranger_view, editor_view));
+            rig.stop().await;
         })
         .await;
 }

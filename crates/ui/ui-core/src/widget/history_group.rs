@@ -730,7 +730,7 @@ fn finish_group(
     }
     let key = match named {
         Some(n) => format!("n:{}", n.id),
-        None => format!("d:{}", hex16(&first.id)),
+        None => format!("d:{}", HistoryEntryId::hex(&first.id)),
     };
     Some(HistoryGroup {
         key,
@@ -756,21 +756,6 @@ fn finish_group(
         first_entry: first.id,
         last_entry: last.id,
     })
-}
-
-/// Lower-case hex of an entry id. Also the document key a name is stored under,
-/// which is why it lives here rather than in the persistence layer.
-pub fn hex16(id: &HistoryEntryId) -> String {
-    hex::encode(id.as_bytes())
-}
-
-/// Parse the hex produced by [`hex16`] back into an id. `None` on anything that
-/// is not exactly 32 hex characters (either case), so a corrupted document key
-/// is skipped rather than silently resolving to a wrong change.
-pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
-    let mut out = [0u8; 16];
-    hex::decode_to_slice(s, &mut out).ok()?;
-    Some(HistoryEntryId(out))
 }
 
 /// "Alice and Bob", in the shell's language.
@@ -1246,29 +1231,9 @@ mod tests {
                 assert_eq!(groups[0].authors_label(), "Alice, Bob + 2");
             }
 
-            fn hex_round_trips_and_rejects_junk() {
-                let id = HistoryEntryId([0xab; 16]);
-                assert_eq!(from_hex16(&hex16(&id)), Some(id));
-                assert_eq!(from_hex16("nope"), None);
-                assert_eq!(from_hex16(&"z".repeat(32)), None);
-                assert_eq!(from_hex16(&"a".repeat(31)), None);
-                assert_eq!(from_hex16(&"a".repeat(34)), None);
-            }
-
-            fn hex16_is_lowercase_and_parsing_accepts_either_case() {
-                let mut bytes = [0u8; 16];
-                bytes[0] = 0xab;
-                bytes[15] = 0xcd;
-                let id = HistoryEntryId(bytes);
-                assert_eq!(hex16(&id), format!("ab{}cd", "0".repeat(28)));
-                assert_eq!(from_hex16(&hex16(&id).to_ascii_uppercase()), Some(id));
-            }
-
             an_unclocked_change_does_not_drag_the_span_back_to_1970();
             a_partial_character_count_is_not_reported_as_a_total();
             many_authors_name_two_people_and_make_the_remainder_scannable();
-            hex_round_trips_and_rejects_junk();
-            hex16_is_lowercase_and_parsing_accepts_either_case();
         }
     }
 }

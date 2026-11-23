@@ -21,7 +21,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::apps::automation::chord_target;
 use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 use tilo_workspace_service::apps::triggers::{Armed, Firing, StartRun as _, armed, seen_here};
-use tilo_workspace_service::service::ServiceSlot;
 
 pub use tilo_workspace_service::apps::automation::FinishedInvocation;
 
@@ -61,8 +60,6 @@ pub struct Automation {
     policy: Arc<std::sync::Mutex<NotificationPolicy>>,
     /// What each of this device's workspaces revokes, as its governance records it.
     revocations: crate::engine::Revocations,
-    /// Where this device's workspace service opens, and the runtime its trigger runner runs on.
-    workspaces: Option<(ServiceSlot, tokio::runtime::Handle)>,
     handle: DesktopHandle,
     /// The person at this device, as the session's own identity names them: a shortcut saved by
     /// anyone else is never armed.
@@ -87,13 +84,12 @@ pub struct Automation {
 }
 
 /// What the session shows its triggers besides its shell: the apps it starts, the person's
-/// notification policy, what each of its workspaces revokes, and where this device's workspace
-/// service opens, whose trigger runner fires the workspaces' triggers.
+/// notification policy, and what each of its workspaces revokes. The workspaces' own triggers
+/// fire in the device's daemon, which keeps the workspaces.
 pub struct Feeds {
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
     pub revocations: crate::engine::Revocations,
-    pub workspaces: (ServiceSlot, tokio::runtime::Handle),
 }
 
 impl Automation {
@@ -104,14 +100,12 @@ impl Automation {
             launches,
             policy,
             revocations,
-            workspaces,
         } = feeds;
         Self {
             broker: None,
             launches,
             policy,
             revocations,
-            workspaces: Some(workspaces),
             handle,
             person,
             armed_now: Vec::new(),
@@ -126,22 +120,7 @@ impl Automation {
     }
 
     /// Start every firing through `broker`.
-    ///
-    /// The workspaces' own triggers fire in this device's workspace service, which a desktop
-    /// session opens in its own process: its trigger runner starts here, once the service opens,
-    /// on the same broker.
     pub fn attach(&mut self, broker: Arc<AppActionBroker>) {
-        if let Some((service, runtime)) = self.workspaces.take() {
-            let runs = Arc::clone(&broker);
-            runtime.spawn(async move {
-                let service = service.installed().await;
-                tilo_workspace_service::apps::triggers::run_on_device(
-                    service.workspaces().clone(),
-                    runs,
-                )
-                .await;
-            });
-        }
         self.broker = Some(broker);
     }
 

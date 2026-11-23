@@ -2022,23 +2022,6 @@ impl ListRow {
         self.selected
     }
 
-    /// The row's parts as a page shows them.
-    pub(crate) fn compose_html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let check = cx.semantics().and_then(|node| {
-            node.children
-                .iter()
-                .find(|child| child.role == Role::Checkbox)
-                .cloned()
-        });
-        // Its trailing control is a widget of its own; its words, icons and
-        // marks stand where the canvas paints them, around it.
-        cx.children();
-        cx.place_children();
-        let band = self.text_band();
-        self.with_face(|face| face.compose(cx, band, check));
-        self.flow_html(cx);
-    }
-
     fn reveal_actions(&self) -> bool {
         (self.selected && !self.environment.supports_hover()) || self.armed_action.is_some()
     }
@@ -2380,6 +2363,26 @@ impl ListRow {
             || matches!(self.leading, Some(Leading::Checkbox { .. }))
     }
 
+    /// Whether a press on the row itself does something: it opens what it names, or it ticks
+    /// its box. A row that only shows something beside its own controls answers no press of
+    /// its own, whatever those controls offer.
+    fn presses_self(&self) -> bool {
+        self.activation.is_bound() || matches!(self.leading, Some(Leading::Checkbox { .. }))
+    }
+
+    /// Whether the row is a choice: it stands beside a chooser, which a press anywhere on the
+    /// line opens. The chooser is the one control the row publishes, and pressing its words
+    /// opens its list as pressing the chooser does.
+    fn opens_its_chooser(&self) -> bool {
+        !self.presses_self()
+            && self.trailing.as_ref().is_some_and(|trailing| {
+                trailing
+                    .element
+                    .as_any()
+                    .is_some_and(|any| any.is::<crate::widget::Dropdown>())
+            })
+    }
+
     fn shown_actions(&self) -> Vec<usize> {
         self.actions
             .iter()
@@ -2597,12 +2600,6 @@ fn settle_trailing(
 }
 
 impl Widget for ListRow {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("li");
-        cx.selected(self.selected);
-        self.compose_html(cx);
-    }
-
     crate::provides!(
         dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,
@@ -2983,6 +2980,30 @@ impl Widget for ListRow {
             let at = over
                 .zip(key.as_deref())
                 .map(|((target, rect), key)| PressAt { target, key, rect });
+            // A press anywhere on a choice's line is the press of its chooser, as pressing
+            // its words should open the list. The chooser saw the event first and left it,
+            // because the press was not where it stands; it is given that press here.
+            if at.is_none()
+                && self.opens_its_chooser()
+                && let Some(trailing) = &mut self.trailing
+                && let Some(node) = trailing.node
+            {
+                let centre = trailing.element.get_rect().center();
+                let moved = crate::synthetic_input::cursor_moved(
+                    centre.x * ctx.scale_factor,
+                    centre.y * ctx.scale_factor,
+                );
+                trailing
+                    .element
+                    .handle_event(&moved, &mut ctx.reborrow(ctx.path, node));
+                trailing
+                    .element
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                if *ctx.handled {
+                    self.dirty = true;
+                    return;
+                }
+            }
             match state {
                 ElementState::Pressed => {
                     if let Some(at) = at {
@@ -3026,6 +3047,7 @@ impl Widget for ListRow {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let pressable = self.activation.is_bound()
+            || self.opens_its_chooser()
             || matches!(self.leading, Some(Leading::Checkbox { .. }))
                 && self.leading_hit().is_some_and(|r| r.contains(point))
             || self.action_rects().iter().any(|r| r.contains(point));
@@ -3103,7 +3125,17 @@ impl Widget for ListRow {
                         if self.activation.activate() {
                             return true;
                         }
-                        self.toggle_checkbox()
+                        if self.toggle_checkbox() {
+                            return true;
+                        }
+                        // A choice's line is its chooser's: pressing the words beside a chooser
+                        // opens its list, as pressing the chooser does.
+                        self.opens_its_chooser()
+                            && self.trailing.as_mut().is_some_and(|trailing| {
+                                trailing
+                                    .element
+                                    .perform_action(action, key_path, state, path)
+                            })
                     }
                     Action::ToggleCheck => self.toggle_checkbox(),
                     _ => false,
@@ -3227,6 +3259,18 @@ impl Widget for ListRow {
         let mut node = self
             .with_face(|face| face.accessibility(outer, id.clone()))
             .with_semantic_key(self.activation.id());
+        // A row a press on it does nothing to — a settings line showing its value beside a
+        // control — is no control of its own: it is the line the setting is read on, named for
+        // the control beside it. Publishing it as a list item would offer a second control of
+        // the same name, which an agent or a screen reader cannot tell from the one that
+        // answers the press, and would take the press a caller made on that one.
+        if !self.presses_self() {
+            node.role = Role::Group;
+            node.action_target = None;
+            node.action = None;
+            node.state.focusable = false;
+            node.state.focused = false;
+        }
         if let Some(tooltip) = &self.leading_tooltip {
             node.description = Some(tooltip.clone());
         }
@@ -3367,7 +3411,6 @@ mod colour;
 mod paint;
 
 mod held;
-mod html;
 pub(crate) use paint::paint_code_badge;
 
 mod spans;

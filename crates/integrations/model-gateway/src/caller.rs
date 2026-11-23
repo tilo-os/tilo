@@ -1,57 +1,14 @@
-//! Trusted host binding, deliberately not serializable/deserializable.
-//! Implementations come from launcher/session authentication, never RPC JSON.
+//! What a launched app may ask of the gateway, by the identity its launcher
+//! handed over: never by anything in the request JSON.
 
 use tilo_app_id::apps;
 
-#[derive(Clone, Copy)]
-pub enum Caller {
-    Agent,
-    Chat,
-    Photos,
-    Settings,
-}
-
 /// The exact launcher identities admitted as provider control panels.
-/// This is a role mapping, not an administration grant: sessions must still
-/// hold the current credential-management permission.
 pub fn provider_admin_app(app_id: &str) -> bool {
     matches!(app_id, apps::SETTINGS | apps::MODEL_PROVIDERS)
 }
 
-/// A revocable authenticated caller. Settings identity alone grants no
-/// provider-administration or credential-management permission. Implementations must consult current
-/// session state rather than just checking the original token expiry.
-pub trait Session: Send + Sync {
-    fn caller(&self) -> Caller;
-    fn may_manage_credentials(&self) -> bool {
-        false
-    }
-    fn active(&self) -> bool;
-}
-
-#[cfg(any(all(unix, feature = "server"), test))]
-pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool {
-    if !session.active() {
-        return false;
-    }
-    if matches!(session.caller(), Caller::Chat) {
-        return chat_completion(request);
-    }
-    match request {
-        crate::Request::Complete { .. } | crate::Request::CompleteDefault { .. } => {
-            matches!(session.caller(), Caller::Agent)
-        }
-        crate::Request::GetProviderConfig
-        | crate::Request::SetProviderConfig { .. }
-        | crate::Request::ListModels { .. } => {
-            matches!(session.caller(), Caller::Settings) && session.may_manage_credentials()
-        }
-        _ => true, // The shared service additionally enforces app-specific verbs.
-    }
-}
-
 /// Chat can generate conversation text, not execute tools or replay tool history.
-/// Shared by launcher RPC and authenticated HTTP sessions.
 #[cfg(any(all(unix, feature = "server"), test))]
 pub(crate) fn chat_completion(request: &crate::Request) -> bool {
     use agent_provider_config::protocol::{Content, Role, ToolChoice};
@@ -67,18 +24,6 @@ pub(crate) fn chat_completion(request: &crate::Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Authenticated(Caller, bool, bool);
-    impl Session for Authenticated {
-        fn caller(&self) -> Caller {
-            self.0
-        }
-        fn may_manage_credentials(&self) -> bool {
-            self.1
-        }
-        fn active(&self) -> bool {
-            self.2
-        }
-    }
 
     #[cfg(all(unix, feature = "server"))]
     fn completion() -> serde_json::Value {
@@ -93,16 +38,11 @@ mod tests {
     #[cfg(all(unix, feature = "server"))]
     #[tokio::test]
     async fn chat_cannot_acquire_agent_photos_or_settings_authority() {
-        let chat = Authenticated(Caller::Chat, true, true);
         let request = serde_json::from_value(completion()).unwrap();
-        assert!(permitted(&chat, &request));
+        assert!(chat_completion(&request));
         let mut default = completion();
         default["verb"] = "complete_default".into();
-        assert!(permitted(&chat, &serde_json::from_value(default).unwrap()));
-        assert!(!permitted(
-            &Authenticated(Caller::Chat, true, false),
-            &request
-        ));
+        assert!(chat_completion(&serde_json::from_value(default).unwrap()));
         let mut forbidden = vec![
             serde_json::json!({"verb":"analyze_image", "profile_id":"p", "model_id":"m", "image":{"media_type":"image/png", "data_base64":"AA==", "source_content_hash":"hash"}}),
             serde_json::json!({"verb":"trace", "trace":{"id":1,"turn":0}, "event":"plan_ready"}),
@@ -146,12 +86,11 @@ mod tests {
         forbidden.push(serde_json::json!({"verb":"get_provider_config"}));
         forbidden.push(serde_json::json!({"verb":"set_provider_config", "expected_revision":"stale", "config":{}}));
         let http = crate::service::provider_client().unwrap();
-        let gateway = crate::service::Gateway::new().unwrap();
         for value in forbidden {
             let request = serde_json::from_value(value.clone()).unwrap();
-            assert!(!permitted(&chat, &request), "{value}");
-            // Exercise both transport entry points; rejection precedes any
-            // provider configuration, credential or network access.
+            assert!(!chat_completion(&request), "{value}");
+            // Rejection precedes any provider configuration, credential or
+            // network access.
             let response =
                 crate::service::handle_streaming("so.tilo.chat", request, &http, &mut |_| true)
                     .await;
@@ -165,24 +104,12 @@ mod tests {
                 _ => "not authorized",
             };
             assert!(response.error.unwrap().contains(expected), "{value}");
-            let response = gateway
-                .execute(&chat, serde_json::from_value(value).unwrap(), &mut |_| true)
-                .await;
-            assert!(!response.ok);
-            assert_eq!(
-                response.model_error.unwrap().kind,
-                agent_provider_config::protocol::ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                response.error.as_deref(),
-                Some("Provider permission denied")
-            );
         }
     }
 
     tilo_test_env::scenario! {
         /// Who may administer providers through the gateway.
-        fn provider_management_needs_the_exact_panel_identity_and_live_settings_ownership;
+        fn provider_management_needs_the_exact_panel_identity;
 
         phase provider_control_panel_identity_is_exact;
         {
@@ -199,41 +126,6 @@ mod tests {
                 "*",
             ] {
                 assert!(!provider_admin_app(app), "{app}");
-            }
-        }
-
-        phase management_requires_live_settings_ownership_permission;
-        {
-            for request in [
-                crate::Request::GetProviderConfig,
-                crate::Request::SetProviderConfig {
-                    expected_revision: "stale".into(),
-                    config: agent_provider_config::ProviderConfig::default(),
-                },
-                crate::Request::ListModels {
-                    profile_id: "profile".into(),
-                },
-            ] {
-                assert!(permitted(
-                    &Authenticated(Caller::Settings, true, true),
-                    &request
-                ));
-                assert!(!permitted(
-                    &Authenticated(Caller::Settings, false, true),
-                    &request
-                ));
-                assert!(!permitted(
-                    &Authenticated(Caller::Settings, true, false),
-                    &request
-                ));
-                assert!(!permitted(
-                    &Authenticated(Caller::Agent, true, true),
-                    &request
-                ));
-                assert!(!permitted(
-                    &Authenticated(Caller::Photos, true, true),
-                    &request
-                ));
             }
         }
     }

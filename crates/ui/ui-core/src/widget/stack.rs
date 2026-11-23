@@ -57,10 +57,6 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.children();
-    }
-
     crate::provides!(
         dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence

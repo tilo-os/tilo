@@ -16,9 +16,9 @@
 //! harness's own id for it, which its item keeps (`sub-agent-coding`, written here as the
 //! sub-agent).
 //!
-//! Its model is the workspace's, for the sub-agent's kind of work, asked through the run's own
-//! loopback endpoint ([`endpoint`]): the key never reaches the harness, and what it costs is
-//! counted on the day of the person's own agent its line of starters ends at, as every turn's
+//! Its model is the workspace's, for the sub-agent's kind of work, asked at this computer's one
+//! model endpoint under the run's own admission ([`super::endpoint`]): the key never reaches the
+//! harness, and what it costs is counted on the day of the person's own agent its line of starters ends at, as every turn's
 //! is. Tilo's MCP server answers it as the sub-agent's turn: what the turn may read and write
 //! holds for its harness as it holds for a model.
 //!
@@ -29,9 +29,7 @@
 //! words start it with its job first. And only an engine told it may start harnesses here
 //! ([`super::ServerAgents::with_coding`]) takes a coding agent's turn.
 
-mod endpoint;
 pub mod harness;
-mod model_endpoint;
 mod run;
 
 use std::collections::BTreeMap;
@@ -44,6 +42,7 @@ use tilo_mcp::McpServer;
 use tilo_workspace_agent::coding::{CodingHarness, CodingProcess};
 use tilo_workspace_agent::{Agent, WorkspaceAgents, workspace_agents as verbs};
 
+use super::endpoint;
 use super::{Ask, Outcome, Reply, ServerAgents, Turn, TurnScope, TurnUsage, going};
 use super::{steps, sub_agents, summary, today};
 pub use harness::{ClaudeCode, Harness};

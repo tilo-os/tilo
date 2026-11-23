@@ -47,7 +47,7 @@ tilo_test_env::scenario! {
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 format!(
                     "timeline-entry:{}",
-                    crate::widget::history_group::hex16(
+                    crate::HistoryEntryId::hex(
                         &crate::history_source::entry_id_from_hash(&hash.to_string())
                     )
                 )
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
         driver.click_named("history-open").unwrap();
         let target = format!(
             "timeline-entry:{}",
-            crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+            crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
                 &hash.to_string()
             ))
         );
@@ -308,7 +308,7 @@ fn review_driver() -> FrameHarness {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );

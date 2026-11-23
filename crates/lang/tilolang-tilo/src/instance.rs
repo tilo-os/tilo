@@ -1489,6 +1489,10 @@ impl Instance {
                 }
             }
         }
+        // Showing an item runs the view's answer for it (`on show`), which may itself open a
+        // page (`open(x)`): that ask is taken in this same step, so the page a primary action
+        // made opens in the frame that ran it.
+        self.follow_opens();
         true
     }
 
@@ -1625,6 +1629,30 @@ impl Instance {
             ToApp::Composing(composing) => self.composing = composing,
             // Every write is sent as it is made; one the store refused is said, not kept.
             ToApp::SaveAgain => {}
+            // What the person does next serves the call they signed for it: the writes it makes
+            // are stamped with it, as the member it names, until the window ends it.
+            ToApp::Serving { call, invoker } => {
+                let call = if call.is_empty() {
+                    None
+                } else {
+                    match serde_json::from_slice::<tilo_actions::remote::SignedCall>(&call) {
+                        Ok(call) => Some(call),
+                        Err(error) => {
+                            tracing::error!(%error, "the window's signed call does not read");
+                            return;
+                        }
+                    }
+                };
+                if let Some(host) = self.host() {
+                    let store = host.store();
+                    store.serve(
+                        call.as_ref()
+                            .map(|call| call.signed.statement().invocation.0.to_string()),
+                    );
+                    store.serve_invoker(invoker.filter(|_| call.is_some()));
+                    store.serve_signed(call.map(Box::new));
+                }
+            }
             ToApp::Space {
                 level,
                 width,
@@ -1751,7 +1779,8 @@ impl Instance {
             | ToApp::Focus { .. }
             | ToApp::Composing(_)
             | ToApp::SaveAgain
-            | ToApp::Space { .. }) => {
+            | ToApp::Space { .. }
+            | ToApp::Serving { .. }) => {
                 self.window_told(told);
                 Ok(())
             }

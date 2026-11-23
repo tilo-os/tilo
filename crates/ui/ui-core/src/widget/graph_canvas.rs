@@ -181,14 +181,6 @@ fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
 impl Widget for GraphCanvas {
     crate::described!();
 
-    /// Its nodes and the lines between them.
-    /// Its nodes as its children, over a picture of the lines between them.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("div");
-        cx.children();
-        cx.picture();
-    }
-
     retained_parts!("GraphCanvas");
     fn build_layout(
         &mut self,

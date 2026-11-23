@@ -3,6 +3,8 @@
 
 d-so-tilo-mail = Mail
 
+d-so-tilo-mail-keywords = email, e-mail, mail, inbox, mailbox, gmail, imap, smtp, apple mail, evolution, geary, kmail, kontact, emails, post, posteingang, briefe, postfach, mailprogramm, elektronische post, e-mails
+
 d-weesm3yb = Account
     .doc = What the server of one of the workspace's mail accounts holds.
     .noun = { $count ->
@@ -642,6 +644,7 @@ d-m5y6nl2m = All inboxes
     .w-is-inbox = is:inbox
 
 d-s7tarqlp = Accounts threads
+    .w-show-older-messages-from = Show older messages from { $address }
 
 d-tfom3oeo = Account threads
     .w-show-older-messages = Show older messages
@@ -671,6 +674,7 @@ d-bbuecgsi = Conversation
 d-krn2y5tw = Conversation messages
 
 d-n2xgxnbw = Message
+    .w-open-contact = Open contact
     .w-reply = Reply
     .w-reply-all = Reply all
     .w-forward = Forward

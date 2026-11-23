@@ -491,37 +491,6 @@ impl Stepper {
 
 impl Widget for Stepper {
     crate::described!();
-    /// A stepper as a page's own group of station buttons, read as the canvas draws it: a
-    /// station behind carries its check and moves the flow back to it, the one it stands on is
-    /// chosen, and the ones ahead are quiet.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Control, ControlOption};
-        let done_ink = cx.theme().tokens.colors.intent.value_fill;
-        let options = self
-            .steps
-            .iter()
-            .enumerate()
-            .map(|(index, step)| {
-                let here = self.current == Some(index);
-                let behind = self.current.is_some_and(|current| index < current);
-                ControlOption::new(step.clone())
-                    .selected(here)
-                    .with_target(self.station_id(index))
-                    .with_icon_opt(
-                        behind
-                            .then(|| crate::icons::Icon::Check.glyph(16.0, done_ink, false))
-                            .flatten(),
-                    )
-                    .disabled(!here && !self.is_station_enabled(index))
-            })
-            .collect();
-        cx.control(Control::Choices {
-            list: "group",
-            item: "button",
-            label: None,
-            options,
-        });
-    }
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
@@ -785,38 +754,6 @@ mod tests {
     use super::*;
 
     const STEPS: [&str; 4] = ["Choose image", "Choose drive", "Write", "Verify"];
-
-    #[test]
-    fn the_page_reads_a_done_step_checked_and_the_current_one_chosen_not_dimmed() {
-        let theme = Theme::light();
-        let stepper = Stepper::new(STEPS.iter().map(|step| (*step).to_owned()).collect())
-            .current(1)
-            .on_station(|_| {});
-        let composed = crate::composition::compose_alone(&stepper, &theme, "Stepper[0]");
-        let json = serde_json::to_value(&composed).expect("a composition is JSON");
-        let options = json
-            .pointer("/own/controls/0/options")
-            .and_then(serde_json::Value::as_array)
-            .unwrap_or_else(|| panic!("the stepper's stations: {json}"));
-        let flag = |option: &serde_json::Value, key: &str| {
-            option.get(key).and_then(serde_json::Value::as_bool) == Some(true)
-        };
-        assert!(
-            options[0].get("icon").is_some(),
-            "the done step carries its check"
-        );
-        assert!(
-            !flag(&options[0], "disabled"),
-            "a done step is a press away"
-        );
-        assert!(flag(&options[1], "selected"));
-        assert!(
-            !flag(&options[1], "disabled"),
-            "the current step is never dimmed"
-        );
-        assert!(options[1].get("icon").is_none());
-        assert!(flag(&options[2], "disabled"), "a step ahead is quiet");
-    }
 
     tilo_test_env::scenario! {
         /// A stepper's steps.

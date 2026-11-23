@@ -95,17 +95,9 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use collab_types::presence::{
-    PEER_PALETTE, agent_client, agent_identity, identity_rgb, user_color,
+    PEER_PALETTE, agent_client, agent_identity, identity_color, identity_rgb, member_color,
+    user_color,
 };
-
-/// The colour a member wears until they choose one ([`crate::tokens::PresenceHue::of_member`]),
-/// as it travels: the one lookup every surface asks — the bar's faces, the People list, a profile
-/// card, an agent's card in a window, its marks and carets, and the run a change is attributed to
-/// — so one member is one colour everywhere.
-#[must_use]
-pub fn member_color(member: &MemberId) -> (u8, u8, u8) {
-    identity_rgb(crate::tokens::PresenceHue::of_member(member))
-}
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
 /// colour travels as ([`user_color`], a colour they chose), in the colour a

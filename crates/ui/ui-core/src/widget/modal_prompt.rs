@@ -195,18 +195,6 @@ impl PromptBody {
     }
 }
 impl Widget for PromptBody {
-    /// The body of a text prompt as a page's own field: its value and its
-    /// placeholder.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        let value = self.input.value().to_owned();
-        let look = crate::composition::TextLook::new(
-            value.clone(),
-            &self.theme.text(TextRole::Body),
-            Some(self.theme.tokens.colors.text_primary),
-        );
-        cx.field(value, self.multiline, None, look);
-    }
-
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,

@@ -88,22 +88,20 @@ fn account_settings_carry_the_imap_and_smtp_endpoints_without_a_password() {
 }
 
 #[test]
-fn contacts_take_the_shape_the_contacts_app_reads_and_keep_their_ids() {
+fn an_address_book_is_read_as_the_vcard_text_contacts_imports() {
     let (home, profile) = sample();
     let book = &profile.address_books[0];
-    let contacts = super::contacts(home.path(), &profile.source_id, &book.source_id).unwrap();
-    assert_eq!(contacts.len(), 2);
-    let ada = contacts
-        .iter()
-        .find(|contact| contact["first"] == "Ada")
+    let cards = super::address_book(home.path(), &profile.source_id, &book.source_id).unwrap();
+    assert_eq!(cards.matches("BEGIN:VCARD").count(), 2, "{cards}");
+    let ada = cards
+        .split("BEGIN:VCARD")
+        .find(|card| card.contains("Ada Lovelace"))
         .expect("Ada's card");
-    assert_eq!(ada["last"], "Lovelace");
-    assert_eq!(ada["org"], "Analytical Engines");
-    assert_eq!(ada["birthday"]["Full"]["year"], 1815);
-    assert_eq!(ada["phones"][0]["label"], "cell");
-    assert!(uuid::Uuid::parse_str(ada["id"].as_str().unwrap()).is_ok());
-    let again = super::contacts(home.path(), &profile.source_id, &book.source_id).unwrap();
-    assert_eq!(contacts, again, "the same card names the same contact");
+    assert!(ada.contains("ORG:Analytical Engines"), "{ada}");
+    assert!(ada.contains("1815"), "her birthday is kept: {ada}");
+    assert!(ada.contains("ada@"), "her address is kept: {ada}");
+    let again = super::address_book(home.path(), &profile.source_id, &book.source_id).unwrap();
+    assert_eq!(cards, again, "the same book reads the same cards");
 }
 
 #[test]

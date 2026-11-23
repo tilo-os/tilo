@@ -252,9 +252,7 @@ struct Unanswering {
 
 impl Unanswering {
     async fn as_server(server: &crate::support::Device) -> Self {
-        let secret = iroh::SecretKey::from_bytes(&tilo_server_protocol::server_node_secret(
-            &server.key.to_bytes(),
-        ));
+        let secret = iroh::SecretKey::from_bytes(&server.key.to_bytes());
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .secret_key(secret)

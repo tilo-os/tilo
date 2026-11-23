@@ -88,6 +88,7 @@ __all__ = [
     "DeviceVpn",
     "Identity",
     "NetworkUsage",
+    "McpServer",
     "Accounts",
     "ChooseThemeArgs",
     "SetDarkModeArgs",
@@ -145,6 +146,8 @@ __all__ = [
     "CountDataUsedArgs",
     "ResetDataUsedArgs",
     "ForgetDataUsedArgs",
+    "SetAcceptOwnDevicesArgs",
+    "SetActWithoutAskingArgs",
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
     "RemoveAccountArgs",
@@ -599,6 +602,16 @@ ForgetDataUsedArgs = TypedDict("ForgetDataUsedArgs", {
     "connection": NotRequired["str | None"],
 })
 """The arguments of `forget-data-used`."""
+
+SetAcceptOwnDevicesArgs = TypedDict("SetAcceptOwnDevicesArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-accept-own-devices`."""
+
+SetActWithoutAskingArgs = TypedDict("SetActWithoutAskingArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-act-without-asking`."""
 
 PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
     "root": "str",
@@ -1901,6 +1914,39 @@ class NetworkUsage(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"count_data_used", "count_data_used_many", "reset_data_used", "reset_data_used_many", "forget_data_used", "forget_data_used_many"})
+
+
+class McpServer(Resource):
+    """Agents from your other devices — `settings.mcp-server`."""
+    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
+    @property
+    def accept_own_devices(self) -> bool:
+        """Read only."""
+        return self.fields["accept_own_devices"]
+    @property
+    def act_without_asking(self) -> bool:
+        """Read only."""
+        return self.fields["act_without_asking"]
+
+    def set_accept_own_devices(self, *, on: bool) -> None:
+        """Runs the app's action."""
+        return self.action("set-accept-own-devices", on=on)
+
+    def set_accept_own_devices_many(self, items: list[SetAcceptOwnDevicesArgs]) -> list[dict[str, Any]]:
+        """Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-accept-own-devices", items)
+
+    def set_act_without_asking(self, *, on: bool) -> None:
+        """Runs the app's action."""
+        return self.action("set-act-without-asking", on=on)
+
+    def set_act_without_asking_many(self, items: list[SetActWithoutAskingArgs]) -> list[dict[str, Any]]:
+        """Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-act-without-asking", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_accept_own_devices", "set_accept_own_devices_many", "set_act_without_asking", "set_act_without_asking_many"})
 
 
 class Accounts(Resource):

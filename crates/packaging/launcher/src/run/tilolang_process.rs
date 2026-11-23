@@ -2,12 +2,14 @@
 //! author's tilolang apps in that workspace, each as an instance
 //! (`docs/designs/app-language/app-window.md`).
 //!
-//! It is no app launch.
+//! It is no app launch. The same sandbox runs the window a device shows on a web page
+//! ([`WINDOW_BIN`]), which answers the page's link and draws nothing.
 
 use super::{
     LaunchError, LaunchOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob,
 };
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,6 +18,10 @@ pub const SUBCOMMAND: &str = "tilolang-process";
 
 /// The host's binary in the tilolang runtime bundle.
 pub const BIN: &str = "bin/tilolang-process";
+
+/// The window binary in the same bundle, which a page window runs
+/// ([`runtime_portal::process_link::PAGE_ENV`]).
+pub const WINDOW_BIN: &str = "bin/tilolang-app";
 
 /// Where the host sees its storage.
 pub const STORAGE_MOUNT: &str = "/run/tilolang-process/storage";
@@ -71,7 +77,8 @@ impl Earlier {
 /// The bubblewrap arguments of a process on the verified tilolang runtime bundle `runtime_root` of
 /// `version`, running on the verified Tilo runtime `app_runtime` (its root and version), holding
 /// `storage`, reading `earlier` (the directory and where the process sees it), with the launcher's
-/// own binary at `shim` for Landlock.
+/// own binary at `shim` for Landlock. A `page` window runs [`WINDOW_BIN`] on its patch connection
+/// and its page link instead of a process link.
 #[must_use]
 pub fn bwrap_argv(
     (runtime_root, version): (&Path, &str),
@@ -79,7 +86,9 @@ pub fn bwrap_argv(
     storage: &Path,
     earlier: Option<(&Path, &Path)>,
     shim: &Path,
+    page: bool,
 ) -> Vec<String> {
+    use runtime_portal::process_link::{CHILD_FD, FD_ENV, PAGE_ENV, PAGE_FD};
     let runtime_mount = crate::sandbox::runtime_mount_for(version);
     let mut argv: Vec<String> = [
         "--unshare-all",
@@ -96,12 +105,14 @@ pub fn bwrap_argv(
     .map(|arg| (*arg).to_owned())
     .collect();
     argv.push("--clearenv".to_owned());
+    let (descriptors, descriptors_named) = if page {
+        (PAGE_ENV, format!("{CHILD_FD},{PAGE_FD}"))
+    } else {
+        (FD_ENV, CHILD_FD.to_string())
+    };
     for (name, value) in [
         ("PATH", crate::sandbox::SANDBOX_PATH.to_owned()),
-        (
-            runtime_portal::process_link::FD_ENV,
-            runtime_portal::process_link::CHILD_FD.to_string(),
-        ),
+        (descriptors, descriptors_named),
         (
             runtime_portal::process_link::STORAGE_ENV,
             STORAGE_MOUNT.to_owned(),
@@ -170,9 +181,17 @@ pub fn bwrap_argv(
         STORAGE_MOUNT.to_owned(),
         "--net-restricted".to_owned(),
         "--keep-fd".to_owned(),
-        runtime_portal::process_link::CHILD_FD.to_string(),
+        CHILD_FD.to_string(),
+    ]);
+    if page {
+        argv.extend(["--keep-fd".to_owned(), PAGE_FD.to_string()]);
+    }
+    argv.extend([
         "--".to_owned(),
-        runtime_mount.join(BIN).display().to_string(),
+        runtime_mount
+            .join(if page { WINDOW_BIN } else { BIN })
+            .display()
+            .to_string(),
     ]);
     argv
 }
@@ -237,10 +256,12 @@ pub fn is_tilolang(runtime: &str) -> bool {
         .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
 }
 
-/// Start the tilolang host `launch` on `socket` and wait for it to end.
+/// Start the tilolang host `launch` on `socket` and wait for it to end; or, handed a `page`
+/// window's patch connection and page link, that window, while this process keeps `socket`.
 pub fn launch_tilolang_process(
     launch: &ProcessLaunch,
     socket: OwnedFd,
+    page: Option<&(OwnedFd, OwnedFd)>,
     opts: &LaunchOptions,
 ) -> Result<std::process::ExitStatus, LaunchError> {
     let (found, searched) = find_runtime_bundle(&launch.runtime, opts)?;
@@ -262,10 +283,11 @@ pub fn launch_tilolang_process(
             launch.app_runtime.clone(),
         ));
     }
-    if !runtime_root.join(BIN).is_file() {
+    let bin = if page.is_some() { WINDOW_BIN } else { BIN };
+    if !runtime_root.join(bin).is_file() {
         return Err(LaunchError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("the runtime {} has no {BIN}", launch.runtime),
+            format!("the runtime {} has no {bin}", launch.runtime),
         )));
     }
     let storage = std::fs::canonicalize(&launch.storage)?;
@@ -306,21 +328,59 @@ pub fn launch_tilolang_process(
             .as_ref()
             .map(|(dir, mount)| (dir.as_path(), mount.as_path())),
         &shim,
+        page.is_some(),
     ));
     let mut command = Command::new(opts.bwrap_bin.clone().unwrap_or_else(|| "bwrap".into()));
     command
         .args(&argv)
         .env_clear()
         .stdin(std::process::Stdio::null());
-    let placed = vec![
-        (socket.as_raw_fd(), runtime_portal::process_link::CHILD_FD),
+    // A page window holds its two connections; the link it was started on stays with this
+    // process, which ends with the window.
+    let (link, page) = match page {
+        Some((patch, page)) => (patch.as_raw_fd(), Some(page.as_raw_fd())),
+        None => (socket.as_raw_fd(), None),
+    };
+    let placed = [
+        (link, runtime_portal::process_link::CHILD_FD),
         (clone3.as_raw_fd(), CLONE3_COMPAT_FD),
         (baseline.as_raw_fd(), BASELINE_FD),
+        (
+            page.unwrap_or(link),
+            page.map_or(runtime_portal::process_link::CHILD_FD, |_| {
+                runtime_portal::process_link::PAGE_FD
+            }),
+        ),
     ];
-    crate::inherit::hand_down(&mut command, placed, false);
+    place(&mut command, placed);
     let status = command.status()?;
     drop((socket, clone3, baseline));
     Ok(status)
+}
+
+/// Hand `command` each descriptor of `placed` at its slot.
+fn place(command: &mut Command, placed: [(RawFd, RawFd); 4]) {
+    // SAFETY: only async-signal-safe calls between fork and exec: each descriptor is moved above every
+    // target slot first, so no dup2 overwrites one not yet placed, then placed at its slot without
+    // close-on-exec.
+    unsafe {
+        command.pre_exec(move || {
+            let mut moved = [(0, 0); 4];
+            for (slot, (from, to)) in moved.iter_mut().zip(placed) {
+                let fd = libc::fcntl(from, libc::F_DUPFD_CLOEXEC, 256);
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                *slot = (fd, to);
+            }
+            for (from, to) in moved {
+                if libc::dup2(from, to) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +463,7 @@ mod tests {
                 Path::new("/home/ada/.local/share/tilo/tilolang-processes/workspace/author"),
                 Some((Path::new(NOTEBOOKS), &notebooks_mount)),
                 Path::new("/usr/libexec/tilo-launcher"),
+                false,
             );
             assert!(
                 argv.contains(&"--unshare-all".to_owned()),
@@ -497,6 +558,52 @@ mod tests {
             assert_eq!(
                 argv.last().map(String::as_str),
                 Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-process")
+            );
+
+            // A page window: the same sandbox, holding its patch connection and its page link in
+            // place of a process link, and running the window binary.
+            let window = bwrap_argv(
+                (
+                    Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
+                    "0.1.0+tilolang",
+                ),
+                (
+                    Path::new("/usr/lib/tilo/runtimes/tilo/2026.10.1"),
+                    "2026.10.1",
+                ),
+                Path::new("/home/ada/.local/share/tilo/tilolang-processes/workspace/.pages"),
+                None,
+                Path::new("/usr/libexec/tilo-launcher"),
+                true,
+            );
+            let env = pair(&window, "--setenv");
+            assert!(env.contains(&(
+                runtime_portal::process_link::PAGE_ENV.to_owned(),
+                "36,37".to_owned()
+            )));
+            assert!(
+                !env.iter()
+                    .any(|(name, _)| name == runtime_portal::process_link::FD_ENV),
+                "a page window has no process link: {env:?}"
+            );
+            assert_eq!(
+                window
+                    .windows(2)
+                    .filter(|w| w[0] == "--keep-fd")
+                    .map(|w| w[1].clone())
+                    .collect::<Vec<_>>(),
+                ["36", "37"]
+            );
+            assert_eq!(
+                pair(&window, "--bind"),
+                [(
+                    "/home/ada/.local/share/tilo/tilolang-processes/workspace/.pages".to_owned(),
+                    STORAGE_MOUNT.to_owned()
+                )]
+            );
+            assert_eq!(
+                window.last().map(String::as_str),
+                Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-app")
             );
         }
     }

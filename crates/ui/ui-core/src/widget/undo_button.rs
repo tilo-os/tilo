@@ -159,30 +159,6 @@ impl UndoButton {
 
 impl Widget for UndoButton {
     crate::provides!(dyn crate::undo::UndoControl);
-    /// Undo and Redo as a page's own button: its glyph and its verb.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Face, TextLook};
-        cx.element("button");
-        let theme = cx.theme();
-        let ink = theme.tokens.colors.text_primary;
-        let label = self.accessible_name();
-        cx.face(Face {
-            icon: crate::composition::glyph(self.icon(), 16.0, ink, false),
-            label: Some(TextLook::new(
-                label,
-                &theme.text(crate::tokens::TextRole::Body),
-                Some(ink),
-            )),
-            detail: None,
-            trailing: None,
-            fill: None,
-            edge: None,
-            radius: f64::from(theme.tokens.radii.control),
-            pad: 8.0,
-            gap: 6.0,
-            spread: false,
-        });
-    }
 
     fn build_layout(
         &mut self,

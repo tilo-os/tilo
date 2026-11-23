@@ -37,6 +37,15 @@ pub const FD_ENV: &str = "TILO_SVC_PROCESS_FD";
 /// The descriptor the launcher places the link at in the process.
 pub const CHILD_FD: i32 = 36;
 
+/// The variable a window shown on a web page reads its two descriptors from, as `<patch>,<page>`:
+/// its instance's patch connection and its end of the page's link. It answers that link and draws
+/// nothing.
+pub const PAGE_ENV: &str = "TILO_TILOLANG_PAGE";
+
+/// The descriptor the launcher places a page window's end of the page's link at; its patch
+/// connection is at [`CHILD_FD`].
+pub const PAGE_FD: i32 = 37;
+
 /// The one switch a launch hands a window it opens for a visitor.
 pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 
