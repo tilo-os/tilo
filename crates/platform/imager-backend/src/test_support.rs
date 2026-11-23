@@ -17,6 +17,32 @@ pub fn parse_live_handoff(bytes: &[u8]) -> Result<serde_json::Value, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Every browser profile discovered under `home` as the plan's selected sources, after
+/// `adjust` sets each profile's data flags.
+#[cfg(target_os = "linux")]
+pub fn selected_browser_sources(
+    home: &Path,
+    mut adjust: impl FnMut(&mut browser_continuity::Profile),
+) -> crate::browser_selection::SelectedSources {
+    let inventory =
+        crate::setup::account_transfer::discover(&crate::setup::account_transfer::SourceRoots {
+            home: home.into(),
+            config: home.join(".config"),
+        });
+    let profiles = crate::browser_profiles::discover(home, &inventory.candidates).unwrap();
+    crate::browser_selection::SelectedSources::from_reviewed(
+        profiles
+            .into_iter()
+            .map(|mut source| {
+                adjust(&mut source.profile);
+                let profile = source.profile.clone();
+                (std::sync::Arc::new(source), profile)
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
 /// Runs one merged phase on a fresh thread, so thread-local fault hooks, scripts and counters start
 /// clean; a failing phase re-raises its original panic payload.
 pub fn isolated(phase: &str, body: impl FnOnce() + Send) {

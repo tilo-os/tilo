@@ -1,12 +1,6 @@
 use super::*;
-use crate::browser_selection::SelectedSources;
-use crate::setup::{
-    account_transfer::{self, SourceRoots},
-    browser_profiles,
-    browser_transfer::{self, ExportRequest},
-    // Selected browser ownership is shared with the native export actor.
-};
-use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+use crate::setup::browser_transfer::{self, ExportRequest};
+use std::{fs, os::unix::fs::PermissionsExt};
 use zeroize::Zeroizing;
 
 #[test]
@@ -20,21 +14,7 @@ fn real_browser_delivery_reuses_verified_ciphertext_and_refuses_changed_media() 
     fs::create_dir_all(&profile).unwrap();
     fs::write(profile.join("Bookmarks"), b"selected bookmarks").unwrap();
     fs::write(profile.join("Cookies"), b"unselected secret").unwrap();
-    let inventory = account_transfer::discover(&SourceRoots {
-        home: home.clone(),
-        config: home.join(".config"),
-    });
-    let selected = SelectedSources::from_reviewed(
-        browser_profiles::discover(&home, &inventory.candidates)
-            .unwrap()
-            .into_iter()
-            .map(|source| {
-                let profile = source.profile.clone();
-                (Arc::new(source), profile)
-            })
-            .collect(),
-    )
-    .unwrap();
+    let selected = crate::test_support::selected_browser_sources(&home, |_| {});
     let plan = selected.plan("exact setup".into(), [3; 32]).unwrap();
     let operation = uuid::Uuid::new_v4().to_string();
     let package = private.path().join(format!("browser-{operation}.sealed"));

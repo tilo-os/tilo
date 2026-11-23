@@ -1,9 +1,5 @@
 use super::*;
-use crate::setup::{
-    account_transfer::{self, SourceRoots},
-    browser_profiles,
-};
-use std::{fs, sync::Arc};
+use std::fs;
 
 fn private_directory() -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -13,22 +9,7 @@ fn private_directory() -> tempfile::TempDir {
 }
 
 fn selected(home: &Path, history: bool) -> SelectedSources {
-    let inventory = account_transfer::discover(&SourceRoots {
-        home: home.into(),
-        config: home.join(".config"),
-    });
-    SelectedSources::from_reviewed(
-        browser_profiles::discover(home, &inventory.candidates)
-            .unwrap()
-            .into_iter()
-            .map(|source| {
-                let mut profile = source.profile.clone();
-                profile.history &= history;
-                (Arc::new(source), profile)
-            })
-            .collect(),
-    )
-    .unwrap()
+    crate::test_support::selected_browser_sources(home, |profile| profile.history &= history)
 }
 fn fixture() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
