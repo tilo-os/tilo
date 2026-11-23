@@ -30,6 +30,7 @@ pub mod compute;
 mod confirm;
 mod content;
 mod host_runs;
+mod keep;
 #[cfg(target_os = "linux")]
 pub mod package_runs;
 pub mod peer;

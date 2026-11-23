@@ -12,32 +12,37 @@ TILO_IDENTITY_ROOT=${TILO_IDENTITY_ROOT:-/var/lib/tilo}
 XDG_STATE_HOME=${XDG_STATE_HOME:-$TILO_IDENTITY_ROOT/state}
 export TILO_IDENTITY_ROOT XDG_STATE_HOME
 
+# The device's one daemon keeps what a server keeps, as its configuration says, its state on the
+# server volume.
+export HOME=/var/lib/tilo-server TILO_RUNTIME_PROFILE=/var/lib/tilo-server
+export TILO_SERVER_CONFIG=/etc/tilo/server.toml
+
 # A volume that already holds its device key, certificate and login is one of the person's
 # devices: a ticket handed to it is left unspent. An empty volume is a machine joining an
 # existing owner, and the one secret that does it is the ticket `tilo device add` printed on an
-# owner device.
+# owner device, which the daemon spends at its first start, as it spends a system credential.
+credentials=/run/tilo-server/credentials
+/usr/bin/busybox mkdir -p -m 0700 "$credentials"
+/usr/bin/busybox rm -f "$credentials/tilo.ticket"
 if [ ! -s "$TILO_IDENTITY_ROOT/device/cert.bin" ] \
     || [ ! -s "$XDG_STATE_HOME/tilo/device/login.json" ]; then
-    no_identity='no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET'
     if [ -z "${TILO_TICKET:-}" ]; then
-        echo "$no_identity" >&2
+        echo 'no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET' >&2
         exit 1
     fi
-    /usr/bin/tilo login "$TILO_TICKET" --label "${TILO_DEVICE_NAME:-Home server}" || {
-        echo "$no_identity" >&2
-        exit 1
-    }
+    (umask 077 && printf '%s\n' "$TILO_TICKET" > "$credentials/tilo.ticket")
 fi
+export CREDENTIALS_DIRECTORY=$credentials
+# The name the person's devices show it by.
+export HOSTNAME="${TILO_DEVICE_NAME:-Home server}"
 
 if [ ! -s /etc/tilo/server.toml ]; then
     umask 022
     printf '%s\n' \
-        'identity_root = "/var/lib/tilo"' \
-        'state_root = "/var/lib/tilo-server"' \
         'iroh_listen = "0.0.0.0:4433"' \
         'trust_policy = { kind = "allow_matching_user" }' \
         'work = { from = "own_devices" }' \
         > /etc/tilo/server.toml
 fi
 
-exec /usr/libexec/tilo/tilo-server "$@"
+exec /usr/bin/tilo-runtime "$@"

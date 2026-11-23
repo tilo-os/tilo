@@ -1,9 +1,8 @@
 # Tilo server configuration.
 #
-# This process durably hosts workspace CRDT state and queues updates for
-# offline members.
-identity_root = "/var/lib/tilo"
-state_root = "/var/lib/tilo-server"
+# The device's one daemon reads it and keeps what a server keeps: the workspaces
+# placed on it, governed here, and what their members send while others are away.
+# Its identity is the login its ticket left; its state is the daemon's own.
 
 # Compose exposes this UDP port. Iroh still uses encrypted relay fallback and
 # NAT traversal when a direct path is unavailable.

@@ -192,6 +192,9 @@ pub struct OnDevice {
     pub keys: tilo_workspace_keys::KeyProvider,
     /// The device's one endpoint.
     pub endpoint: Endpoint,
+    /// Whether a ticket signed the device in, rather than its person founding it: only such a
+    /// machine installs from the plan its person's Servers workspace has for it.
+    pub joined: bool,
     /// What answers the apps' actions addressed to this device, when it serves apps.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
 }
@@ -500,7 +503,7 @@ impl Server {
             },
             tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
             endpoint.clone(),
-            identity.device_cert.capabilities.holds_workspace_keys(),
+            Self::governs(&cfg, &identity.device_cert),
             Arc::new(tilo_workspace_keys::NoSealChecks),
             |config| {
                 let config = Self::keeping(&cfg, config, app_serving.clone());
@@ -514,12 +517,14 @@ impl Server {
         .await?;
         let tilo_workspace_service::own_device::Opened { service, keys } = opened;
         let service = Arc::new(service);
+        let joined = crate::servers::first_install::joined(&cfg.identity_root);
         let (mut server, protocols) = Self::on_device(OnDevice {
             cfg,
             identity,
             service: Arc::clone(&service),
             keys: keys.keys(),
             endpoint: endpoint.clone(),
+            joined,
             app_serving,
         })
         .await?;
@@ -534,6 +539,14 @@ impl Server {
         server.key_service = Some(keys);
         server.iroh_packet_relay = relay.server;
         Ok(server)
+    }
+
+    /// Whether a server governs the workspaces placed on it: only one that admits no one by
+    /// default, on a device that may hold workspace keys, since governing one is holding its keys.
+    #[must_use]
+    pub fn governs(cfg: &ServerConfig, cert: &tilo_user_identity::DeviceCert) -> bool {
+        !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+            && cert.capabilities.holds_workspace_keys()
     }
 
     /// `config`, a device's workspace service's, as a device keeping what `cfg` says opens it:
@@ -555,6 +568,8 @@ impl Server {
             trust_policy: cfg.trust_policy.clone(),
             max_workspace_grants: cfg.max_workspace_grants,
             apps,
+            // A server serves other people's workspaces; it joins none as a member.
+            member: None,
             ..config
         }
     }
@@ -580,6 +595,7 @@ impl Server {
             service,
             keys,
             endpoint,
+            joined,
             app_serving,
         } = parts;
         if cfg.work.takes_nothing() {
@@ -700,7 +716,7 @@ impl Server {
                 governed.clone(),
                 endpoint.clone(),
                 cfg.state_root.clone(),
-                cfg.identity_root.clone(),
+                joined,
                 identity.device_cert.clone(),
             )),
         );
@@ -1013,7 +1029,7 @@ async fn install_and_follow(
     workspaces: crate::workspaces::Workspaces,
     endpoint: Endpoint,
     state_root: PathBuf,
-    identity_root: PathBuf,
+    joined: bool,
     cert: tilo_user_identity::DeviceCert,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -1037,7 +1053,7 @@ async fn install_and_follow(
         Some(endpoint),
         state_root,
     );
-    if crate::servers::first_install::joined(&identity_root) {
+    if joined {
         match crate::servers::first_install::install(
             &workspaces,
             &cert,
@@ -1196,6 +1212,24 @@ fn reaching_of(relay_mode: &iroh::RelayMode) -> Reaching {
     } else {
         Reaching::ByRelay
     }
+}
+
+/// Bind the one endpoint of a device that keeps what `cfg` names: on the address it names,
+/// reached through the packet relay it runs or is given, else the public relays. The relay runs
+/// for as long as the returned [`PacketRelay`] is kept.
+///
+/// # Errors
+///
+/// The relay does not start, or the endpoint does not bind or reaches no relay it was given.
+pub async fn bind_keeping(
+    cfg: &ServerConfig,
+    device_key: &ed25519_dalek::SigningKey,
+) -> Result<(Endpoint, PacketRelay), ServerError> {
+    let relay = PacketRelay::start(cfg, false).await?;
+    let endpoint = bind_endpoint(cfg, device_key, relay.mode()).await?;
+    Reaching::ByRelay.awaited(&endpoint).await;
+    relay.reached(&endpoint)?;
+    Ok((endpoint, relay))
 }
 
 /// Bind the device's one endpoint, keyed by its device key as every device's is: the key its

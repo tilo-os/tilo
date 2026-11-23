@@ -21,7 +21,7 @@ out=${4:?$usage}
 app_model_runtime=${5:?$usage}
 cd "$repo_root"
 bash os/containers/tilo-server/test-contract.sh
-for bin in tilo-server tilo-server-admin tilo tilo-runtime; do
+for bin in tilo-server-admin tilo tilo-runtime; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 [[ -f $app_model_runtime/runtime.json ]] || die "no model runtime in $app_model_runtime"
@@ -41,8 +41,7 @@ context=$scratch/server-context
 rm -rf "$context"
 mkdir -p "$context/bin" "$context/os/containers/tilo-server" "$context/os/usr/lib/systemd/system"
 cp os/containers/tilo-server/Containerfile "$context/"
-cp "$binaries/tilo-server" "$binaries/tilo-server-admin" "$binaries/tilo" \
-  "$binaries/tilo-runtime" "$context/bin/"
+cp "$binaries/tilo-server-admin" "$binaries/tilo" "$binaries/tilo-runtime" "$context/bin/"
 cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"
 cp -R "$app_model_runtime" "$context/app-model-runtime"
 cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"

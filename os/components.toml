@@ -625,9 +625,10 @@ files = [
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
-# The server image's own server: the daemon and its admin program, built
-# without the browser listener a node serves (`web`). Their old names in /usr/bin
-# resolve through the image's own tilo (host-tilo-cli), as a desktop's do.
+# The server image's own server: the device's one daemon, which keeps what a
+# server keeps as its server configuration says (tilo-server.service), and the
+# admin program. The admin program's old name in /usr/bin resolves through the
+# image's own tilo (host-tilo-cli), as a desktop's does.
 # tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it out
 # from this entry, as a swap into a server does.
 [[component]]
@@ -635,13 +636,12 @@ name = "host-server"
 kind = "userspace"
 scope = "vm"
 images = ["host"]
-packages = ["tilo-server"]
-bins = ["tilo-server", "tilo-server-admin"]
+packages = ["tilo-runtime", "tilo-server"]
+bins = ["tilo-runtime", "tilo-server-admin"]
 units = ["tilo-server.service"]
 layer = "host-binaries"
 files = [
-  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-server" },
+  { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-server-admin" },
 ]

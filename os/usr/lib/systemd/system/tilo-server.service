@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo host + relay daemon (iroh WAN transport, workspace CRDT fan-out, store-and-forward)
+Description=This server's Tilo daemon: the device's one daemon, keeping the workspaces placed on it
 Documentation=file:///usr/share/doc/tilo/server.md
 After=network-online.target tilo-server-firstboot.service
 Wants=network-online.target
@@ -13,17 +13,17 @@ After=var-lib-tilo.mount
 ConditionPathExists=!/var/lib/tilo-server/decommissioned
 
 [Service]
-Type=notify
-NotifyAccess=all
+Type=exec
 User=tilo-server
 Group=tilo-server
 SupplementaryGroups=tilo-identity
-# The volume's identity and the login beside it, which first boot wrote: the server reads the
-# certificate and login here, and serves as the device they name.
+# The volume's identity and the login beside it, which first boot wrote: the daemon reads the
+# certificate and login here, and serves as the device they name. The server configuration
+# makes it keep what a server keeps, in its own state below /var/lib/tilo-server.
 Environment=TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state
-# `run` blocks until SIGTERM. sd_notify(READY=1) is emitted from
-# main.rs once the iroh endpoint is bound + accepting.
-ExecStart=/usr/libexec/tilo/tilo-server --config /etc/tilo/server.toml run
+Environment=HOME=/var/lib/tilo-server TILO_RUNTIME_PROFILE=/var/lib/tilo-server
+Environment=TILO_SERVER_CONFIG=/etc/tilo/server.toml
+ExecStart=/usr/libexec/tilo/tilo-runtime
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30
@@ -51,6 +51,9 @@ PrivateTmp=yes
 PrivateDevices=yes
 PrivateIPC=yes
 ReadWritePaths=/var/lib/tilo-server
+# The device's directory beside its login, where its workspace service is kept, and where the
+# certificates its person gives it are filed.
+ReadWritePaths=/var/lib/tilo/state /var/lib/tilo/device
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -77,8 +80,7 @@ SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboo
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 
-# The daemon needs to read the user's cert + server device secret
-# from the shared identity tree, so grant read access there.
+# The server configuration, and the device key in the shared identity tree.
 ReadOnlyPaths=/etc/tilo /var/lib/tilo
 
 [Install]

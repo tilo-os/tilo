@@ -59,15 +59,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
         -print -quit | /usr/bin/busybox grep -q .
 
-COPY bin/tilo-server /usr/libexec/tilo/tilo-server
 COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin
 COPY bin/tilo /usr/bin/tilo
 COPY bin/tilo-runtime /usr/bin/tilo-runtime
 COPY os/containers/tilo-server/tilo-home-peer /usr/bin/tilo-home-peer
 RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer /usr/bin/tilo /usr/bin/tilo-runtime \
-    && for name in tilo-server tilo-server-admin; do \
-         /usr/bin/busybox ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
-       done
+    && /usr/bin/busybox ln -s ../libexec/tilo/tilo-server-admin /usr/bin/tilo-server-admin
 COPY os/usr/lib/systemd/system/tilo-server.service /usr/lib/systemd/system/tilo-server.service
 # The model runtime the apps of this release link their model modules against
 # (tools/ci/app-models.sh): the server applies an installed app's actions from
@@ -86,4 +83,3 @@ EXPOSE 4433/udp
 
 # Default command: daemon. Operator can override with `admin`.
 ENTRYPOINT ["/usr/bin/tilo-home-peer"]
-CMD ["--config", "/etc/tilo/server.toml", "run"]

@@ -28,7 +28,7 @@ use tilo_session_client::device::Device as Entered;
 use tilo_workspace_service::apps::services::{GrantRecording, WorkspaceAuthority, WorkspaceGrants};
 use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::own_device::{self, KeyService};
-use tilo_workspace_service::service::WorkspaceService;
+use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 
 /// What the device's workspace service is opened with.
@@ -45,6 +45,8 @@ pub(crate) struct Opening<'a> {
     pub(crate) seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     /// What answers the person's keys' record actions in a workspace governed here.
     pub(crate) apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+    /// What the service keeps beyond a device's own, on a server.
+    pub(crate) configure: Option<Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'a>>,
 }
 
 /// Every workspace this computer takes part in, through the workspace service this device runs.
@@ -84,6 +86,7 @@ impl ServiceWorkspaces {
             governs,
             seal_checks,
             apps,
+            configure,
         } = opening;
         let own_device::Opened { service, keys } = own_device::open_in(
             dir,
@@ -95,7 +98,13 @@ impl ServiceWorkspaces {
             endpoint.clone(),
             governs,
             seal_checks,
-            |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
+            |config| {
+                let config = ServiceConfig { apps, ..config };
+                match configure {
+                    Some(configure) => configure(config),
+                    None => config,
+                }
+            },
         )
         .await
         .map_err(|error| format!("this device's workspace service: {error}"))?;
@@ -826,6 +835,7 @@ impl ServiceWorkspaces {
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+            configure: None,
         })
         .await
         .unwrap();
@@ -853,6 +863,7 @@ impl ServiceWorkspaces {
             governs: false,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
+            configure: None,
         })
         .await
     }

@@ -7,7 +7,6 @@
 services:
   tilo-server:
     image: ${TILO_SERVER_IMAGE:-registry.tilo.so/tilo/tilo-server:latest}
-    command: ["--config", "/etc/tilo/server.toml", "run"]
     restart: unless-stopped
     environment:
       TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
@@ -31,7 +30,7 @@ services:
     healthcheck:
       # Written only after the daemon has started and its periodic metrics
       # task is live. It is not a claim that an external peer can reach us.
-      test: ["CMD-SHELL", "test -s /var/lib/tilo-server/metrics.json"]
+      test: ["CMD-SHELL", "test -S /var/lib/tilo-server/native.sock"]
       interval: 10s
       timeout: 3s
       retries: 6

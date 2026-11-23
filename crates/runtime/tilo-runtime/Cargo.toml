@@ -151,6 +151,9 @@ uuid.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The toolkit the Unix launch edge and its surface files are read with.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# What a device whose machine is a server keeps beyond its own copies: certification, kept
+# content, its place among its person's servers, and the packet relay it is reached through.
+tilo-server = { path = "../../server/tilo-server" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -178,8 +181,6 @@ tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
 
 [dev-dependencies]
-# The relays the replica tests start.
-tilo-server = { path = "../../server/tilo-server" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }

@@ -45,6 +45,7 @@ use tilo_workspace_service::apps::{
     collab_outbound::PeerPublisher,
     services::{LauncherServices, ProcessServices, ShortcutLibraryServices, WorkspaceAuthority},
 };
+use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
 
 /// Durable collaboration history, where the desktop session keeps it under
@@ -89,6 +90,9 @@ pub struct Daemon {
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
     _endpoint_router: iroh::protocol::Router,
+    /// What this device keeps as a server, when its machine is one. After the router that
+    /// answers for it.
+    _kept: Option<super::keep::Kept>,
     /// The person's other devices, asked from this runtime's endpoint as this device.
     other_devices: Option<crate::other_devices::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it runs here.
@@ -172,10 +176,13 @@ impl Identity {
 }
 
 /// Whether this daemon founds its person at its start, while no person's certificate names its
-/// key: on a computer of one account's (not Tilo OS's system tree) that was handed no ticket, as a
-/// laptop's first `tilo` command is.
+/// key: on a computer of one account's (not Tilo OS's system tree) that was handed no ticket and
+/// is no server, as a laptop's first `tilo` command is. A server waits for its person's ticket.
 #[must_use]
 pub(crate) fn founds_a_person() -> bool {
+    if super::keep::config().is_some() {
+        return false;
+    }
     let handed = std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|dir| {
         Path::new(&dir)
             .join(super::unclaimed::TICKET_CREDENTIAL)
@@ -293,8 +300,13 @@ impl Daemon {
         locked: Option<([u8; 32], advisory_lock::FileLock)>,
     ) -> io::Result<Self> {
         let identity = Identity::here()?;
-        let take_work =
-            take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
+        // A server keeps the workspaces placed on it: it takes no other server's work.
+        let mut keeping = super::keep::Keeping::configured()?;
+        let take_work = if keeping.is_some() {
+            None
+        } else {
+            take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device))
+        };
         host::private_directory(identity.place.dir())?;
         let place = DaemonPlace::of(
             identity.place.dir(),
@@ -319,6 +331,12 @@ impl Daemon {
         let actor = identity.person();
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
             (device.workspace.clone(), None)
+        } else if keeping.is_some() {
+            // A server is signed in by its person's ticket; it founds no one of its own.
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                super::keep::SIGN_IN_FIRST,
+            ));
         } else {
             let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
             (founded.to_string(), Some(founded))
@@ -341,13 +359,40 @@ impl Daemon {
         let key_sessions = founded.map(|_| crate::key_sessions::KeySessions::new());
         let member = take_work.is_some();
         let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
-        let endpoint = endpoint(&identity, port, member)?;
+        let (endpoint, relay) = match keeping.as_mut() {
+            Some(keeping) => {
+                let (endpoint, relay) = keeping.bind(&identity.key, port)?;
+                (endpoint, Some(relay))
+            }
+            None => (endpoint(&identity, port, member)?, None),
+        };
         let workspaces = open_workspaces(
             &identity,
             endpoint,
             Arc::clone(&brokers),
             key_sessions.as_ref(),
+            keeping.as_ref(),
         )?;
+        // What a server keeps beyond its copies, on the workspace service it governs.
+        let kept = match (keeping, relay) {
+            (Some(keeping), Some(relay)) => {
+                stage("keeping what this server keeps");
+                Some(keeping.keep(super::keep::On {
+                    dir: &identity.place.dir().join(OWN),
+                    joined: identity.login.is_some(),
+                    key: &identity.key,
+                    cert: &identity.cert,
+                    service: Arc::clone(workspaces.service()),
+                    keys: workspaces.keys(),
+                    endpoint: workspaces.endpoint(),
+                    relay,
+                })?)
+            }
+            _ => None,
+        };
+        let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {
+            (Some(kept), protocols)
+        });
         if let Some(founded) = founded {
             tilo_rt::app()
                 .handle()
@@ -394,7 +439,8 @@ impl Daemon {
             workspaces: &workspaces,
             take_work,
             actions,
-            host: founded.map(|_| workspaces.service().as_ref()),
+            host: (founded.is_some() || kept.is_some()).then(|| workspaces.service().as_ref()),
+            kept: kept_protocols,
         });
         // What is the person's alone is kept in their own workspace, read and written here on
         // this daemon's runtime once its service holds it: their devices, and the answers they
@@ -475,6 +521,7 @@ impl Daemon {
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
+            _kept: kept,
             login: identity.login,
             tickets,
             key: identity.key.clone(),
@@ -575,12 +622,14 @@ fn endpoint(identity: &Identity, port: Option<u16>, member: bool) -> io::Result<
 }
 
 /// Open the device's workspace service in its directory: it governs the workspace founded here
-/// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
+/// on a computer with no login and the workspaces placed on a server, and holds the member
+/// copies of the login's workspaces otherwise.
 fn open_workspaces(
     identity: &Identity,
     endpoint: iroh::Endpoint,
     brokers: Arc<Mutex<BrokerChannels>>,
     key_sessions: Option<&Arc<crate::key_sessions::KeySessions>>,
+    keeping: Option<&super::keep::Keeping>,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
         identity.cert.clone(),
@@ -593,7 +642,12 @@ fn open_workspaces(
         Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
     });
     let (dir, key) = (identity.place.dir().join(OWN), identity.key.clone());
-    let governs = identity.login.is_none();
+    let governs =
+        identity.login.is_none() || keeping.is_some_and(|keeping| keeping.governs(&identity.cert));
+    let configure = keeping.map(|keeping| {
+        Box::new(keeping.configuring())
+            as Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'static>
+    });
     block_on_owned(async move {
         ServiceWorkspaces::open(Opening {
             dir: &dir,
@@ -603,6 +657,7 @@ fn open_workspaces(
             governs,
             seal_checks: Arc::new(BrokerSealChecks(brokers)),
             apps,
+            configure,
         })
         .await
     })
@@ -1454,24 +1509,23 @@ struct EndpointServing<'a> {
     /// The one action service the device actions are answered on: its workspaces', or the work
     /// it takes from its server, admitting a ticket's certify call while a computer asks.
     actions: tilo_peer_state::actions::ActionService,
-    /// The workspace host this device runs, when it governs the workspace founded here: the
-    /// person's keys open their sessions with it here.
+    /// The workspace host this device runs, when it governs the workspace founded here or the
+    /// workspaces placed on a server: the person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
+    /// What a server answers for what it keeps.
+    kept: tilo_server::daemon::Protocols,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
 /// workspaces this device keeps, its host, the work it takes and a ticket's certify call. An
 /// endpoint's protocols are fixed once bound, so everything it answers is accepted here.
-///
-/// # Errors
-///
-/// The workspaces this device keeps cannot be served.
 fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router {
     let EndpointServing {
         workspaces,
         take_work,
         actions,
         host,
+        kept,
     } = serving;
     let runtime = tilo_rt::app().handle();
     let _entered = runtime.enter();
@@ -1488,6 +1542,9 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
         router = router.accept(alpn, handler);
     }
     if let Some((alpn, handler)) = take_work.map(take_work::TakesWork::terminals) {
+        router = router.accept(alpn, handler);
+    }
+    for (alpn, handler) in kept {
         router = router.accept(alpn, handler);
     }
     router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
