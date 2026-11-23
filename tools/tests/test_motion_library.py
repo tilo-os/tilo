@@ -61,7 +61,7 @@ class MotionLibraryTests(unittest.TestCase):
                     "// Curve::EaseOut in a comment\n"
                     "#[cfg(test)]\nmod tests { fn f() { Curve::EaseOut; } }\n"
                 ),
-                "apps/video-editor/src/curve.rs": "fn ease_in_out(t: f64) -> f64 { t }\n",
+                "crates/engines/video-edit/src/curve.rs": "fn ease_in_out(t: f64) -> f64 { t }\n",
                 "crates/ui/ui-core/src/widget/sankey.rs": (
                     "fn f(t: f64) -> f64 { t * t * (3.0 - 2.0 * t) }\n"
                 ),

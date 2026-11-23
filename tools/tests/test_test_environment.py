@@ -279,7 +279,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
-                                 "video-render": ["video-render"],
                                  "throughput": ["throughput"],
                                  "property-cases": ["property-cases"]})
         for script in scripts.values():
@@ -313,7 +312,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-test-env)": "swtpm",
                                  "package(tilo-pdf) or "
                                  "package(tilo-thumbnail)": "pdf-sandbox",
-                                 "package(tilo-agent-session)": "video-render",
                                  "package(tilo-agent-session) and "
                                  "test(workspace_actions::throughput::)": "throughput"})
 
@@ -530,28 +528,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         given = ran.read_text().splitlines() if ran.exists() else []
         return result, provided, given
 
-    def test_a_handed_render_helper_is_named_to_the_tests_and_not_built(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            helper = work / "tilo-video-render"
-            helper.write_text("#!/bin/sh\n")
-            helper.chmod(0o755)
-            result, provided, given = self.handed_step(
-                work, "video-render",
-                **{"NEXTEST_BIN_EXE_tilo-video-render": str(helper)})
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(provided, {"TILO_VIDEO_RENDER": str(helper)})
-            self.assertEqual(given, [], "the job's helper, not one built here")
-
-    def test_a_render_helper_not_handed_is_built(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            result, provided, given = self.handed_step(work, "video-render")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(given, ["build --locked -p tilo-video-render --bin tilo-video-render"])
-            self.assertEqual(provided,
-                             {"TILO_VIDEO_RENDER": f"{work}/target/debug/tilo-video-render"})
-
     def test_a_handed_pam_module_is_named_to_the_tests_and_not_built(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
@@ -571,17 +547,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(given, ["build --locked -p pam-tilo --lib"])
             self.assertEqual(provided,
                              {"TILO_PAM_TILO_MODULE": f"{work}/target/debug/libpam_tilo.so"})
-
-    def test_a_handed_program_that_cannot_run_fails_instead_of_building(self) -> None:
-        # Building here would hide a broken handoff and compile the program in every shard again.
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            result, provided, given = self.handed_step(
-                work, "video-render",
-                **{"NEXTEST_BIN_EXE_tilo-video-render": str(work / "not-executable")})
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("NEXTEST_BIN_EXE_tilo-video-render", result.stderr)
-            self.assertEqual((provided, given), ({}, []))
 
 
 class SiblingBinaryTests(unittest.TestCase):

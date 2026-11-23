@@ -1488,16 +1488,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilo-video-render"
-# The helper's tests render footage the video editor's test support
-# generates, so a change to that generator runs them.
-inputs = ["apps/video-editor/tests/support/"]
-readers = [
-  "crates/engines/video-render/tests/render_helper.rs",
-  "crates/engines/video-render/tests/support/media_stack.rs",
-]
-
-[[cargo]]
 package = "collab-types"
 # Every app's committed surface must parse as a receiver reads it.
 inputs = ["apps/*/surface.toml"]
@@ -2126,11 +2116,6 @@ readers = ["crates/engines/tilo-pdf/build.rs"]
 name = "browser-fixture-assets"
 inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
 suites = ["tools/web/fixture-assets.test.mjs"]
-
-[[cargo]]
-package = "video-editor"
-inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
-readers = ["apps/video-editor/build.rs"]
 
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"

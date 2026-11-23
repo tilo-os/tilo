@@ -23,7 +23,6 @@ include = ["tl-files", "settings", "terminal"]
 video-player = ["decode"]
 camera = ["live-capture"]
 disks = ["live"]
-video-editor = ["decode", "gst"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
 # The painting engines from their engine library beside the runtime.

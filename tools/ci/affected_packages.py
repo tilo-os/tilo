@@ -246,7 +246,6 @@ HEAVY_PACKAGES = {
     "slides",
     "typst-editor",
     "tilo-ui",
-    "video-editor",
 }
 
 # Below this structural cost, a second clean target directory spends more CPU

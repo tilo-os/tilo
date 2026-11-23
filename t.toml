@@ -169,7 +169,7 @@ isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo
 # none builds it (tools/ci/nextest.sh, or the render helper's setup step, .config/nextest.toml),
 # and a shard names none. So is the capability probe a job of a package
 # .config/nextest-capabilities.toml names first.
-starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
+starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -6174,7 +6174,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

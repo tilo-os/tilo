@@ -28,6 +28,8 @@ app-launch = [
     "dep:tilolang-music",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
+    "dep:video-edit",
+    "dep:video-picture",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -64,6 +66,7 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # What the person may do in an app, as the session hands it with each instance.
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
@@ -165,6 +168,10 @@ media = { package = "tilo-media", path = "../../engines/tilo-media", features = 
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+# The Video Editor's editing and picture engines (`app-launch`): what it asks for a probe, a
+# still, a waveform, a colour and a render, through `video_engine`.
+video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
+video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
 # A video a view declares plays in the app's window (`app-launch`): on Linux decoded by the system's
 # GStreamer, on an Apple silicon Mac by the decoders the tilolang runtime package carries beside
 # this binary (dist/macos/build-app.sh). An Intel Mac's slice and Windows build without one.

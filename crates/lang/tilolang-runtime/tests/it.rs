@@ -60,6 +60,8 @@ mod e2e_notes;
 mod e2e_std;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
+#[path = "e2e_video_editor.rs"]
+mod e2e_video_editor;
 #[path = "effects.rs"]
 mod effects;
 #[path = "event_values.rs"]

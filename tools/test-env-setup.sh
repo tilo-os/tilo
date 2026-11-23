@@ -71,11 +71,6 @@
 #          TILO_REQUIRE_PDF_SANDBOX, where the node's kernel can enforce Landlock
 #          (tools/ci/require-pdf-sandbox.sh): the PDF tests then require the
 #          helper's sandbox instead of letting an unconfined helper stand down.
-# video-render
-#          TILO_VIDEO_RENDER: the agent's render helper, which no package depends
-#          on. A job handed it (t.toml's `starts`) names it; one handed none (a
-#          developer's) builds it, and though named explicitly it is found also
-#          where an archive of test binaries executes away from its build directory.
 # pam-module
 #          TILO_PAM_TILO_MODULE: pam_tilo's cdylib, which no test binary links and
 #          an archive of test binaries does not carry. Its tests load the module
@@ -100,7 +95,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|video-render|pam-module|throughput|property-cases ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|pam-module|throughput|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -327,19 +322,6 @@ pdf-sandbox() {
     [[ -z $required ]] || provide TILO_REQUIRE_PDF_SANDBOX "$required"
 }
 
-video-render() {
-    local path
-    # shellcheck source=tools/ci/handed.sh
-    source "$repo/tools/ci/handed.sh"
-    path=$(handed_bin tilo-video-render)
-    if [[ -n $path ]]; then
-        provide TILO_VIDEO_RENDER "$path"
-    else
-        cargo build --locked -p tilo-video-render --bin tilo-video-render
-        provide TILO_VIDEO_RENDER "${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-video-render"
-    fi
-}
-
 pam-module() {
     local path
     # shellcheck source=tools/ci/handed.sh
@@ -367,7 +349,7 @@ throughput() {
 
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | video-render | pam-module | throughput | property-cases)
+        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | pam-module | throughput | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac

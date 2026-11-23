@@ -858,12 +858,6 @@ impl ConfinedReplica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, ApiError> {
-        // A render is made in the host's render service, never the worker.
-        if let Some(rendered) =
-            crate::render::route(self, self.content.as_ref(), address, arguments)
-        {
-            return rendered;
-        }
         let unavailable = |reason: String| ApiError::Unavailable {
             code: "app_worker".into(),
             reason,

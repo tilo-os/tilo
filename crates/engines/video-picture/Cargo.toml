@@ -1,0 +1,54 @@
+[package]
+name = "tilo-video-picture"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Video Editor's picture: the compositor a frame is drawn through and the encode a cut is written by, over the editing engine."
+
+# The project model and its editing math are `tilo-video-edit`'s; this crate carries the
+# renderer: what stands on a frame, how it is drawn, and how a cut is encoded. It has no widget
+# and no window, so a host, a render helper and a person's export all draw one picture.
+
+[lib]
+name = "video_picture"
+path = "src/lib.rs"
+
+[dependencies]
+video-edit = { package = "tilo-video-edit", path = "../video-edit", default-features = false }
+# Decode and encode run through the system's GStreamer under `decode`/`gst`.
+media = { package = "tilo-media", path = "../tilo-media", default-features = false }
+# A still is written as the PNG the window shows.
+thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
+# The frame's GPU pipeline and the host clock a source waits by.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-actions = { path = "../../core/actions" }
+tilo-paths = { path = "../../platform/tilo-paths" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+fnv.workspace = true
+tracing.workspace = true
+vello.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[features]
+# Decode and waveform support for the preview and the filmstrip.
+decode = ["media/decode", "video-edit/decode"]
+# GStreamer encode and mux support.
+gst = ["media/encode", "media/decode", "video-edit/gst"]
+default = ["decode", "gst"]
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

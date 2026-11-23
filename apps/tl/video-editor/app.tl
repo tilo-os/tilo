@@ -1,0 +1,3390 @@
+app so.tilo.video-editor "Video Editor" (
+    icon: .film,
+    category: .multimedia,
+    tagline: "Cuts video and sound into a film",
+    keywords: ["video editor", "video", "film", "timeline", "cut", "trim", "split", "transition", "title", "export", "videobearbeitung", "video schneiden", "film", "zeitleiste", "schnitt", "exportieren"],
+)
+
+use so.tilo.playback as playback
+
+/// What a source is: a picture that moves, a sound, a still, or words this app draws itself.
+enum Form {
+    video
+    audio
+    image
+    title
+}
+
+/// How a title's lines sit in its box.
+enum Align {
+    left
+    centre
+    right
+}
+
+/// What a drag on the timeline grabbed: nothing, a clip's body, or one of its edges.
+enum Grab {
+    empty
+    move
+    head
+    tail
+}
+
+/// One source in the bin: what it is, where its bytes are, and — for a title — the words it
+/// draws.
+///
+/// A clip references its source; the bytes stay where the file was chosen from, so another
+/// member resolves them on their own device.
+type Media (title: name, untitled: "Untitled source") {
+    name: Text
+    form: Form = .video
+    duration: Float = 0.0
+    width: Int = 0
+    height: Int = 0
+    fps: Float = 0.0
+    /// Its place in the palette, which tints its bin swatch and its clips.
+    palette: Int = 0
+    /// The address its bytes read at (`tilo-blob://…`); empty for a title.
+    path: Text = ""
+    has_audio: Bool = false
+    /// Its picture as the bin shows it, kept once the engine drew it.
+    still: Text = ""
+    /// Its loudness across the whole file, a fraction of full scale, as the waveform draws it.
+    peaks: List<Float>
+    /// A title's words.
+    words: Text = ""
+    /// A title's cap height, a fraction of the frame height.
+    size: Float = 0.12
+    red: Float = 1.0
+    green: Float = 1.0
+    blue: Float = 1.0
+    alpha: Float = 1.0
+    align: Align = .centre
+    bold: Bool = true
+    italic: Bool = false
+    /// A title's backing plate, 0 for none.
+    backdrop: Float = 0.0
+
+    search {
+        sort name a_z
+    }
+}
+
+/// One stackable picture effect on a clip: what it is and how strong.
+type Effect (title: form, untitled: "Effect") {
+    form: Text
+    amount: Float = 1.0
+}
+
+/// A row of the timeline. Video tracks stack above audio tracks.
+type Track (title: name, untitled: "Track") {
+    name: Text
+    form: Form = .video
+    index: Int = 1
+    muted: Bool = false
+    solo: Bool = false
+    locked: Bool = false
+    /// The fader, in decibels, 0 at unity.
+    gain_db: Float = 0.0
+    /// Where it sits across the stereo field: -1 hard left, 0 centre, 1 hard right.
+    pan: Float = 0.0
+}
+
+/// One value a clip holds at a moment of its own, and how the curve leaves it.
+type Key (title: param, untitled: "Key") {
+    /// The field it drives, as the engine names it (`opacity`, `pos_x`, `effect:…`).
+    param: Text
+    /// Seconds from the clip's start, so a move or a split carries it.
+    t: Float
+    v: Float
+    /// `linear`, `hold` or `ease`.
+    interp: Text = "linear"
+}
+
+/// One placement of a source on a track: where it starts, which part of the source it shows,
+/// and how it looks and sounds.
+type Clip (title: name, untitled: "Clip") {
+    name: Text
+    track: Track
+    media: Media
+    /// Its left edge on the timeline, in seconds.
+    start: Float = 0.0
+    /// The source in-point, in seconds into the source.
+    in_point: Float = 0.0
+    /// The source out-point, in seconds into the source.
+    out_point: Float = 0.0
+    opacity: Float = 1.0
+    volume: Float = 1.0
+    /// The incoming transition: empty for a hard cut, else `dissolve`, `fade`, `dip` or `wipe`.
+    transition: Text = ""
+    /// How long that transition runs, in seconds; 0 for its default.
+    transition_duration: Float = 0.0
+    fade_in: Float = 0.0
+    fade_out: Float = 0.0
+    palette: Int = 0
+    /// The playback rate; 1 is normal.
+    speed_rate: Float = 1.0
+    reverse: Bool = false
+    brightness: Float = 0.5
+    contrast: Float = 0.5
+    saturation: Float = 0.5
+    scale_x: Float = 1.0
+    scale_y: Float = 1.0
+    pos_x: Float = 0.0
+    pos_y: Float = 0.0
+    rotation: Float = 0.0
+    crop_left: Float = 0.0
+    crop_right: Float = 0.0
+    crop_top: Float = 0.0
+    crop_bottom: Float = 0.0
+    effects: Collection<Effect>
+    key_enabled: Bool = false
+    key_tolerance: Float = 0.22
+    key_softness: Float = 0.1
+    key_spill: Float = 0.5
+    /// Where a value of this clip changes over its own length: a curve on a field keeps the
+    /// constant field's value where no key sits near.
+    keys: Collection<Key>
+    /// Frames of this clip as the inspector's filmstrip shows them, and the span they were drawn
+    /// for, so a trim draws them again.
+    strips: List<Text>
+    strips_key: Text = ""
+    /// The colour the key removes, in 0..1 RGB: what a sample from the frame sets.
+    key_red: Float = 0.06
+    key_green: Float = 0.72
+    key_blue: Float = 0.2
+    /// A mask that limits where the layer shows: empty for none, else `rect` or `ellipse`.
+    mask_shape: Text = ""
+    mask_x: Float = 0.0
+    mask_y: Float = 0.0
+    mask_w: Float = 0.6
+    mask_h: Float = 0.6
+    mask_rotation: Float = 0.0
+    mask_feather: Float = 0.12
+    mask_invert: Bool = false
+    /// The link group this clip is one half of: its picture and its sound move together.
+    link: Text = ""
+    link_follows: Bool = true
+    /// True when this picture's own sound was split off onto an audio clip.
+    sound_split: Bool = false
+}
+
+/// A point on the timeline a person marked.
+type Marker (title: name, untitled: "Marker") {
+    name: Text
+    /// Seconds on the timeline.
+    t: Float = 0.0
+    palette: Int = 3
+    note: Text = ""
+}
+
+/// A cut: its shape, its sources, its tracks and clips, and what the engine last drew of it.
+type Project (title: name, untitled: "Untitled project") {
+    name: Text
+    fps: Float = 30.0
+    width: Int = 1920
+    height: Int = 1080
+    /// Whether the shape was chosen by a person rather than taken from the first source.
+    explicit_format: Bool = false
+    /// Where a render starts and ends on the timeline; negative for the head and the end.
+    mark_in: Float = -1.0
+    mark_out: Float = -1.0
+    /// The container an export writes.
+    format: Text = "mp4"
+    media: Collection<Media>
+    tracks: Collection<Track>
+    clips: Collection<Clip>
+    markers: Collection<Marker>
+    /// The frame the preview shows at `still_at`, drawn by the engine.
+    still: Text = ""
+    still_at: Float = -1.0
+    /// The cut rendered small for playing in the window.
+    proxy: Text = ""
+    /// The render this cut has running, and how far it has got.
+    job: Text = ""
+    job_kind: Text = ""
+    job_done: Int = 0
+    job_total: Int = 0
+    /// The finished file an export made.
+    exported: Text = ""
+    /// Why the last thing the engine was asked failed.
+    trouble: Text = ""
+}
+
+/// The workspace's cuts, and the one the window has open.
+type Editor {
+    projects: Collection<Project>
+    open: Option<Project>
+    /// The session the window plays through, so its sound has a device to meter.
+    sessions: Collection<playback.Playback>
+    playing: Option<playback.Playback>
+}
+
+root editor: Editor
+
+default view window for Editor
+
+default view studio for Project
+
+row view project_row for Project
+
+row view media_row for Media
+
+/// What the device answered when it was asked what a file is.
+type Probed {
+    kind: Text = "video"
+    duration: Float = 0.0
+    width: Int = 0
+    height: Int = 0
+    fps: Float = 0.0
+    has_audio: Bool = false
+    codec: Text = ""
+}
+
+type ProbeAsk {
+    url: Text
+}
+
+type StillAsk {
+    /// The cut, as `json.encode(shot(p))` writes it.
+    project: Text
+    at: Float
+    width: Int
+    height: Int
+}
+
+type StillAnswer {
+    url: Text
+}
+
+type WaveAsk {
+    url: Text
+    buckets: Int
+}
+
+type Peaks {
+    peaks: List<Float>
+}
+
+type RenderAsk {
+    /// The cut, as `json.encode(shot(p))` writes it.
+    project: Text
+    resolution: Text
+    container: Text
+    fps: Int
+    name: Text
+}
+
+type JobAnswer {
+    job: Text
+}
+
+type JobState {
+    state: Text = ""
+    done: Int = 0
+    total: Int = 0
+    url: Text = ""
+    error: Text = ""
+}
+
+/// The cut as the device reads it: plain values, with the names the engine knows.
+type Shot {
+    name: Text
+    fps: Float
+    width: Int
+    height: Int
+    mark_in: Float
+    mark_out: Float
+    /// One JSON text a source; each is a `ShotMedia` written out.
+    media: List<Text>
+    /// One JSON text a track; each is a `ShotTrack` written out.
+    tracks: List<Text>
+    /// One JSON text a clip; each is a `ShotClip` written out.
+    clips: List<Text>
+    /// One JSON text a marker; each is a `ShotMarker` written out.
+    markers: List<Text>
+}
+
+type ShotMedia {
+    id: Text
+    name: Text
+    kind: Text
+    duration: Float
+    width: Int
+    height: Int
+    fps: Float
+    palette: Int
+    path: Text
+    has_audio: Bool
+    /// A title's words; empty for every decoded source.
+    content: Text
+    size: Float
+    color: List<Float>
+    align: Text
+    font: Text
+    bold: Bool
+    italic: Bool
+    backdrop: Float
+}
+
+type ShotTrack {
+    id: Text
+    name: Text
+    kind: Text
+    index: Int
+    muted: Bool
+    solo: Bool
+    locked: Bool
+    gain_db: Float
+    pan: Float
+}
+
+type ShotClip {
+    id: Text
+    track: Text
+    media: Text
+    start: Float
+    in_point: Float
+    out_point: Float
+    opacity: Float
+    volume: Float
+    transition: Text
+    transition_duration: Float
+    fade_in: Float
+    fade_out: Float
+    palette: Int
+    speed_rate: Float
+    speed_reverse: Bool
+    brightness: Float
+    contrast: Float
+    saturation: Float
+    scale_x: Float
+    scale_y: Float
+    pos_x: Float
+    pos_y: Float
+    rotation: Float
+    crop_left: Float
+    crop_right: Float
+    crop_top: Float
+    crop_bottom: Float
+    /// One JSON text an effect, in stack order.
+    effects: List<Text>
+    /// One JSON text a key, in clip-local seconds.
+    keys: List<Text>
+    key_enabled: Bool
+    key_color: List<Float>
+    key_tolerance: Float
+    key_softness: Float
+    key_spill: Float
+    mask_shape: Text
+    mask_x: Float
+    mask_y: Float
+    mask_w: Float
+    mask_h: Float
+    mask_rotation: Float
+    mask_feather: Float
+    mask_invert: Bool
+    link: Text
+    link_follows: Bool
+    sound_split: Bool
+}
+
+type ShotEffect {
+    id: Text
+    form: Text
+    amount: Float
+}
+
+type ShotKey {
+    param: Text
+    t: Float
+    v: Float
+    interp: Text
+}
+
+/// One source's picture at `at`, kept: a filmstrip frame.
+type ThumbAsk {
+    url: Text
+    at: Float
+    width: Int
+    height: Int
+}
+
+/// The colour of the cut's frame at (x, y), in fractions of its box.
+type SampleAsk {
+    project: Text
+    at: Float
+    x: Float
+    y: Float
+}
+
+type SampleAnswer {
+    red: Float
+    green: Float
+    blue: Float
+}
+
+type ShotMarker {
+    id: Text
+    t: Float
+    name: Text
+    palette: Int
+    note: Text
+}
+
+/// A project file as it is written: what a person hands to someone else.
+type Saved {
+    name: Text = ""
+    fps: Float = 30.0
+    width: Int = 1920
+    height: Int = 1080
+    mark_in: Float = -1.0
+    mark_out: Float = -1.0
+    media: List<SavedMedia>
+    tracks: List<SavedTrack>
+    clips: List<SavedClip>
+    markers: List<SavedMarker>
+}
+
+type SavedMedia {
+    name: Text = ""
+    form: Text = "video"
+    duration: Float = 0.0
+    width: Int = 0
+    height: Int = 0
+    fps: Float = 0.0
+    palette: Int = 0
+    path: Text = ""
+    has_audio: Bool = false
+    words: Text = ""
+    size: Float = 0.12
+    red: Float = 1.0
+    green: Float = 1.0
+    blue: Float = 1.0
+    alpha: Float = 1.0
+    align: Text = "centre"
+    bold: Bool = true
+    italic: Bool = false
+    backdrop: Float = 0.0
+}
+
+type SavedTrack {
+    name: Text = "Track"
+    form: Text = "video"
+    index: Int = 1
+    muted: Bool = false
+    solo: Bool = false
+    locked: Bool = false
+    gain_db: Float = 0.0
+    pan: Float = 0.0
+}
+
+type SavedClip {
+    name: Text = ""
+    track: Int = 0
+    media: Int = 0
+    start: Float = 0.0
+    in_point: Float = 0.0
+    out_point: Float = 0.0
+    opacity: Float = 1.0
+    volume: Float = 1.0
+    transition: Text = ""
+    transition_duration: Float = 0.0
+    fade_in: Float = 0.0
+    fade_out: Float = 0.0
+    speed_rate: Float = 1.0
+    reverse: Bool = false
+    brightness: Float = 0.5
+    contrast: Float = 0.5
+    saturation: Float = 0.5
+    scale_x: Float = 1.0
+    scale_y: Float = 1.0
+    pos_x: Float = 0.0
+    pos_y: Float = 0.0
+    rotation: Float = 0.0
+    crop_left: Float = 0.0
+    crop_right: Float = 0.0
+    crop_top: Float = 0.0
+    crop_bottom: Float = 0.0
+    key_enabled: Bool = false
+    key_tolerance: Float = 0.22
+    key_softness: Float = 0.1
+    key_spill: Float = 0.5
+    mask_shape: Text = ""
+    mask_x: Float = 0.0
+    mask_y: Float = 0.0
+    mask_w: Float = 0.6
+    mask_h: Float = 0.6
+    mask_rotation: Float = 0.0
+    mask_feather: Float = 0.12
+    mask_invert: Bool = false
+    link: Text = ""
+    /// One JSON text a key of the clip.
+    keys: List<Text>
+}
+
+type SavedMarker {
+    name: Text = ""
+    t: Float = 0.0
+    palette: Int = 3
+    note: Text = ""
+}
+
+/// The timeline's shapes and, beside each, the clip it belongs to: the drawing reports the shape
+/// a press landed on, and this is what that shape was.
+type Drawn {
+    shapes: List<ui.Shape>
+    owners: List<Text>
+}
+
+// ---------------------------------------------------------------- what a source and a track are
+fn form_name(f: Form) -> Text {
+    if f == .audio {
+        "audio"
+    } else if f == .image { "image" } else if f == .title { "text" } else { "video" }
+}
+
+fn form_of(name: Text) -> Form {
+    if name == "audio" {
+        .audio
+    } else if name == "image" { .image } else if name == "text" { .title } else { .video }
+}
+
+fn form_words(f: Form) -> Text {
+    if f == .audio {
+        std.say("Sound")
+    } else if f == .image {
+        std.say("Still")
+    } else if f == .title { std.say("Title") } else { std.say("Video") }
+}
+
+fn track_form(f: Form) -> Text {
+    if f == .audio { "audio" } else { "video" }
+}
+
+fn align_name(a: Align) -> Text {
+    if a == .left { "Left" } else if a == .right { "Right" } else { "Center" }
+}
+
+fn align_of(name: Text) -> Align {
+    if name == "left" { .left } else if name == "right" { .right } else { .centre }
+}
+
+// ---------------------------------------------------------------- the cut as the engine reads it
+fn shot(p: Project) -> Shot {
+    Shot(
+        name: p.name,
+        fps: p.fps,
+        width: p.width,
+        height: p.height,
+        mark_in: p.mark_in,
+        mark_out: p.mark_out,
+        media: p.media.map(m -> json.encode(shot_media(m))),
+        tracks: p.tracks.map(t -> json.encode(shot_track(t))),
+        clips: p.clips.map(c -> json.encode(shot_clip(c))),
+        markers: p.markers.map(k -> json.encode(shot_marker(k))),
+    )
+}
+
+fn shot_media(m: Media) -> ShotMedia {
+    ShotMedia(
+        id: m.id(),
+        name: m.name,
+        kind: form_name(m.form),
+        duration: m.duration,
+        width: m.width,
+        height: m.height,
+        fps: m.fps,
+        palette: m.palette,
+        path: m.path,
+        has_audio: m.has_audio,
+        content: if m.form == .title { m.words } else { "" },
+        size: m.size,
+        color: [m.red, m.green, m.blue, m.alpha],
+        align: align_name(m.align),
+        font: "",
+        bold: m.bold,
+        italic: m.italic,
+        backdrop: m.backdrop,
+    )
+}
+
+fn shot_track(t: Track) -> ShotTrack {
+    ShotTrack(
+        id: t.id(),
+        name: t.name,
+        kind: track_form(t.form),
+        index: t.index,
+        muted: t.muted,
+        solo: t.solo,
+        locked: t.locked,
+        gain_db: t.gain_db,
+        pan: t.pan,
+    )
+}
+
+fn shot_clip(c: Clip) -> ShotClip {
+    ShotClip(
+        id: c.id(),
+        track: c.track.id(),
+        media: c.media.id(),
+        start: c.start,
+        in_point: c.in_point,
+        out_point: c.out_point,
+        opacity: c.opacity,
+        volume: c.volume,
+        transition: c.transition,
+        transition_duration: c.transition_duration,
+        fade_in: c.fade_in,
+        fade_out: c.fade_out,
+        palette: c.palette,
+        speed_rate: c.speed_rate,
+        speed_reverse: c.reverse,
+        brightness: c.brightness,
+        contrast: c.contrast,
+        saturation: c.saturation,
+        scale_x: c.scale_x,
+        scale_y: c.scale_y,
+        pos_x: c.pos_x,
+        pos_y: c.pos_y,
+        rotation: c.rotation,
+        crop_left: c.crop_left,
+        crop_right: c.crop_right,
+        crop_top: c.crop_top,
+        crop_bottom: c.crop_bottom,
+        effects: c.effects.map(
+            e -> json.encode(ShotEffect(id: e.id(), form: e.form, amount: e.amount)),
+        ),
+        keys: c.keys.map(
+            k -> json.encode(ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp)),
+        ),
+        key_enabled: c.key_enabled,
+        key_color: [c.key_red, c.key_green, c.key_blue],
+        key_tolerance: c.key_tolerance,
+        key_softness: c.key_softness,
+        key_spill: c.key_spill,
+        mask_shape: c.mask_shape,
+        mask_x: c.mask_x,
+        mask_y: c.mask_y,
+        mask_w: c.mask_w,
+        mask_h: c.mask_h,
+        mask_rotation: c.mask_rotation,
+        mask_feather: c.mask_feather,
+        mask_invert: c.mask_invert,
+        link: c.link,
+        link_follows: c.link_follows,
+        sound_split: c.sound_split,
+    )
+}
+
+fn shot_marker(k: Marker) -> ShotMarker {
+    ShotMarker(id: k.id(), t: k.t, name: k.name, palette: k.palette, note: k.note)
+}
+
+fn saved(p: Project) -> Saved {
+    Saved(
+        name: p.name,
+        fps: p.fps,
+        width: p.width,
+        height: p.height,
+        mark_in: p.mark_in,
+        mark_out: p.mark_out,
+        media: p.media.map(
+            m -> SavedMedia(
+                name: m.name,
+                form: form_name(m.form),
+                duration: m.duration,
+                width: m.width,
+                height: m.height,
+                fps: m.fps,
+                palette: m.palette,
+                path: m.path,
+                has_audio: m.has_audio,
+                words: m.words,
+                size: m.size,
+                red: m.red,
+                green: m.green,
+                blue: m.blue,
+                alpha: m.alpha,
+                align: if m.align == .left {
+                    "left"
+                } else if m.align == .right { "right" } else { "centre" },
+                bold: m.bold,
+                italic: m.italic,
+                backdrop: m.backdrop,
+            ),
+        ),
+        tracks: p.tracks.map(
+            t -> SavedTrack(
+                name: t.name,
+                form: track_form(t.form),
+                index: t.index,
+                muted: t.muted,
+                solo: t.solo,
+                locked: t.locked,
+                gain_db: t.gain_db,
+                pan: t.pan,
+            ),
+        ),
+        clips: p.clips.map(
+            c -> SavedClip(
+                name: c.name,
+                track: index_of_track(p, c.track),
+                media: index_of_media(p, c.media),
+                start: c.start,
+                in_point: c.in_point,
+                out_point: c.out_point,
+                opacity: c.opacity,
+                volume: c.volume,
+                transition: c.transition,
+                transition_duration: c.transition_duration,
+                fade_in: c.fade_in,
+                fade_out: c.fade_out,
+                speed_rate: c.speed_rate,
+                reverse: c.reverse,
+                brightness: c.brightness,
+                contrast: c.contrast,
+                saturation: c.saturation,
+                scale_x: c.scale_x,
+                scale_y: c.scale_y,
+                pos_x: c.pos_x,
+                pos_y: c.pos_y,
+                rotation: c.rotation,
+                crop_left: c.crop_left,
+                crop_right: c.crop_right,
+                crop_top: c.crop_top,
+                crop_bottom: c.crop_bottom,
+                key_enabled: c.key_enabled,
+                key_tolerance: c.key_tolerance,
+                key_softness: c.key_softness,
+                key_spill: c.key_spill,
+                mask_shape: c.mask_shape,
+                mask_x: c.mask_x,
+                mask_y: c.mask_y,
+                mask_w: c.mask_w,
+                mask_h: c.mask_h,
+                mask_rotation: c.mask_rotation,
+                mask_feather: c.mask_feather,
+                mask_invert: c.mask_invert,
+                link: c.link,
+                keys: c.keys.map(
+                    k -> json.encode(ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp)),
+                ),
+            ),
+        ),
+        markers: p.markers.map(
+            k -> SavedMarker(name: k.name, t: k.t, palette: k.palette, note: k.note),
+        ),
+    )
+}
+
+fn index_of_media(p: Project, m: Media) -> Int {
+    p.media.index_of(m) ?? 0
+}
+
+fn index_of_track(p: Project, t: Track) -> Int {
+    p.tracks.index_of(t) ?? 0
+}
+
+/// The shortest clip a trim or a split may leave, in seconds.
+// ---------------------------------------------------------------- the editing math
+fn smallest() -> Float {
+    0.1
+}
+
+/// How fast a clip plays; never slower than the engine accepts.
+fn rate(c: Clip) -> Float {
+    if c.speed_rate < 0.05 { 0.05 } else { c.speed_rate }
+}
+
+/// How much of the timeline a clip takes.
+fn shown(c: Clip) -> Float {
+    (c.out_point - c.in_point) / rate(c)
+}
+
+fn clip_end(c: Clip) -> Float {
+    c.start + shown(c)
+}
+
+/// How long the cut runs.
+fn total(p: Project) -> Float {
+    let ends = p.clips.map(c -> clip_end(c)).sort_by(x -> x)
+    ends.last() ?? 0.0
+}
+
+/// Where a render starts and ends: the marks when they are set, the whole cut otherwise.
+fn render_from(p: Project) -> Float {
+    if p.mark_in < 0.0 { 0.0 } else { p.mark_in }
+}
+
+fn render_to(p: Project) -> Float {
+    if p.mark_out < 0.0 { total(p) } else { p.mark_out }
+}
+
+/// How many tracks the timeline draws.
+fn track_count(p: Project) -> Int {
+    ordered_tracks(p).len()
+}
+
+/// The tracks in the order the timeline draws them: video over sound, each by its index.
+fn ordered_tracks(p: Project) -> List<Track> {
+    [
+        p.tracks.filter(t -> t.form == .video).sort_by(t -> t.index),
+        p.tracks.filter(t -> t.form == .audio).sort_by(t -> t.index),
+    ]
+        .flat_map(x -> x)
+}
+
+/// A moment on the cut, rounded to the frame it is nearest.
+fn snap_time(p: Project, t: Float) -> Float {
+    if p.fps <= 0.0 {
+        return t.max(0.0)
+    }
+    (t * p.fps).round().max(0).to_float() / p.fps
+}
+
+fn overlaps(p: Project, track: Track, start: Float, end: Float, except: Text) -> Bool {
+    p.clips.any(
+        c -> c.track == track and c.id() != except and c.start < end and clip_end(c) > start,
+    )
+}
+
+/// The first free place on `track` at or after `at` where `length` fits.
+fn free_at(p: Project, track: Track, at: Float, length: Float) -> Float {
+    let later = p.clips.filter(c -> c.track == track and clip_end(c) > at).sort_by(c -> c.start)
+    if let c = later.first() {
+        if c.start >= at + length {
+            at
+        } else {
+            free_at(p, track, c.start + shown(c), length)
+        }
+    } else { at }
+}
+
+fn clip_named(p: Project, id: Text) -> Option<Clip> {
+    p.clips.find(c -> c.id() == id)
+}
+
+/// The clip covering `at` on `track`, if one does.
+fn covering(p: Project, track: Track, at: Float) -> Option<Clip> {
+    p.clips.find(c -> c.track == track and c.start <= at and clip_end(c) >= at)
+}
+
+/// What a drag at `at` on `track` grabs: an edge within a finger's width of `span`, the clip's
+/// body, or nothing.
+fn grab_at(p: Project, track: Track, at: Float, span: Float) -> Grab {
+    let edge = span * 0.012
+    let near = p.clips.filter(
+        c -> c.track == track
+            and ((c.start - at).abs() <= edge or (clip_end(c) - at).abs() <= edge),
+    )
+    if let c = near.last() {
+        if (c.start - at).abs() <= edge {
+            return .head
+        }
+        return .tail
+    }
+    if p.clips.any(c -> c.track == track and c.start < at and clip_end(c) > at) {
+        return .move
+    }
+    .empty
+}
+
+fn grabbed(p: Project, track: Track, at: Float, span: Float) -> Text {
+    let edge = span * 0.012
+    let near = p.clips.filter(
+        c -> c.track == track
+            and ((c.start - at).abs() <= edge or (clip_end(c) - at).abs() <= edge),
+    )
+    if let c = near.last() {
+        return c.id()
+    }
+    if let c = covering(p, track, at) {
+        return c.id()
+    }
+    ""
+}
+
+/// Cuts a clip in two at `at`, each half keeping the source its own part shows.
+action split_at(p: Project, c: Clip, at: Float) {
+    let into = (at - c.start) * rate(c)
+    let source = c.in_point + into
+    if source - c.in_point < smallest() or c.out_point - source < smallest() {
+        return
+    }
+    p.clips.insert(
+        Clip(
+            name: "{c.name} (2)",
+            track: c.track,
+            media: c.media,
+            start: at,
+            in_point: source,
+            out_point: c.out_point,
+            opacity: c.opacity,
+            volume: c.volume,
+            palette: c.palette,
+            speed_rate: c.speed_rate,
+            reverse: c.reverse,
+            brightness: c.brightness,
+            contrast: c.contrast,
+            saturation: c.saturation,
+            scale_x: c.scale_x,
+            scale_y: c.scale_y,
+            pos_x: c.pos_x,
+            pos_y: c.pos_y,
+            rotation: c.rotation,
+            fade_in: c.fade_in,
+            fade_out: c.fade_out,
+            transition: c.transition,
+            transition_duration: c.transition_duration,
+            key_enabled: c.key_enabled,
+            key_tolerance: c.key_tolerance,
+            key_softness: c.key_softness,
+            key_spill: c.key_spill,
+            mask_shape: c.mask_shape,
+            mask_x: c.mask_x,
+            mask_y: c.mask_y,
+            mask_w: c.mask_w,
+            mask_h: c.mask_h,
+            mask_rotation: c.mask_rotation,
+            mask_feather: c.mask_feather,
+            mask_invert: c.mask_invert,
+            link: c.link,
+            link_follows: c.link_follows,
+            sound_split: c.sound_split,
+        ),
+    )
+    c.out_point = source
+}
+
+/// The clips of one link group.
+fn linked(p: Project, link: Text) -> List<Clip> {
+    if link == "" { [] } else { p.clips.filter(c -> c.link == link) }
+}
+
+fn a_free_link(p: Project) -> Text {
+    "{p.id()}-{p.clips.len()}"
+}
+
+/// Moves `c` (and its linked sound with it) to `start`, refusing an overlap.
+action shifted(p: Project, c: Clip, start: Float) -> Bool {
+    let to = snap_time(p, start.max(0.0))
+    let delta = to - c.start
+    let moving = if c.link == "" { [c] } else { linked(p, c.link) }
+    for one in moving {
+        if overlaps(p, one.track, one.start + delta, clip_end(one) + delta, one.id()) {
+            trouble(p, "There is no room there")
+            return false
+        }
+    }
+    for one in moving {
+        one.start = snap_time(p, (one.start + delta).max(0.0))
+    }
+    true
+}
+
+// ---------------------------------------------------------------- the engine's answers
+action trouble(p: Project, why: Text) {
+    p.trouble = why
+}
+
+/// Asks the device what a file is, adds it as a source and draws its swatch and waveform.
+action absorb(p: Project, file: File) -> Bool {
+    let asked = engine.call("probe", json.encode(ProbeAsk(url: file.url)))
+    match asked {
+        .err(why) => {
+            trouble(p, why)
+            false
+        }
+        .ok(text) => match json.decode<Probed>(text) {
+            .err(why) => {
+                trouble(p, why)
+                false
+            }
+            .ok(probed) => {
+                let length = if probed.kind == "image" { 5.0 } else { probed.duration }
+                let made = p.media.insert(
+                    Media(
+                        name: file.name,
+                        form: form_of(probed.kind),
+                        duration: length,
+                        width: probed.width,
+                        height: probed.height,
+                        fps: probed.fps,
+                        path: file.url,
+                        has_audio: probed.has_audio,
+                        palette: p.media.len(),
+                    ),
+                )
+                if not p.explicit_format and probed.width > 0 and probed.height > 0 {
+                    p.width = probed.width
+                    p.height = probed.height
+                    if probed.fps > 0.0 {
+                        p.fps = probed.fps
+                    }
+                }
+                draw_swatch(made, 200)
+                if made.has_audio or made.form == .audio { hear(made) }
+                true
+            }
+        },
+    }
+}
+
+/// The source's picture as the bin shows it.
+action draw_swatch(m: Media, width: Int) {
+    if m.form == .title {
+        return
+    }
+    let height = (width.to_float() * 9.0 / 16.0).round().max(16)
+    match engine.call(
+        "still",
+        json.encode(
+            StillAsk(project: json.encode(one_source(m)), at: 0.0, width: width, height: height),
+        ),
+    ) {
+        .ok(text) => match json.decode<StillAnswer>(text) {
+            .ok(answer) => {
+                m.still = answer.url
+            }
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
+/// A cut of one source alone, at zero: what a swatch is drawn from.
+fn one_source(m: Media) -> Shot {
+    Shot(
+        name: m.name,
+        fps: 30.0,
+        width: 1280,
+        height: 720,
+        mark_in: -1.0,
+        mark_out: -1.0,
+        media: [json.encode(shot_media(m))],
+        tracks: [
+            json.encode(
+                ShotTrack(
+                    id: "swatch-track",
+                    name: "Swatch",
+                    kind: "video",
+                    index: 1,
+                    muted: false,
+                    solo: false,
+                    locked: false,
+                    gain_db: 0.0,
+                    pan: 0.0,
+                ),
+            ),
+        ],
+        clips: [
+            json.encode(
+                ShotClip(
+                    id: "swatch-clip",
+                    track: "swatch-track",
+                    media: m.id(),
+                    start: 0.0,
+                    in_point: 0.0,
+                    out_point: if m.duration > 0.0 { m.duration } else { 5.0 },
+                    opacity: 1.0,
+                    volume: 1.0,
+                    transition: "",
+                    transition_duration: 0.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                    palette: 0,
+                    speed_rate: 1.0,
+                    speed_reverse: false,
+                    brightness: 0.5,
+                    contrast: 0.5,
+                    saturation: 0.5,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    pos_x: 0.0,
+                    pos_y: 0.0,
+                    rotation: 0.0,
+                    crop_left: 0.0,
+                    crop_right: 0.0,
+                    crop_top: 0.0,
+                    crop_bottom: 0.0,
+                    effects: [],
+                    keys: [],
+                    key_enabled: false,
+                    key_color: [0.0, 0.0, 0.0],
+                    key_tolerance: 0.0,
+                    key_softness: 0.0,
+                    key_spill: 0.0,
+                    mask_shape: "",
+                    mask_x: 0.0,
+                    mask_y: 0.0,
+                    mask_w: 0.6,
+                    mask_h: 0.6,
+                    mask_rotation: 0.0,
+                    mask_feather: 0.12,
+                    mask_invert: false,
+                    link: "",
+                    link_follows: true,
+                    sound_split: false,
+                ),
+            ),
+        ],
+        markers: [],
+    )
+}
+
+/// The source's loudness across the file, as the waveform draws it.
+action hear(m: Media) {
+    match engine.call("waveform", json.encode(WaveAsk(url: m.path, buckets: 96))) {
+        .ok(text) => match json.decode<Peaks>(text) {
+            .ok(answer) => {
+                m.peaks = answer.peaks
+            }
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
+/// The frame the preview shows at `at`, drawn by the engine.
+action draw_still(p: Project, at: Float) {
+    let width = 640
+    let height = (width.to_float() * p.height.to_float() / p.width.to_float().max(1.0))
+        .round()
+        .max(16)
+    match engine.call(
+        "still",
+        json.encode(
+            StillAsk(project: json.encode(shot(p)), at: at.max(0.0), width: width, height: height),
+        ),
+    ) {
+        .ok(text) => match json.decode<StillAnswer>(text) {
+            .ok(answer) => {
+                p.still = answer.url
+                p.still_at = at
+                p.trouble = ""
+            }
+            .err(why) => trouble(p, why),
+        },
+        .err(why) => trouble(p, why),
+    }
+}
+
+fn export_name(p: Project, container: Text) -> Text {
+    let suffix = if container == "webm" {
+        "webm"
+    } else if container == "mov" { "mov" } else { "mp4" }
+    "{p.name}.{suffix}"
+}
+
+/// Starts a render: `preview` keeps the cut small for the window to play, `export` writes the
+/// file a person saves.
+action begin_render(p: Project, render_kind: Text, resolution: Text, container: Text, fps: Int) {
+    if p.job != "" {
+        return
+    }
+    match engine.start(
+        "render",
+        json.encode(
+            RenderAsk(
+                project: json.encode(shot(p)),
+                resolution: resolution,
+                container: container,
+                fps: fps,
+                name: export_name(p, container),
+            ),
+        ),
+    ) {
+        .ok(text) => match json.decode<JobAnswer>(text) {
+            .ok(answer) => {
+                p.job = answer.job
+                p.job_kind = render_kind
+                p.job_done = 0
+                p.job_total = 0
+                p.format = container
+                p.trouble = ""
+            }
+            .err(why) => trouble(p, why),
+        },
+        .err(why) => trouble(p, why),
+    }
+}
+
+/// Starts a cut: its shape and its first two tracks.
+// ---------------------------------------------------------------- actions
+primary action new_project(e: Editor) -> Project (icon: .plus) {
+    let p = e.projects.insert(Project(name: std.say("Untitled project")))
+    p.tracks.insert(Track(name: "V1", form: .video, index: 1))
+    p.tracks.insert(Track(name: "A1", form: .audio, index: 1))
+    e.open = .some(p)
+    p
+}
+
+/// Opens the cut the window shows.
+action open_project(e: Editor, p: Project) {
+    e.open = .some(p)
+}
+
+/// The session this window plays through: the one it has, or one made now.
+action session(e: Editor) -> playback.Playback {
+    if let held = e.playing {
+        return held
+    }
+    let made = e.sessions.insert(playback.Playback())
+    e.playing = .some(made)
+    made
+}
+
+action rename_project(p: Project, name: Text) {
+    p.name = name
+}
+
+action forget_project(e: Editor, p: Project) (icon: .trash_2, label: "Delete project") {
+    if e.open == .some(p) {
+        e.open = .none
+    }
+    e.projects.remove(p)
+}
+
+/// Adds every file a person chose or dropped as a source.
+action import_files(p: Project, files: List<File>) {
+    for file in files {
+        absorb(p, file)
+    }
+}
+
+action import_one(p: Project, file: File) {
+    absorb(p, file)
+}
+
+/// Opens a video, a sound or a picture in a cut of its own: what Files and the person's own
+/// system offer the editor for.
+action open_media(e: Editor, file: File) -> Project (
+    icon: .file_plus,
+    label: "Open in the Video Editor",
+    opens: [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-matroska",
+    "video/webm",
+    "audio/mpeg",
+    "audio/wav",
+    "image/png",
+    "image/jpeg",
+    .mp4,
+    .m4v,
+    .mov,
+    .mkv,
+    .webm,
+    .mp3,
+    .wav,
+    .png,
+    .jpg,
+    .jpeg,
+],
+) {
+    let p = e.projects.insert(Project(name: file.name))
+    p.tracks.insert(Track(name: "V1", form: .video, index: 1))
+    p.tracks.insert(Track(name: "A1", form: .audio, index: 1))
+    if absorb(p, file) {
+        if let m = p.media.find(x -> x.path == file.url) {
+            let track = if m.form == .audio {
+                p.tracks.find(t -> t.form == .audio)
+            } else { p.tracks.find(t -> t.form == .video) }
+            if let track = track { place(p, m, track, 0.0) }
+        }
+    }
+    draw_still(p, 0.0)
+    e.open = .some(p)
+    p
+}
+
+/// Opens a project file a person chose: one undoable edit that makes the cut it holds.
+action open_project_file(e: Editor, file: File) -> Project (
+    icon: .file_plus,
+    label: "Open a project",
+    opens: [.tlvp],
+) {
+    let text = match file.text() {
+        .ok(text) => text,
+        .err(why) => {
+            let p = e.projects.insert(Project(name: file.name))
+            trouble(p, why)
+            return p
+        }
+    }
+    let cut = match json.decode<Saved>(text) {
+        .ok(cut) => cut,
+        .err(why) => {
+            let p = e.projects.insert(Project(name: file.name))
+            trouble(p, why)
+            return p
+        }
+    }
+    let p = e.projects.insert(
+        Project(
+            name: if cut.name == "" { file.name } else { cut.name },
+            fps: cut.fps,
+            width: cut.width,
+            height: cut.height,
+            mark_in: cut.mark_in,
+            mark_out: cut.mark_out,
+        ),
+    )
+    for m in cut.media {
+        p.media.insert(
+            Media(
+                name: m.name,
+                form: form_of(m.form),
+                duration: m.duration,
+                width: m.width,
+                height: m.height,
+                fps: m.fps,
+                palette: m.palette,
+                path: m.path,
+                has_audio: m.has_audio,
+                words: m.words,
+                size: m.size,
+                red: m.red,
+                green: m.green,
+                blue: m.blue,
+                alpha: m.alpha,
+                align: align_of(m.align),
+                bold: m.bold,
+                italic: m.italic,
+                backdrop: m.backdrop,
+            ),
+        )
+    }
+    for t in cut.tracks {
+        p.tracks.insert(
+            Track(
+                name: t.name,
+                form: form_of(t.form),
+                index: t.index,
+                muted: t.muted,
+                solo: t.solo,
+                locked: t.locked,
+                gain_db: t.gain_db,
+                pan: t.pan,
+            ),
+        )
+    }
+    for c in cut.clips {
+        let track = p.tracks.at(c.track)
+        let media = p.media.at(c.media)
+        if let track = track {
+            if let media = media {
+                let opened = p.clips.insert(
+                    Clip(
+                        name: c.name,
+                        track: track,
+                        media: media,
+                        start: c.start,
+                        in_point: c.in_point,
+                        out_point: c.out_point,
+                        opacity: c.opacity,
+                        volume: c.volume,
+                        transition: c.transition,
+                        transition_duration: c.transition_duration,
+                        fade_in: c.fade_in,
+                        fade_out: c.fade_out,
+                        speed_rate: c.speed_rate,
+                        reverse: c.reverse,
+                        brightness: c.brightness,
+                        contrast: c.contrast,
+                        saturation: c.saturation,
+                        scale_x: c.scale_x,
+                        scale_y: c.scale_y,
+                        pos_x: c.pos_x,
+                        pos_y: c.pos_y,
+                        rotation: c.rotation,
+                        crop_left: c.crop_left,
+                        crop_right: c.crop_right,
+                        crop_top: c.crop_top,
+                        crop_bottom: c.crop_bottom,
+                        key_enabled: c.key_enabled,
+                        key_tolerance: c.key_tolerance,
+                        key_softness: c.key_softness,
+                        key_spill: c.key_spill,
+                        mask_shape: c.mask_shape,
+                        mask_x: c.mask_x,
+                        mask_y: c.mask_y,
+                        mask_w: c.mask_w,
+                        mask_h: c.mask_h,
+                        mask_rotation: c.mask_rotation,
+                        mask_feather: c.mask_feather,
+                        mask_invert: c.mask_invert,
+                        link: c.link,
+                    ),
+                )
+                for text in c.keys {
+                    match json.decode<ShotKey>(text) {
+                        .ok(key) => opened.keys.insert(
+                            Key(param: key.param, t: key.t, v: key.v, interp: key.interp),
+                        ),
+                        .err(_) => {}
+                    }
+                }
+            }
+        }
+    }
+    for k in cut.markers {
+        p.markers.insert(Marker(name: k.name, t: k.t, palette: k.palette, note: k.note))
+    }
+    draw_still(p, 0.0)
+    e.open = .some(p)
+    p
+}
+
+/// The cut as a file a person keeps: its sources and their places, where they stand on their own
+/// device.
+action save_project(p: Project) -> File (icon: .download, label: "Save the project") {
+    File.of_text("{p.name}.tlvp", json.encode(saved(p)))
+}
+
+/// The cut as a film: what an export made.
+action export_file(p: Project) -> File (icon: .download, label: "Save the film") {
+    File.at(export_name(p, p.format), p.exported)
+}
+
+/// Places `m` on `track` at `at`, in the first place it fits.
+action place(p: Project, m: Media, track: Track, at: Float) -> Clip {
+    let length = if m.duration > 0.0 { m.duration } else { 5.0 }
+    let start = free_at(p, track, at.max(0.0), length)
+    p.clips.insert(
+        Clip(
+            name: m.name,
+            track: track,
+            media: m,
+            start: snap_time(p, start),
+            in_point: 0.0,
+            out_point: m.duration,
+            palette: m.palette,
+        ),
+    )
+}
+
+/// Places the bin's source on the first track of its form, at `at`.
+action place_media(p: Project, m: Media, at: Float) -> Option<Clip> {
+    let track = if m.form == .audio {
+        p.tracks.find(t -> t.form == .audio)
+    } else { p.tracks.find(t -> t.form == .video) }
+    if let held = track {
+        if held.locked {
+            trouble(p, "The track is locked")
+            return .none
+        }
+        return .some(place(p, m, held, at))
+    }
+    let made = add_track(p, if m.form == .audio { .audio } else { .video })
+    return .some(place(p, m, made, at))
+}
+
+/// What a drag of the timeline committed: a clip moved or trimmed.
+action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float) {
+    let c = match clip_named(p, clip) {
+        .some(c) => c,
+        .none => {
+            return
+        }
+    }
+    if c.track.locked {
+        trouble(p, "The track is locked")
+        return
+    }
+    if grab == "move" {
+        shifted(p, c, c.start + at - from)
+    } else if grab == "head" {
+        let delta = at - from
+        let source = (c.in_point + delta * rate(c)).clamp(0.0, c.out_point - smallest() * rate(c))
+        let gained = (source - c.in_point) / rate(c)
+        if not overlaps(p, c.track, c.start + gained, clip_end(c), c.id()) {
+            c.in_point = source
+            c.start = snap_time(p, c.start + gained)
+        }
+    } else if grab == "tail" {
+        let delta = at - from
+        let source = (c.out_point + delta * rate(c))
+            .clamp(c.in_point + smallest() * rate(c), c.media.duration)
+        let gained = (source - c.out_point) / rate(c)
+        if not overlaps(p, c.track, c.start, clip_end(c) + gained, c.id()) {
+            c.out_point = source
+        }
+    }
+}
+
+/// Cuts the clip at the playhead in two.
+action split_clip(p: Project, c: Clip, at: Float) {
+    if c.track.locked {
+        trouble(p, "The track is locked")
+        return
+    }
+    split_at(p, c, snap_time(p, at))
+}
+
+/// Cuts every clip the playhead stands on.
+action cut_at(p: Project, at: Float) {
+    for c in p.clips.filter(x -> x.start < at and clip_end(x) > at) {
+        if not c.track.locked { split_at(p, c, snap_time(p, at)) }
+    }
+}
+
+/// Deletes a clip, and the sound linked to it with it.
+action remove_clip(p: Project, c: Clip) (icon: .trash_2, label: "Delete the clip") {
+    if c.track.locked {
+        trouble(p, "The track is locked")
+        return
+    }
+    let group = c.link
+    p.clips.remove(c)
+    if group != "" {
+        for other in p.clips.filter(x -> x.link == group) {
+            p.clips.remove(other)
+        }
+    }
+}
+
+/// Deletes a clip and closes the gap it leaves behind it.
+action ripple_delete(p: Project, c: Clip) (icon: .scissors, label: "Close the gap") {
+    if c.track.locked {
+        trouble(p, "The track is locked")
+        return
+    }
+    let gap = shown(c)
+    let after = p.clips
+        .filter(x -> x.track == c.track and x.start >= clip_end(c))
+        .sort_by(x -> x.start)
+    p.clips.remove(c)
+    for x in after {
+        x.start = (x.start - gap).max(0.0)
+    }
+}
+
+/// Slips the clip along the timeline by frames.
+action nudge(p: Project, c: Clip, frames: Int) {
+    shifted(p, c, c.start + frames.to_float() / p.fps)
+}
+
+/// Sets the rate a clip plays at: 2 twice as fast and half as long, 0.5 in slow motion.
+action set_speed(c: Clip, speed: Float) {
+    c.speed_rate = speed.clamp(0.05, 20.0)
+}
+
+action normal_speed(c: Clip) {
+    c.speed_rate = 1.0
+    c.reverse = false
+}
+
+/// Sets the incoming transition and how long it runs.
+action set_transition(c: Clip, transition: Text, seconds: Float) {
+    c.transition = transition
+    c.transition_duration = seconds
+}
+
+/// What a clip's animatable field holds as its constant value.
+fn param_value(c: Clip, param: Text) -> Float {
+    if param == "volume" {
+        c.volume
+    } else if param == "brightness" {
+        c.brightness
+    } else if param == "contrast" {
+        c.contrast
+    } else if param == "saturation" {
+        c.saturation
+    } else if param == "scale_x" {
+        c.scale_x
+    } else if param == "pos_x" {
+        c.pos_x
+    } else if param == "pos_y" {
+        c.pos_y
+    } else if param == "rotation" {
+        c.rotation
+    } else if param == "key_tolerance" {
+        c.key_tolerance
+    } else if param == "key_softness" {
+        c.key_softness
+    } else if param == "key_spill" {
+        c.key_spill
+    } else if param == "mask_w" {
+        c.mask_w
+    } else if param == "mask_h" { c.mask_h } else { c.opacity }
+}
+
+/// Sets a key of `param` at `at` (timeline seconds), at the value the field holds now: the value
+/// a curve changes from, as the inspection shows it.
+action key_at(c: Clip, at: Float, param: Text, interp: Text) {
+    let t = (at - c.start).max(0.0)
+    let v = param_value(c, param)
+    let near = c.keys.find(x -> x.param == param and (x.t - t).abs() <= 0.02)
+    if let held = near {
+        held.v = v
+        held.interp = interp
+        return
+    }
+    c.keys.insert(Key(param: param, t: t, v: v, interp: interp))
+}
+
+/// Removes a key.
+action unkey(c: Clip, k: Key) {
+    c.keys.remove(k)
+}
+
+/// How a key's curve leaves it.
+action set_interp(k: Key, interp: Text) {
+    k.interp = interp
+}
+
+fn interp_words(name: Text) -> Text {
+    if name == "hold" {
+        std.say("Hold")
+    } else if name == "ease" { std.say("Ease") } else { std.say("Linear") }
+}
+
+/// Takes the colour of the cut's frame where the person pointed, as the key that removes it.
+action sample_key(p: Project, c: Clip, at: Float, x: Float, y: Float) {
+    match engine.call(
+        "sample",
+        json.encode(
+            SampleAsk(
+                project: json.encode(shot(p)),
+                at: snap_time(p, at),
+                x: x.clamp(0.0, 1.0),
+                y: y.clamp(0.0, 1.0),
+            ),
+        ),
+    ) {
+        .ok(text) => match json.decode<SampleAnswer>(text) {
+            .ok(colour) => {
+                c.key_red = colour.red
+                c.key_green = colour.green
+                c.key_blue = colour.blue
+                c.key_enabled = true
+                p.trouble = ""
+            }
+            .err(why) => trouble(p, why),
+        },
+        .err(why) => trouble(p, why),
+    }
+}
+
+/// Sets the colour the key removes to one of the usual screens.
+action key_colour(c: Clip, red: Float, green: Float, blue: Float) {
+    c.key_red = red
+    c.key_green = green
+    c.key_blue = blue
+    c.key_enabled = true
+}
+
+/// One frame of a source at `at` seconds in it, kept as a filmstrip picture.
+action thumb_frame(c: Clip, at: Float, width: Int, height: Int) -> Text {
+    match engine.call(
+        "thumb",
+        json.encode(ThumbAsk(url: c.media.path, at: at, width: width, height: height)),
+    ) {
+        .ok(text) => match json.decode<StillAnswer>(text) {
+            .ok(answer) => answer.url,
+            .err(_) => "",
+        },
+        .err(_) => "",
+    }
+}
+
+/// Draws eight frames of the clip across its own part, kept until a trim asks for them again.
+action filmstrip(p: Project, c: Clip) {
+    let span = "{c.in_point}-{c.out_point}-{c.speed_rate}"
+    if c.strips_key == span and c.strips.len() == 8 {
+        return
+    }
+    if c.media.path == "" {
+        return
+    }
+    let width = 160
+    let height = (width.to_float() * p.height.to_float() / p.width.to_float().max(1.0))
+        .round()
+        .max(16)
+    let inside = c.out_point - c.in_point
+    c.strips = [
+        thumb_frame(c, c.in_point, width, height),
+        thumb_frame(c, c.in_point + inside * 0.125, width, height),
+        thumb_frame(c, c.in_point + inside * 0.25, width, height),
+        thumb_frame(c, c.in_point + inside * 0.375, width, height),
+        thumb_frame(c, c.in_point + inside * 0.5, width, height),
+        thumb_frame(c, c.in_point + inside * 0.625, width, height),
+        thumb_frame(c, c.in_point + inside * 0.75, width, height),
+        thumb_frame(c, c.in_point + inside * 0.875, width, height),
+    ]
+    c.strips_key = span
+}
+
+/// Writes what a mark says.
+action note_marker(k: Marker, note: Text) {
+    k.note = note
+}
+
+/// Sets where a title's lines sit in its box.
+action set_align(m: Media, align: Align) {
+    m.align = align
+}
+
+/// Adds a title to the bin and places it at `at`.
+action add_title(p: Project, words: Text, at: Float) -> Media (icon: .pencil) {
+    let m = p.media.insert(
+        Media(
+            name: if words == "" { std.say("Title") } else { words },
+            form: .title,
+            duration: 5.0,
+            words: words,
+            palette: p.media.len(),
+        ),
+    )
+    let track = p.tracks.find(t -> t.form == .video)
+    if let track = track { place(p, m, track, at) }
+    m
+}
+
+/// Adds a marker at `at`.
+action add_marker(p: Project, at: Float) -> Marker (icon: .flag) {
+    let n = p.markers.len() + 1
+    p.markers.insert(Marker(name: std.say("Marker {n}"), t: at))
+}
+
+action remove_marker(p: Project, k: Marker) {
+    p.markers.remove(k)
+}
+
+action mark_in(p: Project, at: Float) (icon: .arrow_right, label: "Mark in") {
+    p.mark_in = at.max(0.0)
+    if p.mark_out >= 0.0 and p.mark_out <= p.mark_in {
+        p.mark_out = -1.0
+    }
+}
+
+action mark_out(p: Project, at: Float) (icon: .arrow_left, label: "Mark out") {
+    p.mark_out = at.max(0.0)
+    if p.mark_in >= 0.0 and p.mark_in >= p.mark_out {
+        p.mark_in = -1.0
+    }
+}
+
+action clear_marks(p: Project) {
+    p.mark_in = -1.0
+    p.mark_out = -1.0
+}
+
+action set_frame_rate(p: Project, fps: Float) {
+    p.fps = fps.clamp(1.0, 240.0)
+    p.explicit_format = true
+}
+
+action set_frame_size(p: Project, width: Int, height: Int) {
+    p.width = width.clamp(16, 8192)
+    p.height = height.clamp(16, 8192)
+    p.explicit_format = true
+}
+
+/// Takes its shape from a source: what "Use its format" does.
+action adopt_format(p: Project, m: Media) {
+    if m.width > 0 and m.height > 0 {
+        p.width = m.width
+        p.height = m.height
+        if m.fps > 0.0 {
+            p.fps = m.fps
+        }
+        p.explicit_format = true
+    }
+}
+
+action add_track(p: Project, form: Form) -> Track (icon: .plus) {
+    let index = p.tracks.filter(t -> t.form == form).len() + 1
+    p.tracks.insert(
+        Track(name: if form == .audio { "A{index}" } else { "V{index}" }, form: form, index: index),
+    )
+}
+
+action delete_track(p: Project, t: Track) (icon: .trash_2, label: "Delete the track") {
+    for c in p.clips.filter(x -> x.track == t) {
+        p.clips.remove(c)
+    }
+    p.tracks.remove(t)
+}
+
+/// Makes two clips one shot's picture and sound: they move and cut together.
+action link_clips(p: Project, a: Clip, b: Clip) {
+    let link = a_free_link(p)
+    a.link = link
+    b.link = link
+    a.link_follows = true
+    b.link_follows = true
+}
+
+action unlink_clip(c: Clip) {
+    c.link_follows = false
+}
+
+/// Moves a picture clip's own sound onto an audio clip of its own, linked to it.
+action split_audio(p: Project, c: Clip) {
+    if c.sound_split {
+        return
+    }
+    let track = match p.tracks.find(t -> t.form == .audio) {
+        .some(t) => t,
+        .none => add_track(p, .audio),
+    }
+    let link = if c.link == "" { a_free_link(p) } else { c.link }
+    p.clips.insert(
+        Clip(
+            name: "{c.name} (sound)",
+            track: track,
+            media: c.media,
+            start: c.start,
+            in_point: c.in_point,
+            out_point: c.out_point,
+            volume: c.volume,
+            speed_rate: c.speed_rate,
+            reverse: c.reverse,
+            link: link,
+            link_follows: true,
+        ),
+    )
+    c.link = link
+    c.link_follows = true
+    c.sound_split = true
+}
+
+/// Puts two clips side by side: each half the frame, one left and one right.
+action place_side_by_side(p: Project, left: Clip, right: Clip) {
+    left.scale_x = 0.5
+    left.scale_y = 1.0
+    left.pos_x = -0.25
+    left.pos_y = 0.0
+    right.scale_x = 0.5
+    right.scale_y = 1.0
+    right.pos_x = 0.25
+    right.pos_y = 0.0
+}
+
+action unplace_side_by_side(c: Clip) {
+    c.scale_x = 1.0
+    c.scale_y = 1.0
+    c.pos_x = 0.0
+    c.pos_y = 0.0
+}
+
+action add_effect(c: Clip, form: Text) {
+    c.effects.insert(Effect(form: form, amount: 1.0))
+}
+
+action remove_effect(c: Clip, e: Effect) {
+    c.effects.remove(e)
+}
+
+/// Draws the frame the preview shows at `at`.
+action preview(p: Project, at: Float) {
+    draw_still(p, at)
+}
+
+/// Draws the frame at the ruler's place `x`, as a drag along it asks for.
+action seek_at(p: Project, x: Float, span: Float, scroll: Float) {
+    draw_still(p, snap_time(p, time_at(x, span, scroll)))
+}
+
+/// Renders the cut small, so the window plays it.
+action preview_cut(p: Project) {
+    begin_render(p, "preview", "720", "mp4", 30)
+}
+
+/// Renders the cut to a file.
+action export_cut(p: Project, resolution: Text, container: Text, fps: Int) {
+    begin_render(p, "export", resolution, container, fps)
+}
+
+/// Asks how far the running render has got.
+action poll_render(p: Project) {
+    if p.job == "" {
+        return
+    }
+    match engine.status(p.job) {
+        .err(why) => trouble(p, why),
+        .ok(text) => match json.decode<JobState>(text) {
+            .err(why) => trouble(p, why),
+            .ok(state) => {
+                p.job_done = state.done
+                p.job_total = state.total
+                if state.state == "done" {
+                    if p.job_kind == "preview" {
+                        p.proxy = state.url
+                        p.format = "mp4"
+                    } else {
+                        p.exported = state.url
+                    }
+                    p.job = ""
+                    p.trouble = ""
+                    draw_still(p, render_from(p))
+                } else if state.state == "failed" {
+                    trouble(p, state.error)
+                    p.job = ""
+                } else if state.state == "cancelled" {
+                    p.job = ""
+                }
+            }
+        },
+    }
+}
+
+action cancel_render(p: Project) {
+    if p.job != "" {
+        engine.cancel(p.job)
+        p.job = ""
+    }
+}
+
+/// A render runs while the window is open, so its progress is asked for once a second.
+trigger watch_render(p: Project) every 1s: poll_render(p)
+
+/// A clock a person reads: `1:04.5`.
+// ---------------------------------------------------------------- the timeline's drawing
+fn clock(seconds: Float) -> Text {
+    let whole = seconds.max(0.0).floor()
+    let minutes = whole / 60
+    let rest = whole - minutes * 60
+    let tenths = ((seconds.max(0.0) - whole.to_float()) * 10.0).floor().min(9)
+    "{minutes}:{padded(rest)}.{tenths}"
+}
+
+fn padded(n: Int) -> Text {
+    if n < 10 { "0{n}" } else { "{n}" }
+}
+
+fn time_at(x: Float, span: Float, scroll: Float) -> Float {
+    (scroll + x * span).max(0.0)
+}
+
+fn x_of(t: Float, span: Float, scroll: Float) -> Float {
+    (t - scroll) / span
+}
+
+/// A row's top edge as a fraction of the tracks' box, and how tall its body is.
+fn row_top(row: Int, rows: Int) -> Float {
+    if rows <= 0 {
+        return 0.0
+    }
+    row.to_float() / rows.to_float() + 0.06 / rows.to_float()
+}
+
+fn row_span(rows: Int) -> Float {
+    if rows <= 0 { 1.0 } else { 0.86 / rows.to_float() }
+}
+
+/// Which row a press at `y` landed on: -1 past the top, the last row past the bottom.
+fn row_at(y: Float, rows: Int) -> Int {
+    if rows <= 0 {
+        return -1
+    }
+    let row = (y * rows.to_float()).floor()
+    if row < 0 { -1 } else if row >= rows { rows - 1 } else { row }
+}
+
+fn track_at(p: Project, row: Int) -> Option<Track> {
+    ordered_tracks(p).at(row)
+}
+
+fn palette_ink(palette: Int) -> ui.Ink {
+    if palette % 6 == 0 {
+        .accent
+    } else if palette % 6 == 1 {
+        .info
+    } else if palette % 6 == 2 {
+        .success
+    } else if palette % 6 == 3 { .warning } else if palette % 6 == 4 { .danger } else { .ink }
+}
+
+/// What the pointer at (x, y) grabs on the tracks.
+fn grab_words(p: Project, x: Float, y: Float, rows: Int, span: Float, scroll: Float) -> Text {
+    let row = row_at(y, rows)
+    if row < 0 {
+        return ""
+    }
+    match track_at(p, row) {
+        .none => "",
+        .some(track) => {
+            let grab = grab_at(p, track, time_at(x, span, scroll), span)
+            if grab == .head {
+                "head"
+            } else if grab == .tail { "tail" } else if grab == .move { "move" } else { "" }
+        }
+    }
+}
+
+fn grab_clip(p: Project, x: Float, y: Float, rows: Int, span: Float, scroll: Float) -> Text {
+    let row = row_at(y, rows)
+    if row < 0 {
+        return ""
+    }
+    match track_at(p, row) {
+        .none => "",
+        .some(track) => grabbed(p, track, time_at(x, span, scroll), span),
+    }
+}
+
+/// The ruler's shapes: a tick an interval with its time written over it, a mark wherever a person
+/// made one, and the playhead.
+fn ruler(p: Project, span: Float, scroll: Float, playhead: Float) -> List<ui.Shape> {
+    let step = tick(span)
+    let ticks = ticks_between(step, scroll, scroll + span)
+    let lines = ticks.map(
+        t -> ui.Shape.line(
+            x1: x_of(t, span, scroll),
+            y1: 0.55,
+            x2: x_of(t, span, scroll),
+            y2: 1.0,
+            stroke: .track,
+            weight: .hairline,
+        ),
+    )
+    let labels = ticks.map(
+        t -> ui.Shape.text(
+            x: (x_of(t, span, scroll) + 0.004).clamp(0.0, 0.95),
+            y: 0.42,
+            text: clock(t),
+            role: .caption,
+            ink: .muted,
+            anchor: .start,
+        ),
+    )
+    let marks = p.markers
+        .filter(k -> k.t >= scroll and k.t <= scroll + span)
+        .map(
+            k -> ui.Shape.line(
+                x1: x_of(k.t, span, scroll),
+                y1: 0.1,
+                x2: x_of(k.t, span, scroll),
+                y2: 1.0,
+                stroke: palette_ink(k.palette),
+                weight: .strong,
+            ),
+        )
+    let head = [
+        ui.Shape.line(
+            x1: x_of(playhead, span, scroll),
+            y1: 0.0,
+            x2: x_of(playhead, span, scroll),
+            y2: 1.0,
+            stroke: .danger,
+            weight: .strong,
+        ),
+        ui.Shape.ellipse(
+            cx: x_of(playhead, span, scroll),
+            cy: 0.16,
+            rx: 0.004,
+            ry: 0.22,
+            fill: .some(.danger),
+        ),
+    ]
+    [lines, labels, marks, head].flat_map(x -> x)
+}
+
+/// The interval the ruler's ticks stand at, so its labels stay legible at any zoom.
+fn tick(span: Float) -> Float {
+    if span <= 6.0 {
+        0.5
+    } else if span <= 15.0 {
+        1.0
+    } else if span <= 40.0 {
+        5.0
+    } else if span <= 120.0 { 10.0 } else if span <= 400.0 { 30.0 } else { 60.0 }
+}
+
+/// The offsets the ticks count in, from the first one the window shows.
+fn offsets() -> List<Float> {
+    [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+    ]
+}
+
+fn ticks_between(step: Float, from: Float, to: Float) -> List<Float> {
+    let first = (from / step).floor().to_float() * step
+    offsets().map(i -> first + i * step).filter(t -> t >= 0.0 and t <= to)
+}
+
+/// The clip the shape at `i` belongs to, as the drawing the window shows names it.
+fn owner_at(
+    p: Project,
+    i: Int,
+    span: Float,
+    scroll: Float,
+    playhead: Float,
+    selected: Text,
+    drag_kind: Text,
+    drag_clip: Text,
+    drag_value: Float,
+) -> Text {
+    timeline(p, span, scroll, playhead, selected, drag_kind, drag_clip, drag_value).owners.at(i)
+        ?? ""
+}
+
+/// The tracks' shapes and, beside them, which clip each shows: what a press lands on.
+fn timeline(
+    p: Project,
+    span: Float,
+    scroll: Float,
+    playhead: Float,
+    selected: Text,
+    drag_kind: Text,
+    drag_clip: Text,
+    drag_value: Float,
+) -> Drawn {
+    let tracks = ordered_tracks(p)
+    let rows = tracks.len()
+    let background = Drawn(
+        shapes: [ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.track))],
+        owners: [""],
+    )
+    let bands = tracks.map(
+        (t, i) -> row_drawn(
+            p,
+            t,
+            i,
+            rows,
+            span,
+            scroll,
+            selected,
+            drag_kind,
+            drag_clip,
+            drag_value,
+        ),
+    )
+    let marks = p.markers
+        .filter(k -> k.t >= scroll and k.t <= scroll + span)
+        .map(
+            k -> Drawn(
+                shapes: [
+                    ui.Shape.line(
+                        x1: x_of(k.t, span, scroll),
+                        y1: 0.0,
+                        x2: x_of(k.t, span, scroll),
+                        y2: 1.0,
+                        stroke: palette_ink(k.palette),
+                        weight: .hairline,
+                    ),
+                ],
+                owners: [""],
+            ),
+        )
+    let head = Drawn(
+        shapes: [
+            ui.Shape.line(
+                x1: x_of(playhead, span, scroll),
+                y1: 0.0,
+                x2: x_of(playhead, span, scroll),
+                y2: 1.0,
+                stroke: .danger,
+                weight: .strong,
+            ),
+        ],
+        owners: [""],
+    )
+    let parts: List<Drawn> = [[background], bands, marks, [head]].flat_map(x -> x)
+    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
+}
+
+fn row_drawn(
+    p: Project,
+    t: Track,
+    row: Int,
+    rows: Int,
+    span: Float,
+    scroll: Float,
+    selected: Text,
+    drag_kind: Text,
+    drag_clip: Text,
+    drag_value: Float,
+) -> Drawn {
+    let top = row_top(row, rows)
+    let tall = row_span(rows)
+    let label = Drawn(
+        shapes: [
+            ui.Shape.text(
+                x: 0.004,
+                y: top + tall * 0.4,
+                text: "{t.name}",
+                role: .caption,
+                ink: .muted,
+                anchor: .start,
+            ),
+        ],
+        owners: [""],
+    )
+    let line = Drawn(
+        shapes: [
+            ui.Shape.line(
+                x1: 0.0,
+                y1: top + tall,
+                x2: 1.0,
+                y2: top + tall,
+                stroke: .muted,
+                weight: .hairline,
+            ),
+        ],
+        owners: [""],
+    )
+    let clips = p.clips
+        .filter(x -> x.track == t)
+        .sort_by(x -> x.start)
+        .map(
+            c -> clip_drawn(c, top, tall, span, scroll, selected, drag_kind, drag_clip, drag_value),
+        )
+    let parts: List<Drawn> = [[label, line], clips].flat_map(x -> x)
+    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
+}
+
+fn clip_drawn(
+    c: Clip,
+    top: Float,
+    tall: Float,
+    span: Float,
+    scroll: Float,
+    selected: Text,
+    drag_kind: Text,
+    drag_clip: Text,
+    drag_value: Float,
+) -> Drawn {
+    let start = if drag_clip == c.id() and drag_kind == "move" { drag_value } else { c.start }
+    let end = start + shown(c)
+    let x = x_of(start, span, scroll)
+    let w = (x_of(end, span, scroll) - x).max(0.001)
+    let chosen = c.id() == selected
+    let ink: ui.Ink = if chosen { .accent } else { palette_ink(c.palette) }
+    let body = Drawn(
+        shapes: [
+            ui.Shape.rect(
+                x: x,
+                y: top,
+                w: w,
+                h: tall,
+                round: 0.05,
+                fill: .some(if c.media.form == .audio { .info } else { .accent }),
+                stroke: .some(ink),
+                weight: if chosen { .strong } else { .hairline },
+            ),
+        ],
+        owners: [c.id()],
+    )
+    let label = Drawn(
+        shapes: [
+            ui.Shape.text(
+                x: x + 0.004,
+                y: top + tall * 0.22,
+                text: c.name,
+                role: .caption,
+                ink: .ink,
+                anchor: .start,
+            ),
+        ],
+        owners: [c.id()],
+    )
+    let waves = if c.media.form == .audio {
+        Drawn(shapes: waveform(c, start, end, top, tall, span, scroll), owners: [])
+    } else { Drawn(shapes: [], owners: []) }
+    let consumed = if waves.shapes.is_empty() {
+        Drawn(shapes: [], owners: [])
+    } else {
+        Drawn(shapes: waves.shapes, owners: waves.shapes.map(x -> c.id()))
+    }
+    let transition = if c.transition == "" {
+        Drawn(shapes: [], owners: [])
+    } else {
+        Drawn(
+            shapes: [
+                ui.Shape.line(
+                    x1: x,
+                    y1: top,
+                    x2: x,
+                    y2: top + tall,
+                    stroke: .warning,
+                    weight: .strong,
+                ),
+            ],
+            owners: [c.id()],
+        )
+    }
+    let keys = Drawn(
+        shapes: c.keys.map(
+            k -> ui.Shape.ellipse(
+                cx: x_of(start + k.t, span, scroll),
+                cy: top + tall * 0.9,
+                rx: 0.004,
+                ry: 0.12,
+                fill: .some(.warning),
+            ),
+        ),
+        owners: c.keys.map(x -> c.id()),
+    )
+    let parts: List<Drawn> = [[body, label], [consumed], [transition], [keys]].flat_map(x -> x)
+    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
+}
+
+/// One bucket of a waveform as the two points a bar spans, x and y in turn.
+fn wave_pair(
+    peak: Float,
+    i: Int,
+    count: Int,
+    start: Float,
+    end: Float,
+    top: Float,
+    tall: Float,
+    span: Float,
+    scroll: Float,
+) -> List<Float> {
+    let x = x_of(start + (end - start) * i.to_float() / count.to_float(), span, scroll)
+    let mid = top + tall * 0.5
+    [x, mid - peak * tall * 0.4, x, mid + peak * tall * 0.4]
+}
+
+/// A clip's loudness drawn in its body: one bar a bucket the source gave.
+fn waveform(
+    c: Clip,
+    start: Float,
+    end: Float,
+    top: Float,
+    tall: Float,
+    span: Float,
+    scroll: Float,
+) -> List<ui.Shape> {
+    let peaks = c.media.peaks
+    if peaks.is_empty() {
+        return [
+            ui.Shape.line(
+                x1: x_of(start, span, scroll),
+                y1: top + tall * 0.5,
+                x2: x_of(end, span, scroll),
+                y2: top + tall * 0.5,
+                stroke: .muted,
+                weight: .hairline,
+            ),
+        ]
+    }
+    let count = peaks.len()
+    let points = peaks
+        .map((peak, i) -> wave_pair(peak, i, count, start, end, top, tall, span, scroll))
+        .flat_map(x -> x)
+    [ui.Shape.path(points: points, stroke: .some(.ink), weight: .hairline)]
+}
+
+/// The editor: the bin on the left, the preview over the timeline in the middle, and the
+/// inspector on the right.
+// ---------------------------------------------------------------- the window
+view window(e: Editor) {
+    state playhead: Float = 0.0
+    state span: Float = 20.0
+    state scroll: Float = 0.0
+    state selected: Text = ""
+    state picked_media: Text = ""
+    state drag_kind: Text = ""
+    state drag_clip: Text = ""
+    state drag_origin: Float = 0.0
+    state drag_value: Float = 0.0
+    state tab: Text = "clip"
+    state resolution: Text = "1080"
+    state container: Text = "mp4"
+    state rate: Text = "30"
+    state playing: Bool = false
+    let p = shown_project(e)
+    if let p = p {
+        let rows = track_count(p)
+        let height = 46.0 * rows.to_float().max(1.0) + 6.0
+        let drawn = timeline(p, span, scroll, playhead, selected, drag_kind, drag_clip, drag_value)
+        let clip = clip_named(p, selected)
+        let media = p.media.find(m -> m.id() == picked_media)
+        let pct = percent(p)
+        let title = if p.job != "" {
+            std.say("Rendering the cut… {pct}%")
+        } else if p.exported != "" {
+            std.say("{p.name} — the film is ready")
+        } else { p.name }
+        ui.NavShell(content_kind: .canvas, title: title, sidebar_title: std.say("Video Editor")) {
+            actions: {
+                ui.Button(std.say("New project"), icon: .plus) {
+                    on press: new_project(e).then(set(playhead, 0.0))
+                }
+            }
+            sidebar: {
+                ui.NavList {
+                    ui.NavSection(std.say("Projects")) {
+                        for project in e.projects.sort_by(x -> x.name) {
+                            ui.NavItem(project.id(), project.name, icon: .film, item: project) {
+                                on select: open_project(e, project)
+                                    .then(set(selected, ""))
+                                    .then(set(playhead, 0.0))
+                            }
+                        }
+                    }
+                }
+            }
+            content: {
+                row(gap: .related, fill) {
+                    // The bin: the sources of this cut.
+                    stack(gap: .tight) {
+                        ui.Text(std.say("Sources"), role: .heading)
+                        ui.DropZone(
+                            std.say("Drop video, sound or pictures"),
+                            message: std.say("They become clips of this cut"),
+                            icon: .file_plus,
+                        ) {
+                            on drop(files): import_files(p, files)
+                            on choose: file.choose(
+                                import_one(p),
+                                accept: [
+                                    "video/mp4",
+                                    "video/quicktime",
+                                    "video/x-matroska",
+                                    "video/webm",
+                                    "audio/mpeg",
+                                    "audio/wav",
+                                    "image/png",
+                                    "image/jpeg",
+                                ],
+                            )
+                        }
+                        for m in p.media.sort_by(x -> x.name) {
+                            ui.ListRow(
+                                m.name,
+                                item: m,
+                                icon: if m.form == .audio {
+                                    .music
+                                } else if m.form == .image {
+                                    .image
+                                } else if m.form == .title { .pencil } else { .film },
+                                meta: if m.form == .title {
+                                    std.say("Title")
+                                } else { clock(m.duration) },
+                                selected: m.id() == picked_media,
+                            ) {
+                                on activate: set(picked_media, m.id())
+                            }
+                        }
+                    }
+                    stack(gap: .related, fill) {
+                        // The preview: the frame at the playhead, or the cut playing once it is
+                        // rendered small.
+                        ui.Section(p.name) {
+                            if p.proxy != "" and playing {
+                                ui.VideoPlayer(
+                                    title: p.name,
+                                    source: p.proxy,
+                                    playing: true,
+                                    position: playhead,
+                                    duration: total(p),
+                                ) {
+                                    on set_playing(on_now): set(playing, on_now)
+                                    on seek(place): set(playhead, place)
+                                    on fail(why): trouble(p, why)
+                                }
+                            } else if p.still != "" {
+                                ui.Image(
+                                    p.still,
+                                    alt: p.name,
+                                    fit: .contain,
+                                    min: 10rem,
+                                    max: 26rem,
+                                )
+                            } else {
+                                ui.EmptyState(
+                                    std.say("Nothing to show yet"),
+                                    message: std.say(
+                                        "Add a source and the frame at the playhead stands here",
+                                    ),
+                                    icon: .film,
+                                    inline: true,
+                                )
+                            }
+                            row(gap: .tight, align: .center) {
+                                ui.Button(
+                                    "",
+                                    icon: .skip_back,
+                                    icon_only: true,
+                                    accessible_name: std.say("Back a second"),
+                                ) {
+                                    on press: preview(p, (playhead - 1.0).max(0.0))
+                                        .then(
+                                            set(playhead, (playhead - 1.0).max(0.0)),
+                                        )
+                                }
+                                if playing {
+                                    ui.Button(
+                                        "",
+                                        icon: .pause,
+                                        icon_only: true,
+                                        accessible_name: std.say("Pause"),
+                                    ) {
+                                        on press: set(playing, false)
+                                    }
+                                } else if p.proxy != "" {
+                                    ui.Button(
+                                        "",
+                                        icon: .play,
+                                        icon_only: true,
+                                        accessible_name: std.say("Play the cut"),
+                                    ) {
+                                        on press: session(e).then(set(playing, true))
+                                    }
+                                } else {
+                                    ui.Button(
+                                        "",
+                                        icon: .play,
+                                        icon_only: true,
+                                        accessible_name: std.say("Render and play the cut"),
+                                    ) {
+                                        on press: preview_cut(p)
+                                    }
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .skip_forward,
+                                    icon_only: true,
+                                    accessible_name: std.say("Forward a second"),
+                                ) {
+                                    on press: preview(p, playhead + 1.0)
+                                        .then(
+                                            set(playhead, playhead + 1.0),
+                                        )
+                                }
+                                ui.Text(clock(playhead), role: .caption, numeric: true)
+                                ui.Text(
+                                    "/ {clock(total(p))}",
+                                    role: .caption,
+                                    secondary: true,
+                                    numeric: true,
+                                )
+                                ui.Button(std.say("Mark in"), icon: .arrow_right) {
+                                    on press: mark_in(p, playhead)
+                                }
+                                ui.Button(std.say("Mark out"), icon: .arrow_left) {
+                                    on press: mark_out(p, playhead)
+                                }
+                                if p.mark_in >= 0.0 or p.mark_out >= 0.0 {
+                                    ui.Button(std.say("Clear"), icon: .x) {
+                                        on press: clear_marks(p)
+                                    }
+                                }
+                                ui.Button(std.say("Frame"), icon: .image) {
+                                    on press: preview(p, playhead)
+                                }
+                                if let s = e.playing {
+                                    if let out = s.outputs.find(x -> x.device != "") {
+                                        ui.LevelMeter(
+                                            source: out.device,
+                                            output: true,
+                                            running: playing,
+                                            label: std.say("What the cut plays through"),
+                                        )
+                                    }
+                                }
+                            }
+                            if p.job != "" {
+                                ui.ProgressBar(
+                                    value: .some(
+                                        if p.job_total > 0 {
+                                            p.job_done.to_float() / p.job_total.to_float()
+                                        } else { 0.0 },
+                                    ),
+                                    label: if p.job_kind == "preview" {
+                                        std.say("Rendering a preview")
+                                    } else { std.say("Rendering the film") },
+                                )
+                                ui.Button(std.say("Stop the render"), icon: .x) {
+                                    on press: cancel_render(p)
+                                }
+                            } else if p.proxy != "" and not playing {
+                                ui.Button(std.say("Play the cut"), icon: .play) {
+                                    on press: session(e).then(set(playing, true))
+                                }
+                            }
+                            if p.trouble != "" {
+                                ui.Banner(
+                                    std.say("The engine could not do that"),
+                                    message: p.trouble,
+                                    kind: .error,
+                                )
+                            }
+                        }
+                        // The timeline: the ruler over the tracks, both drawn by the design
+                        // system's drawing.
+                        stack(gap: .tight) {
+                            row(gap: .tight, align: .center) {
+                                ui.Button(
+                                    "",
+                                    icon: .minus,
+                                    icon_only: true,
+                                    accessible_name: std.say("Zoom out"),
+                                ) {
+                                    on press: set(span, (span * 2.0).clamp(1.0, 3600.0))
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .plus,
+                                    icon_only: true,
+                                    accessible_name: std.say("Zoom in"),
+                                ) {
+                                    on press: set(span, (span / 2.0).clamp(1.0, 3600.0))
+                                }
+                                ui.Button(std.say("Fit"), icon: .maximize) {
+                                    on press: set(span, total(p).max(2.0)).then(set(scroll, 0.0))
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .chevron_left,
+                                    icon_only: true,
+                                    accessible_name: std.say("Earlier"),
+                                ) {
+                                    on press: set(scroll, (scroll - span / 2.0).max(0.0))
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .chevron_right,
+                                    icon_only: true,
+                                    accessible_name: std.say("Later"),
+                                ) {
+                                    on press: set(scroll, scroll + span / 2.0)
+                                }
+                                ui.Button(std.say("Split"), icon: .scissors) {
+                                    on press: cut_at(p, playhead).then(set(selected, ""))
+                                }
+                                if let c = clip {
+                                    ui.Button(std.say("Delete"), icon: .trash_2) {
+                                        on press: remove_clip(p, c).then(set(selected, ""))
+                                    }
+                                }
+                                ui.Button(std.say("Marker"), icon: .flag) {
+                                    on press: add_marker(p, playhead)
+                                }
+                                ui.Button(std.say("Add a video track"), icon: .plus) {
+                                    on press: add_track(p, .video)
+                                }
+                                ui.Button(std.say("Add a sound track"), icon: .plus) {
+                                    on press: add_track(p, .audio)
+                                }
+                            }
+                            ui.Drawing(
+                                ruler(p, span, scroll, playhead),
+                                meaning: .decoration,
+                                label: .some(std.say("The ruler")),
+                                height: .some(24.0),
+                                motion: .still,
+                            ) {
+                                on drag_start(x): set(
+                                    playhead,
+                                    snap_time(p, time_at(x, span, scroll)),
+                                )
+                                on drag(x): set(playhead, snap_time(p, time_at(x, span, scroll)))
+                                on drag_end(x): set(
+                                        playhead,
+                                        snap_time(p, time_at(x, span, scroll)),
+                                    )
+                                    .then(
+                                        seek_at(p, x, span, scroll),
+                                    )
+                            }
+                            ui.Drawing(
+                                drawn.shapes,
+                                meaning: .chart,
+                                label: .some(std.say("The timeline")),
+                                height: .some(height),
+                                motion: .still,
+                            ) {
+                                on press(i): set(
+                                    selected,
+                                    owner_at(
+                                        p,
+                                        i,
+                                        span,
+                                        scroll,
+                                        playhead,
+                                        selected,
+                                        drag_kind,
+                                        drag_clip,
+                                        drag_value,
+                                    ),
+                                )
+                                on drag_start(x, y): set(drag_origin, time_at(x, span, scroll))
+                                    .then(
+                                        set(drag_value, time_at(x, span, scroll)),
+                                    )
+                                    .then(
+                                        set(
+                                            drag_kind,
+                                            grab_words(p, x, y, track_count(p), span, scroll),
+                                        ),
+                                    )
+                                    .then(
+                                        set(
+                                            drag_clip,
+                                            grab_clip(p, x, y, track_count(p), span, scroll),
+                                        ),
+                                    )
+                                on drag(x): set(drag_value, time_at(x, span, scroll))
+                                on drag_end: commit_drag(
+                                        p,
+                                        drag_kind,
+                                        drag_clip,
+                                        drag_origin,
+                                        drag_value,
+                                    )
+                                    .then(set(drag_kind, ""))
+                                    .then(
+                                        set(selected, drag_clip),
+                                    )
+                            }
+                        }
+                        // The inspector: what is chosen, and what may be done to it.
+                        ui.Section(std.say("Inspector")) {
+                            inspector(
+                                p,
+                                clip,
+                                media,
+                                tab,
+                                resolution,
+                                container,
+                                rate,
+                                playhead,
+                                playing,
+                            )
+                        }
+                    }
+                    if clip == .none and media == .none {
+                        stack(gap: .related, fill) {
+                            ui.Section(std.say("The cut")) {
+                                ui.TextInput(bind: p.name, title: true)
+                                ui.NumberInput(
+                                    bind: p.fps,
+                                    label: std.say("Frames a second"),
+                                    min: 1.0,
+                                    max: 240.0,
+                                    step: 1.0,
+                                )
+                                row(gap: .tight) {
+                                    ui.NumberInput(
+                                        bind: p.width,
+                                        label: std.say("Width"),
+                                        min: 16.0,
+                                        max: 8192.0,
+                                        step: 2.0,
+                                    )
+                                    ui.NumberInput(
+                                        bind: p.height,
+                                        label: std.say("Height"),
+                                        min: 16.0,
+                                        max: 8192.0,
+                                        step: 2.0,
+                                    )
+                                }
+                                if p.mark_in >= 0.0 or p.mark_out >= 0.0 {
+                                    ui.Facts {
+                                        ui.Fact(
+                                            clock(render_from(p)),
+                                            label: std.say("Renders from"),
+                                            icon: .arrow_right,
+                                        )
+                                        ui.Fact(
+                                            clock(render_to(p)),
+                                            label: std.say("to"),
+                                            icon: .arrow_left,
+                                        )
+                                    }
+                                }
+                            }
+                            ui.Section(std.say("Export")) {
+                                export_controls(p, resolution, container, rate)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        ui.EmptyState(
+            std.say("No cut yet"),
+            message: std.say("Start one, or open a video in the editor"),
+            icon: .film,
+            action: std.say("New project"),
+        ) {
+            on act: new_project(e)
+        }
+    }
+}
+
+/// What the window shows: the cut it has open, else the first there is.
+fn shown_project(e: Editor) -> Option<Project> {
+    if let open = e.open { .some(open) } else { e.projects.first() }
+}
+
+fn percent(p: Project) -> Int {
+    if p.job_total <= 0 {
+        return 0
+    }
+    (p.job_done * 100 / p.job_total).clamp(0, 100)
+}
+
+/// The inspector: the clip chosen, else the source, else nothing.
+template view inspector(
+    p: Project,
+    clip: Option<Clip>,
+    media: Option<Media>,
+    tab: State<Text>,
+    resolution: State<Text>,
+    container: State<Text>,
+    rate: State<Text>,
+    playhead: State<Float>,
+    playing: Bool,
+) {
+    if let c = clip {
+        ui.ToggleGroup(selected: if tab == "clip" { 0 } else if tab == "look" { 1 } else { 2 }) {
+            ui.Segment(std.say("Clip")) {
+                on press: set(tab, "clip")
+            }
+            ui.Segment(std.say("Look")) {
+                on press: set(tab, "look")
+            }
+            ui.Segment(std.say("Effects")) {
+                on press: set(tab, "effects")
+            }
+        }
+        if tab == "clip" {
+            ui.TextInput(bind: c.name, placeholder: std.say("Name"))
+            ui.Slider(
+                bind: c.opacity,
+                label: std.say("Opacity"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.volume,
+                label: std.say("Volume"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.speed_rate,
+                label: std.say("Speed"),
+                min: 0.05,
+                max: 4.0,
+                step: 0.05,
+                shows_value: true,
+            )
+            ui.Toggle(bind: c.reverse, label: std.say("Play it backwards"))
+            ui.Slider(
+                bind: c.fade_in,
+                label: std.say("Fade in, seconds"),
+                min: 0.0,
+                max: 5.0,
+                step: 0.1,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.fade_out,
+                label: std.say("Fade out, seconds"),
+                min: 0.0,
+                max: 5.0,
+                step: 0.1,
+                shows_value: true,
+            )
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.MenuButton(std.say("Transition"), icon: .arrow_right) {
+                    ui.MenuItem(std.say("Cut"), checked: c.transition == "") {
+                        on choose: set_transition(c, "", 0.0)
+                    }
+                    ui.MenuItem(std.say("Dissolve"), checked: c.transition == "dissolve") {
+                        on choose: set_transition(c, "dissolve", 0.6)
+                    }
+                    ui.MenuItem(std.say("Fade in"), checked: c.transition == "fade") {
+                        on choose: set_transition(c, "fade", 0.6)
+                    }
+                    ui.MenuItem(std.say("Dip to black"), checked: c.transition == "dip") {
+                        on choose: set_transition(c, "dip", 0.6)
+                    }
+                    ui.MenuItem(std.say("Wipe"), checked: c.transition == "wipe") {
+                        on choose: set_transition(c, "wipe", 0.6)
+                    }
+                }
+                ui.Button(std.say("Use its format"), icon: .crop) {
+                    on press: adopt_format(p, c.media)
+                }
+                if c.link == "" {
+                    ui.Button(std.say("Split the sound"), icon: .music) {
+                        on press: split_audio(p, c)
+                    }
+                } else if c.link_follows {
+                    ui.Button(std.say("Unlink"), icon: .unlink) {
+                        on press: unlink_clip(c)
+                    }
+                }
+                ui.Button(std.say("Marker here"), icon: .flag) {
+                    on press: add_marker(p, playhead)
+                }
+            }
+            if let s = editor.playing {
+                if let out = s.outputs.find(x -> x.device != "") {
+                    ui.LevelMeter(
+                        source: out.device,
+                        output: true,
+                        running: playing,
+                        label: std.say("Sound level"),
+                    )
+                }
+            }
+        } else if tab == "look" {
+            ui.Slider(
+                bind: c.brightness,
+                label: std.say("Brightness"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.contrast,
+                label: std.say("Contrast"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.saturation,
+                label: std.say("Saturation"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.scale_x,
+                label: std.say("Width"),
+                min: 0.1,
+                max: 3.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.pos_x,
+                label: std.say("Across"),
+                min: -1.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.pos_y,
+                label: std.say("Up and down"),
+                min: -1.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.rotation,
+                label: std.say("Turn, degrees"),
+                min: -180.0,
+                max: 180.0,
+                step: 1.0,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.crop_left,
+                label: std.say("Crop from the left"),
+                min: 0.0,
+                max: 0.9,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: c.crop_right,
+                label: std.say("Crop from the right"),
+                min: 0.0,
+                max: 0.9,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Toggle(bind: c.key_enabled, label: std.say("Remove a colour"))
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.MenuButton(std.say("Screen colour"), icon: .palette) {
+                    ui.MenuItem(
+                        std.say("Green"),
+                        checked: c.key_green > c.key_red and c.key_green > c.key_blue,
+                    ) {
+                        on choose: key_colour(c, 0.06, 0.72, 0.2)
+                    }
+                    ui.MenuItem(
+                        std.say("Blue"),
+                        checked: c.key_blue > c.key_green and c.key_blue > c.key_red,
+                    ) {
+                        on choose: key_colour(c, 0.06, 0.22, 0.72)
+                    }
+                    ui.MenuItem(
+                        std.say("Magenta"),
+                        checked: c.key_red > c.key_green and c.key_blue > c.key_green,
+                    ) {
+                        on choose: key_colour(c, 0.72, 0.06, 0.55)
+                    }
+                }
+                ui.Button(std.say("Pick from the frame"), icon: .pipette) {
+                    on press: set(tab, "pick")
+                }
+            }
+            if tab == "pick" {
+                ui.Text(
+                    std.say("Drag across the picture where the colour is"),
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Drawing(
+                    [ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.track))],
+                    meaning: .decoration,
+                    label: .some(std.say("Pick a colour from the frame")),
+                    height: .some(56.0),
+                    motion: .still,
+                ) {
+                    on drag_end(x, y): sample_key(p, c, playhead, x, y).then(set(tab, "look"))
+                }
+            }
+            if c.key_enabled {
+                ui.Slider(
+                    bind: c.key_tolerance,
+                    label: std.say("How much of it"),
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    shows_value: true,
+                )
+                ui.Slider(
+                    bind: c.key_softness,
+                    label: std.say("Soft edge"),
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    shows_value: true,
+                )
+                ui.Slider(
+                    bind: c.key_spill,
+                    label: std.say("Take the tint away"),
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    shows_value: true,
+                )
+            }
+            // Where the clip's own values change.
+            ui.Section(std.say("Keys")) {
+                ui.MenuButton(std.say("Key a field here"), icon: .circle_dot) {
+                    ui.MenuItem(std.say("Opacity")) {
+                        on choose: key_at(c, playhead, "opacity", "linear")
+                    }
+                    ui.MenuItem(std.say("Volume")) {
+                        on choose: key_at(c, playhead, "volume", "linear")
+                    }
+                    ui.MenuItem(std.say("Width")) {
+                        on choose: key_at(c, playhead, "scale_x", "linear")
+                    }
+                    ui.MenuItem(std.say("Across")) {
+                        on choose: key_at(c, playhead, "pos_x", "linear")
+                    }
+                    ui.MenuItem(std.say("Up and down")) {
+                        on choose: key_at(c, playhead, "pos_y", "linear")
+                    }
+                    ui.MenuItem(std.say("Turn")) {
+                        on choose: key_at(c, playhead, "rotation", "linear")
+                    }
+                }
+                if c.keys.is_empty() {
+                    ui.Text(
+                        std.say("This clip holds one value all the way through"),
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                for k in c.keys.sort_by(x -> x.t) {
+                    row(gap: .tight, align: .center) {
+                        ui.Text(k.param, role: .body)
+                        ui.Text(clock(k.t), role: .caption, numeric: true)
+                        ui.MenuButton(interp_words(k.interp), icon: .activity) {
+                            ui.MenuItem(std.say("Linear"), checked: k.interp == "linear") {
+                                on choose: set_interp(k, "linear")
+                            }
+                            ui.MenuItem(std.say("Hold"), checked: k.interp == "hold") {
+                                on choose: set_interp(k, "hold")
+                            }
+                            ui.MenuItem(std.say("Ease"), checked: k.interp == "ease") {
+                                on choose: set_interp(k, "ease")
+                            }
+                        }
+                        ui.Button(
+                            "",
+                            icon: .trash_2,
+                            icon_only: true,
+                            accessible_name: std.say("Remove the key"),
+                        ) {
+                            on press: unkey(c, k)
+                        }
+                    }
+                }
+            }
+            // The clip's frames, as the engine drew them.
+            ui.Section(std.say("Frames")) {
+                if c.strips.is_empty() {
+                    ui.Button(std.say("Draw the filmstrip"), icon: .film) {
+                        on press: filmstrip(p, c)
+                    }
+                } else {
+                    row(gap: .tight, wrap: true) {
+                        for strip in c.strips {
+                            if strip != "" {
+                                ui.Image(
+                                    strip,
+                                    alt: c.name,
+                                    fit: .cover,
+                                    aspect: 16.0 / 9.0,
+                                    min: 4rem,
+                                    max: 8rem,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            ui.MenuButton(std.say("Add an effect"), icon: .plus) {
+                ui.MenuItem(std.say("Grayscale")) {
+                    on choose: add_effect(c, "Grayscale")
+                }
+                ui.MenuItem(std.say("Sepia")) {
+                    on choose: add_effect(c, "Sepia")
+                }
+                ui.MenuItem(std.say("Invert")) {
+                    on choose: add_effect(c, "Invert")
+                }
+                ui.MenuItem(std.say("Warm")) {
+                    on choose: add_effect(c, "Warm")
+                }
+                ui.MenuItem(std.say("Cool")) {
+                    on choose: add_effect(c, "Cool")
+                }
+                ui.MenuItem(std.say("Vignette")) {
+                    on choose: add_effect(c, "Vignette")
+                }
+            }
+            if c.effects.is_empty() {
+                ui.Text(
+                    std.say("This clip has no effect of its own"),
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for effect in c.effects {
+                row(gap: .tight, align: .center) {
+                    ui.Text(effect.form, role: .body)
+                    ui.Slider(
+                        bind: effect.amount,
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.01,
+                        shows_value: true,
+                    )
+                    ui.Button(
+                        "",
+                        icon: .trash_2,
+                        icon_only: true,
+                        accessible_name: std.say("Remove {effect.form}"),
+                    ) {
+                        on press: remove_effect(c, effect)
+                    }
+                }
+            }
+        }
+    } else if let m = media {
+        ui.TextInput(bind: m.name, title: true)
+        ui.Text(form_words(m.form), role: .caption, secondary: true)
+        if m.form == .title {
+            ui.TextInput(bind: m.words, placeholder: std.say("Words"), lines: 3)
+            ui.Slider(
+                bind: m.size,
+                label: std.say("Size"),
+                min: 0.02,
+                max: 0.5,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: m.red,
+                label: std.say("Red"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: m.green,
+                label: std.say("Green"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: m.blue,
+                label: std.say("Blue"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Toggle(bind: m.bold, label: std.say("Bold"))
+            ui.Toggle(bind: m.italic, label: std.say("Italic"))
+            ui.MenuButton(std.say("Lines"), icon: .align_justify) {
+                ui.MenuItem(std.say("Left"), checked: m.align == .left) {
+                    on choose: set_align(m, .left)
+                }
+                ui.MenuItem(std.say("Centre"), checked: m.align == .centre) {
+                    on choose: set_align(m, .centre)
+                }
+                ui.MenuItem(std.say("Right"), checked: m.align == .right) {
+                    on choose: set_align(m, .right)
+                }
+            }
+        } else {
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.Button(std.say("Place at the playhead"), icon: .plus) {
+                    on press: place_media(p, m, playhead)
+                }
+                ui.Button(std.say("Use its format"), icon: .crop) {
+                    on press: adopt_format(p, m)
+                }
+            }
+            ui.Text(clock(m.duration), role: .caption, secondary: true, numeric: true)
+        }
+    } else {
+        ui.Text(std.say("Choose a clip or a source"), role: .caption, secondary: true)
+    }
+    // The cut's marks, and what each says.
+    if not p.markers.is_empty() {
+        ui.Section(std.say("Markers")) {
+            for k in p.markers.sort_by(x -> x.t) {
+                row(gap: .tight, align: .center) {
+                    ui.Text(k.name, role: .body)
+                    ui.Text(clock(k.t), role: .caption, numeric: true)
+                    ui.Button(
+                        "",
+                        icon: .trash_2,
+                        icon_only: true,
+                        accessible_name: std.say("Remove the mark"),
+                    ) {
+                        on press: remove_marker(p, k)
+                    }
+                }
+                ui.TextInput(bind: k.note, placeholder: std.say("What it marks"))
+            }
+        }
+    }
+}
+
+/// The export controls: the shape, the container and the rate, then the render.
+template view export_controls(
+    p: Project,
+    resolution: State<Text>,
+    container: State<Text>,
+    rate: State<Text>,
+) {
+    row(gap: .tight, align: .center, wrap: true) {
+        ui.Dropdown(options: ["720", "1080", "2160"], bind: resolution, caption: std.say("Size"))
+        ui.Dropdown(options: ["mp4", "webm", "mov"], bind: container, caption: std.say("Format"))
+        ui.Dropdown(options: ["24", "30", "60"], bind: rate, caption: std.say("Frames"))
+    }
+    row(gap: .tight, align: .center, wrap: true) {
+        if p.job != "" {
+            ui.Button(std.say("Stop the render"), icon: .x) {
+                on press: cancel_render(p)
+            }
+        } else {
+            ui.Button(std.say("Render the film"), icon: .play) {
+                on press: export_cut(p, resolution, container, rate.to_int() ?? 30)
+            }
+        }
+        if p.job_kind == "preview" and p.proxy != "" {
+            ui.Text(std.say("The cut plays in the window"), role: .caption, secondary: true)
+        }
+        if p.exported != "" {
+            ui.Button(std.say("Save the film"), icon: .download) {
+                on press: file.save(export_file(p), name: export_name(p, p.format))
+            }
+        }
+    }
+    if p.exported != "" {
+        ui.Text(export_name(p, p.format), role: .caption)
+    }
+}
+
+/// A cut opened on its own: what it is, and the way into the editor.
+view studio(p: Project) {
+    let e = root Editor
+    let clips = p.clips.len()
+    std.page(p) {
+        header: {
+            ui.Button(std.say("Open in the editor"), icon: .film) {
+                on press: open_project(e, p)
+            }
+        }
+        content: {
+            ui.Text(p.name, role: .title)
+            ui.Facts {
+                ui.Fact(clock(total(p)), icon: .clock)
+                ui.Fact(std.say("{p.width} × {p.height}"), icon: .image)
+                ui.Fact(std.say("{clips} clips"), icon: .film)
+            }
+            ui.EmptyState(
+                std.say("This cut opens in the Video Editor"),
+                message: std.say(
+                    "Its preview, its timeline and its inspector are in the app's window",
+                ),
+                icon: .film,
+            )
+        }
+    }
+}
+
+view project_row(p: Project) {
+    ui.ListRow(p.name, item: p, icon: .film, meta: clock(total(p)))
+}
+
+view media_row(m: Media) {
+    ui.ListRow(
+        m.name,
+        item: m,
+        icon: if m.form == .audio {
+            .music
+        } else if m.form == .image { .image } else if m.form == .title { .pencil } else { .film },
+        meta: if m.form == .title { std.say("Title") } else { clock(m.duration) },
+    )
+}

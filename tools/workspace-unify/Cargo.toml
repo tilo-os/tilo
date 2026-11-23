@@ -1344,7 +1344,6 @@ doc = false
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
-"tilo-video-render" = { path = "../../crates/engines/video-render", default-features = false, features = ["default", "helper"] }
 "tilo-view" = { path = "../../crates/sdk/tilo-view", default-features = false, features = [] }
 "tilo-vision-service" = { path = "../../crates/services/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
@@ -1487,7 +1486,6 @@ doc = false
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
 "vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
-"video-editor" = { path = "../../apps/video-editor", default-features = false, features = ["decode", "default", "gst", "samples"] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-0_7_0" = { package = "wacore", version = "^0.7.0", default-features = false, features = [] }
 "wacore-appstate-0_7_0" = { package = "wacore-appstate", version = "^0.7.0", default-features = false, features = [] }
@@ -3964,7 +3962,6 @@ doc = false
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
-"tilo-video-render" = { path = "../../crates/engines/video-render", default-features = false, features = ["default", "helper"] }
 "tilo-view" = { path = "../../crates/sdk/tilo-view", default-features = false, features = [] }
 "tilo-vision-service" = { path = "../../crates/services/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
@@ -4106,7 +4103,6 @@ doc = false
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
 "vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
-"video-editor" = { path = "../../apps/video-editor", default-features = false, features = ["decode", "default", "gst", "samples"] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-0_7_0" = { package = "wacore", version = "^0.7.0", default-features = false, features = [] }
 "wacore-appstate-0_7_0" = { package = "wacore-appstate", version = "^0.7.0", default-features = false, features = [] }

@@ -185,7 +185,6 @@ members = [
     "apps/thumbnails",
     "apps/totp",
     "apps/typst-editor",
-    "apps/video-editor",
     "apps/weather",
     "apps/windows",
 
@@ -307,7 +306,7 @@ members = [
     "crates/engines/segment",
     "crates/engines/thumbnail",
     "crates/engines/video-edit",
-    "crates/engines/video-render",
+    "crates/engines/video-picture",
     "crates/engines/wet-media",
 
     # Packaging

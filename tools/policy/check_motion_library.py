@@ -134,13 +134,12 @@ LIBRARY = (
 # Curves that belong to the content, not to UI motion. Keep this short; every
 # entry says why.
 EXEMPT = {
-    "apps/video-editor/": "keyframe interpolation and transitions are the video's own content",
     "crates/engines/ocr/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/segment/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/thumbnail/": "paint, brush and media physics simulate the medium, not UI motion",
-    "crates/engines/video-render/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/vision/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/video-edit/": "a clip's tone curve and transitions are the cut's own content, not UI motion",
     "crates/ui/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/desktop/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
     "vendor/": "vendored upstream code",

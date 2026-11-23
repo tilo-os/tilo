@@ -44,6 +44,8 @@ pub mod testing;
 pub mod wait;
 pub mod web;
 #[cfg(feature = "app-launch")]
+pub mod video_engine;
+#[cfg(feature = "app-launch")]
 pub mod window;
 
 /// The shared toolkit and `libstd`: a thin build links both dynamically so the window's process

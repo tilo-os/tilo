@@ -1,0 +1,943 @@
+//! The Video Editor's engine, as a package reaches it: `engine.call` and `engine.start` answered
+//! for `so.tilo.video-editor` by the editing and picture engines on this device.
+//!
+//! The app runs sandboxed with no decoder and no renderer, so it asks by name. A request carries
+//! the cut as JSON the app wrote; the answer is JSON the app reads back into its own records. A
+//! still, a waveform and a probe answer now; a render starts as a job whose progress is asked by
+//! its id and which can be stopped.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use serde::Deserialize;
+
+use tilo_resource::{Keyed, Ordered};
+use tilolang_tilo::instance::Platform;
+use video_edit::model;
+use video_edit::param::{ClipAnimation, Interp, Param};
+use video_picture::export::{Container, ExportSettings, FrameRate, Resolution};
+
+/// The one app this device answers engine work for.
+pub const APP: &str = "so.tilo.video-editor";
+
+/// One `engine.call` for this device's app, or a refusal.
+///
+/// # Errors
+///
+/// The op is unknown, the cut does not read, or the engine cannot do the work.
+pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+    if app != APP {
+        return Err(format!("`{op}` is no op this device runs for {app}"));
+    }
+    match op {
+        "probe" => probe(platform, input),
+        "still" => still(platform, input),
+        "thumb" => thumb(platform, input),
+        "waveform" => waveform(platform, input),
+        "sample" => sample(platform, input),
+        other => Err(format!("`{other}` is no op this device runs for {app}")),
+    }
+}
+
+/// One `engine.start`: a render, answered with the job's id.
+///
+/// # Errors
+///
+/// Not this device's app, or the cut does not read.
+pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+    if app != APP {
+        return Err(format!("`{op}` is no op this device runs for {app}"));
+    }
+    match op {
+        "render" => render(platform, input),
+        other => Err(format!("`{other}` is no op this device runs for {app}")),
+    }
+}
+
+/// How far a job has got, as JSON: its state, what it has done of how much, and what it made.
+///
+/// # Errors
+///
+/// No such job on this device.
+pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
+    let known = jobs().lock().map_err(|_| "the job table is unreadable".to_owned())?;
+    let Some(state) = known.get(job) else {
+        return Err(format!("no job `{job}` runs on this device"));
+    };
+    let done = state.done.load(Ordering::Relaxed);
+    let total = state.total.load(Ordering::Relaxed);
+    if state.cancel.load(Ordering::Relaxed) {
+        return Ok(serde_json::json!({
+            "state": "cancelled", "done": done, "total": total, "url": "", "error": "",
+        })
+        .to_string());
+    }
+    if let Some(error) = state.error.lock().ok().and_then(|e| e.clone()) {
+        return Ok(serde_json::json!({
+            "state": "failed", "done": done, "total": total, "url": "", "error": error,
+        })
+        .to_string());
+    }
+    if let Some(url) = set_done(state, platform) {
+        return Ok(serde_json::json!({
+            "state": "done", "done": total, "total": total, "url": url, "error": "",
+        })
+        .to_string());
+    }
+    Ok(serde_json::json!({
+        "state": "running", "done": done, "total": total, "url": "", "error": "",
+    })
+    .to_string())
+}
+
+/// Stop a job: false when it is not this device's or it had finished.
+pub fn cancel(job: &str) -> bool {
+    let Ok(known) = jobs().lock() else {
+        return false;
+    };
+    let Some(state) = known.get(job) else {
+        return false;
+    };
+    if state.finished.load(Ordering::Relaxed) {
+        return false;
+    }
+    state.cancel.store(true, Ordering::Relaxed);
+    true
+}
+
+/// One render in flight, and what it made when it is done.
+struct Job {
+    cancel: Arc<AtomicBool>,
+    finished: AtomicBool,
+    done: AtomicU64,
+    total: AtomicU64,
+    /// The file the render writes, until the answer puts it in the content store.
+    path: PathBuf,
+    /// The name its bytes are kept under.
+    name: String,
+    error: Mutex<Option<String>>,
+    /// The address of the finished file, once `status` has kept it.
+    url: Mutex<Option<String>>,
+}
+
+fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
+    static JOBS: OnceLock<Mutex<BTreeMap<String, Arc<Job>>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Keep a finished render as the answer's file, once: what `status` hands the app.
+fn set_done(state: &Job, platform: &dyn Platform) -> Option<String> {
+    if !state.finished.load(Ordering::Relaxed) {
+        return None;
+    }
+    if let Some(url) = state.url.lock().ok().and_then(|u| u.clone()) {
+        return Some(url);
+    }
+    let bytes = std::fs::read(&state.path).ok()?;
+    let media = match state.path.extension().and_then(std::ffi::OsStr::to_str) {
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        _ => "video/mp4",
+    };
+    let kept = platform.keep_content(&state.name, media, &bytes).ok()?;
+    let url = format!("tilo-blob://{}", kept.hash);
+    if let Ok(mut slot) = state.url.lock() {
+        *slot = Some(url.clone());
+    }
+    let _ = std::fs::remove_file(&state.path);
+    Some(url)
+}
+
+/// The still the app asked for at `at`, kept as a picture in the content store.
+fn still(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        project: String,
+        at: f64,
+        width: u32,
+        height: u32,
+    }
+    let ask: Ask = reads(input)?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let settings = video_picture::render::AgentFrameSettings {
+        at: ask.at,
+        width: ask.width.clamp(16, 4096),
+        height: ask.height.clamp(16, 4096),
+    };
+    let png = video_picture::render::render_still(&project, &settings)?;
+    let kept = platform.keep_content("frame.png", "image/png", &png)?;
+    Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
+}
+
+/// One source's picture at `at`, kept as a picture in the content store: a bin swatch or a
+/// filmstrip frame.
+fn thumb(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        url: String,
+        at: f64,
+        width: u32,
+        height: u32,
+    }
+    let ask: Ask = reads(input)?;
+    let mut project = model::Project::new("thumb");
+    project.set_frame_size(ask.width.clamp(16, 4096), ask.height.clamp(16, 4096));
+    let path = media_path(platform, &ask.url)?;
+    let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
+    let media = model::MediaItem {
+        id: uuid::Uuid::from_u128(1),
+        name: "still".to_owned(),
+        kind: probed.kind,
+        duration: probed.duration,
+        width: probed.width,
+        height: probed.height,
+        fps: probed.fps,
+        has_audio: probed.has_audio,
+        path: path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let track = model::Track {
+        id: uuid::Uuid::from_u128(2),
+        kind: model::TrackKind::Video,
+        index: 1,
+        ..Default::default()
+    };
+    let end = if probed.kind == model::MediaKind::Image {
+        video_edit::probe::DEFAULT_IMAGE_DURATION
+    } else {
+        probed.duration
+    };
+    let clip = model::Clip {
+        id: uuid::Uuid::from_u128(3),
+        track: track.id,
+        media: media.id,
+        start: 0.0,
+        in_point: 0.0,
+        out_point: end,
+        ..Default::default()
+    };
+    project.media.push(media);
+    project.tracks.push(track);
+    project.clips.push(clip);
+    let settings = video_picture::render::AgentFrameSettings {
+        at: ask.at.max(0.0),
+        width: ask.width.clamp(16, 4096),
+        height: ask.height.clamp(16, 4096),
+    };
+    let png = video_picture::render::render_still(&project, &settings)?;
+    let kept = platform.keep_content("thumb.png", "image/png", &png)?;
+    Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
+}
+
+/// What the file at `url` really is.
+fn probe(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        url: String,
+    }
+    let ask: Ask = reads(input)?;
+    let path = media_path(platform, &ask.url)?;
+    let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
+    Ok(serde_json::json!({
+        "kind": probed.kind.as_str(),
+        "duration": probed.duration,
+        "width": probed.width,
+        "height": probed.height,
+        "fps": probed.fps,
+        "has_audio": probed.has_audio,
+        "codec": probed.codec,
+    })
+    .to_string())
+}
+
+/// The source's peaks, as fractions of full scale.
+fn waveform(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        url: String,
+        buckets: Option<usize>,
+    }
+    let ask: Ask = reads(input)?;
+    let path = media_path(platform, &ask.url)?;
+    let buckets = ask.buckets.unwrap_or(512).clamp(16, 4096);
+    let peaks = video_edit::waveform::peaks_from_file(&path, buckets)
+        .ok_or_else(|| "no samples could be read from that source".to_owned())?;
+    Ok(serde_json::json!({ "peaks": peaks }).to_string())
+}
+
+/// The colour of the cut's frame at (x, y), a fraction of its box each.
+fn sample(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        project: String,
+        at: f64,
+        x: f64,
+        y: f64,
+    }
+    let ask: Ask = reads(input)?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let (width, height) = (480_u32, 270_u32);
+    let mut compositor = video_picture::gpu::HeadlessCompositor::new()
+        .map_err(|error| format!("this device cannot draw the frame: {error}"))?;
+    let mut sources = video_picture::gpu::MediaFrameSource::new(
+        &project,
+        video_picture::gpu::Fetch::Exact,
+    )
+    .with_timeout(std::time::Duration::from_secs(2))
+    .strict();
+    let rgba = compositor.frame(&project, ask.at, width, height, &mut sources);
+    let x = ((ask.x.clamp(0.0, 1.0) * f64::from(width - 1)).round() as usize).min(width as usize - 1);
+    let y = ((ask.y.clamp(0.0, 1.0) * f64::from(height - 1)).round() as usize).min(height as usize - 1);
+    let at = (y * width as usize + x) * 4;
+    let channel = |i: usize| f64::from(*rgba.get(at + i).unwrap_or(&0)) / 255.0;
+    Ok(serde_json::json!({ "red": channel(0), "green": channel(1), "blue": channel(2) }).to_string())
+}
+
+/// Start a cut's render as a job.
+fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        project: String,
+        resolution: Option<String>,
+        container: Option<String>,
+        fps: Option<i64>,
+        /// The container the finished file takes: `mp4`, `webm` or `mov`.
+        name: Option<String>,
+    }
+    let ask: Ask = reads(input)?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let resolution = match ask.resolution.as_deref() {
+        Some("720") => Resolution::P720,
+        Some("2160") | Some("4k") => Resolution::P2160,
+        _ => Resolution::P1080,
+    };
+    let container = match ask.container.as_deref() {
+        Some("webm") => Container::WebM,
+        Some("mov") => Container::Mov,
+        _ => Container::Mp4,
+    };
+    let frame_rate = match ask.fps {
+        Some(24) => FrameRate::F24,
+        Some(60) => FrameRate::F60,
+        _ => FrameRate::F30,
+    };
+    let settings = ExportSettings {
+        resolution,
+        container,
+        frame_rate,
+    };
+    let id = next_job_id();
+    let extension = match container {
+        Container::WebM => "webm",
+        Container::Mov => "mov",
+        Container::Mp4 => "mp4",
+    };
+    let name = ask.name.unwrap_or_else(|| format!("cut-{id}.{extension}"));
+    let path = scratch_dir().join(format!("render-{id}.{extension}"));
+    let state = Arc::new(Job {
+        cancel: Arc::new(AtomicBool::new(false)),
+        finished: AtomicBool::new(false),
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        path: path.clone(),
+        name,
+        error: Mutex::new(None),
+        url: Mutex::new(None),
+    });
+    jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .insert(id.clone(), Arc::clone(&state));
+    let worker = Arc::clone(&state);
+    let spawned = std::thread::Builder::new()
+        .name("video-editor-render".to_owned())
+        .spawn(move || {
+            let cancel = Arc::clone(&worker.cancel);
+            let done = Arc::new(AtomicU64::new(0));
+            let report_done = Arc::clone(&done);
+            let report_total = Arc::new(AtomicU64::new(0));
+            let report_total_in = Arc::clone(&report_total);
+            let outcome = video_picture::export::render_to(
+                &project,
+                settings,
+                &worker.path,
+                cancel,
+                move |done_frames, total| {
+                    report_done.store(done_frames, Ordering::Relaxed);
+                    report_total_in.store(total, Ordering::Relaxed);
+                },
+            );
+            worker.done.store(done.load(Ordering::Relaxed), Ordering::Relaxed);
+            worker
+                .total
+                .store(report_total.load(Ordering::Relaxed), Ordering::Relaxed);
+            match outcome {
+                Ok(_) => worker.finished.store(true, Ordering::Relaxed),
+                Err(error) => {
+                    if let Ok(mut slot) = worker.error.lock() {
+                        *slot = Some(error);
+                    }
+                }
+            }
+        });
+    if spawned.is_err() {
+        return Err("could not start the render".to_owned());
+    }
+    Ok(serde_json::json!({ "job": id }).to_string())
+}
+
+fn next_job_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    format!("render-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Where a render writes its file before the answer keeps it: one directory per process.
+fn scratch_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("tilo-video-engine-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+    .clone()
+}
+
+fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
+    serde_json::from_str(input).map_err(|error| format!("the request does not read: {error}"))
+}
+
+/// A source's bytes as a file this device can decode: what a `tilo-blob://` address names,
+/// laid out once, or a path already here.
+fn media_path(platform: &dyn Platform, url: &str) -> Result<PathBuf, String> {
+    let hash = url.strip_prefix("tilo-blob://");
+    let Some(hash) = hash else {
+        let path = Path::new(url);
+        if path.exists() {
+            return Ok(path.to_path_buf());
+        }
+        return Err(format!("`{url}` is not a file on this device"));
+    };
+    let dir = scratch_dir();
+    let file = dir.join(format!("source-{hash}"));
+    if file.exists() {
+        return Ok(file);
+    }
+    let bytes = platform
+        .read_content(hash)
+        .ok_or_else(|| "that source's bytes are not on this device yet".to_owned())?;
+    std::fs::write(&file, bytes).map_err(|error| format!("the source cannot be laid out: {error}"))?;
+    Ok(file)
+}
+
+/// The cut as the app writes it: plain records, so the app and the engine agree on one JSON and
+/// neither depends on the other's field spells beyond these names.
+#[derive(Deserialize)]
+struct Shot {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "fps_default")]
+    fps: f64,
+    #[serde(default = "width_default")]
+    width: u32,
+    #[serde(default = "height_default")]
+    height: u32,
+    #[serde(default = "nothing")]
+    mark_in: f64,
+    #[serde(default = "nothing")]
+    mark_out: f64,
+    #[serde(default)]
+    media: Vec<String>,
+    #[serde(default)]
+    tracks: Vec<String>,
+    #[serde(default)]
+    clips: Vec<String>,
+    #[serde(default)]
+    markers: Vec<String>,
+}
+
+fn fps_default() -> f64 {
+    30.0
+}
+
+/// A mark that is not set.
+fn nothing() -> f64 {
+    -1.0
+}
+
+fn width_default() -> u32 {
+    1920
+}
+
+fn height_default() -> u32 {
+    1080
+}
+
+#[derive(Deserialize)]
+struct ShotMedia {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default = "kind_video")]
+    kind: String,
+    #[serde(default)]
+    duration: f64,
+    #[serde(default)]
+    width: u32,
+    #[serde(default)]
+    height: u32,
+    #[serde(default = "fps_default")]
+    fps: f64,
+    #[serde(default)]
+    palette: u8,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    has_audio: bool,
+    #[serde(default)]
+    content: String,
+    #[serde(default = "text_size")]
+    size: f64,
+    #[serde(default = "text_color")]
+    color: [f64; 4],
+    #[serde(default)]
+    align: String,
+    #[serde(default)]
+    font: String,
+    #[serde(default)]
+    bold: bool,
+    #[serde(default)]
+    italic: bool,
+    #[serde(default)]
+    backdrop: f64,
+}
+
+fn kind_video() -> String {
+    "video".to_owned()
+}
+
+fn text_size() -> f64 {
+    0.12
+}
+
+fn text_color() -> [f64; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+
+#[derive(Deserialize)]
+struct ShotTrack {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default = "kind_video")]
+    kind: String,
+    #[serde(default = "one")]
+    index: u32,
+    #[serde(default)]
+    muted: bool,
+    #[serde(default)]
+    solo: bool,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    gain_db: f64,
+    #[serde(default)]
+    pan: f64,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Deserialize)]
+struct ShotClip {
+    id: String,
+    track: String,
+    media: String,
+    #[serde(default)]
+    start: f64,
+    #[serde(default)]
+    in_point: f64,
+    #[serde(default)]
+    out_point: f64,
+    #[serde(default = "one_f")]
+    opacity: f64,
+    #[serde(default = "one_f")]
+    volume: f64,
+    #[serde(default)]
+    transition: Option<String>,
+    #[serde(default)]
+    transition_duration: f64,
+    #[serde(default)]
+    fade_in: f64,
+    #[serde(default)]
+    fade_out: f64,
+    #[serde(default)]
+    palette: u8,
+    #[serde(default)]
+    speed_rate: Option<f64>,
+    #[serde(default)]
+    speed_reverse: bool,
+    #[serde(default = "half")]
+    brightness: f64,
+    #[serde(default = "half")]
+    contrast: f64,
+    #[serde(default = "half")]
+    saturation: f64,
+    #[serde(default)]
+    scale_x: Option<f64>,
+    #[serde(default)]
+    scale_y: Option<f64>,
+    #[serde(default)]
+    pos_x: Option<f64>,
+    #[serde(default)]
+    pos_y: Option<f64>,
+    #[serde(default)]
+    rotation: Option<f64>,
+    #[serde(default)]
+    crop_left: Option<f64>,
+    #[serde(default)]
+    crop_right: Option<f64>,
+    #[serde(default)]
+    crop_top: Option<f64>,
+    #[serde(default)]
+    crop_bottom: Option<f64>,
+    #[serde(default)]
+    effects: Vec<String>,
+    /// One JSON text a key: its param, clip-local seconds, value and interp.
+    #[serde(default)]
+    keys: Vec<String>,
+    #[serde(default)]
+    key_enabled: bool,
+    #[serde(default = "key_color")]
+    key_color: [f64; 3],
+    #[serde(default = "key_tolerance")]
+    key_tolerance: f64,
+    #[serde(default = "key_softness")]
+    key_softness: f64,
+    #[serde(default = "key_spill")]
+    key_spill: f64,
+    #[serde(default)]
+    mask_shape: Option<String>,
+    #[serde(default)]
+    mask_x: Option<f64>,
+    #[serde(default)]
+    mask_y: Option<f64>,
+    #[serde(default)]
+    mask_w: Option<f64>,
+    #[serde(default)]
+    mask_h: Option<f64>,
+    #[serde(default)]
+    mask_rotation: Option<f64>,
+    #[serde(default)]
+    mask_feather: Option<f64>,
+    #[serde(default)]
+    mask_invert: bool,
+    #[serde(default)]
+    link: String,
+    #[serde(default = "yes")]
+    link_follows: bool,
+    #[serde(default)]
+    sound_split: bool,
+}
+
+fn one_f() -> f64 {
+    1.0
+}
+
+fn half() -> f64 {
+    0.5
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn key_color() -> [f64; 3] {
+    [0.06, 0.72, 0.20]
+}
+
+fn key_tolerance() -> f64 {
+    0.22
+}
+
+fn key_softness() -> f64 {
+    0.10
+}
+
+fn key_spill() -> f64 {
+    0.5
+}
+
+#[derive(Deserialize)]
+struct ShotKey {
+    param: String,
+    #[serde(default)]
+    t: f64,
+    #[serde(default)]
+    v: f64,
+    #[serde(default)]
+    interp: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ShotEffect {
+    id: String,
+    form: String,
+    #[serde(default = "one_f")]
+    amount: f64,
+}
+
+#[derive(Deserialize)]
+struct ShotMarker {
+    id: String,
+    #[serde(default)]
+    t: f64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    palette: u8,
+    #[serde(default)]
+    note: String,
+}
+
+/// A text id as the model's stable id: the same text is the same id on every device, so a cut
+/// renders where it was made and nowhere else.
+fn id_of(text: &str) -> uuid::Uuid {
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, text.as_bytes())
+}
+
+fn kind_of(name: &str) -> model::MediaKind {
+    match name {
+        "audio" => model::MediaKind::Audio,
+        "image" => model::MediaKind::Image,
+        "text" | "title" => model::MediaKind::Text,
+        _ => model::MediaKind::Video,
+    }
+}
+
+fn transition_of(name: Option<&str>) -> model::Transition {
+    match name {
+        Some("dissolve") => model::Transition::CrossDissolve,
+        Some("fade") => model::Transition::FadeIn,
+        Some("dip") => model::Transition::DipToBlack,
+        Some("wipe") => model::Transition::Wipe,
+        _ => model::Transition::None,
+    }
+}
+
+fn align_of(name: Option<&str>) -> model::TextAlign {
+    match name {
+        Some("Left") => model::TextAlign::Left,
+        Some("Right") => model::TextAlign::Right,
+        _ => model::TextAlign::Center,
+    }
+}
+
+fn effect_of(name: &str) -> Option<model::EffectKind> {
+    Some(match name {
+        "Grayscale" | "grayscale" => model::EffectKind::Grayscale,
+        "Sepia" | "sepia" => model::EffectKind::Sepia,
+        "Invert" | "invert" => model::EffectKind::Invert,
+        "Warm" | "warm" => model::EffectKind::Warm,
+        "Cool" | "cool" => model::EffectKind::Cool,
+        "Vignette" | "vignette" => model::EffectKind::Vignette,
+        _ => return None,
+    })
+}
+
+impl Shot {
+    /// The model this cut is, with every source laid out where this device can decode it.
+    fn into_project(self, platform: Option<&dyn Platform>) -> Result<model::Project, String> {
+        let mut project = model::Project::new(&self.name);
+        project.set_frame_size(self.width, self.height);
+        project.fps = self.fps.clamp(model::MIN_FPS, model::MAX_FPS);
+        project.mark_in = (self.mark_in >= 0.0).then_some(self.mark_in);
+        project.mark_out = (self.mark_out >= 0.0).then_some(self.mark_out);
+        for media in self.media {
+            let media: ShotMedia = reads(&media)?;
+            // Where this device can decode it: the content store's bytes laid out, or a path
+            // that is already here. An address this device cannot read stays as the app wrote
+            // it, which the picture draws from the source's own fill.
+            let path = platform
+                .and_then(|platform| media_path(platform, &media.path).ok())
+                .map(|at| at.to_string_lossy().into_owned())
+                .unwrap_or_else(|| media.path.clone());
+            project.media.push(model::MediaItem {
+                id: id_of(&media.id),
+                name: media.name,
+                kind: kind_of(&media.kind),
+                duration: media.duration,
+                width: media.width,
+                height: media.height,
+                fps: media.fps,
+                palette: media.palette,
+                path,
+                text: (media.kind == "text").then(|| model::TextSource {
+                    content: media.content,
+                    size: media.size,
+                    color: media.color,
+                    align: align_of(Some(&media.align)),
+                    font: media.font,
+                    bold: media.bold,
+                    italic: media.italic,
+                    backdrop: media.backdrop,
+                }),
+                has_audio: media.has_audio,
+            });
+        }
+        for track in self.tracks {
+            let track: ShotTrack = reads(&track)?;
+            project.tracks.push(model::Track {
+                id: id_of(&track.id),
+                name: track.name,
+                kind: if track.kind == "audio" {
+                    model::TrackKind::Audio
+                } else {
+                    model::TrackKind::Video
+                },
+                index: track.index,
+                muted: track.muted,
+                solo: track.solo,
+                locked: track.locked,
+                gain_db: track.gain_db,
+                pan: track.pan,
+            });
+        }
+        for clip in self.clips {
+            let clip: ShotClip = reads(&clip)?;
+            let mut anim = ClipAnimation::default();
+            for text in &clip.keys {
+                let key: ShotKey = reads(text)?;
+                if let Some(param) = Param::from_name(&key.param) {
+                    anim.ensure(param)
+                        .set_key(key.t, key.v, Interp::from_name(&key.interp));
+                }
+            }
+            let mut effects = Ordered::new();
+            for effect in clip.effects {
+                let effect: ShotEffect = reads(&effect)?;
+                if let Some(kind) = effect_of(&effect.form) {
+                    effects.push(model::ClipEffect {
+                        id: id_of(&effect.id),
+                        kind,
+                        amount: effect.amount,
+                    });
+                }
+            }
+            project.clips.push(model::Clip {
+                id: id_of(&clip.id),
+                track: id_of(&clip.track),
+                media: id_of(&clip.media),
+                start: clip.start,
+                in_point: clip.in_point,
+                out_point: clip.out_point,
+                opacity: clip.opacity,
+                volume: clip.volume,
+                transition: transition_of(clip.transition.as_deref()),
+                palette: clip.palette,
+                filters: model::Filters {
+                    brightness: clip.brightness,
+                    contrast: clip.contrast,
+                    saturation: clip.saturation,
+                },
+                curves: video_edit::curve::Curve::default(),
+                fade_in: clip.fade_in,
+                fade_out: clip.fade_out,
+                transition_duration: clip.transition_duration,
+                effects,
+                transform: model::Transform {
+                    scale_x: clip.scale_x.unwrap_or(1.0),
+                    scale_y: clip.scale_y.unwrap_or(1.0),
+                    pos_x: clip.pos_x.unwrap_or(0.0),
+                    pos_y: clip.pos_y.unwrap_or(0.0),
+                    rotation: clip.rotation.unwrap_or(0.0),
+                    anchor_x: 0.5,
+                    anchor_y: 0.5,
+                    crop_left: clip.crop_left.unwrap_or(0.0),
+                    crop_right: clip.crop_right.unwrap_or(0.0),
+                    crop_top: clip.crop_top.unwrap_or(0.0),
+                    crop_bottom: clip.crop_bottom.unwrap_or(0.0),
+                },
+                speed: model::Speed {
+                    rate: clip.speed_rate.unwrap_or(1.0).clamp(model::MIN_SPEED, model::MAX_SPEED),
+                    reverse: clip.speed_reverse,
+                },
+                key: model::ChromaKey {
+                    enabled: clip.key_enabled,
+                    color: clip.key_color,
+                    tolerance: clip.key_tolerance,
+                    softness: clip.key_softness,
+                    spill: clip.key_spill,
+                },
+                mask: model::Mask {
+                    shape: match clip.mask_shape.as_deref() {
+                        Some("rect") => model::MaskShape::Rect,
+                        Some("ellipse") => model::MaskShape::Ellipse,
+                        _ => model::MaskShape::None,
+                    },
+                    x: clip.mask_x.unwrap_or(0.0),
+                    y: clip.mask_y.unwrap_or(0.0),
+                    w: clip.mask_w.unwrap_or(0.6),
+                    h: clip.mask_h.unwrap_or(0.6),
+                    rotation: clip.mask_rotation.unwrap_or(0.0),
+                    feather: clip.mask_feather.unwrap_or(0.12),
+                    invert: clip.mask_invert,
+                },
+                anim,
+                markers: Keyed::new(),
+                link: (clip.link != "").then(|| id_of(&clip.link)),
+                link_follows: clip.link_follows,
+                sound_split: clip.sound_split,
+            });
+        }
+        for marker in self.markers {
+            let marker: ShotMarker = reads(&marker)?;
+            project.markers.push(model::Marker {
+                id: id_of(&marker.id),
+                t: marker.t,
+                name: marker.name,
+                palette: marker.palette,
+                note: marker.note,
+            });
+        }
+        Ok(project)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_text_id_is_one_id_on_every_device() {
+        assert_eq!(id_of("abc"), id_of("abc"));
+        assert_ne!(id_of("abc"), id_of("abd"));
+    }
+
+    #[test]
+    fn a_cut_itself_reads_into_the_model() {
+        let shot: Shot = serde_json::from_str(r#"{
+                "name": "Cut",
+                "fps": 30.0,
+                "width": 1920,
+                "height": 1080,
+                "media": ["{\"id\":\"m1\",\"name\":\"a.mp4\",\"kind\":\"video\",\"duration\":10.0,\"width\":1920,\"height\":1080,\"path\":\"/media/a.mp4\"}"],
+                "tracks": ["{\"id\":\"t1\",\"name\":\"V1\",\"kind\":\"video\"}"],
+                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\",\"start\":0.0,\"out_point\":4.0,\"transition\":\"dissolve\",\"keys\":[{\"param\":\"opacity\",\"t\":0.0,\"v\":0.2},{\"param\":\"opacity\",\"t\":2.0,\"v\":1.0}]}"],
+                "markers": ["{\"id\":\"k1\",\"t\":1.0,\"name\":\"Beat\"}"]
+            }"#,
+        )
+        .unwrap();
+        let project = shot.into_project(None).unwrap();
+        assert_eq!(project.clips.len(), 1);
+        assert_eq!(project.clips[0].transition, model::Transition::CrossDissolve);
+        assert_eq!(project.tracks[0].kind, model::TrackKind::Video);
+        assert_eq!(project.markers[0].name, "Beat");
+        assert_eq!(project.media[0].path, "/media/a.mp4");
+        assert!(project.clips[0].anim.is_animated(Param::Opacity));
+        assert_eq!(project.clips[0].anim.sample(Param::Opacity, 1.0), Some(0.6));
+    }
+
+}

@@ -16763,7 +16763,6 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-session-client",
  "tilo-test-env",
- "tilo-video-render",
  "tilo-workspace-service",
  "tilolang-tilo",
  "tilolang-web",
@@ -16773,7 +16772,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "typst-editor",
- "video-editor",
+ "uuid",
  "weather",
  "wire-frame",
  "workspace-hack",
@@ -22184,22 +22183,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-video-render"
+name = "tilo-video-picture"
 version = "0.1.0"
 dependencies = [
- "gstreamer",
- "gstreamer-app",
+ "fnv",
  "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
- "tilo-advisory-lock",
+ "tilo-actions",
  "tilo-app",
- "tilo-sandbox",
+ "tilo-automerge-fork",
+ "tilo-files",
+ "tilo-media",
+ "tilo-paths",
+ "tilo-resource",
  "tilo-test-env",
+ "tilo-thumbnail",
+ "tilo-vello",
+ "tilo-video-edit",
  "tracing",
  "uuid",
- "video-editor",
- "wire-frame",
  "workspace-hack",
 ]
 
@@ -22931,6 +22935,7 @@ dependencies = [
  "notify",
  "runtime-dylib",
  "runtime-portal",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -22965,6 +22970,8 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-video-edit",
+ "tilo-video-picture",
  "tilo-wake",
  "tilolang",
  "tilolang-mail",
@@ -24749,38 +24756,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "video-editor"
-version = "0.1.0"
-dependencies = [
- "fnv",
- "gstreamer",
- "gstreamer-app",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-advisory-lock",
- "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-media",
- "tilo-paths",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-video-edit",
- "tilo-winit",
- "tracing",
- "uuid",
- "video-editor",
- "workspace-hack",
-]
 
 [[package]]
 name = "vte"
@@ -28452,7 +28427,6 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-vello-shaders",
- "tilo-video-render",
  "tilo-view",
  "tilo-view-macros",
  "tilo-vision-service",
@@ -28611,7 +28585,6 @@ dependencies = [
  "vergen-lib",
  "version-compare",
  "version_check",
- "video-editor",
  "vte",
  "wacore",
  "wacore-appstate",
