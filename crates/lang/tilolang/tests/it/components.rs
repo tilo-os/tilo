@@ -961,3 +961,33 @@ tilo_test_env::scenario! {
         assert!(got[0].1.contains("a `Ring` made without `alarm`"), "{got:#?}");
     }
 }
+
+tilo_test_env::scenario! {
+    /// A `template view` expands where it is called with the names of the package that declares
+    /// it: a call it makes to one of that package's views reaches the view, never the private row
+    /// view a loop inside that view made under the same name.
+    fn a_templates_call_reaches_the_view_not_the_row_of_its_name;
+
+    phase the_rows_of_a_view_do_not_answer_for_it_in_another_package;
+    {
+        // A view with a loop inside it: the checker makes `peek_card~row0` of the loop body, and
+        // the row is a private part of the view it is written in.
+        let shell = crate::common::compile(
+            "app t.a \"A\"\n\
+             type Peek {\n    hints: Collection<Text>\n}\n\
+             /// The keys a held key reaches\n\
+             view peek_card(p: Peek) {\n    stack {\n        for h in p.hints {\n            text(h)\n        }\n    }\n}\n\
+             template view around(p: Peek) {\n    peek_card(p)\n}\n",
+        );
+        // Another package calls the template: the body is rewritten to `a.peek_card(p)` with the
+        // declaring package's mark, and that name is the declared view, not the row.
+        let caller = crate::common::compile_with(
+            "app t.b \"B\"\n\
+             use t.a as a\n\
+             view mine(p: a.Peek) {\n    a.around(p)\n}\n",
+            &[shell.meta],
+        )
+        .unwrap_or_else(|d| panic!("the caller compiles: {d:#?}"));
+        validate(&caller.wasm);
+    }
+}

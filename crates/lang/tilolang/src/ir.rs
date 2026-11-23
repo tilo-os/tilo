@@ -215,7 +215,6 @@ pub fn applies_export(id: &str) -> String {
 pub struct SynthView {
     pub func: usize,
     pub id: String,
-    pub name: String,
     /// The id of the declared view the loop was written in.
     pub owner: String,
     /// The loop's item first, then each value the body uses from around the loop.

@@ -610,3 +610,45 @@ fn build_out(package: &str) -> PathBuf {
         .join("style-builds")
         .join(package)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every style this build ships copies into the person's own package and compiles against the
+    /// shell the session runs: a copy is the shipped view's body with the shell's names
+    /// qualified, so every name that body reaches — the templates it calls, and the views those
+    /// templates call — must resolve to the shell's declared views.
+    #[test]
+    fn every_shipped_style_copies_and_compiles() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "every_shipped_style_copies_and_compiles",
+            || {
+                let root =
+                    std::env::temp_dir().join(format!("tilo-style-copies-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&root);
+                let mut env = tilo_test_env::ScopedEnv::new();
+                // A device whose store holds nothing: the shell is this build's own copy, which
+                // is what a copy is compiled against before the person installs anything.
+                env.set("TILO_APPS_DATA_DIR", root.join("apps"));
+                env.set("XDG_CACHE_HOME", root.join("cache"));
+                std::fs::create_dir_all(root.join("apps")).expect("the store's directory");
+                for name in ["strips", "frames", "frameless", "desktop"] {
+                    let view = shipped_view(name).unwrap_or_else(|why| panic!("{name}: {why}"));
+                    let dir = root.join(name);
+                    write_copy(&dir, &view).unwrap_or_else(|why| panic!("{name}: {why}"));
+                    let built = compile(&dir)
+                        .unwrap_or_else(|why| panic!("the {name} copy compiles: {why}"));
+                    assert!(
+                        built
+                            .iter()
+                            .any(|package| package.compiled.meta.app == COPY_ID),
+                        "the {name} copy compiles as {COPY_ID}"
+                    );
+                }
+                let _ = std::fs::remove_dir_all(&root);
+            },
+        );
+    }
+}

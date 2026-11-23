@@ -455,7 +455,11 @@ fn row_views(
         .iter()
         .map(|v| ViewMeta {
             id: v.id.clone(),
-            name: v.name.clone(),
+            // A row's name is the id the checker gave it (`strips~row0`), never the view it was
+            // written in: a name source can write would make this private row answer, before the
+            // declared view, to another package's marked call — a template's qualified body — and
+            // the call would read the row's item and key instead of the view's parameters.
+            name: v.id.clone(),
             doc: String::new(),
             params: params_meta(&v.params, app),
             anchors: Vec::new(),
