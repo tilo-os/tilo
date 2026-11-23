@@ -4,7 +4,7 @@ use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::{self, Read, Seek, Write},
+    io::{self, Read, Seek},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -23,7 +23,6 @@ pub(crate) const BOOTSTRAP_FD: RawFd = 49;
 pub(crate) const CLAIM_FD: RawFd = 50;
 const MAX_BYTES: u64 = 1024 * 1024;
 const GROUPS_LIMIT: usize = 65_536;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NS: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Original reader",
@@ -395,12 +394,7 @@ fn root() -> io::Result<()> {
     super::check_credentials(0)
 }
 fn namespaces() -> io::Result<Vec<(u64, u64)>> {
-    NS.iter()
-        .map(|name| {
-            let metadata = std::fs::metadata(format!("/proc/self/ns/{name}"))?;
-            Ok((metadata.dev(), metadata.ino()))
-        })
-        .collect()
+    crate::fd::namespace_identities(&NS)
 }
 fn readonly(directory: &File) -> io::Result<()> {
     let mut flags: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -415,20 +409,8 @@ fn readonly(directory: &File) -> io::Result<()> {
     Ok(())
 }
 fn check_token(token: &File) -> io::Result<()> {
-    let metadata = token.metadata()?;
-    let seals = unsafe { libc::fcntl(token.as_raw_fd(), libc::F_GET_SEALS) };
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.nlink() != 0
-        || metadata.len() > MAX_BYTES
-        || seals < 0
-        || seals & SEALS != SEALS
-    {
-        return Err(refused(
-            "Original-source token is not immutable root ownership",
-        ));
-    }
-    Ok(())
+    crate::fd::check_sealed(token, None, MAX_BYTES)
+        .map_err(|_| refused("Original-source token is not immutable root ownership"))
 }
 fn receive() -> io::Result<Facts> {
     root()?;
@@ -575,30 +557,8 @@ mod tests {
 
 // Only the already-verified signed shim emits this digest-only descriptor.
 fn publish_claim(digest: [u8; 32]) -> io::Result<()> {
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-original-claim".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut token = unsafe { File::from_raw_fd(raw) };
-    token.write_all(&digest)?;
-    token.rewind()?;
-    if unsafe { libc::fcntl(raw, libc::F_ADD_SEALS, SEALS) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if raw == CLAIM_FD {
-        if unsafe { libc::fcntl(raw, libc::F_SETFD, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        std::mem::forget(token);
-    } else if unsafe { libc::dup3(raw, CLAIM_FD, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    let token = crate::fd::sealed_memfd(c"tilo-original-claim", &digest)?;
+    crate::fd::publish_at_fd(token, CLAIM_FD)
 }
 /// Compare an original request with the digest inherited from the signed shim.
 pub fn verify_original_read_claim(expected: [u8; 32]) -> io::Result<()> {
@@ -629,6 +589,7 @@ fn verify_claim_token(token: &File, expected: [u8; 32]) -> io::Result<()> {
 #[cfg(test)]
 mod claim_tests {
     use super::*;
+    use std::io::Write as _;
     #[test]
     fn original_read_claim_refuses_named_and_unsealed_descriptors() {
         let mut ordinary = tempfile::tempfile().unwrap();
@@ -648,20 +609,5 @@ fn seal_facts(facts: &Facts) -> io::Result<File> {
         return Err(refused("Original-source token exceeds bound"));
     }
     // No named path can replace this root-authored inherited descriptor.
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-original-source".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut token = unsafe { File::from_raw_fd(raw) };
-    token.write_all(&bytes)?;
-    token.rewind()?;
-    if unsafe { libc::fcntl(token.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(token)
+    crate::fd::sealed_memfd(c"tilo-original-source", &bytes)
 }

@@ -52,27 +52,8 @@ impl HeldReadView {
     }
 }
 fn held_inode(file: &File) -> io::Result<u64> {
-    let mut bytes = Vec::new();
-    File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?
-        .take(16385)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 16384 {
-        return Err(refused("Target held read fdinfo bound exceeded"));
-    }
-    let mut found = None;
-    for line in std::str::from_utf8(&bytes)
-        .map_err(io::Error::other)?
-        .lines()
-    {
-        if let Some(value) = line.strip_prefix("ino:") {
-            let value = value.trim();
-            if found.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(refused("Target held read inode malformed"));
-            }
-            found = Some(value.parse::<u64>().map_err(io::Error::other)?);
-        }
-    }
-    found
+    crate::fd::fdinfo_u64(file, b"ino:", 16384)
+        .map_err(|_| refused("Target held read inode malformed"))?
         .filter(|value| *value != 0)
         .ok_or_else(|| refused("Target held read inode unavailable"))
 }

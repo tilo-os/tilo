@@ -133,40 +133,15 @@ fn mount_entry(id: u64) -> io::Result<Option<(bool, bool)>> {
         return Err(refused("Exposure mountinfo bound exceeded"));
     }
     let mut found = None;
-    for row in bytes.split(|b| *b == b'\n').filter(|r| !r.is_empty()) {
-        let fields: Vec<&[u8]> = row.split(|b| *b == b' ').collect();
-        let parse = |v: &[u8]| -> io::Result<u64> {
-            if v.is_empty() || !v.iter().all(u8::is_ascii_digit) {
-                return Err(refused("Exposure mount row malformed"));
-            }
-            std::str::from_utf8(v)
-                .map_err(io::Error::other)?
-                .parse()
-                .map_err(io::Error::other)
-        };
-        if fields.len() < 10 {
-            return Err(refused("Exposure mount row truncated"));
-        }
-        let [mount, parent, _, _, _, options, ..] = fields.as_slice() else {
-            return Err(refused("Exposure mount row truncated"));
-        };
-        let rowid = parse(mount)?;
-        parse(parent)?;
-        let split = fields
-            .iter()
-            .position(|f| *f == b"-")
-            .ok_or_else(|| refused("Exposure mount row separator missing"))?;
-        if split < 6 || split.checked_add(4) != Some(fields.len()) {
-            return Err(refused("Exposure mount row malformed"));
-        }
-        if rowid == id {
+    for row in crate::mountinfo::parse(&bytes, 4 * 1024 * 1024)
+        .map_err(|_| refused("Exposure mount row malformed"))?
+    {
+        if row.id == id {
             if found.is_some() {
                 return Err(refused("Exposure mount ID duplicated"));
             }
             found = Some((
-                !fields
-                    .get(6..split)
-                    .ok_or_else(|| refused("Exposure mount row malformed"))?
+                !row.optional
                     .iter()
                     .any(|v| v.starts_with(b"shared:") || v.starts_with(b"master:")),
                 [
@@ -175,7 +150,7 @@ fn mount_entry(id: u64) -> io::Result<Option<(bool, bool)>> {
                     b"noexec".as_slice(),
                 ]
                 .iter()
-                .all(|v| options.split(|b| *b == b',').any(|f| f == *v)),
+                .all(|v| row.options.split(|b| *b == b',').any(|f| f == *v)),
             ));
         }
     }
@@ -191,32 +166,8 @@ fn mounted_file(path: &std::path::Path) -> io::Result<File> {
         .open(path)
 }
 fn held_inode(file: &File) -> io::Result<u64> {
-    let mut bytes = Vec::new();
-    File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?
-        .take(16385)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 16384 {
-        return Err(refused("Exposure fdinfo bound exceeded"));
-    }
-    let mut found = None;
-    for row in bytes.split(|b| *b == b'\n') {
-        if let Some(value) = row.strip_prefix(b"ino:") {
-            if found.is_some() {
-                return Err(refused("Exposure fdinfo inode duplicated"));
-            }
-            let value = value.trim_ascii();
-            if value.is_empty() || !value.iter().all(u8::is_ascii_digit) {
-                return Err(refused("Exposure fdinfo inode malformed"));
-            }
-            found = Some(
-                std::str::from_utf8(value)
-                    .map_err(io::Error::other)?
-                    .parse()
-                    .map_err(io::Error::other)?,
-            );
-        }
-    }
-    found
+    crate::fd::fdinfo_u64(file, b"ino:", 16384)
+        .map_err(|_| refused("Exposure fdinfo inode malformed"))?
         .filter(|v| *v != 0)
         .ok_or_else(|| refused("Exposure fdinfo inode absent"))
 }
@@ -470,18 +421,7 @@ impl HeldViewExposure {
     }
 }
 fn kernel_stopped(fd: &OwnedFd) -> io::Result<bool> {
-    let mut p = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if unsafe { libc::poll(&raw mut p, 1, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if p.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-        return Err(refused("Exposure pidfd observation failed"));
-    }
-    Ok(p.revents & libc::POLLIN != 0)
+    crate::fd::pidfd_exited(fd).map_err(|_| refused("Exposure pidfd observation failed"))
 }
 impl Drop for HeldViewExposure {
     fn drop(&mut self) {
@@ -617,15 +557,7 @@ impl FixtureExposure {
         let Some(fd) = &self.inner.consumer else {
             return Ok(false);
         };
-        let mut p = libc::pollfd {
-            fd: fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        if unsafe { libc::poll(&raw mut p, 1, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(p.revents & libc::POLLIN != 0)
+        crate::fd::pidfd_exited(fd)
     }
     pub fn retire(&mut self) -> io::Result<()> {
         self.inner.retire()?;

@@ -4,7 +4,6 @@ use super::{AsRawFd, File, OpenOptionsExt, Path, PathBuf, identity, io, refuse};
 use std::{
     io::Read,
     os::{fd::FromRawFd, unix::ffi::OsStrExt},
-    path::Component,
 };
 const TABLE_MAX: usize = 4 * 1024 * 1024;
 #[derive(PartialEq, Eq)]
@@ -114,18 +113,11 @@ fn reopen(path: &Path) -> io::Result<File> {
         .open(path)
 }
 fn literal(path: &Path) -> io::Result<()> {
-    let bytes = path.as_os_str().as_bytes();
-    if !path.is_absolute()
-        || bytes.len() > 65536
-        || bytes.contains(&0)
-        || bytes.ends_with(b" (deleted)")
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(refuse("Held source coordinate is not literal and present"));
+    if crate::mountinfo::literal(path) {
+        Ok(())
+    } else {
+        Err(refuse("Held source coordinate is not literal and present"))
     }
-    Ok(())
 }
 fn selected_mount(wanted: u64) -> io::Result<Mount> {
     let mut bytes = Vec::new();
@@ -135,89 +127,26 @@ fn selected_mount(wanted: u64) -> io::Result<Mount> {
     if bytes.len() > TABLE_MAX {
         return Err(refuse("Kernel mount table exceeds bound"));
     }
+    let rows = crate::mountinfo::parse(&bytes, TABLE_MAX)
+        .map_err(|_| refuse("Kernel mount table malformed"))?;
     let mut result = None;
-    for line in bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let fields = line.split(|byte| *byte == b' ').collect::<Vec<_>>();
-        if fields.len() < 10 {
-            return Err(refuse("Kernel mount table malformed"));
-        }
-        let id = number(fields.first().ok_or(io::ErrorKind::InvalidData)?)?;
-        if id != wanted {
+    for row in rows {
+        if row.id != wanted {
             continue;
         }
         if result.is_some() {
             return Err(refuse("Kernel mount identifier repeated"));
         }
-        let device = fields
-            .get(2)
-            .ok_or(io::ErrorKind::InvalidData)?
-            .split(|byte| *byte == b':')
-            .collect::<Vec<_>>();
-        if device.len() != 2 {
-            return Err(refuse("Kernel mount device malformed"));
-        }
-        let separator = fields
-            .iter()
-            .position(|field| *field == b"-")
-            .ok_or_else(|| refuse("Kernel mount filesystem missing"))?;
-        if separator < 6
-            || fields.len() != separator.checked_add(4).ok_or(io::ErrorKind::InvalidData)?
-        {
-            return Err(refuse("Kernel mount filesystem malformed"));
-        }
-        let filesystem = fields
-            .get(separator.checked_add(1).ok_or(io::ErrorKind::InvalidData)?)
-            .ok_or(io::ErrorKind::InvalidData)?
-            .to_vec();
-        let root = decode(fields.get(3).ok_or(io::ErrorKind::InvalidData)?)?;
-        let point = decode(fields.get(4).ok_or(io::ErrorKind::InvalidData)?)?;
-        literal(&root)?;
-        literal(&point)?;
+        literal(&row.root)?;
+        literal(&row.point)?;
         result = Some(Mount {
-            device: (
-                u32::try_from(number(device.first().ok_or(io::ErrorKind::InvalidData)?)?)
-                    .map_err(io::Error::other)?,
-                u32::try_from(number(device.get(1).ok_or(io::ErrorKind::InvalidData)?)?)
-                    .map_err(io::Error::other)?,
-            ),
-            root,
-            point,
-            filesystem,
+            device: (row.major, row.minor),
+            root: row.root,
+            point: row.point,
+            filesystem: row.fs_type,
         });
     }
     result.ok_or_else(|| refuse("Held source mount is absent from current namespace"))
-}
-fn number(bytes: &[u8]) -> io::Result<u64> {
-    std::str::from_utf8(bytes)
-        .map_err(io::Error::other)?
-        .parse()
-        .map_err(io::Error::other)
-}
-fn decode(bytes: &[u8]) -> io::Result<PathBuf> {
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut remaining = bytes;
-    while let Some((&byte, rest)) = remaining.split_first() {
-        if byte != b'\\' {
-            decoded.push(byte);
-            remaining = rest;
-            continue;
-        }
-        let (encoded, rest) = rest
-            .split_at_checked(3)
-            .ok_or_else(|| refuse("Kernel mount escape truncated"))?;
-        decoded.push(match encoded {
-            b"040" => b' ',
-            b"011" => b'\t',
-            b"012" => b'\n',
-            b"134" => b'\\',
-            _ => return Err(refuse("Kernel mount escape unsupported")),
-        });
-        remaining = rest;
-    }
-    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&decoded)))
 }
 
 #[cfg(test)]
@@ -227,7 +156,10 @@ mod tests {
     use super::*;
     use std::{
         ffi::CString,
-        os::unix::fs::{MetadataExt, PermissionsExt},
+        os::unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, PermissionsExt},
+        },
         time::{Duration, Instant},
     };
     use tilo_test_env::SpawnUnderEnvLock as _;
@@ -515,7 +447,7 @@ mod tests {
             .filter(|line| {
                 line.split(|byte| *byte == b' ')
                     .next()
-                    .is_some_and(|id| number(id).is_ok_and(|id| id == mount_id))
+                    .is_some_and(|id| id.parse::<u64>().is_ok_and(|id| id == mount_id))
             })
             .collect();
         assert_eq!(rows.len(), 1);

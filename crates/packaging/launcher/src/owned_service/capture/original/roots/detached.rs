@@ -1,8 +1,8 @@
 //! Fresh, nonrecursive detached copies of already authenticated held roots. Neither
 //! caller paths nor serialized records can construct this ownership.
 use super::{
-    AsRawFd, Component, File, FromRawFd, Inputs, MetadataExt, OpenOptionsExt, OsStrExt, Path,
-    PathBuf, Projection, RawFd, check_input, identity, io, refused, root, validate,
+    AsRawFd, File, FromRawFd, Inputs, MetadataExt, OpenOptionsExt, Path, PathBuf, Projection,
+    RawFd, check_input, identity, io, refused, root, validate,
 };
 use sha2::{Digest, Sha256};
 
@@ -137,45 +137,29 @@ impl Topology {
         }
         let mut selected = false;
         let mut ids = std::collections::BTreeSet::new();
-        for line in table
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
+        for row in crate::mountinfo::parse(&table, TOPOLOGY_MAX)
+            .map_err(|_| refused("Approved root mount topology is malformed"))?
         {
-            let fields = line.split(|byte| *byte == b' ').collect::<Vec<_>>();
-            if fields.len() < 10 || !fields.contains(&b"-".as_slice()) {
-                return Err(refused("Approved root mount topology is malformed"));
-            }
-            let id = number(fields.first().ok_or(io::ErrorKind::InvalidData)?)?;
-            if id == 0 || !ids.insert(id) {
+            if row.id == 0 || !ids.insert(row.id) {
                 return Err(refused("Approved root mount identifier differs"));
             }
-            number(fields.get(1).ok_or(io::ErrorKind::InvalidData)?)?;
-            let point = decode(fields.get(4).ok_or(io::ErrorKind::InvalidData)?)?;
-            literal(&point)?;
-            if id != held.2 && point.starts_with(&name) {
+            literal(&row.point)?;
+            if row.id != held.2 && row.point.starts_with(&name) {
                 return Err(refused(
                     "Approved root contains an unapproved descendant mount",
                 ));
             }
-            if id == held.2 {
-                let device = fields
-                    .get(2)
-                    .ok_or(io::ErrorKind::InvalidData)?
-                    .split(|byte| *byte == b':')
-                    .collect::<Vec<_>>();
-                if device.len() != 2
-                    || (
-                        number(device.first().ok_or(io::ErrorKind::InvalidData)?)?,
-                        number(device.get(1).ok_or(io::ErrorKind::InvalidData)?)?,
-                    ) != (
+            if row.id == held.2 {
+                if (u64::from(row.major), u64::from(row.minor))
+                    != (
                         u64::from(libc::major(held.0)),
                         u64::from(libc::minor(held.0)),
                     )
-                    || !name.starts_with(&point)
+                    || !name.starts_with(&row.point)
                 {
                     return Err(refused("Approved root kernel mount coordinate differs"));
                 }
-                literal(&decode(fields.get(3).ok_or(io::ErrorKind::InvalidData)?)?)?;
+                literal(&row.root)?;
                 selected = true;
             }
         }
@@ -226,50 +210,13 @@ impl Topology {
         Ok(())
     }
 }
-fn number(bytes: &[u8]) -> io::Result<u64> {
-    std::str::from_utf8(bytes)
-        .map_err(io::Error::other)?
-        .parse()
-        .map_err(io::Error::other)
-}
 fn literal(path: &Path) -> io::Result<()> {
-    let bytes = path.as_os_str().as_bytes();
-    if !path.is_absolute()
-        || bytes.len() > 65536
-        || bytes.contains(&0)
-        || bytes.ends_with(b" (deleted)")
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(refused("Approved root topology coordinate is not literal"));
+    if crate::mountinfo::literal(path) {
+        Ok(())
+    } else {
+        Err(refused("Approved root topology coordinate is not literal"))
     }
-    Ok(())
 }
-fn decode(bytes: &[u8]) -> io::Result<PathBuf> {
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut remaining = bytes;
-    while let Some((&byte, rest)) = remaining.split_first() {
-        if byte != b'\\' {
-            decoded.push(byte);
-            remaining = rest;
-            continue;
-        }
-        let (encoded, rest) = rest
-            .split_at_checked(3)
-            .ok_or_else(|| refused("Approved root mount escape is truncated"))?;
-        decoded.push(match encoded {
-            b"040" => b' ',
-            b"011" => b'\t',
-            b"012" => b'\n',
-            b"134" => b'\\',
-            _ => return Err(refused("Approved root mount escape is unsupported")),
-        });
-        remaining = rest;
-    }
-    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&decoded)))
-}
-
 #[cfg(test)]
 #[cfg(feature = "native-qualification")]
 mod tests {
@@ -277,7 +224,7 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::io::Read;
-    use std::os::unix::process::CommandExt;
+    use std::os::unix::{ffi::OsStrExt, process::CommandExt};
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
     use tilo_test_env::SpawnUnderEnvLock as _;

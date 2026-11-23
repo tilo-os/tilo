@@ -50,6 +50,11 @@ pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 /// After [`USH_LAUNCH_MAGIC`]: a little-endian `u32` length, then
 /// `{"protocol":1,"app_id":"…","workspace":"…"}`.
 const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
+
+/// Big-endian `u32` length-prefixed JSON for the retained-view and consuming-bootstrap channels.
+pub(crate) fn json_framing(limit: usize) -> Framing {
+    Framing::big_endian(limit).reject_empty()
+}
 /// Document media.
 pub const BLOB_SERVICE: &str = "blobs";
 /// The filesystem daemon's document-media socket (`runtime_fs::blobs`).

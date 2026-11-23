@@ -10,8 +10,8 @@ use std::{
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::{
-            ffi::{OsStrExt, OsStringExt},
-            fs::{FileExt, MetadataExt, OpenOptionsExt},
+            ffi::OsStringExt,
+            fs::{MetadataExt, OpenOptionsExt},
             net::UnixStream,
         },
     },
@@ -34,7 +34,6 @@ pub(crate) const READY_FD: RawFd = 54;
 pub const WORKER_ARG: &str = "--tilo-retained-target-projection";
 pub const PACKAGE_ID: &str = "so.tilo.imager.home-export";
 const MAX_RECORD: u64 = 16384;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NAMESPACES: [&str; 6] = ["mnt", "pid", "net", "ipc", "uts", "user"];
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Target projection",
@@ -107,13 +106,7 @@ fn validate_name(name: &[u8]) -> io::Result<()> {
     Ok(())
 }
 fn namespaces() -> io::Result<Vec<(u64, u64)>> {
-    NAMESPACES
-        .iter()
-        .map(|name| {
-            let m = std::fs::metadata(format!("/proc/self/ns/{name}"))?;
-            Ok((m.dev(), m.ino()))
-        })
-        .collect()
+    crate::fd::namespace_identities(&NAMESPACES)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,43 +191,10 @@ fn seal(record: &Record) -> io::Result<File> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD {
         return Err(refused("Target bootstrap bound exceeded"));
     }
-    // SAFETY: literal name and fixed flags create a private sealable descriptor.
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-target-projection".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut file = unsafe { File::from_raw_fd(raw) };
-    file.write_all(&bytes)?;
-    if unsafe { libc::fcntl(raw, libc::F_ADD_SEALS, SEALS) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(file)
+    crate::fd::sealed_memfd(c"tilo-target-projection", &bytes)
 }
 fn receive_record(file: &File) -> io::Result<Record> {
-    let m = file.metadata()?;
-    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-    let name = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    if !m.is_file()
-        || m.uid() != 0
-        || m.nlink() != 0
-        || m.len() == 0
-        || m.len() > MAX_RECORD
-        || seals < 0
-        || seals & SEALS != SEALS
-        || !name
-            .as_os_str()
-            .as_bytes()
-            .starts_with(b"/memfd:tilo-target-projection")
-    {
-        return Err(refused("Target bootstrap lacks sealed root ownership"));
-    }
-    let mut bytes = vec![0; usize::try_from(m.len()).map_err(io::Error::other)?];
-    file.read_exact_at(&mut bytes, 0)?;
+    let bytes = crate::fd::read_sealed(file, Some(b"/memfd:tilo-target-projection"), MAX_RECORD)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 fn duplicate(fd: RawFd) -> io::Result<File> {
@@ -245,30 +205,11 @@ fn duplicate(fd: RawFd) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(raw) })
 }
 fn mount_id(file: &File) -> io::Result<u64> {
-    let mut bytes = Vec::new();
-    File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?
-        .take(16385)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 16384 {
-        return Err(refused("Target fdinfo bound exceeded"));
-    }
-    let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
-    let mut found = None;
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("mnt_id:") {
-            if found.is_some() {
-                return Err(refused("Target mount identity duplicated"));
-            }
-            let value = value.trim();
-            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(refused("Target mount identity malformed"));
-            }
-            found = Some(value.parse::<u64>().map_err(io::Error::other)?);
-        }
-    }
-    found
-        .filter(|id| *id != 0)
-        .ok_or_else(|| refused("Target mount identity unavailable"))
+    crate::fd::mount_id(
+        file,
+        rustix::fs::AtFlags::STATX_DONT_SYNC,
+        "Target mount identity unavailable",
+    )
 }
 /// Canonical runner ownership before namespace creation.
 struct LaunchState {

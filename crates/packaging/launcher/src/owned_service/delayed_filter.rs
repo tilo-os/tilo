@@ -2,14 +2,12 @@
 use sha2::{Digest, Sha256};
 use std::ffi::CStr;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 const CHILD_FD: RawFd = crate::services::BASELINE_SECCOMP_CHILD_FD;
 const MAX_BYTES: usize = 4096 * 8;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 
 /// Which service holds a baseline: it names the refusals and the memfd, and checks the caller's root
 /// ownership its own way.
@@ -74,16 +72,9 @@ fn binding(bytes: &[u8]) -> io::Result<Binding> {
 fn verify(ownership: Ownership, file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
     expected.validate(ownership)?;
     let metadata = file.metadata()?;
-    // SAFETY: fcntl inspects the held descriptor; no pointer argument is used.
-    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-    let name = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    if metadata.uid() != 0
-        || metadata.nlink() != 0
-        || metadata.len() != u64::from(expected.bytes)
-        || seals < 0
-        || seals & SEALS != SEALS
-        || !name.as_os_str().as_bytes().starts_with(b"/memfd:")
-    {
+    crate::fd::check_sealed(file, Some(b"/memfd:"), u64::from(expected.bytes))
+        .map_err(|_| ownership.refused("baseline filter is not sealed root ownership"))?;
+    if metadata.len() != u64::from(expected.bytes) {
         return Err(ownership.refused("baseline filter is not sealed root ownership"));
     }
     let bytes = read_bytes(ownership, file)?;
@@ -102,23 +93,7 @@ impl Filter {
         }
         let bytes = read_bytes(ownership, &source)?;
         let binding = binding(&bytes)?;
-        // SAFETY: the static name and fixed flags create a private sealable memfd.
-        let raw = unsafe {
-            libc::memfd_create(
-                ownership.memfd.as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: memfd_create returned a new uniquely owned descriptor.
-        let mut file = unsafe { File::from_raw_fd(raw) };
-        file.write_all(&bytes)?;
-        // SAFETY: these fixed seals irreversibly freeze the held private memfd.
-        if unsafe { libc::fcntl(raw, libc::F_ADD_SEALS, SEALS) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let file = crate::fd::sealed_memfd(ownership.memfd, &bytes)?;
         verify(ownership, &file, &binding)?;
         Ok(Self {
             file,
@@ -160,6 +135,7 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
     const OWNERSHIP: Ownership = Ownership {
         label: "Test",
         memfd: c"tilo-test-baseline",

@@ -66,12 +66,10 @@ impl NamespaceProof {
         if !peer.current() || peer.pid() != self.launcher || self.observed_stopped()? {
             return Err(refused("ordinary namespace launcher is no longer current"));
         }
-        let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", self.init.as_raw_fd()))?;
-        let actual = info
-            .lines()
-            .find_map(|line| line.strip_prefix("Pid:"))
-            .and_then(|value| value.trim().parse::<u32>().ok());
-        if actual != Some(self.pid) || parent(self.outer)? != self.launcher {
+        let actual = crate::fd::fdinfo_u64(&self.init, b"Pid:", 4096)
+            .ok()
+            .flatten();
+        if actual != Some(u64::from(self.pid)) || parent(self.outer)? != self.launcher {
             return Err(refused(
                 "ordinary namespace pidfd or launcher ancestry differs",
             ));
@@ -118,12 +116,7 @@ impl NamespaceProof {
                 return Err(refused("executing task belongs to another namespace"));
             }
         }
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.pid))?;
-        let start_time = stat
-            .rsplit_once(") ")
-            .and_then(|(_, fields)| fields.split_whitespace().nth(19))
-            .and_then(|value| value.parse().ok())
-            .ok_or(io::ErrorKind::InvalidData)?;
+        let start_time = tilo_process::start_time(self.pid).ok_or(io::ErrorKind::InvalidData)?;
         if !member.belongs_to(self.pid, start_time) {
             return Err(refused("executing task is outside consuming init"));
         }
@@ -238,18 +231,7 @@ impl NamespaceProof {
     }
     /// Observe exact task exit, even after admission or session revocation.
     pub fn observed_stopped(&self) -> io::Result<bool> {
-        let mut fd = libc::pollfd {
-            fd: self.init.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        if unsafe { libc::poll(&raw mut fd, 1, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        Ok(fd.revents & libc::POLLIN != 0)
+        crate::fd::pidfd_exited(&self.init)
     }
 }
 

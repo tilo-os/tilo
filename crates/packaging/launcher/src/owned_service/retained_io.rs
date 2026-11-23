@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     fs::File,
-    io::{self, Read, Seek, Write},
+    io::{self, Read, Seek},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -25,7 +25,6 @@ pub const NATIVE_OWNER_FD: i32 = 59;
 const SOURCE_FD: RawFd = 44;
 pub(crate) const TOKEN_FD: RawFd = 49;
 const MAX_TOKEN: u64 = 1024 * 1024;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NAMESPACES: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Retained source",
@@ -36,13 +35,7 @@ fn root() -> io::Result<()> {
     super::capture::check_credentials(0)
 }
 fn namespaces() -> io::Result<Vec<(u64, u64)>> {
-    NAMESPACES
-        .iter()
-        .map(|name| {
-            let m = std::fs::metadata(format!("/proc/self/ns/{name}"))?;
-            Ok((m.dev(), m.ino()))
-        })
-        .collect()
+    crate::fd::namespace_identities(&NAMESPACES)
 }
 /// Root actor's inseparable, nonserializable authority.
 pub trait RetainedIoAuthority: super::ServiceAuthority {
@@ -509,18 +502,8 @@ fn source_metadata(source: &File, directory: bool) -> io::Result<Option<File>> {
     Ok(Some(file.into()))
 }
 fn check_token(token: &File) -> io::Result<()> {
-    let m = token.metadata()?;
-    let seals = unsafe { libc::fcntl(token.as_raw_fd(), libc::F_GET_SEALS) };
-    if !m.is_file()
-        || m.uid() != 0
-        || m.nlink() != 0
-        || m.len() > MAX_TOKEN
-        || seals < 0
-        || seals & SEALS != SEALS
-    {
-        return Err(refused("Retained token lacks immutable root ownership"));
-    }
-    Ok(())
+    crate::fd::check_sealed(token, None, MAX_TOKEN)
+        .map_err(|_| refused("Retained token lacks immutable root ownership"))
 }
 fn seal(facts: &Token) -> io::Result<File> {
     let bytes = serde_json::to_vec(facts)?;
@@ -531,22 +514,7 @@ fn seal_bytes(bytes: &[u8]) -> io::Result<File> {
     if bytes.len() as u64 > MAX_TOKEN {
         return Err(refused("Retained token too large"));
     }
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-retained-io".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut f = unsafe { File::from_raw_fd(raw) };
-    f.write_all(bytes)?;
-    f.rewind()?;
-    if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(f)
+    crate::fd::sealed_memfd(c"tilo-retained-io", bytes)
 }
 /// Signed shim only: sealed root token, actual namespace/source identity and ambient descriptor closure
 /// precede credential drop.

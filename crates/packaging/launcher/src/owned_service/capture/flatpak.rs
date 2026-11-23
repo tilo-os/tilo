@@ -18,7 +18,6 @@ const INVENTORY_FD: RawFd = 1088;
 const FIRST_SOURCE_FD: RawFd = 1089;
 // Matches canonical bounded HandoffInventory; only its FD crosses the request.
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalFlatpakProjection {
@@ -62,7 +61,7 @@ impl FlatpakSources {
             || seals < 0
             || metadata.uid() != 0
             || metadata.len() != self.binding.inventory_len
-            || seals & SEALS != SEALS
+            || seals & crate::fd::SEALS != crate::fd::SEALS
         {
             return Err(refused());
         }
