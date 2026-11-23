@@ -770,6 +770,17 @@ fn governed(provider: &str) -> bool {
 }
 
 impl ActionProvider for Answers {
+    /// The person's own workspace's records, read here by a device of theirs from the moment it
+    /// entered and by their agents' grants as their scope reaches ([`super::person_reads`]); every
+    /// other record by the apps this host serves.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let workspaces = self.work.turns.get()?.clone();
+        Some(Arc::new(super::person_reads::PersonReads {
+            workspaces,
+            apps: self.apps().and_then(ActionProvider::resource_reads),
+        }))
+    }
+
     fn serves(&self, provider: &str) -> bool {
         governed(provider)
             || provider == HOST_ACTIONS_PROVIDER

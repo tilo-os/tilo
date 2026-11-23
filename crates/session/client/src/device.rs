@@ -40,6 +40,11 @@ const UNANSWERED_PAUSE: Wait = Wait::from_millis(250);
 /// How long an operation of the host's own that was still running past
 /// [`ANSWERING`] is followed before it is given up on.
 const FINISHING: Wait = Wait::from_secs(120);
+/// How many reads of the person's list a device makes while the record is still arriving on the
+/// host, each held until it moves.
+const PERSON_LIST_READS: u32 = 4;
+/// How long one held read of the person's list waits for the record to arrive, ms.
+const PERSON_LIST_WAIT_MS: u32 = 10_000;
 
 /// A device of a person, in the workspaces its session is in.
 #[derive(Clone)]
@@ -541,6 +546,51 @@ impl Device {
                 .map_err(DeviceRefusal::from)?;
         }
         Ok(listing)
+    }
+
+    /// The person's list of their workspaces, read from the record of their own workspace on the
+    /// host through the record API ([`IDENTITY_LIST`]): each workspace by its id and the name they
+    /// last saw it by, in their order. A device reads it from the moment it entered their workspace
+    /// with its ticket, while its own copy still fills in behind; a record still arriving on the
+    /// host is waited for. An agent's grant reads the workspaces its scope reaches.
+    ///
+    /// # Errors
+    /// The host did not answer or refused, or the list did not arrive on it in time.
+    ///
+    /// [`IDENTITY_LIST`]: tilo_server_protocol::workspaces::IDENTITY_LIST
+    pub async fn person_workspaces(
+        &self,
+    ) -> Result<tilo_server_protocol::workspaces::PersonWorkspaces, DeviceRefusal> {
+        use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonWorkspaces};
+        let person = self.cert.user_public_key;
+        let actions = self.actions(WorkspaceId::from(collab_types::person_workspace(&person)));
+        let mut after: Option<String> = None;
+        for _ in 0..PERSON_LIST_READS {
+            let read = tilo_actions::remote::ResourceReadRequest {
+                workspace: tilo_server_protocol::servers::person_workspace_id(&person),
+                app: IDENTITY_LIST.0.to_owned(),
+                record: IDENTITY_LIST.1.to_owned(),
+                joined: false,
+                wait_ms: after.as_ref().map(|_| PERSON_LIST_WAIT_MS),
+                after: after.clone(),
+            };
+            let answered = actions
+                .read_record(read)
+                .await
+                .unwrap_or(Err(ActionCallError::Unanswered))
+                .map_err(|error| DeviceRefusal::of(&error))?;
+            let readings: Value = serde_json::from_str(&answered)
+                .map_err(|error| DeviceRefusal::malformed(error.to_string()))?;
+            if let Some(list) =
+                PersonWorkspaces::of_readings(&readings).map_err(DeviceRefusal::malformed)?
+            {
+                return Ok(list);
+            }
+            after = PersonWorkspaces::revision_of(&readings);
+        }
+        Err(DeviceRefusal::unanswered(
+            "your list of workspaces has not reached the host yet",
+        ))
     }
 
     /// The person's workspace list as the host keeps it: every

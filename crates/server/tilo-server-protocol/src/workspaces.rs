@@ -878,6 +878,58 @@ pub const ENTRY_SCOPE: &str = "workspace.entry";
 /// rather than being sent it.
 pub const IDENTITY_LIST: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 
+/// The person's list of their workspaces ([`IDENTITY_LIST`]), as a read of that record answers
+/// it through the record API: each workspace by its id and the name the person last saw it by, in
+/// their order. What else a list shows of a workspace is that workspace's own membership record.
+/// An agent's grant reads only the workspaces its scope reaches.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonWorkspaces {
+    pub workspaces: Vec<ListedWorkspace>,
+}
+
+/// One workspace of the person's list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListedWorkspace {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// The name the person last saw it by.
+    pub name: String,
+}
+
+impl PersonWorkspaces {
+    /// The list a record read answered (`{"revision", "records": [...]}`): `None` while the
+    /// record is still arriving, an empty list where the person's workspace holds none yet.
+    ///
+    /// # Errors
+    /// The answer names no reading of the list.
+    pub fn of_readings(readings: &serde_json::Value) -> Result<Option<Self>, String> {
+        let record = readings
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|records| records.first())
+            .ok_or("the read answered no record")?;
+        if record.get("arriving").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        if record.get("absent").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(Some(Self::default()));
+        }
+        let value = record.get("value").ok_or("the read answered no value")?;
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| format!("the person's list does not read: {error}"))
+    }
+
+    /// The revision a record read answered, which the next read of it follows past.
+    #[must_use]
+    pub fn revision_of(readings: &serde_json::Value) -> Option<String> {
+        readings
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+}
+
 /// Enter a workspace from a device that is not a member of it yet: arguments `entering` (an
 /// [`Entering`](crate::entering::Entering)) and `cert` (this device's certificate, whose key it
 /// signs the request with), answered with the

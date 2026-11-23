@@ -221,6 +221,8 @@ struct Waiting {
     /// The waits for what a watch follows to change, by correlation.
     watched: HashMap<u64, Asked<Answered<()>>>,
     surfaces: HashMap<u64, Asked<Answered<Option<String>>>>,
+    /// Record reads, by correlation: each answered with the readings as JSON text.
+    reads: HashMap<u64, Asked<Answered<String>>>,
 }
 
 /// How many invocations a session's asker keeps following. An agent that invokes all day keeps
@@ -305,6 +307,9 @@ impl Waiting {
         for (_, asked) in self.surfaces.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.reads.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
     }
 
     /// The requests past their deadline, answered as unanswered, and those whose callers left.
@@ -341,6 +346,9 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.surfaces, now) {
+            give.push(giving(asked, Err(late())));
+        }
+        for asked in expired(&mut self.reads, now) {
             give.push(giving(asked, Err(late())));
         }
     }
@@ -389,6 +397,7 @@ impl Waiting {
             && self.changes.is_empty()
             && self.watched.is_empty()
             && self.surfaces.is_empty()
+            && self.reads.is_empty()
     }
 
     /// What every request still waiting asks: what is asked again on the
@@ -403,6 +412,7 @@ impl Waiting {
         again.extend(self.changes.values().map(|asked| asked.again.clone()));
         again.extend(self.watched.values().map(|asked| asked.again.clone()));
         again.extend(self.surfaces.values().map(|asked| asked.again.clone()));
+        again.extend(self.reads.values().map(|asked| asked.again.clone()));
         again.extend(
             self.receipts
                 .values()
@@ -506,6 +516,13 @@ impl Waiting {
                 result,
             } => {
                 let asked = self.surfaces.remove(&correlation);
+                give.extend(asked.map(|asked| giving(asked, result)));
+            }
+            RemoteActionMessage::ResourceReading {
+                correlation,
+                result,
+            } => {
+                let asked = self.reads.remove(&correlation);
                 give.extend(asked.map(|asked| giving(asked, result)));
             }
             _ => {}
@@ -672,6 +689,38 @@ impl SessionActions {
         }
         self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().watched.remove(&correlation);
+            if let Some(asked) = asked {
+                asked.answer.complete(Err(error));
+            }
+        });
+        answered
+    }
+
+    /// Read the record `read` names through the device's record API: the readings as JSON text
+    /// (`{"revision", "records"}`), once they come. With `read.after`, the device answers once the
+    /// record moves past that revision or `read.wait_ms` went by, so a reader follows the record
+    /// with one held read at a time.
+    pub fn read_record(
+        &self,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<Answered<String>> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let waited = Duration::from_millis(u64::from(read.wait_ms.unwrap_or(0)));
+        let message = RemoteActionMessage::ResourceRead {
+            correlation,
+            on_behalf_of: None,
+            read,
+        };
+        let (answer, answered) = pending();
+        let mut asked = Asked::new(answer, message.clone());
+        asked.until = asked.until.checked_add(waited).unwrap_or(asked.until);
+        self.0
+            .waiting
+            .lock_recover()
+            .reads
+            .insert(correlation, asked);
+        self.0.ask(message, |error| {
+            let asked = self.0.waiting.lock_recover().reads.remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }

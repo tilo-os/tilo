@@ -562,7 +562,7 @@ impl Workspaces {
 impl Workspaces {
     /// The person's workspace list as it is in their own workspace: empty
     /// while this host does not hold that workspace.
-    async fn list_of(&self, person: &[u8; 32]) -> WorkspaceDirectory {
+    pub(super) async fn list_of(&self, person: &[u8; 32]) -> WorkspaceDirectory {
         let workspace = person_workspace_id(person);
         let device = self.serving_certificate().device_public_key;
         match person_workspace::document_on(self, &workspace, WORKSPACES).await {
@@ -744,7 +744,7 @@ impl Workspaces {
 }
 
 /// The workspaces of a directory, in the person's order.
-fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
+pub(super) fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
     let mut out = directory.list_workspaces();
     out.sort_by(|left, right| {
         let key = |entry: &WorkspaceMeta| entry.order.unwrap_or(f64::INFINITY);
