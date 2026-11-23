@@ -1149,7 +1149,13 @@ fn rows(state: &State, air_drop: &AirDrops) -> Vec<Row> {
             name: entry.name.clone(),
             direction: entry.direction,
             phase: entry.phase,
-            transferred_bytes: 0,
+            // A transfer that completed carried every byte; one that ended otherwise is not told
+            // by how far it got.
+            transferred_bytes: if entry.phase == NearbyTransferPhase::Completed {
+                entry.total_bytes
+            } else {
+                0
+            },
             total_bytes: entry.total_bytes,
         });
     }
@@ -2326,22 +2332,15 @@ mod transfers_between_devices {
                   sessions live until the whole transfer is over"
     )]
 
-    use std::os::unix::ffi::OsStrExt as _;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::platform::fabric::{FabricLink as _, SharedLink};
-    use runtime_collab::{
-        NearbyTransferCommand, NearbyTransferDestination, NearbyTransferPhase, NearbyTransferReply,
-        NearbyTransferSnapshot, NearbyTransferStatus,
-    };
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
     use tilo_network_actor::DeviceIdentity;
     use tilo_user_identity::DeviceCapabilities;
-    use tilo_workspace_service::apps::services::{
-        NearbyTransferRequestContext, NearbyTransferServices as _,
-    };
+    use tilo_workspace_service::apps::nearby_send::{NearbySend, RESOURCE, TransferState};
+    use tilo_workspace_service::apps::services::NearbyTransferServices;
 
     use super::{FILES_APP_ID, NearbyTransfer};
     use crate::platform::fabric::Continuity;
@@ -2356,36 +2355,21 @@ mod transfers_between_devices {
     /// The name of the file one device sends the other.
     const NAME: &str = "notes.txt";
 
-    /// One of the person's devices, its transfer engine, and its Files.
+    /// One of the person's devices, and its transfer engine.
     struct Device {
         client: Client,
-        id: crate::platform::fabric::DeviceId,
         nearby: Arc<NearbyTransfer>,
-        /// Files, as the broker would admit it on its own connection.
-        app: NearbyTransferRequestContext,
     }
 
     impl Device {
-        /// Files' answer to a command on this device.
-        fn command(&self, command: NearbyTransferCommand) -> NearbyTransferReply {
-            self.nearby
-                .command(&self.app, command)
-                .expect("Files' call is answered")
-        }
-
-        /// What Files sees of this device now.
-        fn snapshot(&self) -> NearbyTransferSnapshot {
-            match self.command(NearbyTransferCommand::Snapshot) {
-                NearbyTransferReply::Snapshot { snapshot } => snapshot,
-                other => panic!("{other:?} is not a snapshot"),
-            }
-        }
-
-        /// This device's way onto the person's fabric.
-        fn fabric(&self) -> SharedLink {
-            self.client
-                .fabric()
-                .expect("a certified device's session keeps a fabric")
+        /// Nearby Send's resource over this device's engine, in the workspace both devices show.
+        fn resource(&self) -> NearbySend {
+            NearbySend::new(
+                Arc::clone(&self.nearby) as Arc<dyn NearbyTransferServices>,
+                "ada",
+                || WORKSPACE.to_owned(),
+                |_| Ok(()),
+            )
         }
     }
 
@@ -2447,7 +2431,6 @@ mod transfers_between_devices {
         label: &str,
         folder: &Path,
         spool: &Path,
-        peer_id: u64,
     ) -> Device {
         let key = test_server::signing_key(seed);
         let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
@@ -2469,9 +2452,6 @@ mod transfers_between_devices {
             tilo_workspace_service::service::ServiceSlot::default(),
         )
         .expect("a loopback endpoint binds");
-        // The fabric names a device by the key its session proves.
-        let id = crate::platform::fabric::DeviceId::new(hex::encode(client.publisher().as_bytes()))
-            .expect("a device id");
         let nearby = NearbyTransfer::open(
             Some(
                 client
@@ -2485,19 +2465,7 @@ mod transfers_between_devices {
         .expect("a transfer engine");
         nearby.attach_authority(Arc::new(session(folder)));
         client.attach_nearby(Arc::clone(&nearby));
-        let app = NearbyTransferRequestContext::for_test(
-            peer_id,
-            FILES_APP_ID,
-            WORKSPACE,
-            &format!("files-{peer_id}"),
-            "Ada",
-        );
-        Device {
-            client,
-            id,
-            nearby,
-            app,
-        }
+        Device { client, nearby }
     }
 
     /// One pass of each session's loop, as the session's own loop makes it: what the devices sent
@@ -2524,33 +2492,28 @@ mod transfers_between_devices {
         }
     }
 
-    /// The file a snapshot lists for `name` , if it lists one.
-    fn listed(snapshot: &NearbyTransferSnapshot, name: &str) -> Option<NearbyTransferStatus> {
-        snapshot
-            .transfers
-            .iter()
-            .find(|status| status.name == name)
-            .cloned()
-    }
-
+    /// Nearby Send as its resource carries it between two of the person's devices: the laptop sends
+    /// through the resource, the session is offered the file and keeps it through its own, the file
+    /// lands whole, and the laptop's reading shows it on its way and then done.
     #[test]
-    fn files_sends_a_file_from_one_device_and_the_other_receives_it_whole() {
+    fn a_second_device_is_offered_the_file_keeps_it_and_the_sender_sees_it_go() {
         let person = person();
         let laptop_folder = tempfile::tempdir().expect("the laptop's files");
         let shell_folder = tempfile::tempdir().expect("the session's files");
         let laptop_spool = tempfile::tempdir().expect("the laptop's spool");
         let shell_spool = tempfile::tempdir().expect("the session's spool");
-        // More than one chunk of the transport's, so the bytes really move.
-        let bytes: Vec<u8> = (0..700_000_u32).map(|index| (index % 251) as u8).collect();
+        // Many chunks of the transport's, so the laptop's row is read while the bytes move.
+        let bytes: Vec<u8> = (0..8_000_000_u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
         let note = laptop_folder.path().join(NAME);
-        std::fs::write(&note, &bytes).expect("the file Files sends");
+        std::fs::write(&note, &bytes).expect("the file the laptop sends");
         let laptop = device(
             &person,
             1,
             "Laptop",
             laptop_folder.path(),
             laptop_spool.path(),
-            11,
         );
         let session = device(
             &person,
@@ -2558,87 +2521,93 @@ mod transfers_between_devices {
             "Session",
             shell_folder.path(),
             shell_spool.path(),
-            12,
         );
         laptop.client.connect(session.client.endpoint_addr());
+        let mut sender = laptop.resource();
+        let mut receiver = session.resource();
+        let act = |nearby: &mut NearbySend, action: &str, arguments: serde_json::Value| {
+            let serde_json::Value::Object(arguments) = arguments else {
+                panic!("arguments are an object");
+            };
+            nearby
+                .invoke(RESOURCE, action, &arguments)
+                .unwrap_or_else(|error| panic!("{action} is refused: {error}"));
+        };
+        let row = |nearby: &NearbySend| {
+            nearby
+                .read()
+                .expect("a reading")
+                .transfers
+                .into_iter()
+                .find(|row| row.name == NAME)
+        };
 
+        let mut device = None;
         assert!(
             until(&[&laptop, &session], || {
-                laptop.fabric().online_device_ids().contains(&session.id)
-                    && session.fabric().online_device_ids().contains(&laptop.id)
+                device = sender
+                    .read()
+                    .expect("a reading")
+                    .devices
+                    .into_iter()
+                    .find(|device| device.name == "Session" && device.reachable);
+                device.is_some()
             }),
-            "the two devices' sessions came up"
+            "the laptop lists the session as a device in reach"
+        );
+        act(
+            &mut sender,
+            "send",
+            serde_json::json!({ "items": [note.to_str().unwrap()], "device": device.unwrap().handle }),
         );
 
-        // Files on the laptop lists the session, and the session's own folder as where a file it receives
-        // would land.
-        let targets = laptop.snapshot().targets;
-        let target = targets
-            .iter()
-            .find(|target| target.label == "Session")
-            .expect("the session is a device Files may send to")
-            .handle;
-        let offered = session.snapshot().destinations;
-        let destination: NearbyTransferDestination = offered
-            .first()
-            .expect("the session's Files has a folder to receive into")
+        // The session is offered the file, and the laptop shows it waiting on the session.
+        let mut offered = None;
+        assert!(
+            until(&[&laptop, &session], || {
+                offered = row(&receiver)
+                    .filter(|row| row.incoming && row.state == TransferState::Offered);
+                offered.is_some()
+            }),
+            "the session is offered the file"
+        );
+        let waiting = row(&sender).expect("the laptop lists what it sent");
+        assert!(!waiting.incoming);
+        assert_eq!(
+            (waiting.state, waiting.progress),
+            (TransferState::Sending, 0),
+            "the laptop lists it on its way, nothing landed yet"
+        );
+        assert_eq!(waiting.peer, "Session");
+        let destination = receiver.read().expect("a reading").destinations[0]
+            .handle
             .clone();
+        act(
+            &mut receiver,
+            "accept",
+            serde_json::json!({ "transfer": offered.unwrap().handle, "destination": destination }),
+        );
 
-        let reply = laptop.command(NearbyTransferCommand::Send {
-            target,
-            source_path: note.as_os_str().as_bytes().to_vec(),
-        });
+        // The laptop shows the bytes moving, then done; the session holds them whole.
+        let mut moving = false;
         assert!(
-            matches!(reply, NearbyTransferReply::Queued { .. }),
-            "the laptop takes the file to send: {reply:?}"
+            until(&[&laptop, &session], || {
+                let sent = row(&sender).expect("the laptop lists what it sent");
+                moving |= sent.state == TransferState::Sending && sent.progress < 100;
+                sent.state == TransferState::Done
+                    && row(&receiver).is_some_and(|row| row.state == TransferState::Done)
+            }),
+            "both devices list the transfer as done"
         );
-
-        // The session's Files is asked, naming the file and nothing of its path.
-        let ask = until(&[&laptop, &session], || {
-            listed(&session.snapshot(), NAME).is_some_and(|status| {
-                status.direction == runtime_collab::NearbyTransferDirection::Receiving
-                    && status.phase == NearbyTransferPhase::AwaitingConsent
-                    && status.total_bytes == bytes.len() as u64
-            })
-        });
-        assert!(ask, "the session's Files is asked to take the file");
-        let asked = listed(&session.snapshot(), NAME).expect("the offer the session lists");
-
-        let reply = session.command(NearbyTransferCommand::Decide {
-            handle: asked.handle,
-            accept: true,
-            destination: Some(destination.handle),
-            remember_for_session: true,
-        });
-        assert_eq!(
-            reply,
-            NearbyTransferReply::Accepted,
-            "the session takes the file into its folder"
-        );
-
-        let landed = shell_folder.path().join(NAME);
         assert!(
-            until(&[&laptop, &session], || landed.is_file()),
-            "the file landed on the session"
+            moving,
+            "the laptop showed the file on its way before it was done"
         );
+        assert_eq!(row(&sender).unwrap().progress, 100);
         assert_eq!(
-            std::fs::read(&landed).expect("the received file"),
+            std::fs::read(shell_folder.path().join(NAME)).expect("the received file"),
             bytes,
             "what the session holds is what the laptop sent, byte for byte"
         );
-
-        // Both Files lists say the transfer is done, each from its own side.
-        let done = until(&[&laptop, &session], || {
-            let sent = listed(&laptop.snapshot(), NAME).is_some_and(|status| {
-                status.direction == runtime_collab::NearbyTransferDirection::Sending
-                    && status.phase == NearbyTransferPhase::Completed
-            });
-            let received = listed(&session.snapshot(), NAME).is_some_and(|status| {
-                status.direction == runtime_collab::NearbyTransferDirection::Receiving
-                    && status.phase == NearbyTransferPhase::Completed
-            });
-            sent && received
-        });
-        assert!(done, "both devices' Files list the transfer as done");
     }
 }
