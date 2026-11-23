@@ -64,6 +64,10 @@ class InstallerRelease(unittest.TestCase):
             # A tag's installer offers the media that tag built.
             self.assertIn("release-catalog/imager", found[f"release/linux-{arch}"]["needs"])
             self.assertIn(f"medium/imager-{arch}", found["release-catalog/imager"]["needs"])
+            for platform in ("windows", "macos"):
+                self.assertEqual(["tag:imager-v*"], found[f"release/{platform}-{arch}"]["on"])
+                self.assertIn("release-catalog/imager", found[f"release/{platform}-{arch}"]["needs"])
+                self.assertEqual([f"release/{platform}-{arch}"], found[f"sign/{platform}-{arch}"]["needs"])
         publish = found["publish-github-release"]
         self.assertEqual(["tag:imager-v*"], publish["on"])
         for arch in ARCHES:

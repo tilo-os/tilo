@@ -4395,12 +4395,32 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# A release tag's Windows build: the same build and package as above, embedding the media
+# catalogue the tag built (release-catalog/imager), and the only one sign/windows-{arch} signs.
+[[check]]
+name = "release/windows-{arch}"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = """set -eu
+export TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
+bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/release-build
+bash apps/imager/packaging/package-windows.sh {arch} /target/windows/{arch}/release-build/imager.exe /target/windows/{arch}/release-package
+"""
+needs = ["build/windows-sdk-{arch}", "release-catalog/imager"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+requires = ["arch=x86_64"]
+outputs = ["/target/windows/{arch}/release-build/*", "/target/windows/{arch}/release-package/*"]
+cache = false
+on = ["tag:imager-v*"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "sign/windows-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target/windows/{arch}/package /target/windows/{arch}/signed"
-needs = ["build/windows-{arch}", "package/windows-{arch}"]
+run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/release-build /target/windows/{arch}/release-package /target/windows/{arch}/signed"
+needs = ["release/windows-{arch}"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner" }
 requires = ["arch=x86_64"]
@@ -4469,12 +4489,32 @@ arch = ["aarch64", "x86_64"]
 # Developer ID identity the stored secret holds, notarizes it and staples the
 # ticket; the signed DMG is then mounted, started and checked as a person
 # receives it, Gatekeeper included. Only a tag run holds any of this.
+# A release tag's macOS build: the same build and package as above, embedding the media catalogue
+# the tag built (release-catalog/imager), and the only one sign/macos-{arch} signs.
+[[check]]
+name = "release/macos-{arch}"
+# Installs packages (rustup targets) from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+export TILO_VERSION="${T_REF#tag:imager-v}" TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
+bash tools/ci/macos/build-imager.sh {arch} "$CARGO_TARGET_DIR/macos/{arch}/release-build"
+bash apps/imager/packaging/package-macos.sh {arch} "$CARGO_TARGET_DIR/macos/{arch}/release-build/imager" "$CARGO_TARGET_DIR/macos/{arch}/release-package"
+'''
+needs = ["release-catalog/imager"]
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/macos/{arch}/release-build/*", "/target/macos/{arch}/release-package/*"]
+cache = false
+timeout_secs = 10800
+on = ["tag:imager-v*"]
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
 [[check]]
 name = "sign/macos-{arch}"
 # Takes the Developer ID certificate and Apple notarization credentials from t's secrets, and reaches Apple's notary service.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/macos/sign-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/build\" \"$CARGO_TARGET_DIR/macos/{arch}/package\" \"$CARGO_TARGET_DIR/macos/{arch}/signed\""
-needs = ["build/macos-{arch}", "package/macos-{arch}"]
+run = "bash tools/ci/macos/sign-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/release-build\" \"$CARGO_TARGET_DIR/macos/{arch}/release-package\" \"$CARGO_TARGET_DIR/macos/{arch}/signed\""
+needs = ["release/macos-{arch}"]
 requires = ["os=macos", "arch=arm64"]
 outputs = ["/target/macos/{arch}/signed/*"]
 cache = false
