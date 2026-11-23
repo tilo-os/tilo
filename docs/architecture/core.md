@@ -1087,6 +1087,11 @@ and don't hold a finished removal back to batch it with unrelated work. No
 landing dates: report what is done, what is on a branch, and what a push
 waits on, if anything.
 
+Every push removes more lines than it adds. The one exception is a fix for
+a regression a person sees, with the test that shows it. A fix that adds a
+shared helper deletes the copies the helper replaces in the same push. A
+session whose push comes out net positive stops and asks before pushing.
+
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
 | Devices, identity | `tilo-enrollment`, `tilo-device-admin`, `threshold-identity`, nearby pairing and Settings' old add-a-device flow, the browser root, and the page's own copy of `device-key.mjs`'s reader | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
