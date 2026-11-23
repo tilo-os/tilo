@@ -516,7 +516,7 @@ impl Task {
         let delivered = match sending.drive(
             &self.replicas.owner(),
             workspace,
-            |write| self.replicas.owner().sent(workspace, &write.bytes),
+            |write| self.replicas.owner().sent(workspace, write.bytes),
             |write| {
                 let (channel, body) = (write.channel, write.bytes.to_vec());
                 let payload = match write.retention {

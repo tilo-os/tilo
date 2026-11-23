@@ -541,6 +541,38 @@ impl NativeWorkspaceOwner {
         self.publish_document(workspace, &candidate, record, None)
     }
 
+    /// This device's latest compaction of `record` of `app` in `workspace`, as the frame a link
+    /// carries, once it is drafted: `None` while none is.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub fn drafted_compaction(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.with_current(workspace, |view| {
+            Ok(view.record.frames.iter().rev().find_map(|frame| {
+                let message = NeighbourMsg::decode(&frame.bytes).ok()?;
+                match message {
+                    NeighbourMsg::AppDocument {
+                        app_id,
+                        document_id,
+                        envelope,
+                        ..
+                    } if app_id == app
+                        && document_id == record
+                        && envelope.kind == collab_types::OpKind::Compaction
+                        && !collab_types::is_compaction_segment(&envelope) =>
+                    {
+                        Some(frame.bytes.clone())
+                    }
+                    _ => None,
+                }
+            }))
+        })
+    }
+
     /// This device's writes to each record of `workspace` a peer was not sent yet.
     #[must_use]
     pub fn document_writes(

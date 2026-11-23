@@ -27,7 +27,7 @@ mod person_records;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
-use neighbour_wire::NeighbourMsg;
+pub use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};
 #[cfg(test)]
 mod admission_cost_tests;
@@ -109,9 +109,6 @@ pub mod removals;
 pub mod standing;
 pub use collab_types::DocumentMutation;
 
-pub mod outbox;
-pub mod owner;
-pub mod workspace_documents;
 mod certified;
 #[cfg(test)]
 #[path = "certified_tests.rs"]
@@ -121,7 +118,10 @@ mod draft;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod enroll;
 mod enrollment;
+pub mod outbox;
+pub mod owner;
 mod vouched;
+pub mod workspace_documents;
 pub mod workspace_view;
 
 pub mod durability;

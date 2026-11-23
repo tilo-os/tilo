@@ -393,29 +393,6 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         self.service()?
             .seal_scoped_checkpoint(workspace, document, named, readers, snapshot)
     }
-
-    fn renew_scoped(
-        &self,
-        workspace: WorkspaceId,
-        document: (&str, &str),
-        named: Option<&str>,
-        readers: &std::collections::BTreeSet<[u8; 32]>,
-        write: &collab_types::SignedOp,
-    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        self.service()?
-            .renew_scoped_document(workspace, document, named, readers, write)
-    }
-
-    fn renew(
-        &self,
-        workspace: WorkspaceId,
-        write: &collab_types::SignedOp,
-    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        match self.handed(workspace) {
-            Some(handed) => handed.renew(write),
-            None => self.service()?.renew_sealed(workspace, write),
-        }
-    }
 }
 
 impl Engine {
@@ -1312,9 +1289,6 @@ impl Engine {
     /// device, which takes no part in the workspace's group.
     pub fn hand_keys(&self, workspace: WorkspaceId, keys: key_group::ContentKeys) {
         self.handed.lock_recover().insert(workspace, keys);
-        // A compaction this device kept for a key it did not hold is decided again now: the
-        // same admission takes it once the key here opens it.
-        self.owner.retry_kept_compactions(workspace);
     }
 
     /// The keys `workspace`'s host handed this device, when it handed any.

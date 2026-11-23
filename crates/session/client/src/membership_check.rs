@@ -528,10 +528,11 @@ impl Sending {
                     retention: *retention,
                 }),
             |write| {
+                let bytes = write.bytes;
                 if !send(write) {
                     return false;
                 }
-                if let Err(error) = sent(write.bytes) {
+                if let Err(error) = sent(bytes) {
                     written = Some(error);
                 }
                 true
