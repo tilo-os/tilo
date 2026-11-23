@@ -1,3 +1,9 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    clippy::doc_markdown,
+    reason = "one end-to-end journey reads as one test, and its prose names the services"
+)]
 use super::*;
 use crate::signal_session::{Completion, SendJournal};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -145,153 +151,6 @@ async fn observe(fixture: &Fixture, kind: ReceiptType) -> Result<bool, SendError
         .await
 }
 
-#[tokio::test]
-async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_without_sending() {
-    let fixture = fixture().await;
-    let history = fixture.broker.client().history();
-    assert_eq!(
-        history
-            .read(fixture.route.clone(), None)
-            .await
-            .unwrap()
-            .messages[0]
-            .delivery,
-        Some(Delivery::Uncertain)
-    );
-    let wakes = Arc::new(AtomicUsize::new(0));
-    let changed = wakes.clone();
-    let _guard = fixture
-        .broker
-        .observe(Arc::new(move || {
-            changed.fetch_add(1, Ordering::SeqCst);
-        }))
-        .unwrap();
-    assert!(!observe(&fixture, ReceiptType::Sent).await.unwrap());
-    assert_eq!(wakes.load(Ordering::SeqCst), 0);
-    assert!(observe(&fixture, ReceiptType::Delivered).await.unwrap());
-    let delivered = history.read(fixture.route.clone(), None).await.unwrap();
-    assert_eq!(
-        delivered.messages[0].delivery,
-        Some(Delivery::RecipientDelivered)
-    );
-    assert!(observe(&fixture, ReceiptType::Read).await.unwrap());
-    assert!(!observe(&fixture, ReceiptType::Delivered).await.unwrap());
-    let read = history.read(fixture.route.clone(), None).await.unwrap();
-    assert_eq!(read.messages[0].delivery, Some(Delivery::RecipientRead));
-    assert_eq!(
-        read.messages[0].timestamp_ms,
-        delivered.messages[0].timestamp_ms
-    );
-    assert_eq!(wakes.load(Ordering::SeqCst), 2);
-    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-    fixture.revoked.store(true, Ordering::SeqCst);
-    assert_eq!(
-        observe(&fixture, ReceiptType::Read).await,
-        Err(SendError::Revoked)
-    );
-    assert_eq!(
-        history.read(fixture.route.clone(), None).await,
-        Err(HistoryError::Revoked)
-    );
-    drop(history);
-    let Fixture {
-        root,
-        owner,
-        route,
-        broker,
-        ..
-    } = fixture;
-    drop(broker);
-    let history = History::open(
-        &root.path().join("history"),
-        &owner,
-        secret_vault::VaultKey::from_bytes([8; 32]),
-    )
-    .unwrap();
-    assert_eq!(
-        history.page(route, 128).unwrap().messages[0].delivery,
-        Some(Delivery::RecipientRead)
-    );
-    assert_eq!(
-        history.check_operation("operation"),
-        Err(SendError::AlreadyReserved)
-    );
-    let encrypted = std::fs::read(root.path().join("history/history.enc")).unwrap();
-    assert!(
-        !encrypted
-            .windows(b"private fixture message".len())
-            .any(|bytes| bytes == b"private fixture message")
-    );
-}
-
-#[tokio::test]
-async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
-    let fixture = fixture().await;
-    let foreign = sdk(&fixture.calls).await;
-    assert_eq!(
-        fixture
-            .broker
-            .observe_whatsapp_receipt(
-                "operation".into(),
-                foreign,
-                receipt(&fixture.route, ReceiptType::Read)
-            )
-            .await,
-        Err(SendError::Revoked)
-    );
-    let mut event = receipt(&fixture.route, ReceiptType::Read);
-    event.source.is_group = true;
-    assert!(
-        !fixture
-            .broker
-            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
-            .await
-            .unwrap()
-    );
-    let mut event = receipt(&fixture.route, ReceiptType::Read);
-    event.source.sender = "different@lid".parse().unwrap();
-    assert_eq!(
-        fixture
-            .broker
-            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
-            .await,
-        Err(SendError::Revoked)
-    );
-    let mut event = receipt(&fixture.route, ReceiptType::Read);
-    event.message_ids = vec!["other-operation".into()];
-    assert_eq!(
-        fixture
-            .broker
-            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
-            .await,
-        Err(SendError::Revoked)
-    );
-    assert_eq!(
-        fixture
-            .broker
-            .observe_whatsapp_receipt(
-                "other-operation".into(),
-                fixture.source.clone(),
-                receipt(&fixture.route, ReceiptType::Read)
-            )
-            .await,
-        Err(SendError::InvalidRequest)
-    );
-    assert_eq!(
-        fixture
-            .broker
-            .client()
-            .history()
-            .read(fixture.route.clone(), None)
-            .await
-            .unwrap()
-            .messages[0]
-            .delivery,
-        Some(Delivery::Uncertain)
-    );
-    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-}
-
 pub(super) fn messages_with_client(
     fixture: &Fixture,
     client: tilo_messaging::MessagingClient,
@@ -368,4 +227,310 @@ pub(super) fn network(calls: &Arc<AtomicUsize>) -> crate::supervisor::whatsapp::
         http: Arc::new(NoNetwork(calls.clone())),
         transport: Arc::new(NoNetwork(calls.clone())),
     }
+}
+
+/// A WhatsApp account's host lifecycle and its recipient evidence: the
+/// supervisor reports each state on the person's Messages view without ever
+/// admitting a route, freezes its link generation, and native receipts promote
+/// the exact operation monotonically, privately and durably.
+#[tokio::test]
+async fn whatsapp_lifecycle_and_receipt_journey_never_admits_a_route() {
+    use crate::supervisor::{AccountSupervisor, whatsapp::WhatsappBootstrap};
+    use tilo_messaging::{AccountState, ServiceAccount};
+    let root = tempfile::tempdir().unwrap();
+    let owner = tests::owner(crate::Service::Whatsapp);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend = crate::whatsapp_store::EncryptedBackend::open_with_key(
+        &root.path().join("sdk"),
+        owner.clone(),
+        secret_vault::VaultKey::from_bytes([23; 32]),
+    )
+    .unwrap();
+    let bootstrap = WhatsappBootstrap::build(backend, network(&calls))
+        .await
+        .unwrap();
+    let source = bootstrap.client();
+    let fixture = assemble(root, owner, calls, source);
+    let supervisor = AccountSupervisor::new(&fixture.owner).unwrap();
+    let account = ServiceAccount::new("whatsapp", &fixture.owner.account);
+    let client = supervisor.client();
+    assert_eq!(client.account_state(&account), AccountState::Unavailable);
+    // A lifecycle label cannot claim readiness.
+    assert_eq!(
+        supervisor.unavailable(AccountState::Ready),
+        Err(SendError::InvalidRequest)
+    );
+    let mut app = messages_with_client(&fixture, client.clone());
+    supervisor.unavailable(AccountState::Linking).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some(
+                        "Linking this account… Confirm the request on your phone."
+                    )))
+    );
+    supervisor.unavailable(AccountState::Locked).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(
+                    |(_, node)| node.label() == Some("Unlock this account to use messaging.")
+                ))
+    );
+    assert!(!client.supports(&fixture.route));
+    supervisor
+        .install_whatsapp(Arc::new(fixture.broker.clone()), bootstrap)
+        .await
+        .unwrap();
+    // An SDK that has not logged in/connected must never advertise readiness.
+    assert_eq!(client.account_state(&account), AccountState::NeedsRelink);
+    let states = app
+        .effect(&messages::MessagesEffect::ListAccountStates)
+        .unwrap()
+        .value
+        .unwrap();
+    assert!(
+        states
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|state| state["service"] == "whatsapp"
+                && state["account"] == fixture.owner.account
+                && state["state"] == "needs-relink")
+    );
+    assert!(!client.supports(&fixture.route));
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some("Link this account again to resume messaging.")))
+    );
+    supervisor.unavailable(AccountState::Failed).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some(
+                        "This account's connection stopped. Check its connection and account setup."
+                    )))
+    );
+    assert_eq!(
+        client.account_state(&ServiceAccount::new("signal", &fixture.owner.account)),
+        AccountState::Unavailable
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        !app.harness()
+            .dump_json()
+            .contains("private fixture message")
+    );
+
+    // A supervisor frozen at another link generation installs neither an
+    // external broker nor another owner's SDK, and never becomes ready.
+    let fixture = super::receipt_tests::fixture().await;
+    let mut stale = fixture.owner.clone();
+    stale.linking_generation = stale.linking_generation.saturating_add(1);
+    let supervisor = AccountSupervisor::new(&stale).unwrap();
+    assert_eq!(
+        supervisor.install_external(&fixture.broker),
+        Err(SendError::Unavailable)
+    );
+    assert_eq!(
+        supervisor.unavailable(AccountState::Ready),
+        Err(SendError::InvalidRequest)
+    );
+    let backend = crate::whatsapp_store::EncryptedBackend::open_with_key(
+        &fixture.root.path().join("stale-sdk"),
+        fixture.owner.clone(),
+        secret_vault::VaultKey::from_bytes([24; 32]),
+    )
+    .unwrap();
+    let bootstrap = WhatsappBootstrap::build(backend, network(&fixture.calls))
+        .await
+        .unwrap();
+    assert_eq!(
+        supervisor
+            .install_whatsapp(Arc::new(fixture.broker.clone()), bootstrap)
+            .await,
+        Err(SendError::Revoked)
+    );
+    assert_eq!(
+        supervisor
+            .client()
+            .account_state(&ServiceAccount::new("whatsapp", &stale.account)),
+        AccountState::Unavailable
+    );
+    assert!(!supervisor.client().supports(&fixture.route));
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+
+    // Native recipient evidence reaches private history monotonically, wakes
+    // its readers, and never sends or replays anything.
+    let fixture = super::receipt_tests::fixture().await;
+    let history = fixture.broker.client().history();
+    assert_eq!(
+        history
+            .read(fixture.route.clone(), None)
+            .await
+            .unwrap()
+            .messages[0]
+            .delivery,
+        Some(Delivery::Uncertain)
+    );
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let changed = wakes.clone();
+    let _guard = fixture
+        .broker
+        .observe(Arc::new(move || {
+            changed.fetch_add(1, Ordering::SeqCst);
+        }))
+        .unwrap();
+    assert!(!observe(&fixture, ReceiptType::Sent).await.unwrap());
+    assert_eq!(wakes.load(Ordering::SeqCst), 0);
+    assert!(observe(&fixture, ReceiptType::Delivered).await.unwrap());
+    let delivered = history.read(fixture.route.clone(), None).await.unwrap();
+    assert_eq!(
+        delivered.messages[0].delivery,
+        Some(Delivery::RecipientDelivered)
+    );
+    assert!(observe(&fixture, ReceiptType::Read).await.unwrap());
+    assert!(!observe(&fixture, ReceiptType::Delivered).await.unwrap());
+    let read = history.read(fixture.route.clone(), None).await.unwrap();
+    assert_eq!(read.messages[0].delivery, Some(Delivery::RecipientRead));
+    assert_eq!(
+        read.messages[0].timestamp_ms,
+        delivered.messages[0].timestamp_ms
+    );
+    assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+
+    // A foreign SDK client, a self or group receipt, an unsupported kind, a
+    // wrong sender or a wrong operation cannot promote anything.
+    let foreign = sdk(&fixture.calls).await;
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt(
+                "operation".into(),
+                foreign,
+                receipt(&fixture.route, ReceiptType::Read)
+            )
+            .await,
+        Err(SendError::Revoked)
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.source.is_group = true;
+    assert!(
+        !fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await
+            .unwrap()
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.source.is_from_me = true;
+    assert!(
+        !fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await
+            .unwrap()
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.r#type = ReceiptType::Other("delivery".into());
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await,
+        Err(SendError::Revoked)
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.source.sender = "different@lid".parse().unwrap();
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await,
+        Err(SendError::Revoked)
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.message_ids = vec!["other-operation".into()];
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await,
+        Err(SendError::Revoked)
+    );
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt(
+                "other-operation".into(),
+                fixture.source.clone(),
+                receipt(&fixture.route, ReceiptType::Read)
+            )
+            .await,
+        Err(SendError::InvalidRequest)
+    );
+    assert_eq!(
+        fixture
+            .broker
+            .client()
+            .history()
+            .read(fixture.route.clone(), None)
+            .await
+            .unwrap()
+            .messages[0]
+            .delivery,
+        Some(Delivery::RecipientRead)
+    );
+    fixture.revoked.store(true, Ordering::SeqCst);
+    assert_eq!(
+        observe(&fixture, ReceiptType::Read).await,
+        Err(SendError::Revoked)
+    );
+    assert_eq!(
+        history.read(fixture.route.clone(), None).await,
+        Err(HistoryError::Revoked)
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    drop(history);
+    let Fixture {
+        root,
+        owner,
+        route,
+        broker,
+        ..
+    } = fixture;
+    drop(broker);
+    let history = History::open(
+        &root.path().join("history"),
+        &owner,
+        secret_vault::VaultKey::from_bytes([8; 32]),
+    )
+    .unwrap();
+    assert_eq!(
+        history.page(route, 128).unwrap().messages[0].delivery,
+        Some(Delivery::RecipientRead)
+    );
+    assert_eq!(
+        history.check_operation("operation"),
+        Err(SendError::AlreadyReserved)
+    );
+    let encrypted = std::fs::read(root.path().join("history/history.enc")).unwrap();
+    assert!(
+        !encrypted
+            .windows(b"private fixture message".len())
+            .any(|bytes| bytes == b"private fixture message")
+    );
 }
