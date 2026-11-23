@@ -96,6 +96,10 @@ impl BadgeMetrics {
         if label.is_empty() {
             return self.dot;
         }
+        // One character stands in a circle; more grow the circle into a pill.
+        if label.chars().count() == 1 {
+            return self.height;
+        }
         let (w, _) = text.measure_style(label, None, &self.caption);
         (f64::from(w) + 2.0 * self.pad_x).ceil().max(self.height)
     }
@@ -108,6 +112,8 @@ pub struct BadgeFace<'a> {
     /// A dot rather than a pill.
     dot: bool,
     modified: bool,
+    /// A tinted face filled with its tone outright ([`PillPaint::solid`]).
+    solid: bool,
 }
 
 impl<'a> BadgeFace<'a> {
@@ -118,6 +124,7 @@ impl<'a> BadgeFace<'a> {
             style: ChipStyle::Neutral,
             dot: false,
             modified: false,
+            solid: false,
         }
     }
 
@@ -129,6 +136,7 @@ impl<'a> BadgeFace<'a> {
             style: ChipStyle::Live,
             dot: true,
             modified: false,
+            solid: false,
         }
     }
 
@@ -143,6 +151,13 @@ impl<'a> BadgeFace<'a> {
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Fill a tinted face with its tone rather than a wash of it, as a count on an icon needs.
+    #[must_use]
+    pub(crate) const fn solid(mut self) -> Self {
+        self.solid = true;
         self
     }
     pub fn height(theme: &Theme) -> f64 {
@@ -183,7 +198,10 @@ impl<'a> BadgeFace<'a> {
             cy + height / 2.0,
         );
         paint_pill(
-            &badge_pill(rect, self.label, self.style, false, 1.0),
+            &PillPaint {
+                solid: self.solid,
+                ..badge_pill(rect, self.label, self.style, false, 1.0)
+            },
             scene,
             transform,
             text_renderer,
@@ -492,6 +510,7 @@ impl CountBadge {
         match label_of(&self.content) {
             Some(label) => BadgeFace::new(rect, &label)
                 .style(self.style)
+                .solid()
                 .paint(scene, transform, text, theme),
             None => BadgeFace::dot(rect)
                 .style(self.style)
@@ -871,6 +890,38 @@ mod tests {
                 assert!(rect[2] > f64::from(label), "{scale}x: {rect:?}");
                 assert!(rect[3] >= f64::from(line), "{scale}x: {rect:?}");
             }
+        }
+
+        phase a_count_on_an_icon_is_round_and_filled_with_its_tone;
+        // One character stands in a circle, so a "3" on an icon covers no more of it than it must;
+        // an alert's count is filled with its tone, since a wash of it on a dark dock reads as mud.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let metrics = BadgeMetrics::of(&theme);
+            assert_eq!(metrics.width("3", &mut text), metrics.height);
+            assert!(metrics.width("12", &mut text) > metrics.height);
+            let rect = Rect::new(0.0, 0.0, metrics.height, metrics.height);
+            let alert = ChipStyle::Tinted(Tone::Warning);
+            let mut on_icon = Scene::new();
+            CountBadge {
+                content: BadgeContent::Count(3),
+                style: alert,
+                metrics: Some(metrics),
+            }
+            .paint(&mut on_icon, Affine::IDENTITY, rect, &mut text, &theme);
+            let mut washed = Scene::new();
+            BadgeFace::new(rect, "3").style(alert).paint(
+                &mut washed,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            assert_ne!(
+                on_icon.encoding().draw_data,
+                washed.encoding().draw_data,
+                "a count on an icon is filled, not washed"
+            );
         }
 
         phase accessibility_reports_static_text_role_and_value;
