@@ -25,22 +25,6 @@ struct StoredConfig {
 }
 
 impl CalendarAccount {
-    /// The opaque, secret-free config payload saved into the workspace's
-    /// record for this account. The `#[serde(skip)]` password keeps the
-    /// credential out of this JSON; it lives only in the vault.
-    #[cfg(test)]
-    fn to_stored(&self) -> StoredAccount {
-        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
-        stored.display_name = self.label().to_string();
-        stored.set_config(&StoredConfig {
-            config: self.config.clone(),
-            calendars: self.kept_calendars(),
-            collapsed: self.collapsed,
-            read_only: self.read_only,
-        });
-        stored
-    }
-
     fn from_stored(stored: &StoredAccount) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
@@ -100,13 +84,28 @@ impl CalendarAccounts {
 mod tests {
     use super::*;
 
+    /// `account` as the record a workspace keeps: the config payload its holder writes for a
+    /// calendar account, minus the credentials. The `#[serde(skip)]` password keeps the
+    /// credential out of it; it lives only in the vault.
+    fn stored(account: &CalendarAccount) -> StoredAccount {
+        let mut kept = StoredAccount::new(AccountId::from(account.id.clone()), TYPE_ID);
+        kept.display_name = account.label().to_string();
+        kept.set_config(&StoredConfig {
+            config: account.config.clone(),
+            calendars: account.kept_calendars(),
+            collapsed: account.collapsed,
+            read_only: account.read_only,
+        });
+        kept
+    }
+
     /// Keep `store`'s accounts as the record a home stages, as a device does
     /// through the workspace's record.
     fn keep(root: &std::path::Path, store: &CalendarAccounts) {
         let mut record = crate::person::staged_in(root).unwrap();
         for account in &store.accounts {
             record
-                .apply_confirmed(AccountList::saving(&account.to_stored()))
+                .apply_confirmed(AccountList::saving(&stored(account)))
                 .unwrap();
         }
         crate::person::keep_staged_in(root, &mut record).unwrap();
