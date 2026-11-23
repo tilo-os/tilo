@@ -3,9 +3,12 @@
 //! The person answers a question first, on a small dialog of its own
 //! ([`tilo_sheets::delete_workspace`]) wherever deleting was asked for — the workspace menu, the
 //! workspace settings, an agent's action through the shell. Only their yes takes the workspace off
-//! the shell, which is what the person's list follows, and then out of this device's record.
+//! the shell, which is what the person's list follows; this device's daemon then deletes it where
+//! it is kept, and it goes out of this device's record.
 //! A workspace its owner deleted somewhere else leaves this device the same way, and the person is
 //! told who deleted it ([`Shared::follow_owner_deletions`]).
+
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_desktop_model::WorkspaceId;
@@ -13,6 +16,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 
 use crate::Shared;
+use crate::engine_write::Polled;
 
 impl Shared {
     /// Ask the person whether to delete the workspace `workspace`, called `name`:
@@ -74,10 +78,11 @@ impl Shared {
         }
     }
 
-    /// The shell deleted the workspace `workspace` , called `name` : what is left of it in this
-    /// device's record goes with it, and the person is told. The shell asks this of whoever deleted
-    /// it — the menu, the settings, an agent invoking the action — so a workspace deleted anywhere
-    /// is deleted everywhere it was this device's.
+    /// The shell took the workspace `workspace` , called `name` , off as deleted: this device's
+    /// daemon deletes it where it is kept (`account/workspaces#delete`, the workspace service's
+    /// `workspace.delete`), and what is left of it in this device's record goes with it. The shell
+    /// asks this of whoever deleted it — the menu, the settings, an agent invoking the action — so
+    /// a workspace deleted anywhere is deleted everywhere it was this device's.
     pub(crate) fn deleted_workspace(&self, workspace: WorkspaceId, name: &str) {
         if let Some(state) = &self.delete_workspace {
             state.presentation().close();
@@ -85,14 +90,56 @@ impl Shared {
         }
         self.delete_workspace_ask.borrow_mut().take();
         self.forget_deleted(workspace);
-        crate::directory::workspace_notice(
-            &*self.telling(),
-            (
-                "session-deleted-workspace",
-                Some("session-deleted-workspace-body"),
-            ),
-            name,
+        let asked = self.view.as_ref().map(|view| {
+            view.ask_account(
+                "account/workspaces",
+                "delete",
+                Map::from_iter([("workspace".to_owned(), Value::from(workspace.to_string()))]),
+            )
+        });
+        let deleted = Polled::new(
+            Arc::clone(&self.wake_handle),
+            async move {
+                match asked {
+                    Some(asked) => asked.await.map(drop),
+                    None => Err("this session reaches no device daemon".to_owned()),
+                }
+            },
+            || Err("the deletion stopped before it answered".to_owned()),
         );
+        self.deletions
+            .borrow_mut()
+            .push((workspace, name.to_owned(), deleted));
+    }
+
+    /// Tell the person how each deletion the daemon answered went.
+    pub(crate) fn follow_deletions(&self) {
+        let mut answered = Vec::new();
+        self.deletions
+            .borrow_mut()
+            .retain_mut(|(workspace, name, deleted)| match deleted.done() {
+                Some(done) => {
+                    answered.push((*workspace, std::mem::take(name), done));
+                    false
+                }
+                None => true,
+            });
+        for (workspace, name, done) in answered {
+            match done {
+                Ok(()) => crate::directory::workspace_notice(
+                    &*self.telling(),
+                    (
+                        "session-deleted-workspace",
+                        Some("session-deleted-workspace-body"),
+                    ),
+                    &name,
+                ),
+                Err(refusal) => {
+                    tracing::warn!(%workspace, %refusal, "a workspace was not deleted where it is kept");
+                    self.handle.acknowledge(refusal);
+                }
+            }
+        }
     }
 
     /// Take each workspace whose host said its owner deleted it off this session and out of this

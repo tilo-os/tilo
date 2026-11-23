@@ -845,6 +845,12 @@ impl Daemon {
             }
             Err(why) => tracing::warn!(%why, "this device keeps no packages"),
         }
+        // A branch made here takes its source's Terminal environments from the runtime that
+        // keeps them.
+        #[cfg(target_os = "linux")]
+        workspaces
+            .copies()
+            .machines(Arc::new(super::environments::Environments::here()));
         stage("serving the workspaces' trees to the files daemon");
         let files_tree = super::files_tree::serve(
             &tilo_device_identity::login::files_tree_socket().map_err(io::Error::other)?,

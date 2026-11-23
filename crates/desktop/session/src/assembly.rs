@@ -252,6 +252,14 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceState>,
     pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceId>>,
+    /// The deletions this device's daemon was asked for, by workspace and name, until it answers.
+    pub(crate) deletions: RefCell<
+        Vec<(
+            tilo_desktop_model::WorkspaceId,
+            String,
+            crate::engine_write::Polled<Result<(), String>>,
+        )>,
+    >,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     #[cfg(target_os = "linux")]

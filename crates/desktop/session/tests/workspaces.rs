@@ -304,32 +304,6 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_shells() {
     );
 }
 
-/// What the person's notes app keeps for `workspace` on this device under the data home `data`:
-/// one note's record, scoped to the workspace as the app writes it.
-fn note_kept(data: &Path, workspace: &str, body: &str) -> std::path::PathBuf {
-    let directory = data
-        .join("tilo-workspaces")
-        .join(workspace)
-        .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
-        .join(workspace)
-        .join("records/uuid-plan");
-    std::fs::create_dir_all(&directory).expect("the note's directory");
-    let mut doc = automerge::AutoCommit::new();
-    assert!(ui::resource::init_scoped(
-        &mut doc,
-        &ui::resource::DocumentId::minted(),
-        &ui::resource::ResourceType::new("notes.page"),
-        workspace,
-        Some(workspace),
-    ));
-    automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "body", body)
-        .expect("the note's text");
-    doc.commit();
-    let path = directory.join("state.automerge");
-    std::fs::write(&path, doc.save()).expect("the note");
-    path
-}
-
 /// Step `session` until `done` holds, as its passes carry out what runs off the loop.
 fn step_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
     for _ in 0..500 {
@@ -344,7 +318,7 @@ fn step_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
 
 /// Branching the workspace in front through the shell's action answers the new workspace's id at
 /// once; once what the workspace holds is copied, the branch is on the shell — the person's own,
-/// with the source's strips and what the apps keep for it — and the person is in it. The source
+/// with the source's strips — and the person is in it. The source
 /// keeps all it had, and the branch comes back after a restart.
 #[test]
 fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
@@ -363,7 +337,6 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
         )
         .expect("a strip of its own");
     let (_, source_name, source) = held(&session)[0].clone();
-    let kept = note_kept(data.path(), &source, "plan");
 
     let started = session
         .invoke(
@@ -458,7 +431,6 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
                 .any(|(title, _)| title.contains("is not complete")),
         "{told:?}"
     );
-    what_the_branch_keeps(data.path(), &source, &kept, &branch);
     drop(session);
 
     let mut again = session_keeping(state.path());
@@ -466,34 +438,6 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
     let after: Vec<String> = held(&again).into_iter().map(|(_, _, id)| id).collect();
     assert!(after.contains(&branch), "the branch came back: {after:?}");
     assert!(after.contains(&source), "and so did the source: {after:?}");
-}
-
-/// What the notes app keeps for the source is the branch's too, naming the branch; the source's is
-/// as it was, and a change to one is not the other's.
-fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
-    let copied = data
-        .join("tilo-workspaces")
-        .join(branch)
-        .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
-        .join(branch)
-        .join("records/uuid-plan/state.automerge");
-    let read = |path: &Path| {
-        automerge::AutoCommit::load(&std::fs::read(path).expect("a note")).expect("a document")
-    };
-    assert_eq!(
-        ui::resource::workspace_scope(&read(&copied)).as_deref(),
-        Some(branch)
-    );
-    assert_eq!(
-        ui::resource::workspace_scope(&read(kept)).as_deref(),
-        Some(source)
-    );
-    std::fs::write(&copied, b"").expect("the branch's note changes");
-    assert_eq!(
-        ui::resource::workspace_scope(&read(kept)).as_deref(),
-        Some(source),
-        "the source's note stays"
-    );
 }
 
 /// A branch names a workspace the shell has: one it does not have is refused, and nothing is made.

@@ -27,6 +27,8 @@ pub mod compute;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod content;
+#[cfg(target_os = "linux")]
+mod environments;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
 #[cfg(unix)]
 pub mod control;

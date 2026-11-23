@@ -1720,6 +1720,7 @@ impl Session {
             inviting,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
+            deletions: RefCell::default(),
             directory_store,
             boot_join: RefCell::new(boot_join),
             hosted_browser: RefCell::new(options.hosted_browser.take()),
