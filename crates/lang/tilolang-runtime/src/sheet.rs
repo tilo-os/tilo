@@ -240,16 +240,19 @@ fn writes_json(writes: &tilo_sheet::Writes) -> Result<String, serde_json::Error>
         entries
             .iter()
             .filter_map(|(reference, input)| {
-                input
-                    .as_ref()
-                    .map(|input| (reference.clone(), serde_json::json!(input)))
+                input.as_ref().map(|input| {
+                    (
+                        reference.clone(),
+                        serde_json::Value::String(input.clone()),
+                    )
+                })
             })
             .collect::<serde_json::Map<_, _>>()
     };
-    serde_json::to_string(&serde_json::json!({
-        "cells": held(&writes.cells),
-        "formats": held(&writes.formats),
-    }))
+    let mut out = serde_json::Map::new();
+    out.insert("cells".to_owned(), held(&writes.cells).into());
+    out.insert("formats".to_owned(), held(&writes.formats).into());
+    serde_json::to_string(&serde_json::Value::Object(out))
 }
 
 /// The bytes a file holds, read whole.

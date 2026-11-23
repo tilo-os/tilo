@@ -374,7 +374,7 @@ tilo_test_env::scenario! {
         );
         // Outside a view a map reads whole too, to hand it to a call or a record.
         let c = compile_body(&format!(
-            "{CHAT}\nfn whole(m: Message) -> Map<Text, Set<Actor>> {{\n    return m.reactions\n}}"
+            "{CHAT}\nfn whole(m: Message) -> Map<List<Actor>> {{\n    return m.reactions\n}}"
         ));
         validate(&c.wasm);
     }

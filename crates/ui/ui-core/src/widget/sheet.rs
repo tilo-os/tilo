@@ -2029,7 +2029,7 @@ impl Findable for Sheet {
 }
 
 #[cfg(test)]
-mod find_tests {
+mod window_tests {
     use super::*;
     use crate::component::{Described, Event, Fired, Intent, Value};
     use crate::widget::InPlace;
