@@ -2342,8 +2342,6 @@ fn drafts_count(session: &Session) -> Option<i64> {
 // Drafts place lists their own drafts and none another member's, so a draft in progress is
 // private to its author while the mailbox is the workshop.
 #[test]
-#[ignore = "waits for the Drafts' reader rule (readers: author) on main; then a member's Drafts \
-            place lists only their own drafts"]
 fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
     use super::{RouteSpec, spec_of};
     use std::rc::Rc;

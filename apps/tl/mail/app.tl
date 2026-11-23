@@ -139,7 +139,7 @@ type Message (origin: imap.message, title: subject) {
 
 /// A message being written: who it goes to, what it says, what it answers, and how it stands on
 /// its way out. The account it goes from is named by its key.
-type Draft (title: subject, untitled: "New message") {
+type Draft (title: subject, untitled: "New message", readers: author until sent) {
     from: Text
     /// The identity of `from` it goes from, one of the account's own (`Name <address>`): empty
     /// for the account's own address, and for one it no longer sends as.
