@@ -121,44 +121,46 @@ same generic action call it uses for anything else: the page is a resource, `bro
 action is one call. The window runs in the workspace's own Linux machine, so the call answers once that
 machine woke and the window is live.
 
-```python fragment
-from tilo import AskPending, Tilo
+```python example=hosted-browser host=stack
+import os
+
+from tilo import Tilo
 
 tilo = Tilo()                                            # your backend's key
 made = tilo.workspaces.create("Visa application: Jane Doe")
 key = tilo.workspace(made.id).keys.mint("Jane Doe's agent")
 workspace = Tilo(key=key.token).workspace(made.id)       # the agent's key, in its one workspace
 
+# The page to drive: any address the workspace's machine reaches.
+url = os.environ.get("TILO_BROWSER_URL", "https://visa.example/apply")
+
 # Browser opens in the workspace's own machine; the window is live when this answers.
 workspace.do("browser#open")
-workspace.do("browser/page#navigate", url="https://visa.example/apply")
-workspace.do("browser/page#wait-page-settled", quiet_ms=300, timeout_ms=15_000)
+workspace.do("browser/page#navigate", url=url)
+workspace.do("browser/page#wait-page-settled", quiet_ms=300, timeout_ms=30_000)
 
 # The page is a resource: find the field, fill it, and read the page back.
 family = workspace.do("browser/page#find-page-element", role="textbox", name="Family name")
 workspace.do("browser/page#fill-page", element=family["element"], text="Doe")
-print(workspace.do("browser/page#read-page")["outline"])
-
-# Submitting leaves the workspace, so the person is asked before it goes.
-submit = workspace.do("browser/page#find-page-element", role="button", name="Submit application")
-try:
-    workspace.do("browser/page#submit-page", element=submit["element"])
-except AskPending as asked:
-    print("your reviewer is asked about the submission:", asked.invocation_id)
+page = workspace.do("browser/page#read-page")
+print("the page is", page["title"], "and says:", page["outline"])
 ```
 
-```typescript fragment
-import { AskPending, Tilo } from "tilo-sdk";
+```typescript example=hosted-browser host=stack
+import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();                                 // your backend's key
 const made = await tilo.workspaces.create("Visa application: Jane Doe");
 const minted = await tilo.workspace(made.id).keys.mint("Jane Doe's agent");
 const workspace = new Tilo({ key: minted.token }).workspace(made.id); // the agent's key, in its one workspace
 
+// The page to drive: any address the workspace's machine reaches.
+const url = process.env.TILO_BROWSER_URL ?? "https://visa.example/apply";
+
 // Browser opens in the workspace's own machine; the window is live when this answers.
 await workspace.do("browser#open");
-await workspace.do("browser/page#navigate", { url: "https://visa.example/apply" });
-await workspace.do("browser/page#wait-page-settled", { quiet_ms: 300, timeout_ms: 15_000 });
+await workspace.do("browser/page#navigate", { url });
+await workspace.do("browser/page#wait-page-settled", { quiet_ms: 300, timeout_ms: 30_000 });
 
 // The page is a resource: find the field, fill it, and read the page back.
 const family = (await workspace.do("browser/page#find-page-element", {
@@ -166,21 +168,8 @@ const family = (await workspace.do("browser/page#find-page-element", {
   name: "Family name",
 })) as { element: string };
 await workspace.do("browser/page#fill-page", { element: family.element, text: "Doe" });
-const page = (await workspace.do("browser/page#read-page")) as { outline: string };
-console.log(page.outline);
-
-// Submitting leaves the workspace, so the person is asked before it goes.
-const submit = (await workspace.do("browser/page#find-page-element", {
-  role: "button",
-  name: "Submit application",
-})) as { element: string };
-try {
-  await workspace.do("browser/page#submit-page", { element: submit.element });
-} catch (error) {
-  if (error instanceof AskPending) {
-    console.log("your reviewer is asked about the submission:", error.invocationId);
-  }
-}
+const page = (await workspace.do("browser/page#read-page")) as { title: string; outline: string };
+console.log("the page is", page.title, "and says:", page.outline);
 ```
 
 The page's actions are the ones a person's Browser has: `navigate`, `wait-page-settled`, `read-page`,

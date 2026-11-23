@@ -7212,6 +7212,32 @@ outputs = ["/target/tilo-sh-local-vm/**"]
 timeout_secs = 5400
 default = false
 
+# The developer docs' hosted-Browser example (example `hosted-browser` in
+# docs/developers/one-workspace-per-customer.md): the same stack and VM host tilo-sh-local-vm
+# runs, brought up for one program, an agent's key opening a workspace's Browser in the
+# workspace's own VM and driving a page through the SDKs' generic action call. The docs-examples
+# check runs the book's other examples against api-on-server and leaves this one out; this check
+# is the one that runs it, so the example proves itself instead of sitting in the page.
+#
+# Its setup's dnf installs from Fedora's mirrors, which are no fixed host list; the run meets the
+# stack, the page it drives and the VM's session on loopback alone.
+[[check]]
+name = "docs-examples-browser"
+on = ["dispatch", "idle"]
+run = "bash os/containers/tilo-sh/test-docs-browser.sh /target/docs-examples-browser"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/docs-examples-browser/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/docs-examples-browser/**"]
+# What a failure keeps of why: every service's log, which says which of them did not answer.
+evidence = ["/target/docs-examples-browser/state/logs/**"]
+timeout_secs = 3600
+
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the check runs), with the entrypoint and image tests its check runs, signed with the release key
 # and published as `sha-<commit>` on a release tag. Published on dispatch as `dev-<commit>`,
