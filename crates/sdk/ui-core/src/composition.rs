@@ -801,6 +801,16 @@ pub struct Composed {
     /// widget places them itself and a host places them at their `rect`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub flows: bool,
+    /// It places its children at their `rect`s as a canvas does, and that is what it shows:
+    /// a page places them there too, in a box that scrolls, where it would otherwise flow
+    /// what a widget places ([`HtmlCx::canvas_children`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub places: bool,
+    /// The place whose window shows here (a `WindowWell`'s): the compositor shows the app's
+    /// window over it natively, and a page's host fills it with what stands for that window
+    /// on the page ([`page::Page::wells`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub well: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Composed>,
     /// Surfaces the widget lays under its children: `[x, y, width, height]` in the window and the
@@ -831,6 +841,8 @@ impl Composed {
             own: None,
             focusable: false,
             flows: false,
+            places: false,
+            well: None,
             children: Vec::new(),
             surfaces: Vec::new(),
         }
@@ -1046,6 +1058,20 @@ impl<'a> HtmlCx<'a> {
             .collect();
         self.composed.children = children;
         self.composed.flows = flows;
+    }
+
+    /// The widget's laid-out children, each where the widget placed it: a canvas, whose
+    /// children stand at points of their own rather than in a flow, and whose page places them
+    /// at those points too ([`Composed::places`]).
+    pub fn canvas_children(&mut self) {
+        self.children();
+        self.composed.places = true;
+    }
+
+    /// The widget is where the window of the place `place` shows: a host fills it
+    /// ([`Composed::well`]).
+    pub fn well(&mut self, place: &str) {
+        self.composed.well = Some(place.to_owned());
     }
 
     /// The composed children ([`Self::children`]) that are `widgets`, taken out of where they

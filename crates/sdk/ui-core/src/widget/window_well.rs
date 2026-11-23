@@ -220,9 +220,10 @@ impl Described for WindowWell {
 }
 
 impl Widget for WindowWell {
-    /// Nothing of its own: the place's own window shows there.
+    /// Nothing of its own: the place's own window shows there, which a page's host fills in.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");
+        cx.well(&self.place);
     }
     fn name(&self) -> &'static str {
         "WindowWell"
