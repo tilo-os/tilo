@@ -1,6 +1,6 @@
-//! A view's video address, as the medium the window plays.
+//! A view's media address, as the medium the window plays.
 //!
-//! A tilolang view names a video by its content address (`tilo-blob://<hash>`), the same way it
+//! A tilolang view names a song or a video by its content address (`tilo-blob://<hash>`), the same way it
 //! names a picture: the bytes live in the workspace's content store, not at a path the view can
 //! spell. The window reads them from the device's store and stages a file the toolkit's player
 //! opens, so the UI library itself knows nothing of Tilo's addresses. A file or stream address

@@ -518,7 +518,6 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "music/audio", "music/live", "music/runtime-engine",
   "camera/live-capture", "disks/live", "video-editor/decode",
   "video-editor/gst", "typst-editor/runtime-engine", "canvas/runtime-engine",
   "settings/runtime-engine",

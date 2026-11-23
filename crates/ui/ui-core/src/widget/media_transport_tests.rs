@@ -557,3 +557,58 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
         );
     }
 }
+
+/// A band given a source plays it on the engine it is handed: what the view declares starts and
+/// stops the sound, a moved place seeks it, and what the band shows is the sound's own place and
+/// length — never a clock the view has to keep in step with.
+#[test]
+fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
+    use crate::component::Described;
+    use crate::widget::{DeclaredTransport, MediaTransportProps};
+
+    let engine = media::MediaEngine::new_synthesized();
+    let props = MediaTransportProps {
+        title: "First Light".to_owned(),
+        source: Some("file:///home/person/Music/first-light.wav".to_owned()),
+        playing: true,
+        volume: Some(0.5),
+        engine: Some(engine),
+        ..MediaTransportProps::default()
+    };
+    let mut transport = DeclaredTransport::from_props("root/0", props);
+    crate::widget::Widget::sync(&mut transport, &(), &());
+    let shown = transport.shown();
+    assert!(shown.playing, "the engine plays what the view asked for");
+    assert!(
+        shown.duration_ms > 0.0,
+        "the band shows the length the engine read, not the view's zero"
+    );
+    assert_eq!(shown.position_ms, 0.0, "it starts where it was opened");
+
+    let paused = MediaTransportProps {
+        title: "First Light".to_owned(),
+        source: Some("file:///home/person/Music/first-light.wav".to_owned()),
+        playing: false,
+        volume: Some(0.5),
+        ..MediaTransportProps::default()
+    };
+    assert!(Described::set_props(&mut transport, paused));
+    crate::widget::Widget::sync(&mut transport, &(), &());
+    assert!(!transport.shown().playing, "a paused view stops the sound");
+
+    let sought = MediaTransportProps {
+        title: "First Light".to_owned(),
+        source: Some("file:///home/person/Music/first-light.wav".to_owned()),
+        playing: false,
+        volume: Some(0.5),
+        position: Some(1.0),
+        ..MediaTransportProps::default()
+    };
+    assert!(Described::set_props(&mut transport, sought));
+    crate::widget::Widget::sync(&mut transport, &(), &());
+    assert_eq!(
+        transport.shown().position_ms,
+        1_000.0,
+        "the place the view declares is where the sound stands"
+    );
+}

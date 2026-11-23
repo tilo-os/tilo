@@ -65,7 +65,7 @@ function Copy-RuntimeFile([string]$Source, [string]$Relative) {
     }
 }
 
-# Explicit playback surface shared by Music, Video and all other media consumers.
+# The explicit playback surface every media consumer shares.
 # Do not ship every development plugin or its unrelated dependency graph.
 $plugins = @(
     'coreelements', 'typefindfunctions', 'playback', 'app', 'videoconvertscale',

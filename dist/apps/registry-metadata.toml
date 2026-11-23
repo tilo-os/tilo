@@ -65,8 +65,6 @@ description = "Find places, plan routes, and orient yourself visually."
 description = "Add AI model providers, keep their keys on this device, and choose the models your agents use."
 [apps.monitor]
 description = "Watch processes, memory, storage, and system resources."
-[apps.music]
-description = "Listen to your library with playback that feels at home in Tilo."
 [apps.osk]
 description = "An on-screen keyboard built for touch and accessibility."
 [apps.passwords]

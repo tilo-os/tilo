@@ -87,6 +87,11 @@ fn run_connector(origin: &str) -> Result<(), String> {
                 std::sync::Arc::new(tilolang_youtube::Live::new());
             tilolang_youtube::connector::run(&service)
         }
+        "music" => {
+            let service: std::sync::Arc<dyn tilolang_music::Service> =
+                std::sync::Arc::new(tilolang_music::Live::new());
+            tilolang_music::connector::run(&service)
+        }
         other => Err(format!("there is no connector for the origin `{other}`")),
     }
 }

@@ -40,6 +40,22 @@ pub mod manifest {
     }
 }
 
+/// The bytes at a URL, as the process that holds the network fetches them: `None` when nothing
+/// answered. Each caller hands its own — the blocking client of the process that has a network,
+/// or a recording in a test — so the toolkit itself reaches no network.
+pub type Fetch = std::sync::Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+/// Fetch the bytes at `url` with `fetch` and keep them as this device's content, answering the
+/// address a view reads them at (`tilo-blob://<hash>`): a picture a connector shows, the copy of
+/// a song a person keeps for playing offline. `None` when the fetch answered nothing or the
+/// store refused the bytes.
+#[must_use]
+pub fn keep_fetched(store: &ContentStore, fetch: &Fetch, url: &str) -> Option<String> {
+    let bytes = fetch(url)?;
+    let hash = store.put(&bytes).ok()?;
+    Some(format!("{}{hash}", crate::pictures::BLOB_SCHEME))
+}
+
 /// The device's one copy of the public file `name` (a catalogue the filesystem daemon mirrors for every
 /// app and workspace), when this host keeps such copies: `None` on one that keeps none (the web).
 #[must_use]
@@ -74,4 +90,30 @@ pub fn session(workspace: &str) -> Option<ContentStore> {
 #[cfg(feature = "native")]
 pub fn set_session_workspaces(workspaces: Vec<String>) {
     tilo_content_device::set_session_workspaces(workspaces);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fetched bytes become this device's content, read back by the address a view takes; a
+    /// fetch that answers nothing keeps nothing. The two callers — a connector's pictures and a
+    /// song kept for offline play — both come through here.
+    #[test]
+    fn fetched_bytes_are_kept_as_content_a_view_reads() {
+        let store = ContentStore::memory();
+        let fetch: Fetch = std::sync::Arc::new(|url: &str| {
+            (url == "https://example.test/cover.png").then(|| vec![1_u8, 2, 3])
+        });
+        let address = keep_fetched(&store, &fetch, "https://example.test/cover.png").expect("kept");
+        let hash = address
+            .strip_prefix(crate::pictures::BLOB_SCHEME)
+            .expect("a content address");
+        assert_eq!(store.read(hash).as_deref(), Some(&[1_u8, 2, 3][..]));
+        assert_eq!(
+            keep_fetched(&store, &fetch, "https://example.test/nothing"),
+            None,
+            "a fetch that answers nothing keeps nothing"
+        );
+    }
 }

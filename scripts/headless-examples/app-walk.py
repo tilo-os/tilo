@@ -2577,6 +2577,33 @@ class Walk:
             raise Failed("no gst-launch-1.0 or ffmpeg to make the walk's clip")
         return {"file": str(path), "bytes": path.stat().st_size, "made_by": made}
 
+    def op_tone(self, value) -> dict:
+        """Write a song's fixture where a person's file chooser reaches it: a few seconds
+        of a tone, made here rather than carried in the tree, which keeps no binary of its own.
+        The step names the file, how long it runs and its pitch."""
+        import math
+        import struct
+        import wave
+
+        name = value["name"]
+        seconds = float(value.get("seconds", 4))
+        hertz = float(value.get("hz", 440))
+        folder = self.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        rate = 8000
+        frames = bytearray()
+        for index in range(int(rate * seconds)):
+            at = index / rate
+            sample = 0.7 * math.sin(2 * math.pi * hertz * at)
+            frames += struct.pack("<h", int(sample * 9000))
+        with wave.open(str(path), "wb") as song:
+            song.setnchannels(1)
+            song.setsampwidth(2)
+            song.setframerate(rate)
+            song.writeframes(bytes(frames))
+        return {"file": str(path), "bytes": path.stat().st_size}
+
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
         questions = self.session.control({"op": "questions"})["answer"]["questions"]

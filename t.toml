@@ -108,7 +108,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "canvas", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "music", "runtime-bundle", "store", "tilo-agent-session",
+    "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -186,7 +186,7 @@ tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
-packages = ["canvas", "music"]
+packages = ["canvas"]
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -289,7 +289,7 @@ unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
+    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
@@ -307,7 +307,7 @@ env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
-packages = ["music", "tilo-messaging-protocol"]
+packages = ["tilo-messaging-protocol"]
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -388,7 +388,7 @@ args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
+    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
@@ -1413,14 +1413,6 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
-on = ["schedule:0 3 * * *", "dispatch"]
-
-[[check]]
-name = "nightly-live-music"
-# Runs against live services on the internet; never served.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\nexport TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo nextest run -p music --locked --profile ci --run-ignored all -E 'test(live_search_and_stream_resolve_through_the_app)'\n"
-cache = false
 on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
@@ -3059,7 +3051,7 @@ arch = ["x86_64", "aarch64"]
 
 # What a release's signed packages must show before they are published: every windowed app draws
 # its first frame against the shared runtime, a media app decodes through the GStreamer the runtime
-# loads on first use, Typst Editor and Music run their engine libraries, and every app's own engine
+# loads on first use, Typst Editor runs its engine libraries, and every app's own engine
 # library loads when it starts. It reads the compile's tree and the signed release the sign check
 # wrote (`tools/apps/release-smoke.sh`), so it builds nothing.
 [[check]]
@@ -6591,7 +6583,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "notes", "settings", "shell", "tube", "video-player"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps

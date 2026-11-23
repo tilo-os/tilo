@@ -84,6 +84,7 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         ("apps/tl/chat", None),
         ("apps/tl/mail", None),
         ("apps/tl/tube", None),
+        ("apps/tl/music", Some("First Light")),
         ("apps/tl/today", None),
         ("apps/tl/views", None),
         ("apps/tl/gallery", None),
@@ -368,8 +369,11 @@ fn a_hosted_shell_reads_the_apps_the_windows_and_the_surface_its_host_publishes(
     );
 
     // The launcher opens over the windows: the panel lists the apps the workspace serves.
-    page.fill_reading("desktop:overlays", &serde_json::json!({ "here": "launcher" }))
-        .expect("the surface is read");
+    page.fill_reading(
+        "desktop:overlays",
+        &serde_json::json!({ "here": "launcher" }),
+    )
+    .expect("the surface is read");
     page.follow();
     let body = page.render();
     assert!(

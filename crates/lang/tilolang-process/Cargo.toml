@@ -25,6 +25,7 @@ app-launch = [
     "dep:media",
     "dep:tilo-failure",
     "dep:tilo-app-module",
+    "dep:tilolang-music",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
 ]
@@ -102,6 +103,9 @@ tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = t
 # YouTube as an outside origin: its connector, and a window without a session keeping a video
 # site's resources in step with it, in native code with the network.
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", optional = true }
+# A music catalogue as an outside origin: its connector, and a window without a session keeping
+# a package's songs in step with it, in native code with the network.
+tilolang-music = { path = "../../integrations/tilolang-music", optional = true }
 runtime-dylib = { path = "../../sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]

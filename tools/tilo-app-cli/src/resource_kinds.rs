@@ -531,46 +531,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn music_production_resource_is_declared_for_packaging() {
-        let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/music");
-        assert_eq!(super::declared_in(&app).unwrap(), ["music.library"]);
-        let authored = tilo_app_package::Manifest::from_toml_str(
-            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
-        )
-        .unwrap();
-        let desktop = tilo_app_package::desktop::desktop_manifest(
-            &authored,
-            "linux",
-            "x86_64",
-            "x86_64",
-            "bin/music",
-        )
-        .unwrap();
-        assert_eq!(desktop.resources.kinds, ["music.library"]);
-        // What the app carries is its own kind and every kind its local
-        // dependencies declare in production code, whatever they are now.
-        let metadata = crate::cargo_metadata(&app).unwrap();
-        let mut expected = std::collections::BTreeSet::from(["music.library".to_owned()]);
-        for dependency in super::local_dependencies(&metadata).unwrap() {
-            expected.extend(super::declared_in(&dependency).unwrap());
-        }
-        let declared = super::declared_by_app(&app).unwrap();
-        assert_eq!(
-            declared,
-            expected.into_iter().collect::<Vec<_>>(),
-            "the production dependency resources are included"
-        );
-        assert!(
-            declared.iter().any(|kind| kind == "tilo.text"),
-            "a framework record the app links is among them: {declared:?}"
-        );
-        assert!(
-            declared.iter().all(|kind| !kind.starts_with("test.")),
-            "SDK test fixtures are excluded: {declared:?}"
-        );
-    }
-
     tilo_test_env::scenario! {
         fn kinds_are_declared_by_production_sources_only;
 

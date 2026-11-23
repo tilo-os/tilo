@@ -10,12 +10,6 @@ function Get-TiloWindowsAppName {
         'diffmerge' { 'Diff and Merge' }
         'db-client' { 'Database Client' }
         'git-client' { 'Git Client' }
-<<<<<<< HEAD
-        'video-player' { 'Video Player' }
-=======
-        'pdf-viewer' { 'PDF Viewer' }
->>>>>>> a0c4f88047b (refactor(video): retires the Rust Video Player app)
-        'music' { 'Music' }
         'ebook' { 'Books' }
         'totp' { 'Authenticator' }
         'typst-editor' { 'Typst' }

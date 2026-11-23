@@ -39,7 +39,11 @@ PACKAGE_ADDITIONS = {'video-editor': {'flac', 'libogg'}}
 # libopus carry their encoders in the same library). Every library and Homebrew package they and
 # the runtime load is named; a closure with anything more or less is refused.
 TILOLANG_DECODERS = {'applemedia', 'dav1d', 'vpx', 'opus', 'vorbis', 'flac', 'theora', 'ogg'}
-TILOLANG_PLUGINS = {f'libgst{name}.dylib' for name in PLUGINS | TILOLANG_DECODERS}
+# What Music needs beside a player: its library's files and the tags they carry, the sound
+# effects it offers and the network protocols its catalogue reaches. The tilolang runtime runs
+# Music, so its closure is where they go; a native app's profile keeps its own reviewed set.
+TILOLANG_MUSIC = {'audiofx', 'wavparse', 'aiff', 'asf', 'id3demux', 'apetag'}
+TILOLANG_PLUGINS = {f'libgst{name}.dylib' for name in PLUGINS | TILOLANG_DECODERS | TILOLANG_MUSIC}
 TILOLANG_LIBRARIES = {
     'libFLAC.14.dylib', 'libX11.6.dylib', 'libXau.6.dylib', 'libXdmcp.6.dylib', 'libXext.6.dylib',
     'libXrender.1.dylib', 'libass.9.dylib', 'libbrotlicommon.1.2.1.dylib',
@@ -49,6 +53,7 @@ TILOLANG_LIBRARIES = {
     'libgraphite2.3.3.1.dylib', 'libgstallocators-1.0.0.dylib', 'libgstapp-1.0.0.dylib',
     'libgstaudio-1.0.0.dylib', 'libgstbase-1.0.0.dylib', 'libgstcodecparsers-1.0.0.dylib',
     'libgstpbutils-1.0.0.dylib', 'libgstreamer-1.0.0.dylib', 'libgstriff-1.0.0.dylib',
+    'libgstsdp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib', 'libgstfft-1.0.0.dylib',
     'libgstrtp-1.0.0.dylib', 'libgsttag-1.0.0.dylib', 'libgstvideo-1.0.0.dylib',
     'libharfbuzz.0.dylib', 'libintl.8.dylib', 'libogg.0.8.6.dylib', 'libopus.0.dylib',
     'liborc-0.4.0.dylib', 'libpango-1.0.0.dylib', 'libpangocairo-1.0.0.dylib',

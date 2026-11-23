@@ -1,0 +1,50 @@
+[package]
+name = "tilolang-music"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The music catalogues of tilolang packages: keeps a package's music types in step with YouTube Music and lyrics, through the clients the platform ships."
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# The action API an instance attaches to the connector over.
+runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+# YouTube Music's own client, as Music reached it: each query compiled once beside rustypipe.
+tilo-innertube = { path = "../tilo-innertube", optional = true }
+rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }
+# The app runtime rustypipe's connections live on, and its TLS provider.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+# The device's network: the queries, the pictures and the songs an answer names, fetched here
+# because the app's window never has one.
+tilo-net = { path = "../../platform/tilo-net", default-features = false, features = ["blocking"], optional = true }
+tilo-files = { path = "../../platform/tilo-files" }
+# The cache directory the moved client keeps its answers in, and the URLs it parses.
+tilo-paths = { path = "../../platform/tilo-paths" }
+url.workspace = true
+# rustypipe is async: the client's own timeouts run on the runtime it is built in.
+tokio = { workspace = true, features = ["time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["live", "connector"]
+# The YouTube Music client, and the connector process that holds it: the network the tilolang
+# host never has. A build without it, or a session with no connector running, answers from a
+# test's own service instead.
+live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net"]
+# The connector process's loop: the action API it takes instances from, and the socket each
+# reaches it over (`tilo-launcher run --tilolang-connector music`).
+connector = ["dep:runtime-portal"]
+
+[dev-dependencies]
+# The moved lyrics tests run under the test environment's scenario macro.
+tilo-test-env = { path = "../../../tools/test-env", features = ["document"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

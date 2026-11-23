@@ -10017,49 +10017,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
 
 [[package]]
-name = "music"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "gstreamer",
- "hex",
- "image",
- "reqwest",
- "rquickjs",
- "runtime-dylib",
- "rustypipe",
- "serde",
- "serde_json",
- "serial_test",
- "sha2 0.11.0",
- "taffy",
- "tempfile",
- "test-http",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-files",
- "tilo-innertube",
- "tilo-media",
- "tilo-net",
- "tilo-oauth",
- "tilo-paths",
- "tilo-spotify",
- "tilo-spotify-engine",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-winit",
- "tilo-youtube-engine",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17126,7 +17083,6 @@ dependencies = [
  "maps",
  "messages",
  "model-providers",
- "music",
  "neighbour-wire",
  "passwords",
  "poker",
@@ -21832,6 +21788,7 @@ dependencies = [
  "tilolang-calendar",
  "tilolang-cli",
  "tilolang-mail",
+ "tilolang-music",
  "tilolang-process",
  "tilolang-tilo",
  "tilolang-youtube",
@@ -23456,6 +23413,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-music"
+version = "0.1.0"
+dependencies = [
+ "runtime-portal",
+ "rustypipe",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-files",
+ "tilo-innertube",
+ "tilo-net",
+ "tilo-paths",
+ "tilo-test-env",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-process"
 version = "0.1.0"
 dependencies = [
@@ -23503,6 +23482,7 @@ dependencies = [
  "tilo-wake",
  "tilolang",
  "tilolang-mail",
+ "tilolang-music",
  "tilolang-process",
  "tilolang-tilo",
  "tilolang-youtube",
@@ -28310,7 +28290,6 @@ dependencies = [
  "moxcms",
  "muldiv",
  "murmurhash32",
- "music",
  "mutate_once",
  "mysql",
  "mysql_common",
@@ -29075,6 +29054,7 @@ dependencies = [
  "tilolang-cli",
  "tilolang-lex",
  "tilolang-mail",
+ "tilolang-music",
  "tilolang-process",
  "tilolang-runtime",
  "tilolang-tilo",
