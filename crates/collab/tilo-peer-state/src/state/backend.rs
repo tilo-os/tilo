@@ -446,8 +446,6 @@ pub(super) struct PeerCore {
     pub(super) pending_bytes: usize,
     pub(super) exact_admissions: ExactAdmissions,
     pub(super) exact_selected: bool,
-    // Transient native cut context is never part of the durable DTO.
-    pub(super) native_cut_publisher: Option<[u8; 32]>,
 }
 impl Clone for PeerCore {
     fn clone(&self) -> Self {
@@ -464,7 +462,6 @@ impl Clone for PeerCore {
             pending_bytes: self.pending_bytes,
             exact_admissions: self.exact_admissions.clone(),
             exact_selected: self.exact_selected,
-            native_cut_publisher: self.native_cut_publisher,
         }
     }
 }

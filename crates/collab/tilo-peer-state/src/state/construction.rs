@@ -89,7 +89,6 @@ impl StatePeer {
                 pending_bytes: 0,
                 exact_admissions: ExactAdmissions::default(),
                 exact_selected: false,
-                native_cut_publisher: None,
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,

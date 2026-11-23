@@ -160,16 +160,6 @@ impl StatePeer {
         let full = |held: usize, held_bytes: usize| {
             held >= MAX_HELD_INPUTS || held_bytes.saturating_add(bytes) > MAX_HELD_BYTES
         };
-        // A native publication cut exports no queue it changed
-        // (`NativePublicationCut::finish`): its own message is refused.
-        if self.core.native_cut_publisher.is_some()
-            && full(self.core.pending.len(), self.core.pending_bytes)
-        {
-            return Err(crate::AdmissionError::rejected(
-                neighbour_wire::RefusalReason::Full,
-                "app prerequisite queue full; fresh checkpoint required",
-            ));
-        }
         if bytes > MAX_HELD_BYTES {
             let input = dropped_input(
                 &source,
@@ -265,10 +255,7 @@ impl StatePeer {
                     into.settled.extend(applied.settled);
                     into.summary.dropped.extend(applied.summary.dropped);
                 }
-                Err(error) => {
-                    if self.core.native_cut_publisher.is_some() {
-                        return Err(error);
-                    }
+                Err(_) => {
                     into.rejected = into.rejected.saturating_add(1);
                 }
             }

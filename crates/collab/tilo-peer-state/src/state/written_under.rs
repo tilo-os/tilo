@@ -278,7 +278,6 @@ impl StatePeer {
                 pending_bytes: 0,
                 exact_admissions: crate::admission::ExactAdmissions::default(),
                 exact_selected: false,
-                native_cut_publisher: None,
             },
             surfaces: self.surfaces.clone(),
             app_surfaces: self.app_surfaces.clone(),

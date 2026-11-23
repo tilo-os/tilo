@@ -888,7 +888,6 @@ impl StatePeer {
                 pending_bytes: durable.pending_bytes,
                 exact_selected: exact_admissions.is_some(),
                 exact_admissions: exact_admissions.unwrap_or_default(),
-                native_cut_publisher: None,
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
