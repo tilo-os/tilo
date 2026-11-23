@@ -1053,29 +1053,7 @@ impl MediaGrant {
         })
     }
 }
-/// A sealed Home unit carries the reviewed tree, with sockets recreated empty.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Home {
-    pub runtime_sockets: u64,
-}
-impl portable_transfer::UnitKind for Home {
-    const PURPOSE: Purpose = Purpose::Home;
-    const PREFIX: &'static str = "home";
-    const INVALID: &'static str =
-        "Portable home expectation has invalid bounds or operation binding";
-    fn operation_valid(operation: &str) -> bool {
-        !operation.is_empty()
-            && operation.len() <= 96
-            && operation
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    }
-    fn within_bounds(expectation: &Expectation) -> bool {
-        expectation.kind.runtime_sockets <= expectation.limits.entries as u64
-    }
-}
-pub type Expectation = portable_transfer::Expectation<Home>;
+pub use prepared_setup_model::{Home, HomeExpectation as Expectation};
 fn filename(operation: &str) -> io::Result<String> {
     Expectation::filename(operation)
 }

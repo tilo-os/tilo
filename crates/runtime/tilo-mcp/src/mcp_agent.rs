@@ -1545,7 +1545,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             // Any other action, on the app or on a resource inside it, starts the app without a
             // window first and is then done where its path points: a fresh workspace's first
-            // `notes/Notes#new-note` works the way the refusal for a read says it will.
+            // `notes/Notes#new_note` works the way the refusal for a read says it will.
             AppRef::Installed { app_id, .. } => {
                 let provider = self
                     .tree

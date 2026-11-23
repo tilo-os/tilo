@@ -8,11 +8,14 @@
 //! sends is ever acted on: a request a service sends back down its stream
 //! is not answered.
 
-use std::sync::Arc;
+use std::ops::ControlFlow;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
+use tilo_lock::MutexRecover as _;
 use tilo_net::{HeaderValue, Url};
+use wire_frame::sse;
 
 use super::address::Address;
 use super::said::{self, Offered};
@@ -253,7 +256,11 @@ impl Session {
         self.next = self.next.saturating_add(1);
         let id = self.next;
         let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        let whole: Whole = Arc::new(move |read: &[u8]| answered(read, id, false).is_some());
+        let stream = Arc::new(Mutex::new(StreamAnswer::new(id)));
+        let reading = Arc::clone(&stream);
+        let whole: Whole = Box::new(move |kind: &str, chunk: &[u8]| {
+            kind.starts_with("text/event-stream") && reading.lock_recover().push(chunk)
+        });
         let sent = self
             .wire
             .send(Ask {
@@ -276,7 +283,7 @@ impl Session {
         }
         let kind = sent.header("content-type").unwrap_or_default();
         let answer = if kind.starts_with("text/event-stream") {
-            answered(&sent.body, id, true)
+            stream.lock_recover().finish()
         } else if kind.starts_with("application/json") {
             let message =
                 serde_json::from_slice::<Value>(&sent.body).map_err(|_| Problem::Unreadable)?;
@@ -301,7 +308,7 @@ impl Session {
                 headers: self.headers(),
                 wait: ASK_WAIT,
                 most: MAX_ANSWER_BYTES,
-                whole: Some(Arc::new(|_: &[u8]| true)),
+                whole: Some(Box::new(|_: &str, _: &[u8]| true)),
             })
             .await?;
         match sent.status {
@@ -332,29 +339,75 @@ fn answer_to(message: Value, id: u64) -> Option<Result<Map<String, Value>, ()>> 
     }
 }
 
+/// Finds the JSON-RPC answer to question `id` in an event stream, one arriving
+/// piece at a time. While the stream is open, only events ended by a blank line
+/// count; at EOF, [`Self::finish`] also checks a trailing unterminated event.
+struct StreamAnswer {
+    id: u64,
+    sse: sse::Reader,
+    found: Option<Result<Map<String, Value>, ()>>,
+}
+
+impl StreamAnswer {
+    const fn new(id: u64) -> Self {
+        Self {
+            id,
+            // Lenient UTF-8; the whole HTTP response is bounded by
+            // `MAX_ANSWER_BYTES` in `wire.rs`, with no tighter per-event cap.
+            sse: sse::Reader::new(sse::Utf8::Lenient, None),
+            found: None,
+        }
+    }
+
+    fn push(&mut self, piece: &[u8]) -> bool {
+        if self.found.is_some() {
+            return true;
+        }
+        let id = self.id;
+        let found = &mut self.found;
+        let _ = self.sse.push(piece, |event| {
+            *found = event_answer(event.data, id);
+            if found.is_some() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        self.found.is_some()
+    }
+
+    fn finish(&mut self) -> Option<Result<Map<String, Value>, ()>> {
+        if self.found.is_none() {
+            let id = self.id;
+            let found = &mut self.found;
+            let _ = self.sse.finish_unterminated(|event| {
+                *found = event_answer(event.data, id);
+                if found.is_some() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+        }
+        self.found.take()
+    }
+}
+
+fn event_answer(data: &str, id: u64) -> Option<Result<Map<String, Value>, ()>> {
+    if data.is_empty() {
+        return None;
+    }
+    let message = serde_json::from_str::<Value>(data).ok()?;
+    answer_to(message, id)
+}
+
 /// The answer to the question `id` in what was read of an event stream.
 /// Until the stream `ended`, only an event that is whole counts.
+#[cfg(test)]
 fn answered(stream: &[u8], id: u64, ended: bool) -> Option<Result<Map<String, Value>, ()>> {
-    let text = String::from_utf8_lossy(stream)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    let mut events: Vec<&str> = text.split("\n\n").collect();
-    if !ended {
-        // What follows the last blank line is an event still arriving.
-        events.pop();
-    }
-    events.into_iter().find_map(|event| {
-        let data: Vec<&str> = event
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(|data| data.strip_prefix(' ').unwrap_or(data))
-            .collect();
-        if data.is_empty() {
-            return None;
-        }
-        let message = serde_json::from_str::<Value>(&data.join("\n")).ok()?;
-        answer_to(message, id)
-    })
+    let mut answer = StreamAnswer::new(id);
+    answer.push(stream);
+    if ended { answer.finish() } else { answer.found }
 }
 
 #[cfg(test)]
@@ -437,5 +490,44 @@ mod tests {
         // A result that is no object is no answer this server reads.
         assert!(answer_to(json!({"jsonrpc": "2.0", "id": 1, "result": "done"}), 1).is_none());
         assert!(answer_to(json!([{"jsonrpc": "2.0", "id": 1, "result": {}}]), 1).is_none());
+    }
+
+    /// An unterminated last event (without a closing blank line) is withheld
+    /// while the stream is still arriving and given out with its exact value
+    /// once the stream has ended, whatever line endings it used.
+    #[test]
+    fn an_unterminated_last_event_is_emitted_only_at_stream_end() {
+        for (stream, expected) in [
+            (
+                &b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"late\":true,\"n\":42}}"[..],
+                json!({"late": true, "n": 42}),
+            ),
+            (
+                &b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"tail\":\"lf\"}}\n"[..],
+                json!({"tail": "lf"}),
+            ),
+            (
+                &b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\r\ndata: \"result\":{\"tail\":\"crlf\"}}\r\n"[..],
+                json!({"tail": "crlf"}),
+            ),
+            (
+                &b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"tail\":\"cr\"}}\r"[..],
+                json!({"tail": "cr"}),
+            ),
+        ] {
+            assert!(
+                answered(stream, 9, false).is_none(),
+                "must stay pending until end: {:?}",
+                String::from_utf8_lossy(stream)
+            );
+            let found = answered(stream, 9, true).unwrap().unwrap();
+            assert_eq!(Value::Object(found), expected);
+            // Same result when pieces arrive one byte at a time across line ends.
+            let mut incremental = StreamAnswer::new(9);
+            for byte in stream {
+                assert!(!incremental.push(std::slice::from_ref(byte)));
+            }
+            assert_eq!(Value::Object(incremental.finish().unwrap().unwrap()), expected);
+        }
     }
 }

@@ -1,0 +1,44 @@
+[package]
+name = "windows-vm"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
+
+[dependencies]
+uuid.workspace = true
+tilo-paths.workspace = true
+tilo-libvirt-domain = { path = "../../vm/libvirt-domain" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+base64.workspace = true
+bounded-command = { path = "../../system/bounded-command" }
+tilo-files = { path = "../../platform/tilo-files" }
+hex.workspace = true
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+getrandom.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

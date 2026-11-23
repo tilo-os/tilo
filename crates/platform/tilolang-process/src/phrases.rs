@@ -3,7 +3,7 @@
 //! locale catalogues — the words dates and clocks are written in — read through the platform's
 //! toolkit-free Fluent catalogue (`tilo_history::Catalogue`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
@@ -57,6 +57,9 @@ pub struct Phrases {
     /// from again when the person chooses another language ([`Self::speak`]).
     packages: RefCell<Vec<Vec<(String, String)>>>,
     catalogue: RefCell<Catalogue>,
+    /// Moves whenever the active window language or package catalogues change, so published
+    /// action labels and nouns are rebuilt in the new words.
+    revision: Cell<u64>,
 }
 
 /// The host's own words and the toolkit's, in `wanted` or in the closest language the catalogues
@@ -90,6 +93,7 @@ impl Phrases {
             locale: RefCell::new(wanted),
             shipped: None,
             packages: RefCell::default(),
+            revision: Cell::new(0),
         }
     }
 
@@ -141,7 +145,15 @@ impl Phrases {
         for catalogues in self.packages.borrow().iter() {
             self.take_in(catalogues);
         }
+        self.revision.set(self.revision.get().wrapping_add(1));
         true
+    }
+
+    /// Monotonic revision of these phrases: advances when the active display locale changes
+    /// ([`Self::speak`]) or package catalogues are added ([`Self::add_package`]).
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
     }
 
     /// The language the phrases are in (`en-US`).
@@ -195,6 +207,9 @@ impl Phrases {
     pub fn add_package(&self, catalogues: &[(String, String)]) {
         self.take_in(catalogues);
         self.packages.borrow_mut().push(catalogues.to_vec());
+        if !catalogues.is_empty() {
+            self.revision.set(self.revision.get().wrapping_add(1));
+        }
     }
 
     fn take_in(&self, catalogues: &[(String, String)]) {
@@ -214,18 +229,19 @@ impl Phrases {
 
 impl tilo_formats::Words for Phrases {
     fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
-        let args: Vec<(String, String)> = args
-            .iter()
-            .map(|(name, value)| {
-                let value = match value {
-                    // A number stays a number here: this catalogue selects a plural by it.
-                    tilo_formats::Word::Number(n) => n.to_string(),
-                    tilo_formats::Word::Text(text) => text.clone(),
-                };
-                ((*name).to_owned(), value)
-            })
-            .collect();
-        self.say(key, &args)
+        let mut fluent = FluentArgs::new();
+        for (name, value) in args {
+            match value {
+                // Keep numbers numeric for plural selection and text verbatim so zero-padded
+                // calendar fields (`"05"`, `"06"`) are not turned into unpadded numbers.
+                tilo_formats::Word::Number(n) => fluent.set(*name, *n),
+                tilo_formats::Word::Text(text) => fluent.set(*name, text.as_str()),
+            }
+        }
+        self.catalogue
+            .borrow()
+            .format(key, &fluent)
+            .unwrap_or_else(|| key.to_owned())
     }
 }
 
@@ -357,6 +373,24 @@ mod tests {
                 "a list that finds nothing reads in the person's language"
             );
             assert_eq!(english.say("no-such-phrase", &[]), "no-such-phrase");
+        }
+
+        phase formatted_dates_preserve_zero_padded_fields_like_the_toolkit;
+        // `format-date-language` in German writes `{ $day2 }.{ $month2 }.{ $year }`: zero-padded
+        // text arguments (`"05"`, `"06"`) must stay text rather than being re-parsed as numbers
+        // (which stripped their leading zeros into `5.6.2026`, disagreeing with the toolkit).
+        {
+            let german = Phrases::new("de-DE");
+            let formats = tilo_formats::RegionFormats {
+                date: tilo_formats::DateStyle::Language,
+                ..tilo_formats::RegionFormats::default()
+            };
+            let day = jiff::civil::Date::new(2026, 6, 5).expect("valid date");
+            assert_eq!(
+                tilo_formats::date(formats, day, &german),
+                "05.06.2026",
+                "German language date keeps zero-padded day and month"
+            );
         }
     }
 }

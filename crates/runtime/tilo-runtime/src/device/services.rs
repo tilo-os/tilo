@@ -307,7 +307,7 @@ impl Daemon {
         } else {
             take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device))
         };
-        host::private_directory(identity.place.dir())?;
+        tilo_files::native::private::directory(identity.place.dir())?;
         let place = DaemonPlace::of(
             identity.place.dir(),
             &identity.key.verifying_key().to_bytes(),
@@ -326,7 +326,7 @@ impl Daemon {
                 super::serve::lock_device(&place)?
             }
         };
-        host::private_directory(root)?;
+        tilo_files::native::private::directory(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
@@ -515,6 +515,16 @@ impl Daemon {
         );
         if let Some(replicas) = &replicas {
             let _ = replica_slot.set(Arc::downgrade(replicas));
+        }
+        // Device control is this device's own resource: its steps run as the units the image
+        // ships, so a person's grant on `devices/<this>/vm` reaches them from boot. A device
+        // without the step program offers none.
+        #[cfg(target_os = "linux")]
+        match super::control::device_control(identity.cert.device_public_key) {
+            Ok(control) => workspaces
+                .copies()
+                .provide(super::control::PROVIDER, control),
+            Err(why) => tracing::info!(%why, "this device offers no device control"),
         }
         Ok(Self {
             policy_origin,
@@ -797,9 +807,11 @@ fn broker_services(
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with
         // no desktop session open on it.
-        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(Arc::clone(
-            parts.workspaces,
-        ))?) as Arc<dyn ShortcutLibraryServices>),
+        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
+            parts.workspaces.copies().clone(),
+            parts.workspaces.device_cert().clone(),
+            parts.workspaces.signer(),
+        )?) as Arc<dyn ShortcutLibraryServices>),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),

@@ -6,7 +6,9 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{
+        AmStore, InvokeOutcome, ResourceRef, Runtime, RuntimeError, SimpleAuthority, UiNode, Value,
+    };
 
     const SOURCE: &str = r#"app so.tilo.time "Time"
 
@@ -53,6 +55,10 @@ action read(b: Board, text: Text) uses time {
 /// `d + span` for a span code holds: a day moves by whole days only, told where it moves.
 fn moved(d: Date, span: Duration) -> Date {
     d + span
+}
+
+fn double_span(span: Duration) -> Duration {
+    span + span
 }
 
 fn weekday_name(d: Date) -> Text {
@@ -138,6 +144,24 @@ action too_fine(b: Board) uses time {
 action fine(b: Board) uses time {
     let l = b.logs.insert(Log())
     l.stamp = moved(today, 2d)
+}
+
+action defer(b: Board, span: Duration) uses time {
+    let l = b.logs.insert(Log())
+    l.at = now + span
+    l.seconds = span.seconds()
+}
+
+action since_hour(b: Board) -> Duration uses time {
+    return now - Time("2026-10-29T21:00:00Z")
+}
+
+action extend(b: Board, span: Duration = 45m) -> Duration {
+    return span + 15m
+}
+
+view span_label(span: Duration) {
+    text("{span} ({span.seconds()})")
 }
 "#;
 
@@ -487,6 +511,265 @@ action fine(b: Board) uses time {
             evening.view("read_back")[1],
             "1970-01-01T00:00:00Z 1970-01-01 0",
             "words no phrase reads name nothing"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        fn a_length_of_time_crosses_the_wasm_boundary;
+
+        phase an_export_takes_a_duration_from_the_host;
+        {
+            let sheet = Sheet::in_zone(0, None);
+            let defer = sheet.app.action("defer");
+            let outcome = sheet
+                .rt
+                .invoke_action(
+                    &me(),
+                    (defer.as_str(), vec![Value::resource(&sheet.board), Value::Int(5400)]),
+                )
+                .expect("a duration crosses from the host as whole seconds");
+            assert_eq!(outcome, InvokeOutcome::Done(Value::Unit));
+            assert_eq!(
+                sheet.view("read_back"),
+                ["2026-10-29T23:40:00Z 1970-01-01 5400"]
+            );
+
+            let opened = sheet
+                .rt
+                .open_view(&me(), &sheet.app.view("span_label"), vec![Value::Int(5400)])
+                .expect("a view export takes a duration from the host");
+            assert_eq!(texts(opened.tree()), ["90m (5400)"]);
+
+            for wrong in [Value::Bool(true), Value::text("90m"), Value::Float(90.0)] {
+                let err = sheet
+                    .rt
+                    .invoke_action(
+                        &me(),
+                        (defer.as_str(), vec![Value::resource(&sheet.board), wrong.clone()]),
+                    )
+                    .expect_err("a wrong-typed argument for a duration is refused");
+                assert!(
+                    matches!(err, RuntimeError::BadArgs(_)),
+                    "wrong value {wrong:?} refused as BadArgs, got {err:?}"
+                );
+            }
+        }
+
+        phase an_export_returns_a_duration_to_the_host;
+        {
+            let sheet = Sheet::in_zone(0, None);
+            let since_hour = sheet.app.action("since_hour");
+            let outcome = sheet
+                .rt
+                .invoke_action(&me(), (since_hour.as_str(), vec![Value::resource(&sheet.board)]))
+                .expect("an action export returns a duration as whole seconds");
+            assert_eq!(outcome, InvokeOutcome::Done(Value::Int(4200)));
+
+            let extend = sheet.app.action("extend");
+            let extended = sheet
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        extend.as_str(),
+                        vec![Value::resource(&sheet.board), Value::Int(1800)],
+                    ),
+                )
+                .expect("an action export both takes and returns a duration");
+            assert_eq!(extended, InvokeOutcome::Done(Value::Int(2700)));
+
+            let default_span = sheet
+                .rt
+                .default_argument(extend.as_str(), 1, &[Value::resource(&sheet.board)])
+                .expect("a duration parameter default unmarshals as whole seconds");
+            assert_eq!(default_span, Some(Value::Int(2700)));
+
+            let completed = sheet
+                .rt
+                .complete_args(extend.as_str(), vec![Some(Value::resource(&sheet.board))])
+                .expect("completing a duration default succeeds");
+            let from_default = sheet
+                .rt
+                .invoke_action(&me(), (extend.as_str(), completed))
+                .expect("invoking with a completed duration default succeeds");
+            assert_eq!(from_default, InvokeOutcome::Done(Value::Int(3600)));
+        }
+
+        phase a_cross_package_fn_takes_and_returns_a_duration;
+        {
+            let sheet = Sheet::in_zone(0, None);
+            let caller = App::compile(
+                "app so.tilo.time_caller \"Time Caller\"\n\
+                 use so.tilo.time as time\n\
+                 type Holder { secs: Int = 0 }\n\
+                 action run(h: Holder, span: Duration) -> Duration {\n\
+                     let doubled = time.double_span(span)\n\
+                     h.secs = doubled.seconds()\n\
+                     return doubled\n\
+                 }\n",
+                std::slice::from_ref(sheet.app.meta()),
+            );
+            caller.load(&sheet.rt);
+            let holder = sheet.rt.create("Holder").unwrap();
+            let run = caller.action("run");
+            let outcome = sheet
+                .rt
+                .invoke_action(
+                    &me(),
+                    (run.as_str(), vec![Value::resource(&holder), Value::Int(2700)]),
+                )
+                .expect("a cross-package fn takes and returns a duration");
+            assert_eq!(outcome, InvokeOutcome::Done(Value::Int(5400)));
+            assert_eq!(sheet.rt.read(&holder, "secs").unwrap(), Value::Int(5400));
+        }
+
+        phase a_program_keeps_a_duration_and_handles_sent_duration_actions;
+        {
+            use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+            use tilolang_runtime::program::{ProgramOutcome, Session};
+
+            struct AlwaysSent;
+            impl Invoker for AlwaysSent {
+                fn invoke(&self, _: &Invocation) -> Invoked {
+                    Invoked::Sent
+                }
+            }
+
+            let sheet = Sheet::in_zone(0, None);
+            let mut session = Session::new();
+            let agent = agent("claude");
+            let kept = session.run(&sheet.rt, &agent, "let d = 90m");
+            assert!(
+                matches!(kept.outcome, ProgramOutcome::Done),
+                "keeping a duration succeeds: {kept:?}"
+            );
+            let shown = session.run(&sheet.rt, &agent, "print(\"{d} {d.seconds()}\")");
+            assert!(
+                matches!(shown.outcome, ProgramOutcome::Done),
+                "passing a kept duration into the next program succeeds: {shown:?}"
+            );
+            assert_eq!(shown.output, ["90m 5400"]);
+
+            sheet.rt.set_invoker(AlwaysSent);
+            let call = format!(
+                "let d = time.since_hour(@time.Board:{})\nprint(\"{{d}} {{d.seconds()}}\")",
+                sheet.board.id_string()
+            );
+            let sent = session.run(&sheet.rt, &agent, &call);
+            assert!(
+                matches!(sent.outcome, ProgramOutcome::Done),
+                "a sent action returning Duration produces 0s rather than trapping: {sent:?}"
+            );
+            assert_eq!(sent.output, ["0s 0"]);
+        }
+
+        phase an_int_export_accepts_a_flag_while_a_duration_refuses_it;
+        {
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let app = App::compile(
+                "app so.tilo.flag_int \"Flag Int\"\n\
+                 action echo_int(n: Int) -> Int {\n\
+                     return n\n\
+                 }\n\
+                 action echo_duration(span: Duration) -> Duration {\n\
+                     return span\n\
+                 }\n",
+                &[],
+            );
+            app.load(&rt);
+            let echo_int = app.action("echo_int");
+            let echo_duration = app.action("echo_duration");
+
+            assert_eq!(
+                rt.invoke_action(&me(), (echo_int.as_str(), vec![Value::Bool(true)]))
+                    .expect("an Int export reads a bare Bool flag as 1"),
+                InvokeOutcome::Done(Value::Int(1))
+            );
+            assert_eq!(
+                rt.invoke_action(&me(), (echo_int.as_str(), vec![Value::Bool(false)]))
+                    .expect("an Int export reads a bare Bool false as 0"),
+                InvokeOutcome::Done(Value::Int(0))
+            );
+            assert_eq!(
+                rt.invoke_action(
+                    &me(),
+                    (echo_int.as_str(), vec![Value::some(Value::Bool(true))])
+                )
+                .expect("an Int export reads a boxed Bool flag as 1"),
+                InvokeOutcome::Done(Value::Int(1))
+            );
+
+            assert_eq!(
+                rt.invoke_action(&me(), (echo_duration.as_str(), vec![Value::Int(5400)]))
+                    .expect("a Duration export takes bare whole seconds"),
+                InvokeOutcome::Done(Value::Int(5400))
+            );
+            assert_eq!(
+                rt.invoke_action(
+                    &me(),
+                    (echo_duration.as_str(), vec![Value::some(Value::Int(5400))])
+                )
+                .expect("a Duration export unboxes boxed whole seconds"),
+                InvokeOutcome::Done(Value::Int(5400))
+            );
+            for wrong in [Value::Bool(true), Value::some(Value::Bool(true))] {
+                let err = rt
+                    .invoke_action(&me(), (echo_duration.as_str(), vec![wrong.clone()]))
+                    .expect_err("a Duration export refuses bare and boxed flags");
+                assert!(
+                    matches!(err, RuntimeError::BadArgs(_)),
+                    "wrong value {wrong:?} refused as BadArgs, got {err:?}"
+                );
+            }
+        }
+    }
+
+    /// Typed dates and times read the person's language first and fall back to English when that
+    /// reading names neither a day nor a time; where both languages read the text, the person's
+    /// language wins.
+    #[test]
+    fn typed_dates_read_the_persons_language_first_and_then_english() {
+        struct GermanWords;
+        impl tilolang_runtime::Words for GermanWords {
+            fn add(&self, _catalogues: &[(String, String)]) {}
+            fn add_used(&self, _catalogues: &[(String, String)]) {}
+            fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
+                source.to_owned()
+            }
+            fn language(&self) -> String {
+                "de".to_owned()
+            }
+        }
+
+        // Thursday 2026-10-29 08:00 local in Europe/Berlin (CET, UTC+1), before 09:00.
+        let berlin = Sheet::at("2026-10-29T07:00:00Z", 3600, Some("Europe/Berlin"), 0);
+        berlin.rt.set_words(std::rc::Rc::new(GermanWords));
+        for phrase in [
+            "Freitag",
+            "friday",
+            "tomorrow 9am",
+            "Montag friday",
+            "sometime",
+        ] {
+            berlin.call(
+                "read",
+                vec![Value::resource(&berlin.board), Value::text(phrase)],
+            );
+        }
+        assert_eq!(
+            berlin.view("read_back"),
+            [
+                // German weekday read in German.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // English weekday read through the English fallback.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // App-supplied English phrase (`mail` snooze/send_later): tomorrow 09:00 CET = 08:00Z.
+                "2026-10-30T08:00:00Z 2026-10-30 0",
+                // Both languages read the text: German `Montag` wins over English `friday`.
+                "2026-11-01T23:00:00Z 2026-11-02 0",
+                // Unknown words still parse as nothing.
+                "1970-01-01T00:00:00Z 1970-01-01 0",
+            ]
         );
     }
 }

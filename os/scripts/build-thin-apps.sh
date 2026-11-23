@@ -60,11 +60,19 @@ app_profiles=()
 # which every tilolang app's entrypoint executes) joins the graph only when
 # BUILD_PACKAGES or WITH_RUNTIMES names it (the nested session, `tilolang dev`,
 # an image that ships tilolang packages).
-for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; do
+# The installer is not an app, so it has no tilo-app.toml: the home-capture
+# role names its worker crate directly, and builds its tilo-home-export below.
+capture_worker=()
+[ "$BUILD_ROLE" = home-capture ] && capture_worker=("$REPO/apps/imager/Cargo.toml")
+for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml ${capture_worker[@]+"${capture_worker[@]}"}; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
-    binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+    if [ "${manifest##*/}" = Cargo.toml ]; then
+        binary=tilo-home-export
+    else
+        binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+    fi
     [ -n "$package" ] && [ -n "$binary" ] \
         || { echo "could not read package/binary from $dir" >&2; exit 1; }
     case "$EXCLUDE_PACKAGES" in

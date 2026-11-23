@@ -323,7 +323,7 @@ impl tilo_session_client::engine::Founder for Founding {
             super::adopt::redeem(
                 self.endpoint.clone(),
                 self.identity.clone(),
-                engine,
+                Arc::clone(&engine),
                 self.network
                     .as_ref()
                     .map(|(network, events)| super::adopt::Carrier { network, events }),
@@ -336,7 +336,13 @@ impl tilo_session_client::engine::Founder for Founding {
                 Some(&self.service),
             )
             .await
-            .map_err(|failure| failure.to_string())
+            .map_err(|failure| failure.to_string())?;
+            // This device created the workspace, so its key service creates the group the
+            // workspace's records are sealed with: the founding hands it the group before
+            // anything is kept there. Nothing else asks for a group nothing asked of yet, and
+            // a first write refused for its keys would wait on a change no pass makes.
+            hand_the_group(&engine, workspace).await;
+            Ok(())
         })
     }
 
@@ -405,6 +411,38 @@ impl tilo_session_client::engine::Founder for Founding {
         Some(Box::pin(async move {
             service.ask_own(&caller, &action, arguments).await
         }))
+    }
+}
+
+/// Hand this device's key service the group of `workspace`, a workspace this device founded: it
+/// creates the group and holds its keys, and what is kept in the workspace next finds them.
+///
+/// A group starts when an endpoint asks for its keys, which is what
+/// [`KeyProvider::group_keys`](tilo_workspace_keys::KeyProvider::group_keys) does with `create`:
+/// the founder creates it on the key service's next pass, once the workspace's governance names
+/// this device, which is after its enrollment. Nothing else asks before the first record is
+/// kept, so a founding that left the group to a later ask could leave a first write waiting for
+/// keys that no pass brings. A workspace another device founded is not created here: the group
+/// arrives as that device admits this one.
+async fn hand_the_group(engine: &Engine, workspace: tilo_desktop_model::WorkspaceId) {
+    let founded = engine
+        .owner()
+        .with_current(workspace, |view| Ok(view.founded_here()))
+        .unwrap_or(false);
+    if !founded {
+        return;
+    }
+    if let Some(Err(error)) = engine
+        .keys()
+        .group_keys(
+            &workspace.to_string(),
+            collab_types::EVERY_MEMBER,
+            true,
+            tilo_workspace_service::own_device::OPEN_WAIT,
+        )
+        .await
+    {
+        tracing::debug!(%workspace, %error, "a founded workspace's group keys are not here yet");
     }
 }
 

@@ -292,6 +292,7 @@ fn collab_types_surface(bytes: &[u8]) -> collab_types::surface::SurfaceFile {
     collab_types::surface::SurfaceFile::parse(bytes).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
     argv.windows(3)
         .find(|window| window[0] == "--setenv" && window[1] == key)
@@ -301,6 +302,7 @@ fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
 /// The launcher runs a built app as the tilolang runtime's binary over the app's payload, under the
 /// app's own id, with its icon and its surface.
 #[test]
+#[cfg(target_os = "linux")]
 fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("tl/counter");

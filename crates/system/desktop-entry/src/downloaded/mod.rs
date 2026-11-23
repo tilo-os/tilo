@@ -647,9 +647,6 @@ impl DownloadedProgram {
 }
 
 const RESOURCE_PREFIX: &str = "record:";
-/// The extended attribute Tilo's filesystem serves each file's record id on (16
-/// bytes), the same through every move and rename.
-const DOCUMENT_ID_XATTR: &str = "user.tilo.document-id";
 
 fn parse_document(hex: &str) -> Option<[u8; 16]> {
     let digits: Vec<u8> = hex.bytes().filter(|byte| *byte != b'-').collect();
@@ -673,30 +670,6 @@ fn format_record(id: &[u8; 16]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-#[cfg(target_os = "linux")]
-fn document_id(path: &Path) -> Option<[u8; 16]> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let name = std::ffi::CString::new(DOCUMENT_ID_XATTR).ok()?;
-    let mut id = [0_u8; 16];
-    // SAFETY: both strings are NUL-terminated and outlive the call, and the
-    // buffer is writable for the length passed.
-    let read = unsafe {
-        libc::getxattr(
-            path.as_ptr(),
-            name.as_ptr(),
-            id.as_mut_ptr().cast(),
-            id.len(),
-        )
-    };
-    (usize::try_from(read).ok() == Some(id.len())).then_some(id)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn document_id(_path: &Path) -> Option<[u8; 16]> {
-    None
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1089,8 +1062,11 @@ fn existing_icon(entry: &Path) -> Option<String> {
 #[cfg(unix)]
 pub fn file_identity(path: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt as _;
+    /// The extended attribute Tilo's filesystem serves each file's record id on, the same
+    /// through every move and rename.
+    const DOCUMENT_ID_XATTR: &str = "user.tilo.document-id";
     let meta = std::fs::metadata(path).ok()?;
-    if let Some(id) = document_id(path) {
+    if let Some(id) = tilo_files::native::identity::read(path, DOCUMENT_ID_XATTR) {
         return Some(format!("{RESOURCE_PREFIX}{}", format_record(&id)));
     }
     Some(format!("{}:{}", meta.dev(), meta.ino()))

@@ -730,6 +730,13 @@ fn datetime_iso(day: Date, minute: i64) -> String {
 }
 
 impl Widget for Timeline {
+    /// A picture of the grid, redrawn when its days or the items it names change: the items it
+    /// shows are in its semantics, which the picture's version folds in.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.picture();
+    }
+
     crate::described!();
 
     fn build_layout(

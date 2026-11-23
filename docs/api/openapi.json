@@ -15236,120 +15236,6 @@
         ],
         "description": ""
       },
-      "imager.sources.select-source.Arguments": {
-        "type": "object",
-        "properties": {
-          "source": {
-            "additionalProperties": false,
-            "properties": {
-              "expected_sha256": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "identity": {
-                "additionalProperties": false,
-                "properties": {
-                  "file": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "volume": {
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "volume",
-                  "file"
-                ],
-                "type": [
-                  "object",
-                  "null"
-                ]
-              },
-              "installable": {
-                "type": "boolean"
-              },
-              "kind": {
-                "oneOf": [
-                  {
-                    "const": "IsoFile",
-                    "type": "string"
-                  },
-                  {
-                    "const": "TiloImage",
-                    "type": "string"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "path": {
-                "type": "string"
-              },
-              "size": {
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "kind",
-              "path",
-              "name",
-              "size",
-              "label",
-              "installable"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "description": ""
-      },
-      "imager.sources.clear-source.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "imager.sources.status.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "imager.sources.export-config.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "imager.sources.rescan.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "imager.sources.choose-drive.Arguments": {
-        "type": "object",
-        "properties": {
-          "drive": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "drive"
-        ],
-        "description": ""
-      },
       "logs.journal.clear-filters.Arguments": {
         "type": "object",
         "properties": {},
@@ -20728,27 +20614,51 @@
         ],
         "description": ""
       },
-      "shortcuts.workbench.set-schedule.Arguments": {
+      "shortcuts.workbench.add-trigger.Arguments": {
         "type": "object",
         "properties": {
           "draft": {
             "type": "string"
           },
-          "enabled": {
-            "type": "boolean"
+          "trigger": {}
+        },
+        "required": [
+          "draft",
+          "trigger"
+        ],
+        "description": ""
+      },
+      "shortcuts.workbench.replace-trigger.Arguments": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
           },
-          "hour": {
+          "index": {
             "type": "integer"
           },
-          "minute": {
+          "trigger": {}
+        },
+        "required": [
+          "draft",
+          "index",
+          "trigger"
+        ],
+        "description": ""
+      },
+      "shortcuts.workbench.remove-trigger.Arguments": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "index": {
             "type": "integer"
           }
         },
         "required": [
           "draft",
-          "enabled",
-          "hour",
-          "minute"
+          "index"
         ],
         "description": ""
       },
@@ -37332,42 +37242,6 @@
       "arguments": "#/components/schemas/hex-editor.document.delete-bytes.Arguments"
     },
     {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "select-source",
-      "arguments": "#/components/schemas/imager.sources.select-source.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "clear-source",
-      "arguments": "#/components/schemas/imager.sources.clear-source.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "status",
-      "arguments": "#/components/schemas/imager.sources.status.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "export-config",
-      "arguments": "#/components/schemas/imager.sources.export-config.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "rescan",
-      "arguments": "#/components/schemas/imager.sources.rescan.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
-      "action": "choose-drive",
-      "arguments": "#/components/schemas/imager.sources.choose-drive.Arguments"
-    },
-    {
       "app": "so.tilo.logs",
       "resource": "logs.journal",
       "action": "clear-filters",
@@ -38816,8 +38690,20 @@
     {
       "app": "so.tilo.shortcuts",
       "resource": "shortcuts.workbench",
-      "action": "set-schedule",
-      "arguments": "#/components/schemas/shortcuts.workbench.set-schedule.Arguments"
+      "action": "add-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.add-trigger.Arguments"
+    },
+    {
+      "app": "so.tilo.shortcuts",
+      "resource": "shortcuts.workbench",
+      "action": "replace-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.replace-trigger.Arguments"
+    },
+    {
+      "app": "so.tilo.shortcuts",
+      "resource": "shortcuts.workbench",
+      "action": "remove-trigger",
+      "arguments": "#/components/schemas/shortcuts.workbench.remove-trigger.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",

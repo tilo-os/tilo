@@ -410,8 +410,8 @@ impl ui::host_operation::ResourceOperations for BackgroundLayer {
         doc: &mut ui::widget::Edits<'_>,
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        if let Some(request) = op.unscoped()
-            && request.type_id == LayoutEffect::OPERATION
+        let request = op.request();
+        if request.type_id == LayoutEffect::OPERATION
             && let Ok(verb) = LayoutEffect::from_payload(request.payload)
             && self.perform(&verb)
         {

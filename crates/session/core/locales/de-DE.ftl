@@ -1010,49 +1010,6 @@ strip-switcher-remove = Entfernen
 feedback-report-problem = Problem melden…
 profile-action-settings = Einstellungen
 profile-action-devices-access = Geräte und Zugriff
-feedback-picker-hint = Klicke auf das, was nicht funktioniert. Umschalt-Klick oder Ziehen wählt mehr, Scrollen erweitert, Esc verlässt.
-feedback-picker-picked = { $count ->
-    [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.
-   *[other] { $count } Teile gewählt. Umschalt-Klick oder Ziehen wählt mehr.
-}
-feedback-picker-continue = Prüfen
-feedback-picker-cancel = Abbrechen
-feedback-part-in = { $what } in { $app }
-feedback-part-named = „{ $name }“ ({ $role ->
-    [Button] Schaltfläche
-    [ToggleButton] Schaltfläche
-    [Link] Link
-    [Tab] Tab
-    [MenuItem] Menüeintrag
-    [Checkbox] Kästchen
-    [Switch] Schalter
-    [TextInput] Feld
-    [MultilineTextInput] Feld
-    [Heading] Überschrift
-   *[other] { $role }
-})
-feedback-part-role = { $role ->
-    [ListItem] Ein Listeneintrag
-    [Row] Eine Zeile
-    [Cell] Eine Zelle
-    [Button] Eine Schaltfläche
-    [ToggleButton] Eine Schaltfläche
-    [Link] Ein Link
-    [Image] Ein Bild
-    [TextInput] Ein Feld
-    [MultilineTextInput] Ein Feld
-    [StaticText] Ein Text
-    [Paragraph] Ein Absatz
-    [Heading] Eine Überschrift
-    [List] Eine Liste
-    [Group] Eine Gruppe
-    [Window] Ein Fenster
-    [Toolbar] Eine Werkzeugleiste
-    [Menu] Ein Menü
-    [MenuItem] Ein Menüeintrag
-    [Tab] Ein Tab
-   *[other] Ein Teil
-}
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }

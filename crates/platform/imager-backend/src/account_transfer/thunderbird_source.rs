@@ -189,29 +189,9 @@ fn validate_password(password: &[u8]) -> Result<(), ConnectionError> {
     Ok(())
 }
 
-/// What the destination received, in opaque ids and counts; never a path, address or content.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThunderbirdImportReceipt {
-    pub accounts: Vec<ThunderbirdAccountReceipt>,
-    pub address_books: usize,
-    pub calendars: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThunderbirdAccountReceipt {
-    pub source_id: String,
-    pub created: bool,
-    pub needs_reconnect: bool,
-    pub folders: Vec<ThunderbirdFolderReceipt>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThunderbirdFolderReceipt {
-    pub source_id: String,
-    pub messages: u64,
-    pub bytes: u64,
-    pub local_only: bool,
-}
+pub use prepared_setup_model::{
+    ThunderbirdAccountReceipt, ThunderbirdFolderReceipt, ThunderbirdImportReceipt,
+};
 
 fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
     if binding.is_empty() || binding.len() > MAX_BINDING {

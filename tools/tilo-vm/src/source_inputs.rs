@@ -11,14 +11,14 @@ use crate::{build, context::Worktree, error::CliError};
 
 #[derive(Serialize, Deserialize)]
 struct Inputs {
-    provenance: tilo_vm_protocol::Provenance,
+    provenance: tilo_device_protocol::Provenance,
     files: BTreeMap<String, String>,
 }
 
 pub(crate) struct Snapshot {
     pub file: tempfile::NamedTempFile,
     pub digest: String,
-    pub provenance: tilo_vm_protocol::Provenance,
+    pub provenance: tilo_device_protocol::Provenance,
     paths: Vec<String>,
 }
 

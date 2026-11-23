@@ -471,7 +471,7 @@ impl AppBrokerState {
             ),
             owner,
             original: OriginalInvocationData::capture(
-                collaboration::invocation_scope::PublishedInvocationRequest {
+                super::super::InvocationRequest {
                     wire_id: id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -484,7 +484,6 @@ impl AppBrokerState {
                 },
                 offered.0.route.clone(),
                 &offered.1,
-                revision,
                 origin,
                 policy_time.clone(),
                 execution.as_ref().map(ExecutionScope::lease),

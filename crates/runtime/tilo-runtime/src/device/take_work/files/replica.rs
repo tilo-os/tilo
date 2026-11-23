@@ -137,7 +137,7 @@ impl ReplicaFiles {
         let workspace = collab_types::WorkspaceId::parse(parts.workspace).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
         })?;
-        crate::host::private_directory(parts.state)?;
+        tilo_files::native::private::directory(parts.state)?;
         let tree = crate::device::workspaces::block_on_owned({
             let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
             let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));

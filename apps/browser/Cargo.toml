@@ -44,7 +44,7 @@ runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engi
 [dependencies]
 # The web engine client: the Chromium helper, the page protocol and their commands.
 tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
-tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
+tilo-browser-sessions = { path = "../../crates/import/tilo-browser-sessions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 host-info = { path = "../../crates/system/host-info" }

@@ -28,16 +28,16 @@ use crate::control::{MAX_MESSAGE_BYTES, MAX_MESSAGE_FDS};
 use crate::{WireError, control};
 
 /// The socket type of a channel: see the module's documentation.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const SOCKET_TYPE: SocketType = SocketType::SEQPACKET;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 const SOCKET_TYPE: SocketType = SocketType::DGRAM;
 
 /// A datagram socket refuses a message larger than its send buffer, and a send its peer has no
 /// room for instead of waiting: room for the largest message out, and for many of them in.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 const SEND_BUFFER: usize = MAX_MESSAGE_BYTES * 2;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 const RECV_BUFFER: usize = MAX_MESSAGE_BYTES * 64;
 
 /// One end of a control channel.
@@ -68,13 +68,13 @@ pub enum ChannelError {
 impl Channel {
     /// Both ends of a new channel, close-on-exec.
     pub fn pair() -> io::Result<(Self, Self)> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let flags = SocketFlags::CLOEXEC;
         // Set on each end below: macOS's `socketpair` takes no flags.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let flags = SocketFlags::empty();
         let (a, b) = rustix::net::socketpair(AddressFamily::UNIX, SOCKET_TYPE, flags, None)?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         for end in [&a, &b] {
             rustix::io::fcntl_setfd(end, rustix::io::FdFlags::CLOEXEC)?;
         }
@@ -93,7 +93,7 @@ impl Channel {
     }
 
     #[cfg_attr(
-        target_os = "linux",
+        any(target_os = "linux", target_os = "android"),
         allow(
             clippy::unnecessary_wraps,
             reason = "a socket's options are set, and can fail, on macOS"
@@ -102,7 +102,7 @@ impl Channel {
     fn new(socket: OwnedFd) -> io::Result<Self> {
         // A datagram end's buffers, and a send to a closed peer that answers an error rather
         // than raising `SIGPIPE`.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             rustix::net::sockopt::set_socket_send_buffer_size(&socket, SEND_BUFFER)?;
             rustix::net::sockopt::set_socket_recv_buffer_size(&socket, RECV_BUFFER)?;
@@ -137,10 +137,10 @@ impl Channel {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let flags = SendFlags::NOSIGNAL;
         // `SO_NOSIGPIPE`, set when the end was made, keeps the signal away.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let flags = SendFlags::empty();
         let bytes = control::encode(message)?;
         let mut space =
@@ -179,10 +179,10 @@ impl Channel {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let flags = RecvFlags::CMSG_CLOEXEC;
         // Marked close-on-exec below, once received: macOS has no flag for it.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let flags = RecvFlags::empty();
         let mut buffer = vec![0_u8; MAX_MESSAGE_BYTES];
         let mut space =
@@ -208,7 +208,7 @@ impl Channel {
                 fds.extend(rights);
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         for fd in &fds {
             rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC).map_err(io::Error::from)?;
         }

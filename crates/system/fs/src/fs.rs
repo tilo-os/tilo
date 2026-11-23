@@ -1,3 +1,13 @@
+// An Android app mounts nothing: the parts of the filesystem only its FUSE adapter calls have
+// no caller there.
+#![cfg_attr(
+    target_os = "android",
+    allow(
+        dead_code,
+        unused_imports,
+        reason = "only the FUSE adapter uses them, and Android mounts nothing"
+    )
+)]
 //! The FUSE operations, and the filtered view they serve.
 //!
 //! A denial is presented as an absence: a path outside the view is `ENOENT` with no
@@ -13,11 +23,13 @@
 //! than writing over state the app cannot see. The capability model cannot produce
 //! that situation: a `Restrict` is a ceiling and every verb implies `Read`, so
 //! reaching it needs a direct [`crate::acl::AclEntry`] with `write` but not `read`.
+use crate::node::{FileAttr, FileType, INodeNo};
+#[cfg(not(target_os = "android"))]
 use fuser::{
-    BackingId, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
-    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags,
-    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
-    ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileHandle, Filesystem, FopenFlags, Generation, InitFlags,
+    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite,
+    ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{
     EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
@@ -173,6 +185,7 @@ impl BufferState {
 /// system, so reads through a passthrough handle are not re-checked against the ACL.
 /// Registering one needs `CAP_SYS_ADMIN` in the initial user namespace; the first
 /// refusal disables passthrough for the mount.
+#[cfg(not(target_os = "android"))]
 struct Passthrough {
     dir: std::path::PathBuf,
     kernel_ready: std::sync::atomic::AtomicBool,
@@ -180,6 +193,7 @@ struct Passthrough {
     backing: Mutex<HashMap<u64, (BackingId, std::fs::File)>>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Passthrough {
     fn usable(&self) -> bool {
         self.kernel_ready.load(Ordering::Acquire) && !self.disabled.load(Ordering::Acquire)
@@ -475,6 +489,7 @@ impl AclVisibleDocumentIndex {
 
 pub mod activity;
 mod attributes;
+#[cfg(not(target_os = "android"))]
 mod fuse;
 mod listing;
 pub mod native_ops;
@@ -513,6 +528,7 @@ pub struct QuickFS {
     /// The content each inode's kernel page cache was filled from, so an `open` of
     /// unchanged content keeps the cache and an open after any change drops it.
     kernel_cached: Mutex<HashMap<u64, Option<Hash>>>,
+    #[cfg(not(target_os = "android"))]
     passthrough: Option<Passthrough>,
     /// Who the files on the mount are presented as owned by (`None`: each caller).
     owner: Option<(u32, u32)>,
@@ -598,6 +614,7 @@ impl QuickFS {
             commit_locks: Mutex::new(HashMap::new()),
             unsaved: None,
             kernel_cached: Mutex::new(HashMap::new()),
+            #[cfg(not(target_os = "android"))]
             passthrough: None,
             owner: None,
             open_file_handles: Mutex::new(HashMap::new()),
@@ -1470,6 +1487,7 @@ impl QuickFS {
     /// Offer kernel passthrough for read-only opens of fully local files, with backing
     /// files under `dir`. Takes effect only when the kernel negotiates it at `init`.
     #[must_use]
+    #[cfg(not(target_os = "android"))]
     pub fn with_passthrough(mut self, dir: std::path::PathBuf) -> Self {
         self.passthrough = Some(Passthrough {
             dir,
@@ -1497,6 +1515,7 @@ impl QuickFS {
     /// the file still has; otherwise no flag, which makes the kernel drop the cache.
     /// Buffered inodes never keep it, and neither do files whose payload is
     /// not resident, so "Free Local Space" also frees the kernel's copy.
+    #[cfg(not(target_os = "android"))]
     fn open_cache_flags(&self, ino: u64) -> FopenFlags {
         if self.inode_workspace(ino).is_some() {
             self.kernel_cached.lock_recover().remove(&ino);
@@ -1517,6 +1536,7 @@ impl QuickFS {
 
     /// A read-only backing file holding exactly the current content of `ino`, when
     /// passthrough is usable and every chunk is local.
+    #[cfg(not(target_os = "android"))]
     fn passthrough_backing(&self, ino: u64) -> Option<std::fs::File> {
         let passthrough = self.passthrough.as_ref().filter(|p| p.usable())?;
         if self.payload_not_resident(ino) || self.buffers().contains_key(&ino) {
@@ -2870,6 +2890,7 @@ impl QuickFS {
         clippy::significant_drop_tightening,
         reason = "the open-handle snapshot must remain stable across authorization and inode validation"
     )]
+    #[cfg(not(target_os = "android"))]
     fn check_open_handle_access(
         &self,
         ino: u64,
@@ -3333,6 +3354,7 @@ impl QuickFS {
         Ok(ino)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn remove_entry(&self, parent: INodeNo, name: &OsStr, expect_dir: bool, reply: ReplyEmpty) {
         match self.delete_named(parent.0, name.as_bytes(), expect_dir) {
             Ok(()) => reply.ok(),
@@ -3404,12 +3426,14 @@ impl QuickFS {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn to_errno(e: i32) -> Errno {
     io::Error::from_raw_os_error(e).into()
 }
 
 /// Reply to a `getxattr` following the two-call protocol: `size == 0` asks for the
 /// length; a non-zero size must fit the value, else `ERANGE`.
+#[cfg(not(target_os = "android"))]
 fn reply_xattr_bytes(reply: ReplyXattr, bytes: &[u8], size: u32) {
     if size == 0 {
         reply.size(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
@@ -4027,6 +4051,7 @@ fn pinned_candidate_is_current(
 
 /// The ACL accesses an open of the given mode requires: read for `O_RDONLY`, write for
 /// `O_WRONLY`, both for `O_RDWR`.
+#[cfg(not(target_os = "android"))]
 fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
     match mode {
         OpenAccMode::O_RDONLY => &[Access::Read],

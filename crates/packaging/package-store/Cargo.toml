@@ -35,7 +35,6 @@ store = [
     "dep:cli-shim",
     "dep:semver",
     "dep:serde_json",
-    "dep:fnv",
 ]
 
 [dependencies]
@@ -46,6 +45,8 @@ tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 # runs over the image's.
 runtime-bundle = { version = "0.1.0", path = "../runtime-bundle" }
 ed25519-dalek.workspace = true
+# Names an app's saved-data directory (`state`), shared with the launcher.
+fnv.workspace = true
 hex.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -65,8 +66,6 @@ tokio = { workspace = true, features = ["rt"], optional = true }
 # The sidecar contract the PATH shims an install writes are read by.
 cli-shim = { version = "0.1.0", path = "../cli-shim", optional = true }
 semver = { workspace = true, optional = true }
-# Names an app's saved-data directory the way the launcher does.
-fnv = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Whose devices may publish images for the user: their identity's fleet.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }

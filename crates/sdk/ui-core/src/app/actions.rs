@@ -790,37 +790,14 @@ impl App {
             },
         );
         let invoker_scope = crate::invocation_scope::InvokerScope::delivered(invoker, invocation);
-        let authorization = self.authorize_published_invocation(
-            &crate::invocation_scope::PublishedInvocationRequest {
-                wire_id: id,
-                invocation,
-                address: address.clone(),
-                argument: argument.map(str::to_owned),
-                actor: actor.clone(),
-                presence,
-            },
+        let result = self.invoke_resource_action(
+            ResourceInvocation::new(&address, actor)
+                .argument(argument)
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(invocation))
+                .ambient_context(ambient_context),
         );
-        let authorization = authorization.and_then(|lease| {
-            if let Some(lease) = &lease {
-                self.check_published_invocation_revision(lease)?;
-            }
-            self.published_invocation_scope(&address, lease)
-        });
-        let (result, authorization) = match authorization {
-            Ok(authorization) => (
-                self.invoke_resource_action(
-                    ResourceInvocation::new(&address, actor)
-                        .argument(argument)
-                        .confirmed(true)
-                        .broker_admitted(true)
-                        .invocation(Some(invocation))
-                        .ambient_context(ambient_context)
-                        .scope(authorization.as_ref()),
-                ),
-                authorization,
-            ),
-            Err(error) => (Err(error), None),
-        };
         drop(invoker_scope);
         let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
         {
@@ -829,12 +806,6 @@ impl App {
             // What the effect submitted is applied for its invoker before
             // its caller learns it finished.
             self.dispatch_control_invocations();
-            if let Some(scope) = &authorization {
-                // Submitted continuations already carry their original broker
-                // ownership. A retained handler clone must not submit more work
-                // once this handler has answered, even while those edits settle.
-                scope.cancel();
-            }
             self.actions.acting_for.remove(&invocation)
         };
         let update = match result {
@@ -847,7 +818,6 @@ impl App {
                     DirectedInvocation {
                         wire_id: id,
                         cancellation_requested: false,
-                        authorization,
                     },
                 );
                 // This delivery was already admitted as Accepted by the
@@ -1139,7 +1109,6 @@ impl App {
             confirmation_evidence,
             invocation,
             ambient_context,
-            scope,
             ..
         } = *invocation;
         // The typed text of a prompt travels to the broker as the argument the
@@ -1222,7 +1191,6 @@ impl App {
                         invocation: operation_invocation,
                         source_invocation,
                         ambient: ambient_context,
-                        scope,
                         api: Some(&mut api),
                     },
                 )
@@ -1340,7 +1308,6 @@ impl App {
             broker_admitted,
             invocation,
             ambient_context: ambient,
-            scope,
             ..
         } = *request;
         let _entry = target
@@ -1395,7 +1362,6 @@ impl App {
                 invocation: id,
                 source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
-                scope,
                 route: Some(&route),
             },
         );
@@ -1571,13 +1537,7 @@ impl App {
             confirmation_evidence,
             invocation,
             ambient_context,
-            scope,
         } = *request;
-        if scope.is_some() {
-            return Err(tilo_actions::ApiError::Failed(
-                "required invocation has no actual canonical owner".into(),
-            ));
-        }
         // Ordinary local requests use the permission-projected, cached
         // resource surface (including retained bound rows).
         let mut resources = if let Some(presence) = crate::invocation_scope::current_presence() {
@@ -1640,9 +1600,6 @@ impl App {
             argument,
             confirmation_satisfied,
         )?;
-        if let Some(scope) = scope {
-            scope.check_dispatch_spec(resolved)?;
-        }
         crate::invocation_scope::check_continuation(
             resolved,
             resolved.need_for(typed_arguments.as_ref(), argument).kind,
@@ -1703,8 +1660,7 @@ impl App {
                 .broker_admitted(broker_admitted)
                 .evidence(confirmation_evidence)
                 .invocation(invocation)
-                .ambient_context(ambient_context)
-                .scope(scope);
+                .ambient_context(ambient_context);
             return self.invoke_document_resource_action(
                 &request,
                 &resources,
@@ -1891,7 +1847,6 @@ impl App {
                                 invocation: operation_invocation,
                                 source_invocation: broker_admitted.then_some(operation_invocation),
                                 ambient: ambient_context,
-                                scope: None,
                                 api: Some(&mut api),
                             },
                         )
@@ -2189,21 +2144,7 @@ impl App {
             if self.action_publication_failure.is_some() {
                 break;
             }
-            let authority = self.check_published_continuation(pending.authorization.as_ref());
-            let polled = if let Err(reason) = authority {
-                // The shared per-job scope is now permanently retired. Pending
-                // model work retains that scope and cannot resurrect after this
-                // terminal receipt; unrelated jobs remain runnable.
-                Ok(Some(tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "published_invocation_unauthorized".into(),
-                        message: reason,
-                        details: None,
-                        retryable: false,
-                    },
-                }))
-            } else if let Some(target) = self.actions.bound_invocations.get(&invocation) {
+            let polled = if let Some(target) = self.actions.bound_invocations.get(&invocation) {
                 crate::bound_dispatch::poll_resource_operation(
                     self.root_widget.as_mut(),
                     &self.state.doc,
@@ -2224,9 +2165,6 @@ impl App {
                 Ok(Some(update)) => update,
                 Ok(None) => continue,
                 Err(_) => {
-                    if let Some(scope) = &pending.authorization {
-                        scope.cancel();
-                    }
                     self.actions.bound_invocations.remove(&invocation);
                     self.actions.directed_invocations.remove(&invocation);
                     continue;
@@ -2251,9 +2189,6 @@ impl App {
                 self.dispatch_control_invocations();
                 if let Some(continuation) = self.actions.acting_for.get_mut(&invocation) {
                     if !continuation.outstanding.is_empty() {
-                        if let Some(scope) = &pending.authorization {
-                            scope.cancel();
-                        }
                         // It answers once the host admitted its edits.
                         continuation.deferred = Some((pending.wire_id, update));
                         self.actions.bound_invocations.remove(&invocation);
@@ -2274,9 +2209,6 @@ impl App {
                 break;
             }
             if update.is_terminal() {
-                if let Some(scope) = &pending.authorization {
-                    scope.cancel();
-                }
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);

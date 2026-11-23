@@ -51,7 +51,12 @@ impl Held {
     async fn new() -> Self {
         let placed = WorkspaceId::new();
         let (workspaces, directory) = ServiceWorkspaces::test_hosting(placed).await;
-        let library = Shortcuts::new(Arc::clone(&workspaces)).expect("a runtime for shortcut runs");
+        let library = Shortcuts::new(
+            workspaces.copies().clone(),
+            workspaces.device_cert().clone(),
+            workspaces.signer(),
+        )
+        .expect("a runtime for shortcut runs");
         let person = hex::encode(workspaces.device_cert().user_public_key);
         Self {
             workspaces,
@@ -262,5 +267,41 @@ async fn the_library_serves_the_devices_chords_its_run_runtime_and_fixed_labels(
         held.library.fixed_shortcut_label(fixed),
         fixed.id,
         "a fixed shortcut is named by its id where the desktop fixes no label"
+    );
+}
+
+/// A desktop starts its broker before its own workspace service opens: the library waits for the
+/// service to install, then saves through it as the daemon's does.
+#[tokio::test]
+async fn the_library_saves_once_this_devices_workspace_service_installs() {
+    use tilo_workspace_service::service::ServiceSlot;
+
+    let placed = WorkspaceId::new();
+    let (workspaces, _directory) = ServiceWorkspaces::test_hosting(placed).await;
+    let service = ServiceSlot::default();
+    let library = Shortcuts::when_installed(
+        service.clone(),
+        workspaces.device_cert().clone(),
+        workspaces.signer(),
+    )
+    .expect("a runtime for shortcut runs");
+    service.install(workspaces.service().clone());
+
+    let actor = MemberId::person(hex::encode(workspaces.device_cert().user_public_key));
+    assert_eq!(
+        library
+            .store(saving(
+                &placed.to_string(),
+                &actor,
+                shortcut("tidy", "Tidy", &serde_json::json!([])),
+            ))
+            .await,
+        Ok(())
+    );
+    let described = workspaces.workspace(placed).expect("a held workspace");
+    assert_eq!(
+        described.shortcuts.len(),
+        1,
+        "the save lands in the service's store once it is installed"
     );
 }

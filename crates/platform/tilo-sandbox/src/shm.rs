@@ -325,10 +325,18 @@ mod sys {
         ))
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature of the platforms that seal memory, whose callers this shares"
+    )]
     pub fn seal(_file: &File) -> io::Result<()> {
         Ok(())
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature of the platforms that seal memory, whose callers this shares"
+    )]
     pub fn verify_sealed(_file: &File) -> io::Result<bool> {
         Ok(false)
     }

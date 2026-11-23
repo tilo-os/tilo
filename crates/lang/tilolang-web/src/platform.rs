@@ -6,8 +6,14 @@ use std::sync::Arc;
 
 use std::rc::Rc;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::Platform;
+use tilolang_tilo::instance::{GlobalLocale, Locale, Platform};
 use tilolang_tilo::tilolang::Compiled;
+
+/// Browser and headless layout-check windows share the toolkit's catalogues, language and region
+/// formats on their thread. Neither runs a desktop settings watcher or reads on-disk language
+/// packs, so `words_revision` reflects only in-process `I18nManager` or region-format changes and
+/// cannot notice an external catalogue changing while running.
+static WEB_LOCALE: GlobalLocale = tilo_app_window::platform_locale!(GlobalLocale);
 
 /// The compiled packages an instance loads: the app and what it uses, the app last; and the
 /// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
@@ -54,58 +60,94 @@ impl Platform for Packages {
         0
     }
 
+    fn locale(&self) -> Option<&dyn Locale> {
+        Some(&WEB_LOCALE)
+    }
+
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), tilo_app_window::i18n::value_of(value)))
-            .collect();
-        tilo_app_window::i18n::t_args(id, &args)
+        tilo_app_window::i18n::phrase(id, args)
     }
 
-    /// The package's words, and the one language its window is laid out in: the person's when the
-    /// package ships it, the package's source language otherwise.
-    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        if window {
-            ui::i18n::speak_window_language(catalogues);
-        } else {
-            tilo_app_window::i18n::add_shared_catalogues(catalogues);
-        }
-    }
-
-    /// A fixed instant, so every run lays out the same dates: the clock
-    /// the capture pins ([`ui::clock::freeze_for_capture`]), which the
-    /// days the app reads and the days its window writes both come
-    /// from.
     fn now(&self) -> String {
-        format!("{:.0}", ui::clock::local_now().timestamp())
+        tilolang_tilo::instance::wall_now()
     }
 
-    /// The person's zone, as a window knows it: a seed's wall-clock time and every day the window
-    /// shows are read in it, so the layout is the one a person in their zone sees.
-    fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().seconds())
-    }
-
-    fn zone_name(&self) -> Option<String> {
-        ui::time::local_zone_name()
-    }
-
-    /// A day or a time of day in a sentence, as the toolkit's lists show them, so a row's line and
-    /// a notice carry no stored text.
-    fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_app_window::date::shown_text(kind, value)
-    }
-
-    fn sentence(&self, kind: &str, value: &str) -> String {
-        tilo_app_window::date::sentence_text(kind, value)
-    }
-
-    /// The time of day as the person reads a clock, in the style they chose.
-    fn clock(&self, hour: u32, minute: u32) -> String {
-        ui::clock::hour_minute(hour, minute)
+    fn moment(&self) -> tilolang_tilo::instance::Zoned {
+        tilolang_tilo::instance::wall_moment()
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Restores thread-local region formats, clock zone and i18n state (including an unset
+    /// `person_locale` override) even if an assertion fails.
+    struct ThreadLocaleGuard {
+        prev_locale: String,
+        prev_person: Option<String>,
+    }
+
+    impl ThreadLocaleGuard {
+        fn enter(person: Option<&str>) -> Self {
+            tilo_app_window::i18n::ensure();
+            Self {
+                prev_locale: ui::i18n::I18nManager::current_locale(),
+                prev_person: ui::i18n::set_person_locale(person),
+            }
+        }
+    }
+
+    impl Drop for ThreadLocaleGuard {
+        fn drop(&mut self) {
+            let _ = ui::i18n::set_person_locale(self.prev_person.as_deref());
+            ui::i18n::I18nManager::set_locale(&self.prev_locale);
+            ui::format::region::install_here(None, None);
+        }
+    }
+
+    /// The web / layout-check host agrees with every other host on the shared table of dates,
+    /// times, clocks, week starts and German typed dates, and moves `words_revision` on
+    /// in-process display locale changes.
+    #[test]
+    fn a_web_packages_dates_week_and_language_agree_with_every_other_host() {
+        use tilolang_tilo::instance::testing::{
+            LocalAgreementHost, assert_platform_agrees, compile_probe,
+        };
+
+        let _guard = ThreadLocaleGuard::enter(Some("en-US"));
+        ui::i18n::I18nManager::set_locale("en-US");
+
+        let (compiled, actions) = compile_probe();
+        let platform = Rc::new(Packages(Rc::new(vec![compiled]), Vec::new()));
+        let utc = ui::clock::Zone::of(ui::format::TimeZone::UTC);
+        let mut harness = LocalAgreementHost::open(
+            "Packages",
+            Rc::clone(&platform) as Rc<dyn Platform>,
+            move |formats| {
+                ui::format::region::install_here(Some(formats), Some(utc.clone()));
+            },
+            |locale| {
+                let _ = ui::i18n::set_person_locale(Some(locale));
+            },
+        );
+        assert_platform_agrees(&mut harness, &actions);
+
+        let catalog_rev = || {
+            platform
+                .words_revision()
+                .wrapping_sub(ui::format::region::revision())
+        };
+        let rev_before = catalog_rev();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_ne!(
+            catalog_rev(),
+            rev_before,
+            "switching display locale moves words_revision"
+        );
     }
 }

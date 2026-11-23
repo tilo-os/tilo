@@ -10,7 +10,7 @@ use crate::widget::{
     Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
     FullscreenWidgetExt, Widget,
 };
-use automerge::{AutoCommit, ObjId, ROOT};
+use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, VecDeque};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -378,13 +378,11 @@ pub struct TileHost {
     /// app's header row may hold it, but never a band of its own.
     window_history: Option<bool>,
     live_callback_node: Option<NodeId>,
-    retained_invocations: HashMap<tilo_actions::InvocationId, crate::history_mode::HistoryOwner>,
+    /// Answers of operations a replaced component admitted, until the host polls them.
     retained_updates: HashMap<tilo_actions::InvocationId, VecDeque<tilo_actions::InvocationUpdate>>,
     /// Operations the component shown admitted that have not ended, so a
     /// component taking its place cannot leave them unanswered.
     component_invocations: std::collections::HashSet<tilo_actions::InvocationId>,
-    owner_bound_work: bool,
-    owner_bound_ownership: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     history_lifetime: std::rc::Rc<crate::history_mode::owner::ResourceOwnerLifetime>,
     ownership_parent: Option<crate::ControlDomain>,
@@ -738,11 +736,8 @@ impl TileHost {
             history: None,
             window_history: None,
             live_callback_node: None,
-            retained_invocations: HashMap::new(),
             retained_updates: HashMap::new(),
             component_invocations: std::collections::HashSet::new(),
-            owner_bound_work: false,
-            owner_bound_ownership: None,
             close_reports: vec![],
             history_lifetime: crate::history_mode::owner::ResourceOwnerLifetime::new(),
             ownership_parent: None,
@@ -1032,63 +1027,6 @@ impl TileHost {
         self.record_transition_error.as_deref()
     }
 
-    fn collect_retained_updates_before_release(&mut self) -> Result<(), String> {
-        let invocations = self
-            .retained_invocations
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        for invocation in invocations {
-            if self
-                .retained_updates
-                .get(&invocation)
-                .is_some_and(|updates| !updates.is_empty())
-            {
-                return Err(
-                    "A retained operation update must be delivered before switching documents"
-                        .into(),
-                );
-            }
-            let Some(owner) = self.retained_invocations.get(&invocation).cloned() else {
-                continue;
-            };
-            owner
-                .validate()
-                .map_err(|error| format!("Outgoing document observation unavailable: {error}"))?;
-            let (store, checkout) = owner.store_checkout();
-            let TileContent::App(root) = &mut self.content else {
-                continue;
-            };
-            let update = store
-                .read_checked(&checkout.id, |document| {
-                    crate::widget::poll_resource_operation(
-                        root.as_mut(),
-                        invocation,
-                        false,
-                        document,
-                        &ROOT,
-                    )
-                })
-                .map_err(|error| format!("Outgoing document observation unavailable: {error}"))?;
-            if let Some(update) = update {
-                let terminal = update.is_terminal();
-                self.retained_updates
-                    .entry(invocation)
-                    .or_default()
-                    .push_back(update);
-                if terminal {
-                    self.retained_invocations.remove(&invocation);
-                } else {
-                    return Err(
-                        "A retained operation update must be delivered before switching documents"
-                            .into(),
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn take_retained_update(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1118,62 +1056,6 @@ impl TileHost {
         }
     }
 
-    fn prepare_owner_transition(&mut self) -> Result<(), String> {
-        if !self.owner_bound_work {
-            self.record_transition_error = None;
-            return Ok(());
-        }
-        if !self.history_lifetime.active.get() {
-            let error = "The current document owner is closed".to_string();
-            self.record_transition_error = Some(error.clone());
-            return Err(error);
-        }
-        if let Err(error) = self.collect_retained_updates_before_release() {
-            self.record_transition_error = Some(error.clone());
-            return Err(error);
-        }
-        let release = match &mut self.content {
-            TileContent::App(root) => {
-                crate::resource::capability::release_resource_scope(root.as_mut())
-            }
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => Ok(()),
-        };
-        if let Err(error) = release {
-            self.record_transition_error = Some(error.clone());
-            return Err(error);
-        }
-        for invocation in self
-            .retained_invocations
-            .drain()
-            .map(|(invocation, _)| invocation)
-        {
-            let updates = self.retained_updates.entry(invocation).or_default();
-            if !updates
-                .iter()
-                .any(tilo_actions::InvocationUpdate::is_terminal)
-            {
-                updates.push_back(Self::unavailable_update(invocation));
-            }
-        }
-        self.owner_bound_work = false;
-        self.owner_bound_ownership = None;
-        self.record_transition_error = None;
-        Ok(())
-    }
-
-    fn current_binding_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        self.callback_binding()
-            .map(crate::history_mode::HistoryOwner::component)
-    }
-
-    fn owner_bound_ownership_changed(&self) -> bool {
-        self.owner_bound_work
-            && self.owner_bound_ownership.as_ref().is_some_and(|admitted| {
-                self.current_binding_owner()
-                    .is_none_or(|current| !current.same_owner(admitted))
-            })
-    }
-
     fn renew_history_lifetime(&mut self) {
         self.history_lifetime.control_domain.close();
         self.history_lifetime.active.set(false);
@@ -1201,9 +1083,6 @@ impl TileHost {
             let error = "The current document owner is closed".to_string();
             self.record_transition_error = Some(error.clone());
             return Err(error);
-        }
-        if self.owner_bound_ownership_changed() {
-            self.prepare_owner_transition()?;
         }
         Ok(())
     }
@@ -1241,11 +1120,8 @@ impl TileHost {
         if let Some(window) = &self.hosted_window {
             window.declare(None);
         }
-        self.retained_invocations.clear();
         self.component_invocations.clear();
         self.retained_updates.clear();
-        self.owner_bound_work = false;
-        self.owner_bound_ownership = None;
         self.record_transition_error = None;
         self.content = content;
         self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
@@ -1929,7 +1805,6 @@ impl Widget for TileHost {
             // open that asked) before it closes; the answers outlive it until
             // the host polls them, and work it cannot finish is reported
             // unavailable rather than inherited by the new component.
-            let _ = self.collect_retained_updates_before_release();
             let mut answers = std::mem::take(&mut self.retained_updates);
             let (doc, path) = crate::doc::document_ref(s, p);
             for invocation in std::mem::take(&mut self.component_invocations) {
@@ -1944,15 +1819,6 @@ impl Widget for TileHost {
                 {
                     answers.entry(invocation).or_default().push_back(update);
                 }
-                let updates = answers.entry(invocation).or_default();
-                if !updates
-                    .iter()
-                    .any(tilo_actions::InvocationUpdate::is_terminal)
-                {
-                    updates.push_back(Self::unavailable_update(invocation));
-                }
-            }
-            for invocation in self.retained_invocations.keys().copied() {
                 let updates = answers.entry(invocation).or_default();
                 if !updates
                     .iter()
@@ -2419,8 +2285,6 @@ impl crate::widget::ResourceOperations for TileHost {
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let _running = self.running();
-        let (_, scope) = op.with_ownership();
-        op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
         }
@@ -2428,50 +2292,22 @@ impl crate::widget::ResourceOperations for TileHost {
             return Err("The current document owner is closed".into());
         }
         self.prepare_resource_resolution()?;
-        if scope.is_none() {
-            self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
-        }
-        let owner = self.history_owner();
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         let TileContent::App(app) = &mut self.content else {
             return Ok(None);
         };
-        let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
-            Some(scope) => scope.with_document_mutation(document, |document| {
-                crate::widget::start_operation(
-                    app.as_mut(),
-                    op,
-                    &mut crate::widget::Edits::lend(document),
-                    root,
-                )
-            }),
-            None => crate::widget::start_operation(
-                app.as_mut(),
-                op,
-                &mut crate::widget::Edits::lend(document),
-                root,
-            ),
-        };
-        if scope.is_none() {
-            let started = start(doc.document_mut(), path)?;
-            if matches!(
-                started,
-                Some(crate::widget::ResourceOperationStart::Accepted)
-            ) && self.callback_binding().is_some()
-            {
-                self.component_invocations.insert(op.invocation());
-            }
-            return Ok(started);
-        }
-        let started = start(doc.document_mut(), path)?;
+        let started = crate::widget::start_operation(
+            app.as_mut(),
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )?;
         if matches!(
             started,
             Some(crate::widget::ResourceOperationStart::Accepted)
-        ) && let Some(owner) = owner
+        ) && self.callback_binding().is_some()
         {
-            self.retained_invocations
-                .insert(op.invocation(), owner.clone());
-            self.owner_bound_work = true;
-            self.owner_bound_ownership.get_or_insert(owner);
+            self.component_invocations.insert(op.invocation());
         }
         Ok(started)
     }
@@ -2503,41 +2339,6 @@ impl crate::widget::ResourceOperations for TileHost {
                 .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
             {
                 self.component_invocations.remove(&invocation);
-            }
-            return update;
-        }
-        // Admitted work belongs to the retained owner even while its local
-        // presentation is hidden. A replacement must never inherit the id.
-        if let Some(owner) = self.retained_invocations.get(&invocation).cloned() {
-            if owner.validate().is_err()
-                || self
-                    .history_owner()
-                    .is_none_or(|current| !current.same_owner(&owner))
-            {
-                self.retained_invocations.remove(&invocation);
-                return Some(Self::unavailable_update(invocation));
-            }
-            let (store, checkout) = owner.store_checkout();
-            let TileContent::App(app) = &mut self.content else {
-                return None;
-            };
-            let update = store
-                .read_checked(&checkout.id, |document| {
-                    crate::widget::poll_resource_operation(
-                        app.as_mut(),
-                        invocation,
-                        cancellation_requested,
-                        document,
-                        &ROOT,
-                    )
-                })
-                .ok()
-                .flatten();
-            if update
-                .as_ref()
-                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
-            {
-                self.retained_invocations.remove(&invocation);
             }
             return update;
         }

@@ -8,7 +8,6 @@ description = "Portable filesystem operations that only some hosts provide: perm
 
 [dependencies]
 tracing.workspace = true
-trash = "5.2.6"
 tilo-paths.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -31,3 +30,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [lints]
 workspace = true
+
+# The trash a host keeps for another filesystem; an Android app has only its own storage.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+trash = "5.2.6"

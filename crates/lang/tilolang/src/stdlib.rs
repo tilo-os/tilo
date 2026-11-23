@@ -5,10 +5,15 @@
 //! compiles with it. Its views are templates, expanded where a package calls them (`std.list(...)`), so
 //! what they build is the caller's UI, under the caller's authority. A document's map of its own
 //! headings is one of them (`std.headings`), as are the frames a window of a tree or a list gets.
+//!
+//! Like any package, it is read from its source: a tool run in a checkout reads the checkout's
+//! (`load_from` what `in_tree` finds), so an edit of the library takes effect at once. The copy
+//! built in is the packaged release's, for a tool run anywhere else.
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::ast::{Item, Module, ViewDecl};
+use crate::ast::{Item, ViewDecl};
 use crate::ids::{IdsLock, SeededEntropy};
 use crate::meta::PackageMeta;
 use crate::package::Compiled;
@@ -18,65 +23,98 @@ pub const APP: &str = "tilo.std";
 
 pub const NS: &str = "std";
 
+/// The packaged release's copy of the library's source.
 pub const SOURCE: &str = include_str!("../std/app.tl");
 
+/// The packaged release's copy of the ids the library locks.
 pub const IDS: &str = include_str!("../std/app.ids");
 
-/// The library's module.
-///
-/// # Panics
-/// Never for the shipped library, which its tests parse.
-#[expect(
-    clippy::panic,
-    reason = "the library ships with the compiler: a build that cannot parse it has no packages to serve, and its tests prove it parses"
-)]
-fn module() -> &'static Module {
-    static MODULE: OnceLock<Module> = OnceLock::new();
-    MODULE.get_or_init(|| {
-        crate::package::parse(SOURCE).unwrap_or_else(|diagnostics| {
-            let errors: Vec<String> = diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.render("std/app.tl"))
-                .collect();
-            panic!("the standard library parses: {}", errors.join("\n"));
-        })
+/// Where a checkout keeps the library's source, from its root.
+pub const IN_TREE: &str = "crates/lang/tilolang/std";
+
+/// The library's source this process compiles: its text, the ids it locks and the file it reads as.
+struct Source {
+    text: String,
+    ids: String,
+    path: String,
+}
+
+static IN_USE: OnceLock<Source> = OnceLock::new();
+
+fn source() -> &'static Source {
+    IN_USE.get_or_init(|| Source {
+        text: SOURCE.to_owned(),
+        ids: IDS.to_owned(),
+        path: "std/app.tl".to_owned(),
     })
 }
 
-/// The library as a package: its compiled module, its metadata and the ids it locks.
+/// The library the checkout at or above `dir` holds, if `dir` is in one.
+#[must_use]
+pub fn in_tree(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .map(|root| root.join(IN_TREE))
+        .find(|lib| lib.join("app.tl").is_file())
+}
+
+/// Reads the library from its package directory `dir` for the rest of the process, in place of
+/// the packaged copy.
+///
+/// # Errors
+/// Its source or ids cannot be read, or the process already compiled another library.
+pub fn load_from(dir: &Path) -> Result<(), String> {
+    let read = |name: &str| {
+        let path = dir.join(name);
+        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let text = read("app.tl")?;
+    let ids = read("app.ids")?;
+    let path = dir.join("app.tl").display().to_string();
+    let wanted = text.clone();
+    if IN_USE.set(Source { text, ids, path }).is_err() && source().text != wanted {
+        return Err(format!(
+            "{}: the standard library was already read from {}",
+            dir.display(),
+            source().path
+        ));
+    }
+    if LIBRARY.get().is_none() {
+        let library = Library::compiled(source())
+            .map_err(|error| format!("the standard library does not compile:\n{error}"))?;
+        let _ = LIBRARY.set(library);
+    }
+    Ok(())
+}
+
+/// The library as a package: its module, compiled, with the ids it locks.
 struct Library {
     compiled: Compiled,
     templates: Vec<ViewDecl>,
 }
 
 impl Library {
-    /// Compiles the library from its source, with the ids its lock holds.
+    /// Compiles the library from `source`, with the ids its lock holds.
     ///
-    /// # Panics
-    /// Never for the shipped library: its tests prove that it compiles and that the ids in
-    /// `std/app.ids` are the ones its declarations take.
-    #[expect(
-        clippy::panic,
-        reason = "the library ships with the compiler: a build that cannot compile it has no packages to serve, and its tests prove it compiles"
-    )]
-    fn compiled() -> Self {
-        let ids = IdsLock::parse(IDS).unwrap_or_else(|error| {
-            panic!("the standard library's ids are readable: {error}");
-        });
+    /// # Errors
+    /// Its ids, or its source, as the file it reads as says where.
+    fn compiled(source: &Source) -> Result<Self, String> {
+        let render = |diagnostics: Vec<crate::diag::Diagnostic>| {
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.render(&source.path))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let module = crate::package::parse(&source.text).map_err(render)?;
+        let ids = IdsLock::parse(&source.ids).map_err(|e| format!("{}: {e}", source.path))?;
         let compiled = crate::package::compile_package_source_with(
-            &PackageSource::single(SOURCE),
+            &PackageSource::single(&source.text),
             &ids,
             &[],
             &mut SeededEntropy(0),
         )
-        .unwrap_or_else(|diagnostics| {
-            let errors: Vec<String> = diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.render("std/app.tl"))
-                .collect();
-            panic!("the standard library compiles: {}", errors.join("\n"));
-        });
-        let templates = module()
+        .map_err(render)?;
+        let templates = module
             .items
             .iter()
             .filter_map(|item| match item {
@@ -84,17 +122,29 @@ impl Library {
                 _ => None,
             })
             .collect();
-        Self {
+        Ok(Self {
             compiled,
             templates,
-        }
+        })
     }
 }
 
+static LIBRARY: OnceLock<Library> = OnceLock::new();
+
 /// The compiled library, once per process.
+///
+/// # Panics
+/// Never for the packaged copy, which its tests compile; a library read from a checkout is
+/// compiled when it is read (`load_from`).
+#[expect(
+    clippy::panic,
+    reason = "the packaged library ships with the compiler: a build that cannot compile it has no packages to serve, and its tests prove it compiles"
+)]
 fn library() -> &'static Library {
-    static LIBRARY: OnceLock<Library> = OnceLock::new();
-    LIBRARY.get_or_init(Library::compiled)
+    LIBRARY.get_or_init(|| {
+        Library::compiled(source())
+            .unwrap_or_else(|error| panic!("the standard library compiles: {error}"))
+    })
 }
 
 #[must_use]
@@ -121,7 +171,7 @@ mod tests {
 
     #[test]
     fn the_library_is_a_package_of_templates() {
-        let module = super::module();
+        let module = &crate::package::parse(super::SOURCE).unwrap();
         assert_eq!(module.app.id, APP);
         for item in &module.items {
             assert!(

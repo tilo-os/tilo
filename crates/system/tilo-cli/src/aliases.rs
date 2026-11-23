@@ -31,7 +31,6 @@ pub const LIBEXEC: &str = "/usr/libexec/tilo";
 /// docs), so `tilo` never sees them as `argv[0]`.
 pub const MOVED: &[&str] = &[
     "tilo-crypto",
-    "tilo-device-admin",
     "tilo-device-key-init",
     "tilo-greeter",
     "tilo-image-trust",

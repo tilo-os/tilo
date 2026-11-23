@@ -80,9 +80,6 @@ pub struct VmEntry {
     pub ssh: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// Remote command that serves RPC, e.g. `sudo -n tilo-vmd rpc`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub daemon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// `raw` when `image` is a raw disk; absent for qcow2.
@@ -144,8 +141,12 @@ pub struct VmEntry {
     pub mac: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<crate::reach::WakeInfo>,
+    /// The device this VM or machine is, once it answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer: Option<PeerRoute>,
+    pub device: Option<DeviceRoute>,
+    /// The `tilo device add` ticket the VM is booted with until its device answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,16 +169,21 @@ pub struct VmEntry {
     pub awaits_host: Option<String>,
 }
 
+/// The UDP port a dev image's daemon endpoint binds, so a VM's port forward and a device on the
+/// LAN are dialed without a lookup.
+pub const DAEMON_PORT: u16 = 7703;
+
+/// The device a VM or machine is, as its daemon answers: its device key (its endpoint id), the
+/// workspace whose grants admit this machine there, and where it was last reached.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerRoute {
+pub struct DeviceRoute {
     pub device: String,
-    pub endpoint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
+    pub workspace: String,
+    /// Socket addresses its endpoint answered at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home_relay: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,11 +214,12 @@ pub fn registry_path() -> PathBuf {
         .join("vms.toml")
 }
 
-pub fn admin_identity_root(registry: &Path) -> PathBuf {
+/// Where tilo-vm keeps the person it makes for itself on a machine that has none.
+pub fn own_identity_dir(registry: &Path) -> PathBuf {
     registry
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join("admin-identity")
+        .join("identity")
 }
 
 impl Registry {

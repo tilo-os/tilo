@@ -11,9 +11,11 @@ description = "A picture's subject, found by the on-device model through the mod
 tilo-model-client = { path = "../../agent/model-client", default-features = false }
 # The matte, and refining an edge and defringing, which run in the app.
 tilo-segment = { path = "../../media/segment" }
+# Shared synchronous JPEG encoder for the model request.
+tilo-image-codec = { path = "../tilo-image-codec" }
 base64.workspace = true
 hex.workspace = true
-image = { workspace = true, features = ["jpeg", "png"] }
+image = { workspace = true, features = ["png"] }
 sha2.workspace = true
 thiserror.workspace = true
 

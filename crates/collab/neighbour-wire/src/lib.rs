@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 64;
+pub const PEER_PROTOCOL_VERSION: u32 = 65;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -1434,7 +1434,7 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "093f010101010101010101010101010101010101010101010101010101010101010102020202",
+                "0941010101010101010101010101010101010101010101010101010101010101010102020202",
                 "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
                 "000a004003030303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030303030303030303030303030303030300",

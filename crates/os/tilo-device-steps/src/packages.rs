@@ -1,0 +1,128 @@
+//! The `install-packages` step: third-party packages for verification, installed
+//! with the one package manager line the VM's image supports. On a bootc image `dnf
+//! install --transient` puts them in a transient overlay on `/usr` that the next
+//! reboot discards, so nothing outlives the test; sessions freeze their `/usr` when
+//! they start, so an account sees them after its session restarts.
+
+use std::path::Path;
+
+use tilo_device_protocol::{InstallPackages, InstallPackagesResult, valid_package_name};
+
+use crate::error::DaemonError;
+
+/// Install what `request` names; the package manager's output streams as the step's progress.
+pub fn install(request: &InstallPackages) -> Result<InstallPackagesResult, DaemonError> {
+    let argv = install_argv(&request.packages, Path::exists).map_err(DaemonError::InvalidParams)?;
+    let Some((program, flags)) = argv.split_first() else {
+        return Err(DaemonError::InvalidParams("no packages given".into()));
+    };
+    eprintln!("{}", argv.join(" "));
+    let mut command = std::process::Command::new(program);
+    command.args(flags);
+    let ended = crate::exec::run_bounded(
+        command,
+        std::time::Duration::from_secs(request.timeout),
+        16 << 20,
+        std::io::stderr(),
+        std::io::stderr(),
+    )
+    .map_err(|e| DaemonError::ToolMissing {
+        tool: program.clone(),
+        purpose: format!("install packages ({e})"),
+    })?;
+    Ok(InstallPackagesResult { code: ended.code() })
+}
+
+/// The argv that installs `packages`, given which of the paths it asks
+/// about exist.
+pub fn install_argv(
+    packages: &[String],
+    exists: impl Fn(&Path) -> bool,
+) -> Result<Vec<String>, String> {
+    if packages.is_empty() {
+        return Err("no packages given".into());
+    }
+    if let Some(bad) = packages.iter().find(|p| !valid_package_name(p)) {
+        return Err(format!("'{bad}' is not a package name"));
+    }
+    // A composefs-backed bootc system has no `/run/ostree-booted`; its deployments live under
+    // `/sysroot/composefs`.
+    let bootc = exists(Path::new("/run/ostree-booted")) || exists(Path::new("/sysroot/composefs"));
+    let mut argv: Vec<String> = if exists(Path::new("/usr/bin/dnf")) {
+        let mut argv = vec!["dnf", "install", "--assumeyes"];
+        if bootc {
+            argv.push("--transient");
+        }
+        argv.push("--setopt=install_weak_deps=False");
+        argv
+    } else if exists(Path::new("/usr/bin/rpm-ostree")) {
+        vec![
+            "rpm-ostree",
+            "install",
+            "--apply-live",
+            "--idempotent",
+            "--assumeyes",
+        ]
+    } else {
+        return Err("the VM's image has neither dnf nor rpm-ostree".into());
+    }
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    argv.push("--".into());
+    argv.extend(packages.iter().cloned());
+    Ok(argv)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(paths: &'static [&'static str]) -> impl Fn(&Path) -> bool {
+        move |path| paths.iter().any(|p| Path::new(p) == path)
+    }
+
+    fn packages() -> Vec<String> {
+        vec!["xterm".into(), "gtk4-devel-tools".into()]
+    }
+
+    tilo_test_env::scenario! {
+        fn packages_install_with_the_installer_the_system_has;
+
+        phase a_bootc_image_installs_transiently_with_dnf;
+        {
+            let argv = install_argv(
+                &packages(),
+                with(&["/usr/bin/dnf", "/usr/bin/rpm-ostree", "/run/ostree-booted"]),
+            )
+            .unwrap();
+            assert_eq!(
+                argv.join(" "),
+                "dnf install --assumeyes --transient --setopt=install_weak_deps=False -- xterm gtk4-devel-tools"
+            );
+        }
+
+        phase a_composefs_bootc_image_installs_transiently_too;
+        {
+            let argv =
+                install_argv(&packages(), with(&["/usr/bin/dnf", "/sysroot/composefs"])).unwrap();
+            assert!(argv.contains(&"--transient".to_owned()), "{argv:?}");
+        }
+
+        phase a_plain_system_installs_with_dnf_and_rpm_ostree_is_the_fallback;
+        {
+            let plain = install_argv(&packages(), with(&["/usr/bin/dnf"])).unwrap();
+            assert!(!plain.contains(&"--transient".to_owned()), "{plain:?}");
+            let ostree = install_argv(&packages(), with(&["/usr/bin/rpm-ostree"])).unwrap();
+            assert_eq!(ostree[..3], ["rpm-ostree", "install", "--apply-live"]);
+            assert!(install_argv(&packages(), with(&[])).is_err());
+        }
+
+        phase names_that_are_not_packages_are_refused;
+        {
+            let error = install_argv(&["--installroot=/".into()], with(&["/usr/bin/dnf"])).unwrap_err();
+            assert!(error.contains("not a package name"), "{error}");
+            assert!(install_argv(&[], with(&["/usr/bin/dnf"])).is_err());
+        }
+    }
+}

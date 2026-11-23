@@ -87,18 +87,17 @@ pub struct Starter {
 }
 
 /// The one person `acting` leads to: the actor when it is a person, else the
-/// single person down the chain of who it acts for. `None` when it acts for
-/// nobody, or for several people at once.
+/// person its work is for, down the chain of who it acts for. That is the
+/// first one each node acts for; the others after it bound the work (the
+/// person an agent belongs to, the starter of a sub-agent) and never share it.
+/// `None` when it acts for nobody.
 pub(crate) fn led_to(acting: &tilo_actions::Acting) -> Option<&str> {
     let mut node = acting;
     loop {
         if let Some(person) = node.person_id() {
             return Some(person).filter(|person| !person.is_empty());
         }
-        match node.acted_for.as_slice() {
-            [one] => node = one,
-            _ => return None,
-        }
+        node = node.acted_for.first()?;
     }
 }
 
@@ -106,8 +105,8 @@ pub(crate) fn led_to(acting: &tilo_actions::Acting) -> Option<&str> {
 /// themselves, or the one person the software that invokes it acts for.
 ///
 /// # Errors
-/// The invoker acts for nobody, or for several people: an agent works for
-/// one person, and nothing else may start its turn.
+/// The invoker acts for nobody: an agent works for one person, and nothing
+/// else may start its turn.
 pub fn starter(cx: &ActionCx) -> Result<Starter, Refusal> {
     let nobody = || {
         Refusal::new(

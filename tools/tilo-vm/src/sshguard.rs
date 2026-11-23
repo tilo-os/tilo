@@ -47,8 +47,6 @@ const SYSTEMCTL_CHANGES: &[&str] = &[
     "link",
     "preset",
 ];
-/// tilo-vmd subcommands, which all act on the VM's state.
-const DAEMON_COMMANDS: &[&str] = &["rpc", "build", "ci-layer", "restore", "input-serve"];
 
 pub fn guarded_write(command: &[String]) -> Option<String> {
     let line = command.join(" ");
@@ -273,9 +271,10 @@ fn simple_command(words: &[String]) -> Option<String> {
             .into_iter()
             .find(|w| is_guarded(w))
             .map(|w| format!("remounts {w}")),
-        "tilo-vmd" => first
-            .filter(|v| DAEMON_COMMANDS.contains(v))
-            .map(|v| format!("runs tilo-vmd {v}, which acts on the VM's accounts behind tilo-vm")),
+        // Every device step acts on the VM's state; run by hand it goes behind tilo-vm.
+        "tilo-device-step" => first.filter(|step| *step != "catalogue").map(|step| {
+            format!("runs the device step {step}, which acts on the VM behind tilo-vm")
+        }),
         _ => None,
     }
 }
@@ -292,18 +291,18 @@ mod tests {
     fn the_ssh_guard_passes_reads_and_catches_guarded_writes() {
         {
             for line in [
-                "systemctl status tilo-vmd --no-pager",
-                "systemctl is-active tilo-vmd",
+                "systemctl status tilo-device-key-init --no-pager",
+                "systemctl is-active tilo-device-key-init",
                 "systemctl is-enabled tilo-vm-session@a.service",
-                "command -v tilo-vmd",
-                "tilo-vmd --version",
-                "tilo-vmd --help",
+                "command -v tilo-runtime",
+                "tilo-runtime --version",
+                "tilo-runtime --help",
                 "ls /usr/bin",
                 "cat /etc/os-release",
                 "ls -la /var/lib/tilo-vm/accounts",
                 "journalctl -b -p warning",
-                "journalctl -u tilo-vmd --no-pager | tail -n 50",
-                "systemctl status tilo-vmd --no-pager | head -20; systemctl is-active sshd && echo ok",
+                "journalctl -u tilo-device-build@a --no-pager | tail -n 50",
+                "systemctl status tilo-device-key-init --no-pager | head -20; systemctl is-active sshd && echo ok",
                 "rpm -qa | grep tilo",
                 "rpm -qi bootc",
                 "dnf list installed",
@@ -320,7 +319,8 @@ mod tests {
                 assert_eq!(check(line), None, "{line}");
             }
             assert_eq!(guarded_write(&[]), None);
-            let words = ["systemctl", "status", "tilo-vmd", "--no-pager"].map(str::to_owned);
+            let words =
+                ["systemctl", "status", "tilo-device-key-init", "--no-pager"].map(str::to_owned);
             assert_eq!(guarded_write(&words), None);
         }
 
@@ -353,18 +353,21 @@ mod tests {
                 ("sudo rpm-ostree install strace", "changes the image"),
                 ("rpm -Uvh x.rpm", "changes packages (rpm -Uvh)"),
                 (
-                    "systemctl restart tilo-vmd",
-                    "restarts the tilo unit tilo-vmd",
+                    "systemctl restart tilo-device-key-init",
+                    "restarts the tilo unit tilo-device-key-init",
                 ),
                 (
-                    "systemctl enable --now tilo-vmd.socket",
+                    "systemctl enable --now tilo-device-key-init.service",
                     "enables the tilo unit",
                 ),
                 ("systemd-sysext refresh", "system extensions"),
                 ("bootc usr-overlay", "bootc usr-overlay"),
                 ("ostree admin unlock --hotfix", "ostree admin"),
                 ("mount -o remount,rw /usr", "remounts /usr"),
-                ("tilo-vmd restore", "tilo-vmd restore"),
+                (
+                    "tilo-device-step apply-incoming",
+                    "device step apply-incoming",
+                ),
                 ("sh -c 'cp shell /usr/bin/shell'", "writes /usr/bin/shell"),
                 (
                     "ls /usr/bin && cp shell /usr/bin/shell",

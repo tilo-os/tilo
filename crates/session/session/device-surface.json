@@ -2221,7 +2221,7 @@
         },
         {
           "id": "hand-to-agent",
-          "label": "Hand the notification to your agent",
+          "label": "Hand to agent",
           "description": "Hand a notification to the agent the person keeps: it works on what it was told, and its answer comes where their conversation with it is",
           "kind": "outside",
           "params": [
@@ -2851,7 +2851,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md \u00a76).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
           "fields": [
             {
               "name": "style",
@@ -3059,6 +3059,29 @@
           "params": []
         },
         {
+          "id": "pick-emoji",
+          "label": "Write the picked emoji into the field the person types in, and close the picker.",
+          "description": "Write the picked emoji into the field the person types in, and close the picker.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "close-emoji",
+          "label": "Close the emoji picker without writing anything",
+          "description": "Close the emoji picker without writing anything.",
+          "kind": "outside",
+          "params": []
+        },
+        {
           "id": "answer-ask",
           "label": "Answer",
           "description": "Answer the question waiting on the person's avatar",
@@ -3121,6 +3144,110 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
+        },
+        {
+          "path": "about",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "emoji",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "peek",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Peek"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "about_sheet",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "AboutSheet"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "AboutSheet",
+          "doc": "What the About sheet says, as the session reads it from the Tilo this computer runs.",
+          "fields": [
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "heading",
+              "type": "text"
+            },
+            {
+              "name": "version",
+              "type": "text"
+            },
+            {
+              "name": "home",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Peek",
+          "doc": "What a held Super reaches, as the shell's card shows it: the groups of keys, in reading order.",
+          "fields": [
+            {
+              "name": "groups",
+              "type": {
+                "list": {
+                  "named": "PeekGroup"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "PeekGroup",
+          "doc": "One group of the peek: its title, and the keys under it.",
+          "fields": [
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "hints",
+              "type": {
+                "list": {
+                  "named": "PeekHint"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "PeekHint",
+          "doc": "One hint of the peek: the keys of a chord, and what pressing them does.",
+          "fields": [
+            {
+              "name": "keys",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
         }
       ]
     }

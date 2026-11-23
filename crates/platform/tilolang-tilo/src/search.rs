@@ -426,6 +426,13 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
             .filter(|text| text.chars().count() > SHORT_TEXT)
             .map(|text| (text.clone(), IndexWeight::Body)),
     );
+    // A record that names a picture's bytes is a picture for search: the
+    // system's image analysis reads it from the content store, so the picture
+    // is found by the words in it and by what it shows, in every app.
+    let image = hit
+        .texts
+        .iter()
+        .find_map(|text| tilo_resource::search_index::picture_address(text));
     let entry = IndexEntry {
         key: hit.resource.clone(),
         resource: hit.resource.clone(),
@@ -441,6 +448,7 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
         fields,
         secret: false,
         references: hit.references.clone(),
+        image,
         ..IndexEntry::default()
     };
     entry.bounded()

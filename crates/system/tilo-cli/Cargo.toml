@@ -103,7 +103,7 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 
 # `tilo migrate`: the migration sources the Tilo OS installer reads (Thunderbird, Outline,
 # Linear), brought into the workspace from this computer.
-migration-sources = { path = "../../platform/migration-sources" }
+migration-sources = { path = "../../import/migration-sources" }
 # An email account's settings as Mail keeps them, for the person's accounts.
 accounts = { path = "../accounts" }
 # Cloud drives sign in, refresh and resolve their storage as the installer and Settings do.
@@ -133,7 +133,7 @@ test-http = { path = "../../../tools/test-http" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # A server a ticket's computer enters, as the person's device.
-migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
+migration-sources = { path = "../../import/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.
 cloud-source-dav = { path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { path = "../cloud-source-gdrive", features = ["fake-server"] }

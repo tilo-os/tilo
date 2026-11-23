@@ -173,8 +173,9 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                     }
                     let receipt = local_host_answer(pending).await.unwrap();
                     assert_eq!(receipt.invocation, request.invocation);
-                    let lease = local_host_lease(&rig, &caller, request.invocation).await;
-                    lease.check().unwrap();
+                    let original_call =
+                        local_host_original(&rig, &caller, request.invocation).await;
+                    original_call.check_lifecycle().unwrap();
                     let event = events.try_recv().unwrap();
                     assert_eq!(event.peer_id, 903);
                     assert_eq!(event.route, env.route);

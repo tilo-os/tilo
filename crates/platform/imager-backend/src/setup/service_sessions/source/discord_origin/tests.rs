@@ -235,7 +235,7 @@ fn origin_only_session_seals_imports_raw_dom_value_without_a_cookie_store() {
     .unwrap();
     let session = account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
         .service_session(
-            &declaration.sessions[0].account("origin-only-operation"),
+            &sessions::account(&declaration.sessions[0], "origin-only-operation"),
             [7; 32],
             "origin-only-operation",
         )
@@ -343,7 +343,7 @@ fn explicitly_selected_discord_cookies_and_origin_share_one_sealed_session() {
     .unwrap();
     let session = account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
         .service_session(
-            &declaration.sessions[0].account("combined-operation"),
+            &sessions::account(&declaration.sessions[0], "combined-operation"),
             [7; 32],
             "combined-operation",
         )

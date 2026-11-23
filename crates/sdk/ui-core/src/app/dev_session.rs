@@ -173,30 +173,24 @@ extern "C" fn request_dev_session_stop(signal: libc::c_int) {
     reason = "the signal pipe is read for the life of the process; a pool job would pin a worker on a blocking read"
 )]
 pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<UserEvent>) {
+    use std::io::Read as _;
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    use std::os::unix::fs::FileTypeExt as _;
     if crate::process::environment().dev_session.is_none()
         || DEV_STOP_INSTALLED.swap(true, Ordering::Relaxed)
     {
         return;
     }
-    let mut fds = [0i32; 2];
-    // SAFETY: pipe fills a two-int array the caller owns.
-    let opened = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if opened != 0 {
+    let Ok((mut reader, writer)) = std::io::pipe() else {
         DEV_STOP_INSTALLED.store(false, Ordering::Relaxed);
         return;
-    }
-    DEV_STOP_PIPE.store(fds[1], Ordering::Relaxed);
-    let read_fd = fds[0];
+    };
+    DEV_STOP_PIPE.store(writer.into_raw_fd(), Ordering::Relaxed);
     std::thread::Builder::new()
         .name("tilo-dev-session".into())
         .spawn(move || {
             let mut byte = [0u8; 1];
-            loop {
-                // SAFETY: `read_fd` stays open for this thread's lifetime.
-                let read = unsafe { libc::read(read_fd, byte.as_mut_ptr().cast(), 1) };
-                if read <= 0 {
-                    break;
-                }
+            while reader.read_exact(&mut byte).is_ok() {
                 let event = if byte[0] == 2 {
                     UserEvent::DevSessionReload
                 } else {
@@ -208,6 +202,24 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
             }
         })
         .ok();
+    // A dev loop that starts this process on a pipe as stdin holds its only other end
+    // (`tilolang dev`): when that end closes, however the loop ended, stop as SIGTERM stops.
+    let stdin = std::io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map(std::fs::File::from);
+    if stdin
+        .and_then(|stdin| stdin.metadata())
+        .is_ok_and(|meta| meta.file_type().is_fifo())
+    {
+        std::thread::Builder::new()
+            .name("tilo-dev-lifeline".into())
+            .spawn(|| {
+                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+                request_dev_session_stop(libc::SIGTERM);
+            })
+            .ok();
+    }
     // SAFETY: the handler only writes one byte to the pipe above.
     unsafe {
         libc::signal(

@@ -113,7 +113,14 @@ pub enum ShortcutChange {
 }
 
 /// One step, named so later steps can refer to its output.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Written as one flat map: the step's own fields and its kind's. A
+/// `#[serde(flatten)]` would write the same JSON, but it opens a map whose
+/// length it cannot state, which a non-self-describing format such as the
+/// host's postcard cannot encode; a shortcut is hashed in that form when a
+/// device commits its save. [`Step`] therefore writes the map itself, with
+/// its length known, and reads the flat form back through the fields.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
@@ -124,6 +131,38 @@ pub struct Step {
     pub on_error: StepPolicy,
     #[serde(flatten)]
     pub kind: StepKind,
+}
+
+impl Serialize for Step {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::{Error as _, SerializeMap as _};
+        let kind = serde_json::to_value(&self.kind).map_err(S::Error::custom)?;
+        let fields: std::collections::BTreeMap<String, serde_json::Value> = kind
+            .as_object()
+            .ok_or_else(|| S::Error::custom("a step's kind is written as a map"))?
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let policy = !StepPolicy::is_fail(&self.on_error);
+        let fields_count = fields
+            .len()
+            .saturating_add(1)
+            .saturating_add(usize::from(policy));
+        let mut map = serializer.serialize_map(Some(fields_count))?;
+        map.serialize_entry("id", &self.id)?;
+        if policy {
+            map.serialize_entry("on_error", &self.on_error)?;
+        }
+        // Sorted by name, so a proof over the bytes does not depend on how
+        // serde_json's map keeps its order in the build that writes it.
+        for (name, value) in fields {
+            map.serialize_entry(&name, &value)?;
+        }
+        map.end()
+    }
 }
 
 impl Step {

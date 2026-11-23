@@ -328,7 +328,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 delivered.actor,
                 tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
             );
-            let request = collaboration::invocation_scope::PublishedInvocationRequest {
+            let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -336,8 +336,8 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 actor: delivered.actor,
                 presence: None,
             };
-            let lease = (rig.authorize)(&request).unwrap();
-            lease.check().unwrap();
+            let original_call = (rig.originals)(&request).unwrap();
+            original_call.check_lifecycle().unwrap();
             assert!(observe(&agent.handle, invocation).await.unwrap().is_some());
             assert!(
                 rig.state
@@ -352,7 +352,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 observe(&agent.handle, invocation).await,
                 Ok(Some(_))
             ));
-            assert!(lease.check().is_err());
+            assert!(original_call.check_lifecycle().is_err());
             assert!(invoke(&agent.handle, invocation).await.is_err());
             assert!(matches!(
                 admitted.status,
@@ -775,7 +775,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
             let invocation = id(0xf002);
             invoke(&second.handle, invocation).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = collaboration::invocation_scope::PublishedInvocationRequest {
+            let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -783,15 +783,15 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
                 actor: delivered.actor,
                 presence: None,
             };
-            let lease = (rig.authorize)(&request).unwrap();
-            lease.check().unwrap();
+            let original_call = (rig.originals)(&request).unwrap();
+            original_call.check_lifecycle().unwrap();
             env.control.set_wall_ns(1);
             env.control.advance_monotonic(Duration::from_secs(7));
             assert!(!matches!(
                 observe(&second.handle, invocation).await,
                 Ok(Some(_))
             ));
-            assert!(lease.check().is_err());
+            assert!(original_call.check_lifecycle().is_err());
             assert!(
                 observe(&rig.worker.handle, original)
                     .await
@@ -850,7 +850,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
             .await
             .expect("the broker admits the queued original caller");
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = collaboration::invocation_scope::PublishedInvocationRequest {
+            let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -860,15 +860,15 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
                     caller.execution_id().unwrap(),
                 )),
             };
-            let lease = (rig.authorize)(&request).unwrap();
-            lease.check().unwrap();
+            let original_call = (rig.originals)(&request).unwrap();
+            original_call.check_lifecycle().unwrap();
             caller.retire_execution();
             assert!(
-                lease.check().is_err(),
+                original_call.check_lifecycle().is_err(),
                 "retained checked effects cannot outlive their execution"
             );
             assert!(
-                (rig.authorize)(&request).is_err(),
+                (rig.originals)(&request).is_err(),
                 "the same delivered request cannot mint ownership again"
             );
             rig.stop().await;

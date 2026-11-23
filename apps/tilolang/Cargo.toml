@@ -43,6 +43,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
+tilolang-tilo = { path = "../../crates/platform/tilolang-tilo", features = ["test-support"] }
 # Mail's engine, the stand-in IMAP and SMTP servers Mail's tests run against, and the engine's
 # content store.
 mail-engine = { path = "../../crates/platform/mail-engine", features = ["test-support"] }

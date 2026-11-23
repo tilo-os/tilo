@@ -18,7 +18,6 @@ use crate::{AccountId, Saved, Secret, SecretVault, VaultBackend};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
 const GRANT_PREFIX: &str = "tilo-secret-grant:";
-const MAX_APP_ID_BYTES: usize = 255;
 const MAX_PURPOSE_BYTES: usize = 160;
 const MAX_ORIGIN_BYTES: usize = 2_048;
 
@@ -831,19 +830,12 @@ pub(crate) fn canonical_origin(input: &str) -> Result<String, BrokerError> {
     Ok(parsed.origin().ascii_serialization())
 }
 
+/// Validates an incoming application id against the shared segment grammar.
+/// Single-segment identifiers remain allowed because local services and stored
+/// credential grants may use dotless ids such as `"browser"`.
 fn validate_app_id(app_id: &str) -> Result<(), BrokerError> {
-    if app_id.is_empty()
-        || app_id.len() > MAX_APP_ID_BYTES
-        || !app_id.is_ascii()
-        || app_id.starts_with('.')
-        || app_id.ends_with('.')
-        || app_id.split('.').any(|part| {
-            part.is_empty()
-                || !part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        })
-    {
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.allow_single_segment();
+    if !GRAMMAR.matches(app_id) {
         return Err(BrokerError::InvalidAppId);
     }
     Ok(())
@@ -1168,6 +1160,60 @@ mod tests {
             );
             assert!(broker.persistent_grants().is_empty());
             std::fs::remove_dir_all(root).ok();
+        }
+    }
+
+    #[test]
+    fn app_id_validation_matches_single_segment_grammar() {
+        const GRAMMAR: tilo_app_id::Grammar =
+            tilo_app_id::Grammar::CANONICAL.allow_single_segment();
+        let longest_single = "a".repeat(255);
+        let too_long_single = "a".repeat(256);
+        let longest_dotted = format!("a.{}", "b".repeat(253));
+        let too_long_dotted = format!("a.{}", "b".repeat(254));
+        for (label, app_id, expected) in [
+            ("empty", "", false),
+            ("single segment", "browser", true),
+            ("canonical dotted", "so.tilo.mail", true),
+            ("255 bytes single segment", longest_single.as_str(), true),
+            ("256 bytes single segment", too_long_single.as_str(), false),
+            ("255 bytes dotted", longest_dotted.as_str(), true),
+            ("256 bytes dotted", too_long_dotted.as_str(), false),
+            ("leading dot", ".org.tilo", false),
+            ("trailing dot", "org.tilo.", false),
+            ("only dot", ".", false),
+            ("doubled dot", "org..tilo", false),
+            ("only doubled dot", "..", false),
+            ("underscore", "org.example.my_app", true),
+            ("underscore single segment", "my_app", true),
+            ("leading hyphen", "-org.example.app", true),
+            ("leading hyphen single segment", "-browser", true),
+            ("upper case", "org.tilo.Browser", true),
+            ("upper case single segment", "Browser", true),
+            ("digits and hyphen", "org.example.app-2", true),
+            ("space", "org.tilo.my app", false),
+            ("leading space", " browser", false),
+            ("slash", "org.tilo/app", false),
+            ("non-ASCII", "so.tilo.n\u{f6}tes", false),
+            ("control newline", "org.tilo.Browser\nFake", false),
+            ("control nul", "org.tilo.Browser\0", false),
+            ("control tab", "org.tilo\tapp", false),
+        ] {
+            let result = validate_app_id(app_id);
+            let grammar_ok = GRAMMAR.matches(app_id);
+            assert_eq!(
+                result.is_ok(),
+                grammar_ok,
+                "{label}: validate_app_id and Grammar::CANONICAL.allow_single_segment() disagreed on {app_id:?}"
+            );
+            assert_eq!(result.is_ok(), expected, "{label}: {app_id:?}");
+            if !expected {
+                assert_eq!(
+                    result,
+                    Err(BrokerError::InvalidAppId),
+                    "{label}: {app_id:?}"
+                );
+            }
         }
     }
 

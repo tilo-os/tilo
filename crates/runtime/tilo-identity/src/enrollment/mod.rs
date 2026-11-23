@@ -751,7 +751,7 @@ mod tests {
             let encoded = store
                 .mint_enrollment(
                     &fixture.identity_id,
-                    DeviceCapabilities::administrator(),
+                    DeviceCapabilities::nothing(),
                     now,
                     now + 5_000,
                     &[],

@@ -1052,11 +1052,12 @@ fn report_launch_result(
                 );
                 // A sandbox this computer cannot make ends every app the same way: said by its
                 // own exit code, so whoever started the app names the cause.
-                if matches!(launcher::user_namespaces::allowed(), Ok(false)) {
+                if let Ok(Some(refusal)) = launcher::user_namespaces::refusal() {
                     eprintln!(
                         "tilo-launcher: this computer allows no user namespaces, which every app's \
                          sandbox is made in"
                     );
+                    eprintln!("tilo-launcher: {refusal}");
                     return exit_code(launcher::user_namespaces::EXIT_NO_USER_NAMESPACES);
                 }
             }

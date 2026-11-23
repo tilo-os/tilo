@@ -69,10 +69,6 @@ x86_64 = 131072
 [apps."so.tilo.hex-editor"]
 x86_64 = 131072
 
-# no model; 2,788,864 bytes in all, 2,752,512 budgeted.
-[apps."so.tilo.imager"]
-x86_64 = 65536
-
 # no model; 657,408 bytes in all, 655,360 budgeted.
 [apps."so.tilo.launcher"]
 x86_64 = 65536

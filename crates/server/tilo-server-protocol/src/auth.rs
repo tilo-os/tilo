@@ -1398,7 +1398,7 @@ mod tests {
                 AuthError::PolicyReject
             ));
             let mut forged = laptop.cert.clone();
-            forged.capabilities.can_administer_devices = true;
+            forged.capabilities.foreign = !forged.capabilities.foreign;
             assert!(matches!(
                 authenticate_endpoint_bound(
                     &forged,
@@ -1644,7 +1644,7 @@ mod tests {
                 cert: laptop.cert.clone(),
                 sk: laptop.sk.clone(),
             };
-            forged.cert.capabilities.can_administer_devices = true;
+            forged.cert.capabilities.foreign = !forged.cert.capabilities.foreign;
             let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &forged, &revocations);
             assert!(matches!(error, AuthError::Cert(_)));
             assert_eq!(said, Some(HelloRefusal::CertificateRejected));

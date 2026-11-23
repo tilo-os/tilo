@@ -9,7 +9,7 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tilo_vm_protocol::Provenance;
+use tilo_device_protocol::Provenance;
 
 use crate::builderlayer::{Packed, Stream};
 use crate::cli::ArtifactSwap;

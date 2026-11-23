@@ -12,10 +12,9 @@ pub use restart_storage::RestartStorage;
 mod native;
 #[cfg(unix)]
 pub use native::PreparedIdentity;
+pub use tilo_identity::enrolled_transport::{CurrentDeviceDeclaration, TransportReceipt};
 #[cfg(unix)]
-pub use tilo_identity::enrolled_transport::{
-    CurrentDeviceDeclaration, CurrentDeviceReference, EnrolledDevice, TransportReceipt,
-};
+pub use tilo_identity::enrolled_transport::{CurrentDeviceReference, EnrolledDevice};
 #[cfg(not(unix))]
 #[path = "prepared_identity/unsupported.rs"]
 mod unavailable;
@@ -55,31 +54,6 @@ pub fn require_supported() -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CurrentDeviceDeclaration {
-    schema: u32,
-    user_public_key: [u8; 32],
-    device_public_key: [u8; 32],
-    record_name: String,
-    record_sha256: [u8; 32],
-    certificate_sha256: [u8; 32],
-    fleet_sha256: [u8; 32],
-}
-#[cfg(not(unix))]
-impl CurrentDeviceDeclaration {
-    pub fn public_key(&self) -> [u8; 32] {
-        self.user_public_key
-    }
-    pub fn device_public_key(&self) -> [u8; 32] {
-        self.device_public_key
-    }
-    pub fn record_name(&self) -> &str {
-        &self.record_name
-    }
-}
-
-#[cfg(not(unix))]
 enum Never {}
 #[cfg(not(unix))]
 pub struct CurrentDeviceReference {
@@ -88,12 +62,6 @@ pub struct CurrentDeviceReference {
 #[cfg(not(unix))]
 pub struct EnrolledDevice {
     _never: Never,
-}
-#[cfg(not(unix))]
-pub struct TransportReceipt {
-    pub user_public_key: [u8; 32],
-    pub device_public_key: [u8; 32],
-    pub sealed_bytes: u64,
 }
 
 /// A held restart generation lock, not a path-based grant.

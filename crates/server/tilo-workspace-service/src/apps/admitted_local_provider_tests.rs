@@ -1,4 +1,4 @@
-// Uses the real signed authority, private worker, RPC directory and SDK authorizer above.
+// Uses the real signed authority, private worker, RPC directory and original lookup above.
 include!("native_facade_tests.rs");
 fn local_host_evidence(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
     member_device_evidence(env, 93, false)
@@ -62,17 +62,17 @@ async fn local_host_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> 
     .expect("actual broker admission remains open")
 }
 
-async fn local_host_lease(
+async fn local_host_original(
     rig: &Rig,
     caller: &tilo_actions::remote::Caller,
     invocation: tilo_actions::InvocationId,
-) -> collaboration::invocation_scope::PublishedInvocationLease {
+) -> std::sync::Arc<crate::apps::collab_app_broker::OriginalInvocation> {
     let delivered =
         tilo_test_env::within("the admitted delivery", rig.stream.as_ref().unwrap().read())
             .await
             .unwrap();
     assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
-    let request = collaboration::invocation_scope::PublishedInvocationRequest {
+    let request = crate::apps::collab_app_broker::InvocationRequest {
         wire_id: delivered.id,
         invocation,
         address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -82,9 +82,10 @@ async fn local_host_lease(
             caller.execution_id().unwrap(),
         )),
     };
-    let lease = (rig.authorize)(&request).expect("actual worker receives original ownership");
-    lease.check().unwrap();
-    lease
+    let original_call =
+        (rig.originals)(&request).expect("actual worker receives original ownership");
+    original_call.check_lifecycle().unwrap();
+    original_call
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -139,13 +140,13 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
                     .await
                     .unwrap();
                 assert_eq!(retry, receipt);
-                let lease = local_host_lease(&rig, &caller, request.invocation).await;
+                let original_call = local_host_original(&rig, &caller, request.invocation).await;
                 no_delivery(&rig).await;
                 assert!(events.try_recv().is_err(), "retry is not new execution");
                 // Rollback cannot keep the original caller certificate alive.
                 env.control.set_wall_ns(1);
                 env.control.advance_monotonic(Duration::from_secs(7));
-                assert!(lease.check().is_err());
+                assert!(original_call.check_lifecycle().is_err());
                 assert!(host.observe(&caller, &request.invocation).is_none());
                 assert!(
                     local_host_answer(host.invoke(&caller, request))
@@ -495,7 +496,7 @@ async fn a_certified_local_continuation_ends_with_its_certificate() {
             local_host_answer(host.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
-            let _lease = local_host_lease(&rig, &caller, request.invocation).await;
+            let _original_call = local_host_original(&rig, &caller, request.invocation).await;
             let continued = rig
                 .state
                 .continuing_caller(903, request.invocation)
@@ -692,7 +693,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
                 "the queued invocation admission and its dispatch verify once"
             );
             assert_eq!(receipt.invocation, request.invocation);
-            let _lease = local_host_lease(&rig, &caller, request.invocation).await;
+            let _original_call = local_host_original(&rig, &caller, request.invocation).await;
 
             let before = verifications();
             local_host_answer(host.query(
@@ -828,8 +829,8 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 local_host_answer(next).await.unwrap().invocation,
                 fresh.invocation
             );
-            let _first = local_host_lease(&rig, &caller, request.invocation).await;
-            let _second = local_host_lease(&rig, &caller, fresh.invocation).await;
+            let _first = local_host_original(&rig, &caller, request.invocation).await;
+            let _second = local_host_original(&rig, &caller, fresh.invocation).await;
             no_delivery(&rig).await;
             assert!(rig.state.remote_job(&caller, &request.invocation).is_some());
             assert!(rig.state.remote_job(&caller, &fresh.invocation).is_some());

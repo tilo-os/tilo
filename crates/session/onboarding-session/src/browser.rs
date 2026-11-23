@@ -254,6 +254,7 @@ pub fn validate_published_projection(path: &Path) -> bool {
 }
 impl Kind for Browser {
     type Declaration = BrowserDeclaration;
+    type StoredDeclaration = prepared_setup_model::stored::StoredBrowserDeclaration;
     type Event = Event;
     const FAILURE: &'static str = "Browser data are pending or unavailable";
     const ROOT: &'static str = "prepared-browser";
@@ -274,6 +275,9 @@ impl Kind for Browser {
     const MONOTONIC_RECEIPTS: bool = false;
     const COMPLETION_NEEDS_PROOF: bool = true;
 
+    fn into_declaration(stored: Self::StoredDeclaration) -> Self::Declaration {
+        stored.0
+    }
     fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<BrowserDeclaration>> {
         prepared.browser(identity)
     }
@@ -287,9 +291,11 @@ impl Kind for Browser {
         status.insert("browser".to_owned(), true.into());
     }
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
-        let expected: crate::prepared::BrowserPayload =
-            serde_json::from_slice(&private_file(&directory.join("expectation.json"), 24576)?)
-                .map_err(|_| failure())?;
+        let expected = serde_json::from_slice::<
+            prepared_setup_model::stored::StoredBrowserExpectation,
+        >(&private_file(&directory.join("expectation.json"), 24576)?)
+        .map_err(|_| failure())?
+        .0;
         if expected != cx.declaration.payload {
             return Err(failure());
         }
@@ -380,20 +386,20 @@ pub mod fixtures {
         let operation = uuid::Uuid::new_v4().to_string();
         let declaration = BrowserDeclaration {
             payload: crate::prepared::BrowserPayload {
-                schema: 1,
                 filename: format!("browser-{operation}.sealed"),
                 operation,
-                purpose: "browser_profiles".into(),
                 setup_binding: plan.setup_binding.clone(),
                 sealed_bytes: 18,
                 plaintext_bytes: 16,
                 entries: 2,
                 ciphertext_sha256: [2; 32],
-                plan_sha256: Sha256::digest(plan.encode().unwrap()).into(),
                 limits: crate::prepared::ApplicationLimits {
                     plaintext_bytes: 1024,
                     entries: 64,
                     metadata_bytes: 1024,
+                },
+                kind: prepared_setup_model::Browser {
+                    plan_sha256: Sha256::digest(plan.encode().unwrap()).into(),
                 },
             },
             plan,
@@ -698,5 +704,197 @@ mod tests {
                 .unwrap(),
             b"fixture ciphertext"
         );
+        let mut with_unknown =
+            serde_json::to_value(&pending.context().declaration.payload).unwrap();
+        with_unknown["unexpected"] = serde_json::json!(true);
+        std::fs::write(
+            root(home.path()).join("expectation.json"),
+            serde_json::to_vec(&with_unknown).unwrap(),
+        )
+        .unwrap();
+        let mut refused = Pending::open(
+            home.path().into(),
+            reopened.context().identity.clone(),
+            reopened.context().declaration.clone(),
+        )
+        .unwrap();
+        assert!(refused.run_with("review", &helper).is_err());
+    }
+
+    #[test]
+    fn package_reader_accepts_flat_and_kind_expectations() {
+        let (home, identity, declaration) = fixture();
+        let directory = root(home.path());
+        let cx = Context {
+            home: home.path().to_path_buf(),
+            identity,
+            declaration: declaration.clone(),
+            digest: [0; 32],
+        };
+        assert_eq!(
+            Browser::package(&cx, &directory).unwrap(),
+            (
+                directory.join(&declaration.payload.filename),
+                declaration.payload.operation.clone()
+            )
+        );
+        let mut flat = serde_json::json!({
+            "schema": 1,
+            "operation": declaration.payload.operation,
+            "purpose": "browser_profiles",
+            "filename": declaration.payload.filename,
+            "setup_binding": declaration.payload.setup_binding,
+            "sealed_bytes": declaration.payload.sealed_bytes,
+            "plaintext_bytes": declaration.payload.plaintext_bytes,
+            "entries": declaration.payload.entries,
+            "ciphertext_sha256": declaration.payload.ciphertext_sha256,
+            "plan_sha256": declaration.payload.kind.plan_sha256,
+            "limits": declaration.payload.limits,
+        });
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&flat).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Browser::package(&cx, &directory).unwrap(),
+            (
+                directory.join(&declaration.payload.filename),
+                declaration.payload.operation
+            )
+        );
+        flat["extra"] = serde_json::json!(true);
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&flat).unwrap(),
+        )
+        .unwrap();
+        assert!(Browser::package(&cx, &directory).is_err());
+    }
+
+    fn flat_choice_json(digest: [u8; 32], declaration: &BrowserDeclaration) -> String {
+        // Exact literal wire layout and field order written by main's
+        // `Choice<BrowserDeclaration>` (`schema`, `setup_digest`, `declaration`
+        // with `plan` and flat 11-key `BrowserPayload`, `outcome`).
+        format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""plan":{plan},"payload":{{"#,
+                r#""schema":1,"operation":"{operation}","purpose":"browser_profiles","#,
+                r#""filename":"{filename}","setup_binding":"{binding}","#,
+                r#""sealed_bytes":{sealed_bytes},"plaintext_bytes":{plaintext_bytes},"#,
+                r#""entries":{entries},"ciphertext_sha256":{ciphertext},"#,
+                r#""plan_sha256":{plan_sha256},"limits":{{"plaintext_bytes":{limit_plain},"#,
+                r#""entries":{limit_entries},"metadata_bytes":{limit_meta}}}}}}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&digest).unwrap(),
+            plan = serde_json::to_string(&declaration.plan).unwrap(),
+            operation = declaration.payload.operation,
+            filename = declaration.payload.filename,
+            binding = declaration.payload.setup_binding,
+            sealed_bytes = declaration.payload.sealed_bytes,
+            plaintext_bytes = declaration.payload.plaintext_bytes,
+            entries = declaration.payload.entries,
+            ciphertext = serde_json::to_string(&declaration.payload.ciphertext_sha256).unwrap(),
+            plan_sha256 = serde_json::to_string(&declaration.payload.kind.plan_sha256).unwrap(),
+            limit_plain = declaration.payload.limits.plaintext_bytes,
+            limit_entries = declaration.payload.limits.entries,
+            limit_meta = declaration.payload.limits.metadata_bytes,
+        )
+    }
+
+    #[test]
+    fn stored_main_flat_choice_json_loads_stays_on_equal_replaces_and_refuses_unknown_keys() {
+        let (home, identity, declaration) = fixture();
+        let prepared = Prepared::open(home.path()).unwrap();
+        let directory = root(home.path());
+        let choice_path = directory.join("choice.json");
+        let flat_choice = flat_choice_json(prepared.digest(), &declaration);
+        std::fs::write(&choice_path, flat_choice.as_bytes()).unwrap();
+        std::fs::set_permissions(&choice_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut pending =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(pending.deferred());
+        assert!(!pending.pending());
+        assert_eq!(pending.status()["state"], "deferred");
+
+        // Re-acknowledging the equal outcome leaves the existing flat file untouched on disk.
+        pending.invoke("later", b"").unwrap();
+        assert_eq!(std::fs::read(&choice_path).unwrap(), flat_choice.as_bytes());
+
+        // Replacing the deferred flat choice with verified completion writes the nested shape.
+        pending.invoke("resume", b"").unwrap();
+        assert!(pending.pending());
+        pending
+            .receive_prepared_password(
+                prepared.digest(),
+                Zeroizing::new(b"private password".to_vec()),
+            )
+            .unwrap();
+        pending.manual();
+        let projection = certified_projection(home.path(), &identity, &declaration);
+        let helper = home.path().join("inert-helper");
+        let complete = serde_json::json!({
+            "event": "complete",
+            "verified": true,
+            "projection": projection,
+            "identity_public_key": declaration.plan.identity_public_key,
+            "operation": declaration.payload.operation,
+            "profiles": 1
+        });
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\n",
+                serde_json::to_string(&complete).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        pending.run_with("activate", &helper).unwrap();
+        wait(&mut pending);
+        assert_eq!(pending.verified_projection(), Some(projection.as_path()));
+
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&choice_path).unwrap()).unwrap();
+        assert_eq!(written["outcome"], "complete");
+        assert!(written["declaration"]["payload"]["kind"]["plan_sha256"].is_array());
+        assert!(written["declaration"]["payload"].get("schema").is_none());
+        assert!(written["declaration"]["payload"].get("purpose").is_none());
+
+        let reopened =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(!reopened.pending());
+        assert_eq!(reopened.verified_projection(), Some(projection.as_path()));
+
+        // Unknown keys at outer, declaration, flat payload, and nested payload levels are refused.
+        let mut with_outer_unknown: serde_json::Value = serde_json::from_str(&flat_choice).unwrap();
+        with_outer_unknown["unexpected"] = serde_json::json!(true);
+        let mut with_decl_unknown: serde_json::Value = serde_json::from_str(&flat_choice).unwrap();
+        with_decl_unknown["declaration"]["extra"] = serde_json::json!(true);
+        let mut with_payload_unknown: serde_json::Value =
+            serde_json::from_str(&flat_choice).unwrap();
+        with_payload_unknown["declaration"]["payload"]["extra"] = serde_json::json!(true);
+        let mut with_nested_unknown = written;
+        with_nested_unknown["declaration"]["payload"]["extra"] = serde_json::json!(true);
+
+        for (label, bad) in [
+            ("outer unknown", with_outer_unknown),
+            ("declaration unknown", with_decl_unknown),
+            ("flat payload unknown", with_payload_unknown),
+            ("nested payload unknown", with_nested_unknown),
+        ] {
+            std::fs::write(&choice_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert!(
+                Pending::open(home.path().into(), identity.clone(), declaration.clone()).is_err(),
+                "open must refuse {label}"
+            );
+            assert!(
+                pending.invoke("later", b"").is_err(),
+                "acknowledge must refuse {label}"
+            );
+        }
     }
 }

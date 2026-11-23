@@ -187,7 +187,7 @@ def select(root: Path, base: str) -> dict:
             continue
         if component.get("scope") != "vm":
             # A session component merges through a machine's own session (the device
-            # account); neither guest of this proof runs one tilo-vmd knows.
+            # account); neither guest of this proof runs one the device's steps know.
             refused.append({"component": name, "programs": sorted(hit),
                             "reason": "a session component, and neither guest's session is a tilo-vm account"})
             continue

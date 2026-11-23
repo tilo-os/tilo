@@ -48,7 +48,6 @@ EXEMPT = {
     # The server's admin client.
     "crates/server/tilo-server/src/admin.rs": "server admin client",
     # A client of the device administrator, which chooses its own relays.
-    "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
     "crates/system/tilo-auth/src/sibling/exchange.rs": "initrd unlock exchange",

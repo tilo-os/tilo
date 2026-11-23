@@ -67,9 +67,6 @@ pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
         HostKind::Pacman => format!("sudo pacman -S {package}"),
         HostKind::Zypper => format!("sudo zypper install {package}"),
         HostKind::Macos => format!("brew install {package}"),
-        HostKind::Windows if tool == "rsync" => {
-            "install MSYS2 rsync and openssh in %USERPROFILE%\\msys64\\usr\\bin (pacman -S rsync openssh)".into()
-        }
         HostKind::Windows => format!("install {package} (winget) and put it on PATH"),
         HostKind::Dnf => format!("sudo dnf install {package}"),
         HostKind::Unknown => format!("install {package} with your package manager"),
@@ -82,9 +79,8 @@ pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
         format!("{} on {}", facts.kind.describe(), facts.arch),
     )];
     for (tool, purpose) in [
-        ("ssh", "reach the VM"),
+        ("ssh", "open a shell with tilo-vm vm ssh"),
         ("git", "name your account and record provenance"),
-        ("rsync", "sync this worktree into the VM for in-VM builds"),
         ("curl", "download the published dev disk"),
     ] {
         checks.push(match facts.first(tool) {
@@ -93,19 +89,6 @@ pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
                 tool,
                 format!("not on PATH (needed to {purpose})"),
                 install_fix(facts, tool),
-            ),
-        });
-    }
-    if facts.os == "windows" {
-        checks.push(match crate::host::rsync_ssh_program() {
-            Some(path) => Check::ok(
-                "rsync SSH",
-                format!("{} (MSYS2 transport for rsync)", path.display()),
-            ),
-            None => Check::fail(
-                "rsync SSH",
-                "MSYS2 ssh.exe is missing beside rsync.exe; native Windows OpenSSH closes the rsync pipe",
-                "install MSYS2 openssh with pacman -S openssh",
             ),
         });
     }
@@ -426,16 +409,18 @@ mod tests {
                     &[("ssh", "/usr/bin/ssh"), ("git", "/usr/bin/git")],
                 );
                 let checks = host_checks(&facts);
-                assert_eq!(find(&checks, "ssh").detail, "/usr/bin/ssh (reach the VM)");
-                let rsync = find(&checks, "rsync");
-                assert_eq!(rsync.state, "fail");
+                assert_eq!(
+                    find(&checks, "ssh").detail,
+                    "/usr/bin/ssh (open a shell with tilo-vm vm ssh)"
+                );
+                let curl = find(&checks, "curl");
+                assert_eq!(curl.state, "fail");
                 assert!(
-                    rsync
-                        .fix
+                    curl.fix
                         .as_deref()
                         .unwrap()
-                        .starts_with("this host is image-based: rpm-ostree install rsync"),
-                    "{rsync:?}"
+                        .starts_with("this host is image-based: rpm-ostree install curl"),
+                    "{curl:?}"
                 );
                 let apt = linux(HostKind::Apt, &[]);
                 assert_eq!(

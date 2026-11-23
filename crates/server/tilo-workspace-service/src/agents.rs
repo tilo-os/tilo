@@ -650,6 +650,9 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
     workspaces.call_private_model_addresses(true);
+    // The model this computer's Agent models pane chose is the workspaces' it keeps.
+    workspaces.on_a_computer();
+    workspaces.follow_this_computer();
     telling::start(&workspaces);
     // Each agent signs its calls with a key of its own, made here from its person's root.
     let keys = match agent_keys::FleetAgentKeys::from_env() {
@@ -662,10 +665,15 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
+    // The agents speak the language their person reads this computer in.
     ServerAgents::on_device(workspaces, actions, keys)
+        .speaking(settings_store::appearance::preferred_language)
         .run()
         .await;
 }
+
+/// The language a host's agents speak, asked anew for each turn ([`ServerAgents::speaking`]).
+pub type Language = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// What carries one turn's model calls, made fresh for each turn on its own thread: a test's
 /// script, standing where a workspace's model would ([`ServerAgents::scripted`]).
@@ -868,6 +876,10 @@ pub struct ServerAgents {
     /// A test's script, answering in a workspace that linked no model: `None` outside tests,
     /// where such a workspace is told what to link.
     model: Option<Model>,
+    /// The language the agents' own words are said in where this host knows its person's: a
+    /// person's own computer speaks theirs ([`Self::speaking`]). `None` says them in the host's
+    /// source language.
+    language: Option<Language>,
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
     going: Arc<going::Turns>,
@@ -937,6 +949,7 @@ impl ServerAgents {
             actions,
             roster,
             model,
+            language: None,
             going: Arc::default(),
             events: None,
             carriers: Arc::default(),
@@ -957,8 +970,24 @@ impl ServerAgents {
         agents
     }
 
+    /// Say the agents' own words (why no model answered, what a provider's failure was) in the
+    /// language `language` answers, asked at each turn: the person may change it at any time.
+    #[must_use]
+    pub fn speaking(
+        mut self,
+        language: impl Fn() -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.language = Some(Arc::new(language));
+        self
+    }
+
+    /// The language the agents' own words are said in now ([`Self::speaking`]).
+    fn language(&self) -> Option<String> {
+        self.language.as_ref().and_then(|language| language())
+    }
+
     /// A test's script answers in every workspace here that linked no model.
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn scripted(mut self, model: impl Into<Option<Model>>) -> Self {
         self.model = model.into();
@@ -2059,6 +2088,7 @@ impl ServerAgents {
             }
         };
         let asked = theirs.clone();
+        let language = self.language();
         let linked = tokio::task::spawn_blocking(move || asked.linked())
             .await
             .map_err(|error| error.to_string())?
@@ -2074,12 +2104,14 @@ impl ServerAgents {
                     stop: Arc::clone(&stop),
                     answered: None,
                     context_chars,
+                    language: language.clone(),
                 }) as Box<dyn PlanTurns>)
             })),
-            Err(refused @ ModelRefusal::NoModelLinked { .. }) => {
-                self.model.clone().ok_or_else(|| refused.words(None))
-            }
-            Err(refused) => Err(refused.words(None)),
+            Err(refused @ ModelRefusal::NoModelLinked { .. }) => self
+                .model
+                .clone()
+                .ok_or_else(|| refused.words(language.as_deref())),
+            Err(refused) => Err(refused.words(language.as_deref())),
         }
     }
 
@@ -2151,6 +2183,8 @@ struct WorkspaceTurns {
     answered: Option<ModelAnswered>,
     /// The most characters of conversation this model reads, by its descriptor's context.
     context_chars: usize,
+    /// The language a failure is said in ([`ServerAgents::speaking`]).
+    language: Option<String>,
 }
 
 impl PlanTurns for WorkspaceTurns {
@@ -2180,7 +2214,7 @@ impl PlanTurns for WorkspaceTurns {
                 &|| self.stop.load(Ordering::Relaxed),
                 written,
             )
-            .map_err(|refused| refused.model_error())?;
+            .map_err(|refused| refused.model_error_in(self.language.as_deref()))?;
         self.answered = Some(ModelAnswered {
             provider: answer.linked.provider,
             label: answer.linked.model.display_label().to_owned(),
@@ -3014,8 +3048,8 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         } else if call.name == shares::ANSWER_WITH_DOCUMENT {
             let at = self.at.lock().await;
             Box::pin(at.1.document(self.server, &call.input)).await
-        } else if web_search::owns(&call.name) {
-            self.web.tool(&call.name, &call.input).await
+        } else if let Some(web) = self.web.tool(&call.name, &call.input).await {
+            web
         } else {
             learned::call(self.keeping, &call.name, &call.input).await?
         };

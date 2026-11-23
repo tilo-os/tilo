@@ -63,7 +63,11 @@ impl PasteShortcut {
     }
 }
 
-/// Whether `app_id` can carry an override: non-empty, bounded, printable.
+/// Whether `app_id` can carry a paste-shortcut override, keyed by a Wayland
+/// app id or X11 window class chosen by the application or host desktop
+/// rather than Tilo. Narrowing this check to the shared Tilo app id grammar
+/// would drop stored settings and refuse real applications whose identifiers
+/// contain spaces, slashes, or other non-reverse-DNS characters.
 #[must_use]
 pub fn valid_app_id(app_id: &str) -> bool {
     !app_id.trim().is_empty()
@@ -208,5 +212,37 @@ mod tests {
             );
             assert_eq!(resolve_ids(&[], &overrides), PasteShortcut::CtrlV);
         }
+    }
+
+    #[test]
+    fn host_window_app_ids_outside_tilo_grammar_are_kept() {
+        for app_id in ["My Terminal", "/usr/bin/tool", "kitty"] {
+            assert!(
+                !tilo_app_id::Grammar::CANONICAL.matches(app_id),
+                "pinned fixture {app_id:?} must be refused by Grammar::CANONICAL"
+            );
+            assert!(
+                valid_app_id(app_id),
+                "host app id {app_id:?} must remain valid for paste shortcut overrides"
+            );
+        }
+        let section: Map<String, Value> = serde_json::from_str(
+            r#"{ "paste_shortcuts": {
+                "My Terminal": "ctrl_shift_v",
+                "/usr/bin/tool": "ctrl_v"
+            } }"#,
+        )
+        .unwrap();
+        let overrides = overrides_from_section(&section);
+        assert_eq!(
+            overrides.len(),
+            2,
+            "host overrides must load: {overrides:?}"
+        );
+        assert_eq!(
+            resolve("my terminal", &overrides),
+            PasteShortcut::CtrlShiftV
+        );
+        assert_eq!(resolve("/usr/bin/tool", &overrides), PasteShortcut::CtrlV);
     }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Lint with clippy the apps that ship an Android host, for both Android
-# targets, with the `android` feature their host example builds with.
+# targets, with the `android` feature their host example builds with, and
+# type-check the device daemon the Tilo app runs in its own process.
 #
 #   tools/ci/clippy-android.sh [-p <app>]...   # default: every Android app
 #   CARGO=<any cargo drop-in> tools/ci/clippy-android.sh
@@ -22,4 +23,7 @@ for target in aarch64-linux-android x86_64-linux-android; do
     bash scripts/ci-run.sh "Clippy (Android apps, $target)" -- \
     "$cargo" clippy --locked "$@" --examples --features android --target "$target" \
     -- -D warnings -A clippy::missing_const_for_thread_local
+  bash tools/ci/measure.sh "check tilo-runtime $target" -- \
+    bash scripts/ci-run.sh "Check (device daemon, $target)" -- \
+    "$cargo" check --locked -p tilo-runtime --target "$target"
 done

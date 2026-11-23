@@ -1464,13 +1464,12 @@ impl crate::widget::ResourceOperations for LiveUi {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.type_id.starts_with(LIVE_GRAPH_OPERATION))
-            .filter(|request| request.kind != crate::tilo_actions::OperationKind::Document)
-        else {
+        let request = op.request();
+        if !(request.type_id.starts_with(LIVE_GRAPH_OPERATION)
+            && request.kind != crate::tilo_actions::OperationKind::Document)
+        {
             return Ok(None);
-        };
+        }
         self.invoke_graph_operation(request.type_id, request.payload)
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }

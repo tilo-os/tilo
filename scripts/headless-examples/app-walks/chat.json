@@ -117,13 +117,18 @@
               ],
               "within": 20
             }
+          },
+          {
+            "holds": [
+              "new-channel"
+            ]
           }
         ]
       }
     },
     {
       "id": "channel-from-search",
-      "said": "Start a channel through the desktop's search: the window's button ran nothing",
+      "said": "Start a channel through the desktop's search, as the window's button does",
       "ops": {
         "rust": [],
         "tl": [
@@ -146,6 +151,11 @@
               ],
               "within": 20
             }
+          },
+          {
+            "holds": [
+              "new-channel"
+            ]
           }
         ]
       }
@@ -199,6 +209,11 @@
           },
           {
             "must": [
+              "Hello team"
+            ]
+          },
+          {
+            "holds": [
               "Hello team"
             ]
           }

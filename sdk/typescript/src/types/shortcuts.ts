@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shortcuts@07f5724db001dde6";
+export const SURFACE = "so.tilo.shortcuts@e0152581ca03b6ec";
 
 export interface Draft {
   name: string;
@@ -87,12 +87,23 @@ export interface DuplicateShortcutArgs {
   shortcut: unknown;
 }
 
-/** The arguments of `set-schedule`. */
-export interface SetScheduleArgs {
+/** The arguments of `add-trigger`. */
+export interface AddTriggerArgs {
   draft: string;
-  enabled: boolean;
-  hour: number;
-  minute: number;
+  trigger: unknown;
+}
+
+/** The arguments of `replace-trigger`. */
+export interface ReplaceTriggerArgs {
+  draft: string;
+  index: number;
+  trigger: unknown;
+}
+
+/** The arguments of `remove-trigger`. */
+export interface RemoveTriggerArgs {
+  draft: string;
+  index: number;
 }
 
 /** The arguments of `discard`. */
@@ -213,14 +224,25 @@ export interface Workbench extends tilo.Resource {
   }): Promise<void>;
   /** Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateShortcutMany(items: DuplicateShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
-  setSchedule(args: {
+  addTrigger(args: {
     draft: string;
-    enabled: boolean;
-    hour: number;
-    minute: number;
+    trigger: unknown;
   }): Promise<void>;
-  /** Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setScheduleMany(items: SetScheduleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `add-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  addTriggerMany(items: AddTriggerArgs[]): Promise<tilo.ActionAnswer[]>;
+  replaceTrigger(args: {
+    draft: string;
+    index: number;
+    trigger: unknown;
+  }): Promise<void>;
+  /** Runs `replace-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  replaceTriggerMany(items: ReplaceTriggerArgs[]): Promise<tilo.ActionAnswer[]>;
+  removeTrigger(args: {
+    draft: string;
+    index: number;
+  }): Promise<void>;
+  /** Runs `remove-trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  removeTriggerMany(items: RemoveTriggerArgs[]): Promise<tilo.ActionAnswer[]>;
   discard(args: {
     draft: string;
   }): Promise<void>;
@@ -299,7 +321,7 @@ export interface Workbench extends tilo.Resource {
 
 /** The actions `Workbench` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKBENCH_ACTIONS = ["draftProposal", "draftProposalMany", "ignoreProposal", "ignoreProposalMany", "allowProposal", "allowProposalMany", "newDraft", "newDraftMany", "duplicateDraft", "duplicateDraftMany", "draftShortcut", "draftShortcutMany", "openShortcut", "openShortcutMany", "duplicateShortcut", "duplicateShortcutMany", "setSchedule", "setScheduleMany", "discard", "discardMany", "addStep", "addStepMany", "replaceStep", "replaceStepMany", "bindArgument", "bindArgumentMany", "removeStep", "removeStepMany", "moveStep", "moveStepMany", "setStepPolicy", "setStepPolicyMany", "setNested", "setNestedMany", "setOutput", "setOutputMany", "addInput", "addInputMany", "removeInput", "removeInputMany"] as const;
+export const WORKBENCH_ACTIONS = ["draftProposal", "draftProposalMany", "ignoreProposal", "ignoreProposalMany", "allowProposal", "allowProposalMany", "newDraft", "newDraftMany", "duplicateDraft", "duplicateDraftMany", "draftShortcut", "draftShortcutMany", "openShortcut", "openShortcutMany", "duplicateShortcut", "duplicateShortcutMany", "addTrigger", "addTriggerMany", "replaceTrigger", "replaceTriggerMany", "removeTrigger", "removeTriggerMany", "discard", "discardMany", "addStep", "addStepMany", "replaceStep", "replaceStepMany", "bindArgument", "bindArgumentMany", "removeStep", "removeStepMany", "moveStep", "moveStepMany", "setStepPolicy", "setStepPolicyMany", "setNested", "setNestedMany", "setOutput", "setOutputMany", "addInput", "addInputMany", "removeInput", "removeInputMany"] as const;
 
 /** The `shortcuts.workbench` kind at `path`. */
 export function workbench(ws: tilo.Workspace, path: string): Workbench {

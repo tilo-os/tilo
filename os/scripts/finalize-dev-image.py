@@ -8,7 +8,7 @@
 
 Run by os/Containerfile.dev as its last content step:
 
-* /usr/share/tilo-vm/base.json is what tilo-vmd checks every imported layer
+* /usr/share/tilo-vm/base.json is what the device's steps check every imported layer
   against (the protocol crate's BaseInfo): the production base image's digest,
   plus the in-image toolchain (`rustc --version`), its target triple and the
   Cargo.lock hash, in the same form `tilo-vm` records in a layer's provenance.

@@ -14,21 +14,22 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tilo_vm_protocol::manifest::Component;
-use tilo_vm_protocol::{
+use tilo_device_protocol::image::Reboot;
+use tilo_device_protocol::manifest::Component;
+use tilo_device_protocol::{
     ApplyResult, BootConfirm, BootConfirmResult, LayerImport, LayerSource, Policy, Provenance,
     Rollback, Swap, VM_ACCOUNT,
 };
 
+use super::reach::device_sh;
 use super::{App, KernelFlags, Outcome, Resolved, describe_apply, human_bytes, on_path, short};
 use crate::build;
 use crate::config::DirectKernel;
 use crate::context::Worktree;
 use crate::error::CliError;
-use crate::hypervisor::{CommandLine, Runner, SshEndpoint, run_all};
-use crate::remote::{self, Remote};
+use crate::hypervisor::{CommandLine, Runner, run_all};
+use crate::remote::Remote;
 use crate::sshkey;
-use crate::vmbuild;
 
 const REBOOT_TIMEOUT: Duration = Duration::from_secs(240);
 
@@ -68,35 +69,6 @@ pub fn direct_cmdline(cmdline: &str) -> String {
         .filter(|w| !w.starts_with("BOOT_IMAGE=") && !w.starts_with("initrd="))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub fn vm_staging_dir(worktree_id: &str) -> String {
-    format!("/var/lib/tilo-vm/kernel/{worktree_id}")
-}
-
-pub fn rsync_modules(
-    built: &Built,
-    endpoint: &SshEndpoint,
-    key: Option<&str>,
-    staging: &str,
-) -> Result<CommandLine, CliError> {
-    let rsh = vmbuild::rsync_rsh(endpoint, key)?;
-    let dest = format!("{staging}/usr/lib/modules");
-    let source = built
-        .modules
-        .parent()
-        .map(|p| format!("{}/", p.display()))
-        .unwrap_or_default();
-    Ok(CommandLine::new(
-        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
-        &["--archive", "--delete", "--checksum", "--compress"],
-    )
-    .arg("--rsh")
-    .arg(rsh)
-    .arg("--rsync-path")
-    .arg(format!("mkdir -p {dest} && rsync"))
-    .arg(source)
-    .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host)))
 }
 
 pub fn pack(built: &Built, out: &Path) -> Result<(), CliError> {
@@ -210,7 +182,7 @@ impl App {
         drop(remote);
         let built = self.build_kernel(&worktree, component, jobs, false)?;
         let mut remote = self.connect(&vm)?;
-        let layer = self.upload_kernel(&vm, &mut remote, &worktree, &built)?;
+        let layer = self.upload_kernel(&mut remote, &worktree, &built)?;
         self.install_kernel_layer(&vm, &mut remote, component, &layer, Some(&built), started)
     }
 
@@ -259,52 +231,27 @@ impl App {
 
     fn upload_kernel(
         &mut self,
-        vm: &Resolved,
         remote: &mut Remote,
         worktree: &Worktree,
         built: &Built,
     ) -> Result<String, CliError> {
-        let provenance = provenance(worktree, built, &remote.hello.arch);
-        let source = if remote.hello.tools.rsync && on_path("rsync") {
-            let endpoint = self.endpoint(vm)?;
-            let id = vmbuild::worktree_id(worktree, crate::context::hostname().as_deref());
-            let staging = vm_staging_dir(&id);
-            let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging)?;
-            eprintln!(
-                "tilo-vm: syncing {} to {}:{staging}",
-                built.modules.display(),
-                vm.name
-            );
-            let runner = &mut self.runner;
-            if !self
-                .receipt
-                .phase("transfer", || runner.interactive(&rsync))?
-            {
-                return Err(CliError::CommandFailed {
-                    command: rsync.display(),
-                    status: "sync failed".into(),
-                    stderr: "rsync's output above says why".into(),
-                });
-            }
-            LayerSource::Path(staging)
-        } else {
-            let staging = build::Staging::new(worktree)?;
-            let archive = staging.archive();
-            pack(built, &archive)?;
-            let size = std::fs::metadata(&archive).map_or(0, |m| m.len());
-            eprintln!(
-                "tilo-vm: uploading the kernel layer ({})",
-                human_bytes(size)
-            );
-            let upload = self
-                .receipt
-                .phase("transfer", || -> Result<String, CliError> {
-                    let file = std::fs::File::open(&archive)
-                        .map_err(CliError::io(format!("open {}", archive.display())))?;
-                    remote.upload(std::io::BufReader::new(file))
-                })?;
-            LayerSource::Upload(upload)
-        };
+        let provenance = provenance(worktree, built, &remote.status.arch);
+        let staging = build::Staging::new(worktree)?;
+        let archive = staging.archive();
+        pack(built, &archive)?;
+        let size = std::fs::metadata(&archive).map_or(0, |m| m.len());
+        eprintln!(
+            "tilo-vm: uploading the kernel layer ({})",
+            human_bytes(size)
+        );
+        let upload = self
+            .receipt
+            .phase("transfer", || -> Result<String, CliError> {
+                let file = std::fs::File::open(&archive)
+                    .map_err(CliError::io(format!("open {}", archive.display())))?;
+                remote.put_reader(std::io::BufReader::new(file))
+            })?;
+        let source = LayerSource::Content { hash: upload };
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
                 source,
@@ -374,27 +321,17 @@ impl App {
             .and_then(|b| b.kver.clone())
             .unwrap_or_else(|| "the image's kernel".into());
         let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-        let key = vm.entry.key.clone();
-        let boot_id = self.remote_text(
-            &endpoint,
-            key.as_deref(),
-            "cat /proc/sys/kernel/random/boot_id",
-        );
+        let mut remote = self.connect(vm)?;
+        let old_boot = remote.status.boot.boot_id.clone();
         eprintln!("tilo-vm: rebooting VM {} onto {expected}", vm.name);
-        let reboot = remote::ssh_command(
-            &endpoint,
-            key.as_deref(),
-            &["systemctl".into(), "--no-block".into(), "reboot".into()],
-            false,
-        );
-        let _ = self.runner.output(&reboot);
+        remote.call(Reboot {})?;
+        drop(remote);
         let rebooted = Instant::now();
-        let mut up = self.wait_for_new_boot(&endpoint, key.as_deref(), boot_id.as_deref());
+        let mut up = self.wait_for_new_boot(vm, &old_boot);
         let mut detail = String::new();
-        if !up {
+        if up.is_none() {
             detail = format!(
-                "no SSH answer within {}s of the reboot",
+                "its device did not answer from a new boot within {}s of the reboot",
                 REBOOT_TIMEOUT.as_secs()
             );
             if let Some(reset) = adapter.reset(&vm.vm()) {
@@ -404,19 +341,18 @@ impl App {
                 );
                 let _ = self.runner.output(&reset);
                 detail.push_str("; the VM was reset onto its default entry");
-                up = self.wait_for_new_boot(&endpoint, key.as_deref(), None);
+                up = self.wait_for_new_boot(vm, &old_boot);
             }
         }
         let reboot_seconds = seconds(rebooted);
         self.receipt.record("reboot", reboot_seconds);
-        if !up {
+        let Some(mut remote) = up else {
             return Err(CliError::Unreachable {
                 vm: vm.name.clone(),
                 detail: format!("{detail}; it did not come back"),
                 debug: Self::debug_commands(adapter.as_ref(), &vm.name),
             });
-        }
-        let mut remote = self.connect(vm)?;
+        };
         let confirm = self.receipt.phase("confirm", || {
             remote.call(BootConfirm {
                 expect_version: expect_version.map(str::to_owned),
@@ -444,48 +380,29 @@ impl App {
         Ok((confirm, reboot_seconds))
     }
 
-    fn wait_for_new_boot(
-        &mut self,
-        endpoint: &SshEndpoint,
-        key: Option<&str>,
-        old: Option<&str>,
-    ) -> bool {
+    /// The VM's device once it answers from a boot other than `old_boot` (any boot when empty).
+    fn wait_for_new_boot(&mut self, vm: &Resolved, old_boot: &str) -> Option<Remote> {
         let started = Instant::now();
-        std::thread::sleep(Duration::from_secs(3));
         while started.elapsed() < REBOOT_TIMEOUT {
-            if let Some(id) = self.remote_text(endpoint, key, "cat /proc/sys/kernel/random/boot_id")
-                && Some(id.as_str()) != old
+            if let Ok(remote) = self.connect(vm)
+                && !remote.status.boot.boot_id.is_empty()
+                && remote.status.boot.boot_id != old_boot
             {
-                return true;
+                return Some(remote);
             }
             std::thread::sleep(Duration::from_secs(2));
         }
-        false
-    }
-
-    fn remote_text(
-        &mut self,
-        endpoint: &SshEndpoint,
-        key: Option<&str>,
-        command: &str,
-    ) -> Option<String> {
-        let line = remote::ssh_command(endpoint, key, &[command.to_owned()], false);
-        let output = self.runner.output(&line).ok()?;
-        output.success.then(|| output.stdout.trim().to_owned())
+        None
     }
 
     fn vm_kernel_facts(&mut self, vm: &Resolved) -> Result<(String, String), CliError> {
         let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let text = self
-            .remote_text(
-                &endpoint,
-                vm.entry.key.as_deref(),
-                "cat /proc/cmdline /proc/sys/kernel/osrelease",
-            )
-            .ok_or_else(|| CliError::Unreachable {
+            .connect(vm)
+            .and_then(|mut remote| device_sh(&mut remote, "cat /proc/cmdline /proc/sys/kernel/osrelease"))
+            .map_err(|error| CliError::Unreachable {
                 vm: vm.name.clone(),
-                detail: "a direct boot takes the running VM's kernel command line, and SSH did not answer; pass it with --cmdline".into(),
+                detail: format!("a direct boot takes the running VM's kernel command line, and its device did not answer ({error}); pass it with --cmdline"),
                 debug: Self::debug_commands(adapter.as_ref(), &vm.name),
             })?;
         let (cmdline, release) = parse_running(&text).unwrap_or_default();
@@ -582,25 +499,23 @@ impl App {
             let _ = self.runner.output(&off);
         }
         run_all(&mut self.runner, &adapter.start(&updated.vm()))?;
-        let endpoint = adapter.ssh_endpoint(&updated.vm(), &mut self.runner)?;
         let booted = Instant::now();
-        let up = self.wait_for_new_boot(&endpoint, updated.entry.key.as_deref(), None);
+        let up = self.wait_for_new_boot(&updated, "");
         let boot_seconds = seconds(booted);
         self.receipt.record("boot", boot_seconds);
         let running = up
-            .then(|| {
-                self.remote_text(
-                    &endpoint,
-                    updated.entry.key.as_deref(),
+            .and_then(|mut remote| {
+                device_sh(
+                    &mut remote,
                     "cat /proc/sys/kernel/osrelease /proc/sys/kernel/version",
                 )
+                .ok()
             })
-            .flatten()
             .and_then(|t| parse_running(&t))
             .ok_or_else(|| CliError::Unreachable {
                 vm: vm.name.clone(),
                 detail: format!(
-                    "no SSH answer within {}s of the restart",
+                    "its device did not answer within {}s of the restart",
                     REBOOT_TIMEOUT.as_secs()
                 ),
                 debug: Self::debug_commands(adapter.as_ref(), &vm.name),
@@ -781,39 +696,6 @@ mod tests {
             )
             .unwrap();
             assert!(minimal.initrd.is_none());
-        }
-
-        {
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "127.0.0.1".into(),
-                port: 2223,
-            };
-            let command = rsync_modules(
-                &built(),
-                &endpoint,
-                Some("/k/id"),
-                &vm_staging_dir("wt-1a2b"),
-            )
-            .unwrap();
-            let text = command.display();
-            assert_eq!(
-                command.program,
-                crate::host::rsync_program().unwrap_or_else(|| "rsync".into())
-            );
-            assert!(
-                text.contains("--archive --delete --checksum --compress"),
-                "{text}"
-            );
-            assert!(
-                text.contains("mkdir -p /var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules && rsync"),
-                "{text}"
-            );
-            assert!(
-                text.contains(" /c/tilo-kernel/linux-7.2.5/out/stage/lib/modules/ root@127.0.0.1:/var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules/"),
-                "{text}"
-            );
-            assert!(text.contains("-p 2223"), "{text}");
         }
 
         {

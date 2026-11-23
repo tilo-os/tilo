@@ -46,6 +46,9 @@
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
+#   --until-stdin-closes  end when stdin reaches its end: a tool that starts the
+#                      session on a pipe whose write end only it holds ends it
+#                      however the tool ends, a kill included
 #   --print-runtime    print the private runtime directory a session on
 #                      --state uses, and exit: a tool that has to reach into a
 #                      session (its mounts, its sockets) asks here instead of
@@ -76,6 +79,7 @@ fresh_desktop=0
 headless=0
 software=0
 print_runtime=0
+until_stdin_closes=0
 community=
 install_tapps=()
 ready_out=
@@ -97,6 +101,7 @@ while (($#)); do
         --headless) headless=1; shift ;;
         --software) software=1; shift ;;
         --print-runtime) print_runtime=1; shift ;;
+        --until-stdin-closes) until_stdin_closes=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; session_args=("$@"); break ;;
@@ -596,6 +601,7 @@ cleanup() {
     # script again) must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_groups "${children[@]}"
+    [[ -z ${lifeline:-} ]] || kill "$lifeline" 2>/dev/null || true
     rm -f "$pidfile"
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
@@ -605,6 +611,13 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
+if ((until_stdin_closes)); then
+    # A job in the background reads /dev/null unless told otherwise: stdin goes to it as fd 3.
+    exec 3<&0
+    { cat <&3 >/dev/null; kill -TERM $$; } &
+    lifeline=$!
+    exec 3<&-
+fi
 printf '%s\n' "$$" > "$pidfile"
 logs=$state/logs
 mkdir -p "$logs"

@@ -1130,7 +1130,7 @@ fn default_launch_guard(
     grace: Duration,
 ) -> io::Result<Option<advisory_lock::FileLock>> {
     let directory = profile.join("launches");
-    host::private_directory(&directory)?;
+    tilo_files::native::private::directory(&directory)?;
     let path = directory.join(format!("{}.lock", blake3::hash(app_id.as_bytes()).to_hex()));
     let deadline = Instant::now().checked_add(grace).ok_or_else(|| {
         io::Error::new(

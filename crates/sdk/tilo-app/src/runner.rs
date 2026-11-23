@@ -116,12 +116,10 @@ impl Presentation {
         doc: &ui_core::automerge::AutoCommit,
         content: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.type_id == OUTLINE_TYPE)
-        else {
+        let request = op.request();
+        if request.type_id != OUTLINE_TYPE {
             return Ok(None);
-        };
+        }
         let (picture, _) = outline::asked(request.payload)?;
         let theme = self.theme.clone().unwrap_or_else(ui_core::Theme::dark);
         let mut output = outline::answer(&*content, doc, &theme);

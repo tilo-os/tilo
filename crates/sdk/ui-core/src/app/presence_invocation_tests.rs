@@ -88,9 +88,7 @@ impl crate::widget::ResourceOperations for TwoViews {
         _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
+        let crate::host_operation::OperationRequest { type_id, .. } = op.request();
         let presence = crate::invocation_scope::current_presence();
         let mut probe = self.0.borrow_mut();
         if let Some(presence) = &presence {

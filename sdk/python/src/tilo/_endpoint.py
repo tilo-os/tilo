@@ -16,9 +16,9 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 from ._api import MAX_WAIT, refusal_of_error
-from ._errors import AskPending, ProtocolError, Refused
+from ._errors import AskPending, ProtocolError, Refused, Unreachable
 from ._models import Event, ProgramAnswer
-from ._transport import Response, Unreachable, events
+from ._transport import Response, events
 
 # The headers a call names its group in, and the surface generated types are for.
 INVOCATION_HEADER = "tilo-invocation"

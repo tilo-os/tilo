@@ -31,16 +31,6 @@ class PackageSetsTests(unittest.TestCase):
         }
         self.assertEqual(package_sets.browser_crates(packages), {"web"})
 
-    def test_example_apps_live_under_examples_apps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            packages = {
-                "counter": {"manifest_path": str(root / "examples/apps/counter/Cargo.toml")},
-                "gallery": {"manifest_path": str(root / "examples/gallery/Cargo.toml")},
-                "notes": {"manifest_path": str(root / "apps/settings/Cargo.toml")},
-            }
-            self.assertEqual(package_sets.example_apps(packages, root), {"counter"})
-
     def test_a_unit_differs_between_architectures_by_its_cpu_cfgs_branches_and_intrinsics(self):
         differs = [
             '#[cfg(target_arch = "x86_64")]\nconst SYS_OPEN: i64 = 2;',
@@ -106,7 +96,6 @@ class PackageSetsTests(unittest.TestCase):
         # Each has an x86_64 and an aarch64 code path of its own; the derivation must keep
         # finding them, whatever else it finds.
         known = {
-            "tilo-sandbox": "clone3 assembly, microvm or virt machine",
             "tilo-agent-session": "seccomp confinement",
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",

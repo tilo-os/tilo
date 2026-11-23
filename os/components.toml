@@ -14,8 +14,9 @@
 #     unit that does not exist;
 #   * tools/policy/check_dev_image_contract.py, which keeps dev-only components
 #     out of the production image and the dev image out of production tags;
-#   * tilo-vmd, which reads its copy at /usr/share/tilo/components.toml in the
-#     dev image to learn each component's scope and units;
+#   * the device's steps (crates/os/tilo-device-steps), which read the
+#     copy at /usr/share/tilo/components.toml in the dev image to learn each
+#     component's scope and units;
 #   * os/tests/lib/containerfile.sh, which expands the manifest into the image's
 #     copy contract.
 #
@@ -134,8 +135,8 @@ files = [
   # come from the same source: a session swapped onto an older image otherwise
   # reads a declaration in another format and judges nothing. The session is
   # its one owner: the launcher, tilo-install, the app host and the runtime
-  # services read it too, so tilo-vmd refuses a generation in which any of them
-  # was built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
+  # services read it too, so the device refuses a generation in which any of them
+  # was built for another declaration (crates/os/tilo-device-steps/src/interfaces.rs).
   { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644", layer = "desktop-files" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
@@ -218,7 +219,7 @@ files = [
 # The control-socket CLI, the one way agents and scripts drive a running
 # desktop (AGENTS.md): the action model over the device admin's control socket
 # in every image, plus synthetic input over a dev session's test-control
-# socket. tilo-vmd's `control` passes through to it.
+# socket. The device's `control` step passes through to it.
 [[component]]
 name = "control"
 kind = "userspace"
@@ -247,6 +248,26 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
   { link = "../libexec/tilo/tilo-runtime", to = "/usr/bin/tilo-runtime" },
+]
+
+# The device's steps: each step's oneshot unit runs `tilo-device-step` as
+# root, and the device's daemon publishes the steps it declares, so a swap
+# restarts the daemon to offer the swapped ones.
+[[component]]
+name = "device-steps"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-device-steps"]
+bins = ["tilo-device-step"]
+units = ["tilo-runtime.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-device-step", to = "/usr/libexec/tilo/tilo-device-step", mode = "0755" },
+  # The manifest the device's steps admit a cohort by: which components a tree
+  # has, and each one's scope, units and build profile. A device updated from a
+  # newer tree than its image otherwise refuses the cohort's new components as
+  # absent. The steps are its one reader, so the file ships with them.
+  { from = "@manifest/components.toml", to = "/usr/share/tilo/components.toml", mode = "0644", layer = "desktop-files" },
 ]
 
 [[component]]
@@ -506,7 +527,7 @@ features = [
   "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
   "print-centre/runtime-engine", "sheets/runtime-engine",
-  "imager/runtime-engine", "browser/runtime-engine",
+  "browser/runtime-engine",
   "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
 ]
 layer = "direct"
@@ -971,48 +992,8 @@ files = [
 # tools/policy/check_dev_image_contract.py fails if the production image builds
 # or copies any of it.
 
-# The dev-VM guest daemon. It is not a service: `tilo-vm` runs
-# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link. The link names the
-# daemon itself, not `tilo`: swapping it is how an older image gets the
-# daemon it needs, and such an image's `tilo` runs no programs by name.
-[[component]]
-name = "vmd"
-kind = "userspace"
-scope = "vm"
-outside_sessions = true
-packages = ["tilo-vmd"]
-bins = ["tilo-vmd"]
-layer = "dev-tools"
-files = [
-  { from = "tilo-vmd", to = "/usr/libexec/tilo/tilo-vmd", mode = "0755" },
-  { link = "../libexec/tilo/tilo-vmd", to = "/usr/bin/tilo-vmd" },
-  # The manifest this daemon admits a cohort by: which components a tree has,
-  # and each one's scope, units and build profile. A device updated from a
-  # newer tree than its image otherwise refuses the cohort's new components as
-  # absent, the way a swapped session would read a declaration in another
-  # format. The daemon is the one reader, so the file ships with it.
-  { from = "@manifest/components.toml", to = "/usr/share/tilo/components.toml", mode = "0644" },
-]
-
-# tilo-vmd's requests over the peer network, for a device beyond the LAN
-# (docs/device-reach.md). os/dev-image/ carries its unit,
-# tilo-device-admin.service, which os/Containerfile.dev enables; `tilo-vm`
-# runs `tilo-device-admin id` over SSH to record the route, hence the PATH
-# link. A developer's machine runs the same binary's `dial`.
-[[component]]
-name = "device-admin"
-kind = "userspace"
-scope = "vm"
-packages = ["tilo-device-admin"]
-bins = ["tilo-device-admin"]
-layer = "dev-tools"
-files = [
-  { from = "tilo-device-admin", to = "/usr/libexec/tilo/tilo-device-admin", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-device-admin" },
-]
-
 # The host CLI, so a Tilo dev machine is a developer's machine too: it drives
-# other devices over SSH, or beyond the LAN through tilo-device-admin beside it.
+# the person's other devices through their actions.
 [[component]]
 name = "vm-cli"
 kind = "userspace"

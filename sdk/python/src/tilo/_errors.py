@@ -137,6 +137,10 @@ class UnsupportedVersion(ProtocolError):
         self.speaking = speaking
 
 
+class Unreachable(ProtocolError):
+    """The server could not be reached: the call may be sent again as it is."""
+
+
 class KeyRefused(ProtocolError):
     """The API turned the key away (HTTP 401): it reaches nothing.
 

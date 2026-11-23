@@ -1336,93 +1336,388 @@ tilo_test_env::scenario! {
     }
 }
 
-/// With no channels yet, the workspace offers one way to make the first: the window bar's
-/// "New channel" primary, which stands on the screen a window opens on at every width. The
-/// places say the workspace has no channels where its channels would stand, and draw no call
-/// to action of their own: a second one would stand beside the bar's on a wide window, and at
-/// a narrow width the two screens of the stack would offer one each, so no width is left with
-/// none or with two. The window shows that one state alone while the places hold nothing and
-/// nothing is open, with the line the app says a channel is for; once a channel exists the
-/// state is gone and the bar keeps its primary.
+/// How many ways the view offers to make a channel: the bar's primary, and any empty state's
+/// own call to action. The host reads the bar's off the action's declaration, and its header
+/// rules only ever drop a control that repeats one the content or the sidebar offers, so a view
+/// offering this action once offers it once at every width.
+fn new_channel_offered(view: &ViewInstance) -> usize {
+    let mut nodes = view.tree().of_kind("ui.Button");
+    nodes.extend(view.tree().of_kind("ui.EmptyState"));
+    nodes
+        .into_iter()
+        .filter_map(|node| {
+            let named = if node.kind == "ui.EmptyState" {
+                node.props.get("action")
+            } else {
+                node.props.get("label")
+            };
+            match named {
+                Some(Value::Text(label)) if label == "New channel" => Some(()),
+                _ => None,
+            }
+        })
+        .count()
+}
+
+/// The channels the app's own read holds, in the sidebar's order.
+fn channels(r: &Replica) -> Vec<tilolang_runtime::ResourceRef> {
+    match r.read(&r.root(APP), "channels") {
+        Value::List(items) => items.iter().map(target).collect(),
+        other => panic!("the app's channels: {other:?}"),
+    }
+}
+
+/// What one channel is called, as the app stores it.
+fn name_of(r: &Replica, channel: &tilolang_runtime::ResourceRef) -> String {
+    match r.read(channel, "name") {
+        Value::Text(name) => name,
+        other => panic!("a channel's name: {other:?}"),
+    }
+}
+
+/// The messages a channel holds, in the order they were said.
+fn messages(
+    r: &Replica,
+    channel: &tilolang_runtime::ResourceRef,
+) -> Vec<tilolang_runtime::ResourceRef> {
+    match r.read(channel, "messages") {
+        Value::List(items) => items.iter().map(target).collect(),
+        other => panic!("a channel's messages: {other:?}"),
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_channel_made_at_the_window_takes_a_message_that_is_answered_reacted_edited_and_pinned;
+
+    phase the_bar_and_the_apps_own_api_each_make_a_channel;
+    {
+        let (ada, _) = Replica::new(
+            "ada",
+            Workspace::new(),
+            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        );
+        ada.commit();
+        // With no channel yet the places say so, with the line that says what a channel is for,
+        // and the bar's primary is the one way to make the first; the places draw no call to
+        // action beside it, which a wide window would show twice and a narrow one on two screens.
+        let sidebar = ada.view(APP);
+        let states = sidebar.tree().of_kind("ui.EmptyState");
+        assert_eq!(
+            states.first().and_then(|state| state.props.get("title")),
+            Some(&Value::text("No channels yet")),
+            "the places say the workspace has no channels where they would stand"
+        );
+        assert!(
+            states
+                .first()
+                .is_some_and(|state| state.props.contains_key("message")),
+            "with the line that says what a channel is for"
+        );
+        assert!(
+            states
+                .iter()
+                .all(|state| !state.props.contains_key("action")),
+            "no empty state draws a call to action beside the bar's"
+        );
+        assert_eq!(
+            new_channel_offered(&sidebar),
+            1,
+            "the window offers the way to make the first channel once"
+        );
+
+        // The window bar's primary action, pressed as the window presses it.
+        let make = button(sidebar.tree(), "New channel").expect("the bar's New channel");
+        assert!(
+            matches!(sidebar.press(&make).unwrap(), InvokeOutcome::Done(_)),
+            "the bar's New channel runs"
+        );
+        ada.commit();
+        assert_eq!(channels(&ada).len(), 1, "the bar made a channel");
+        assert_eq!(name_of(&ada, &channels(&ada)[0]), "new-channel");
+        let sidebar = ada.view(APP);
+        assert!(
+            texts(sidebar.tree()).contains(&"new-channel".to_owned()),
+            "the sidebar lists the channel the bar made: {:?}",
+            texts(sidebar.tree())
+        );
+        assert!(
+            sidebar
+                .tree()
+                .first_of_kind("ui.EmptyState")
+                .is_none_or(|state| state.props.get("title") != Some(&Value::text("No channels yet"))),
+            "no empty state saying the workspace has no channels once one exists"
+        );
+        assert_eq!(
+            new_channel_offered(&sidebar),
+            1,
+            "the bar keeps its primary once the empty state is gone"
+        );
+
+        // What the window's bar, the palette and system search run: an address on the app's
+        // root and no argument, built through the app's own API and carried out as the person's
+        // step. A name the action defaults fills in.
+        let meta = ada.host.package(APP).unwrap().meta;
+        let action = crate::fixtures::action_id(&meta, "new_channel");
+        let root = ada.root(APP);
+        let args = serde_json::Map::new();
+        let planned = ada.host.carrying_out(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            || {
+                ada.host.plan(&tilolang_tilo::publish::PlanRequest {
+                    app: APP,
+                    kind: &tilolang_tilo::meta::MetaExt::kind_of(&meta, "Conversations"),
+                    action_id: &action,
+                    resource: Some(root.id_string().as_str()),
+                    args: &args,
+                    caller: None,
+                    from: None,
+                })
+            },
+        );
+        if let Err(why) = &planned {
+            panic!("New channel run by address: {why}");
+        }
+        let made = ada
+            .host
+            .take_returned(&action)
+            .expect("the invocation answers the channel it made");
+        ada.commit();
+        assert_eq!(channels(&ada).len(), 2, "the address made a channel");
+        assert_eq!(name_of(&ada, &made), "new-channel");
+        assert!(
+            channels(&ada).iter().any(|channel| channel == &made),
+            "the app's own read holds what the invocation made"
+        );
+        let sidebar = ada.view(APP);
+        assert_eq!(
+            texts(sidebar.tree())
+                .iter()
+                .filter(|text| *text == "new-channel")
+                .count(),
+            2,
+            "the sidebar lists both: {:?}",
+            texts(sidebar.tree())
+        );
+    }
+
+    phase the_message_it_holds_is_answered_reacted_to_edited_and_pinned;
+    {
+        let (ada, _) = Replica::new(
+            "ada",
+            Workspace::new(),
+            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        );
+        ada.commit();
+        let sidebar = ada.view(APP);
+        let make = button(sidebar.tree(), "New channel").expect("the bar's New channel");
+        sidebar.press(&make).unwrap();
+        ada.commit();
+        let channel = channels(&ada).remove(0);
+        let mut view = ada.host.open_resource(&channel, None).unwrap();
+
+        // Say something in it.
+        post(&ada, &view, "Hello team");
+        assert_eq!(said(&mut view), ["Hello team"]);
+
+        // Answer it: Reply on its row puts it over the composer, and the message quotes it.
+        let row = rows(&mut view).remove(0);
+        let reply = button(&row, "Reply").expect("Reply on a message");
+        view.press(&reply).unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            view.tree().first_of_kind("ui.Quote").is_some(),
+            "the message being answered stands over the composer"
+        );
+        post(&ada, &view, "Welcome to launch");
+        let rows_shown = rows(&mut view);
+        assert_eq!(said(&mut view), ["Hello team", "Welcome to launch"]);
+        assert_eq!(
+            rows_shown[1]
+                .first_of_kind("ui.Quote")
+                .and_then(|quote| quote.props.get("excerpt")),
+            Some(&Value::text("Hello team")),
+            "the answer quotes what it answers"
+        );
+
+        // React to it: the hover bar's picker adds the emoji.
+        let row = rows(&mut view).remove(0);
+        let picker = row
+            .first_of_kind("ui.EmojiPicker")
+            .expect("a reaction on a message's toolbar")
+            .key
+            .clone();
+        assert!(
+            matches!(
+                view.fire_with(&picker, "pick", Some(&Value::text("🎉")))
+                    .unwrap(),
+                InvokeOutcome::Done(_)
+            ),
+            "the picker reacts"
+        );
+        ada.commit();
+        view.poll_patches().unwrap();
+        let row = rows(&mut view).remove(0);
+        assert_eq!(
+            reactions(&row),
+            [(
+                "🎉".to_owned(),
+                vec![Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                    "ada"
+                ))]
+            )],
+            "the message carries the reaction"
+        );
+
+        // Fix what it says: Edit in its place, then Save.
+        let edit = button(&row, "Edit").expect("Edit on your own message");
+        view.press(&edit).unwrap();
+        view.poll_patches().unwrap();
+        let row = rows(&mut view).remove(0);
+        let editor = row
+            .first_of_kind("ui.RichInput")
+            .expect("the editor in the message's place")
+            .key
+            .clone();
+        view.edit(&editor, &rich("Hello team!")).unwrap();
+        let save = button(&row, "Save").expect("Save beside the editor");
+        assert!(matches!(view.press(&save).unwrap(), InvokeOutcome::Done(_)));
+        ada.commit();
+        view.poll_patches().unwrap();
+        assert_eq!(said(&mut view), ["Hello team!", "Welcome to launch"]);
+
+        // Keep it: Pin on the message's toolbar.
+        let row = rows(&mut view).remove(0);
+        let pin = button(&row, "Pin").expect("Pin on a message");
+        view.press(&pin).unwrap();
+        ada.commit();
+        view.poll_patches().unwrap();
+        let row = rows(&mut view).remove(0);
+        assert!(
+            texts(&row).contains(&"Pinned".to_owned()),
+            "the message says it is pinned: {:?}",
+            texts(&row)
+        );
+        assert!(
+            button(&row, "Unpin").is_some(),
+            "Pin turns into Unpin"
+        );
+
+        // Each of them is an action a script or an agent runs as the person presses it: edit,
+        // react, pin and answer by address, and the app's own read shows all of it.
+        let first = messages(&ada, &channel).remove(0);
+        let first = Value::resource(&first);
+        call(&ada, "edit", vec![first.clone(), rich("Hello from a script")]);
+        call(&ada, "react", vec![first.clone(), Value::text("👍")]);
+        call(&ada, "pin", vec![first.clone(), Value::Bool(true)]);
+        call(
+            &ada,
+            "send",
+            vec![
+                Value::resource(&channel),
+                rich("And an answer"),
+                Value::Opt(Some(Box::new(first))),
+            ],
+        );
+        ada.commit();
+        let mut view = ada.host.open_resource(&channel, None).unwrap();
+        assert_eq!(
+            said(&mut view),
+            ["Hello from a script", "Welcome to launch", "And an answer"]
+        );
+        let row = rows(&mut view).remove(0);
+        assert!(
+            reactions(&row)
+                .iter()
+                .any(|(emoji, who)| emoji == "👍" && !who.is_empty()),
+            "the message carries the reaction a script added: {:?}",
+            reactions(&row)
+        );
+        assert!(
+            texts(&row).contains(&"Pinned".to_owned()),
+            "the message is still pinned"
+        );
+        assert_eq!(
+            rows(&mut view)[2]
+                .first_of_kind("ui.Quote")
+                .and_then(|quote| quote.props.get("excerpt")),
+            Some(&Value::text("Hello from a script")),
+            "the answer a script sent quotes what it answers"
+        );
+    }
+}
+
+/// A message sent in a channel is found by the system's search, and a read of it holds its
+/// text: what another app's page or an agent asking about the workspace gets.
 #[test]
-fn an_empty_workspace_offers_one_new_channel_button() {
+fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
+    use std::sync::Arc;
+
+    use tilo_desktop_search::Source as _;
+    use tilo_desktop_search::content_index::AppContentIndex;
+    use tilo_desktop_search::indexed::IndexedContent;
+    use tilo_resource::search_index::{IndexState, Publisher};
+
     let (ada, _) = Replica::new(
         "ada",
         Workspace::new(),
         &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
     );
-    ada.commit();
-
-    // What the view offers: the bar's primary the host reads off the action's declaration, and
-    // each empty state's own call to action. The host's header rules only ever drop a control
-    // that repeats one the content or the sidebar offers, so a view offering this action once
-    // offers it once at every width, on every screen of the stack.
-    let offered = |view: &ViewInstance| -> Vec<String> {
-        let mut nodes = view.tree().of_kind("ui.Button");
-        nodes.extend(view.tree().of_kind("ui.EmptyState"));
-        nodes
-            .into_iter()
-            .filter_map(|node| {
-                let named = if node.kind == "ui.EmptyState" {
-                    node.props.get("action")
-                } else {
-                    node.props.get("label")
-                };
-                match named {
-                    Some(Value::Text(label)) => Some(label.clone()),
-                    _ => None,
-                }
-            })
-            .collect()
-    };
-    let new_channel = |view: &ViewInstance| -> usize {
-        offered(view)
-            .iter()
-            .filter(|label| label.as_str() == "New channel")
-            .count()
-    };
-    let sidebar = ada.view(APP);
-    let states = sidebar.tree().of_kind("ui.EmptyState");
-    assert_eq!(
-        states.first().and_then(|state| state.props.get("title")),
-        Some(&Value::text("No channels yet")),
-        "the places say the workspace has no channels where they would stand"
-    );
-    assert!(
-        states
-            .first()
-            .is_some_and(|state| state.props.contains_key("message")),
-        "with the line that says what a channel is for"
-    );
-    assert!(
-        states
-            .iter()
-            .all(|state| !state.props.contains_key("action")),
-        "no empty state draws a call to action beside the bar's"
-    );
-    assert_eq!(
-        new_channel(&sidebar),
-        1,
-        "the window offers the way to make the first channel once"
-    );
-
-    // A channel made, the places' "no channels" state goes and the bar is the place to make
-    // another.
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    let _ = call(&ada, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
-    let sidebar = ada.view(APP);
-    assert!(
-        sidebar
-            .tree()
-            .first_of_kind("ui.EmptyState")
-            .is_none_or(|state| state.props.get("title") != Some(&Value::text("No channels yet"))),
-        "no empty state saying the workspace has no channels once one exists"
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let message = call(
+        &ada,
+        "send",
+        vec![
+            design,
+            rich("The launch build is on the test machines."),
+            Value::none(),
+        ],
     );
+    ada.commit();
+
+    // The system's search index, filled from what the app publishes and asked as the session
+    // asks it.
+    let index = AppContentIndex::in_memory();
+    let published = tilolang_tilo::search::publish_whole(
+        Publisher::default(),
+        IndexState {
+            generation: 1,
+            secrets_unlocked: None,
+        },
+        tilolang_tilo::search::whole(&ada.host),
+    );
+    for delta in &published.deltas {
+        index
+            .publish("workspace", APP, "chat", delta)
+            .expect("the index takes what the app publishes");
+    }
+    let hits = IndexedContent::new(Arc::new(index), str::to_owned, "ada").query("launch build");
+    let found = hits
+        .iter()
+        .find(|hit| hit.title.contains("launch build"))
+        .unwrap_or_else(|| panic!("the message is found: {hits:#?}"));
     assert_eq!(
-        new_channel(&sidebar),
-        1,
-        "the bar keeps its primary once the empty state is gone"
+        found.subtitle.as_deref(),
+        Some("Message"),
+        "what search finds says what it is: {found:#?}"
+    );
+
+    // The app's own read of the message holds what it says.
+    let read = ada
+        .host
+        .answer(
+            tilolang_tilo::effects::HostEffect::ReadValues {
+                item: target(&message).id_string(),
+            },
+            None,
+        )
+        .expect("the message reads");
+    let read = serde_json::to_string(&read.value).expect("the reading as JSON");
+    assert!(
+        read.contains("The launch build is on the test machines."),
+        "the read holds the message's text: {read}"
     );
 }
 

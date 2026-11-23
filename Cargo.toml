@@ -72,7 +72,7 @@ members = [
     "apps/poker",
     "apps/poker-model",
     "apps/poker-model-wasm",
-    "crates/browser/browser-continuity",
+    "crates/import/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
     "crates/platform/tilo-handoff",
@@ -296,11 +296,9 @@ members = [
     "tools/test-server",
     "tools/tilo-app-cli",
     "tools/tilo-app-template-smoke",
-    "crates/dev/tilo-device-admin",
     "tools/tilo-local",
     "tools/tilo-vm",
-    "tools/tilo-vm-protocol",
-    "crates/dev/tilo-vmd",
+    "crates/os/tilo-device-protocol",
     "tools/ui-builder",
     "crates/dev/ui-graph",
     "tools/ui-examples",
@@ -348,7 +346,7 @@ members = [
     "crates/packaging/app-cli",
     "crates/packaging/package-service",
     "crates/packaging/app-registry",
-    "crates/packaging/oci-images",
+    "crates/vm/oci-images",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
@@ -380,7 +378,7 @@ members = [
     "crates/platform/account-probe",
     "crates/platform/mail-engine",
     "crates/platform/mail-session",
-    "crates/platform/migration-sources",
+    "crates/import/migration-sources",
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-app-id",
     "crates/platform/tilo-appearance",
@@ -417,7 +415,7 @@ members = [
     "crates/platform/tilo-accessibility-settings",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
-    "crates/platform/tilo-browser-sessions",
+    "crates/import/tilo-browser-sessions",
     "crates/platform/tilo-innertube",
     "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
@@ -442,9 +440,9 @@ members = [
 
     # Runtime
     "crates/runtime/cli",
-    "crates/runtime/linux-vm-agent",
-    "crates/runtime/linux-vm-protocol",
-    "crates/runtime/linux-vm",
+    "crates/vm/linux-vm-agent",
+    "crates/vm/linux-vm-protocol",
+    "crates/vm/linux-vm",
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
@@ -478,16 +476,17 @@ members = [
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
+    "crates/os/tilo-device-steps",
     "crates/runtime/tilo-runtime",
     # The wasm host layer every wasm host in the tree runs its guests on.
     "crates/runtime/tilo-wasm-host",
-    "crates/runtime/environment",
+    "crates/vm/environment",
     "crates/runtime/egress",
-    "crates/runtime/ush",
-    "crates/runtime/ush-shell",
-    "crates/runtime/ush-tilo",
-    "crates/runtime/ush-wasi",
-    "crates/runtime/env-tools",
+    "crates/vm/ush",
+    "crates/vm/ush-shell",
+    "crates/vm/ush-tilo",
+    "crates/vm/ush-wasi",
+    "crates/vm/env-tools",
 
     # Session
     "crates/session/color-params",
@@ -514,6 +513,7 @@ members = [
     "crates/platform/imager-backend",
     "crates/session/install-plan",
     "crates/session/install-profile-model",
+    "crates/session/prepared-setup-model",
     "crates/session/liveness",
     "crates/session/native-media",
     "crates/session/network-actor",
@@ -521,6 +521,7 @@ members = [
     "crates/session/notification-banners",
     "crates/session/activities",
     "crates/session/notifications-service",
+    "crates/session/vision-service",
     "crates/session/onboarding",
     "crates/session/onboarding-session",
     "crates/session/polkit-agent",
@@ -587,7 +588,7 @@ members = [
     "crates/system/image-policy-check",
     "crates/system/tilo-pycompat",
     "crates/system/install-helpers",
-    "crates/system/libvirt-domain",
+    "crates/vm/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/net-answers",
     "crates/system/device-vpn",
@@ -616,7 +617,7 @@ members = [
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-startup-metrics",
-    "crates/system/tinker",
+    "crates/vm/tinker",
     "crates/system/tts",
     "crates/system/wire-frame",
 
@@ -629,9 +630,9 @@ members = [
     "crates/text/tilo-words",
 
     # Windows
-    "crates/windows/compat-catalogue",
-    "crates/windows/compat-service",
-    "crates/windows/windows-vm",
+    "crates/compat/compat-catalogue",
+    "crates/compat/compat-service",
+    "crates/compat/windows-vm",
 
     # Feature unification for third-party dependencies (cargo hakari)
     "crates/workspace-hack",
@@ -729,7 +730,7 @@ duration_suboptimal_units = "allow"
 must_use_candidate = "allow"
 
 [workspace.dependencies]
-browser-continuity = { path = "crates/browser/browser-continuity", version = "0.1.0" }
+browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
 tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
 

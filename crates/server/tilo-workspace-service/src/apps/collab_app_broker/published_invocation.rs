@@ -3,10 +3,20 @@ use super::{
     AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
 };
-use collaboration::invocation_scope::{
-    PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
-    PublishedInvocationSpec,
-};
+
+/// What the daemon delivered to the app for one admitted invocation. It is
+/// built only from what admission decided, never from a caller's envelope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationRequest {
+    pub wire_id: u64,
+    pub invocation: tilo_actions::InvocationId,
+    pub address: tilo_actions::ActionAddress,
+    pub argument: Option<String>,
+    pub actor: tilo_actions::Actor,
+    /// Whose view this invocation resolves against, set by the device that
+    /// admitted `actor`. It routes to view state and is never authority.
+    pub presence: Option<tilo_actions::PresenceId>,
+}
 
 #[derive(Clone)]
 pub(super) enum InvocationCaller {
@@ -31,9 +41,10 @@ pub(super) enum InvocationCaller {
 }
 #[derive(Clone)]
 pub(super) struct OriginalInvocationData {
-    request: PublishedInvocationRequest,
+    request: InvocationRequest,
     route: CrdtRoute,
-    spec: PublishedInvocationSpec,
+    kind: tilo_actions::OperationKind,
+    contract: tilo_actions::ActionContract,
     resource_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     /// The kind of the resource the action is published on: where it sits
     /// in the tree the grants decide over.
@@ -51,7 +62,7 @@ impl OriginalInvocationData {
         mutates: bool,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         if self.route != worker.route
-            || self.spec.contract.kind
+            || self.contract.kind
                 < if mutates {
                     tilo_actions::ActionKind::Outside
                 } else {
@@ -89,18 +100,18 @@ impl OriginalInvocationData {
         let action = self.request.address.action.as_str();
         match command {
             Command::Publish { cut: false, .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect
+                self.kind == tilo_actions::OperationKind::Effect
                     && matches!(action, "copy" | "copy-selection")
             }
             Command::Publish { cut: true, .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect
+                self.kind == tilo_actions::OperationKind::Effect
                     && matches!(action, "cut" | "cut-selection")
             }
             Command::Paste { .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
+                self.kind == tilo_actions::OperationKind::Effect && action == "paste"
             }
             Command::RestoreTrash { .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect && action == "restore"
+                self.kind == tilo_actions::OperationKind::Effect && action == "restore"
             }
             Command::Observe { .. } | Command::Cancel { .. } => {
                 matches!(
@@ -111,11 +122,11 @@ impl OriginalInvocationData {
             Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
             Command::Redo { .. } => self.clipboard_compensation() && action == "redo",
             Command::Recover { .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect
+                self.kind == tilo_actions::OperationKind::Effect
                     && action == "recover-clipboard-transfers"
             }
             Command::Capture { .. } | Command::CaptureNamed { .. } | Command::Release { .. } => {
-                self.spec.kind == tilo_actions::OperationKind::Effect
+                self.kind == tilo_actions::OperationKind::Effect
                     && matches!(
                         action,
                         "copy" | "copy-selection" | "cut" | "cut-selection" | "paste"
@@ -126,7 +137,7 @@ impl OriginalInvocationData {
     }
 
     pub(super) fn clipboard_compensation(&self) -> bool {
-        self.spec.kind == tilo_actions::OperationKind::Document
+        self.kind == tilo_actions::OperationKind::Document
             && matches!(self.request.address.action.as_str(), "undo" | "redo")
     }
 
@@ -170,7 +181,7 @@ impl OriginalInvocationData {
         Ok(())
     }
     pub(super) fn permits_clipboard(&self, needed: tilo_actions::ActionKind) -> bool {
-        self.spec.contract.kind >= needed
+        self.contract.kind >= needed
             && self
                 .execution
                 .as_ref()
@@ -253,7 +264,7 @@ impl OriginalInvocationData {
                 if !person.may_in(
                     workspace,
                     &self.node(workspace),
-                    self.spec.contract.need().kind,
+                    self.contract.need().kind,
                     seconds,
                 ) {
                     return Err("original invocation caller is no longer authorized");
@@ -294,7 +305,7 @@ impl OriginalInvocationData {
             &self.route.app_id,
             &self.resource_kind,
             &self.request.address.resource,
-            self.spec.contract.field.as_deref(),
+            self.contract.field.as_deref(),
             &self.request.address.action,
         )
     }
@@ -335,7 +346,7 @@ impl OriginalInvocationData {
 
     pub(super) fn permits_launch_in(&self, workspace: &str) -> bool {
         self.route.cluster_id == workspace
-            && self.spec.contract.kind >= tilo_actions::ActionKind::Undoable
+            && self.contract.kind >= tilo_actions::ActionKind::Undoable
             && self
                 .execution
                 .as_ref()
@@ -354,25 +365,18 @@ impl OriginalInvocationData {
     }
 
     pub(super) fn capture(
-        request: PublishedInvocationRequest,
+        request: InvocationRequest,
         route: CrdtRoute,
         offered: &PublishedAction,
-        revision: Option<&str>,
         caller: Option<InvocationCaller>,
         time: Option<crate::apps::policy_clock::PolicyTime>,
         execution: Option<tilo_actions::remote::ExecutionLease>,
     ) -> Option<Arc<Self>> {
-        let spec = PublishedInvocationSpec {
-            kind: offered.operation_kind,
-            contract: offered.contract.clone(),
-            params: offered.params.clone(),
-            input: (&offered.input).into(),
-            directory_revision: revision.map(str::to_owned),
-        };
         Some(Arc::new(Self {
             request,
             route,
-            spec,
+            kind: offered.operation_kind,
+            contract: offered.contract.clone(),
             resource_identity: offered.semantic_identity.clone(),
             resource_kind: offered.resource_kind.clone(),
             caller: caller?,
@@ -434,17 +438,17 @@ impl OriginalInvocation {
         }
         Ok(())
     }
-    pub fn request(&self) -> &PublishedInvocationRequest {
+    pub fn request(&self) -> &InvocationRequest {
         &self.data.request
     }
     pub fn route(&self) -> &CrdtRoute {
         &self.data.route
     }
     pub fn contract(&self) -> &tilo_actions::ActionContract {
-        &self.data.spec.contract
+        &self.data.contract
     }
-    pub fn dispatch_spec(&self) -> &PublishedInvocationSpec {
-        &self.data.spec
+    pub fn operation_kind(&self) -> tilo_actions::OperationKind {
+        self.data.kind
     }
     pub fn policy_time(&self) -> &crate::apps::policy_clock::PolicyTime {
         &self.data.time
@@ -573,8 +577,8 @@ impl OriginalInvocation {
         };
         if route.app_id != "so.tilo.store"
             || data.route != route
-            || data.spec.kind != tilo_actions::OperationKind::Effect
-            || data.spec.contract.kind != tilo_actions::ActionKind::Outside
+            || data.kind != tilo_actions::OperationKind::Effect
+            || data.contract.kind != tilo_actions::ActionKind::Outside
         {
             return Err("external moderation target action or contract mismatch".into());
         }
@@ -582,7 +586,7 @@ impl OriginalInvocation {
         // assertion. Admission of a Confirm contract consumes the host's
         // one-use token bound to this actor, action and exact arguments.
         // Refuse a Store publication that tries to remove that policy.
-        if data.spec.contract.confirmation != tilo_actions::ConfirmationPolicy::Confirm {
+        if data.contract.confirmation != tilo_actions::ConfirmationPolicy::Confirm {
             return Err("external moderation requires exact system confirmation".into());
         }
         let argument = data
@@ -659,10 +663,10 @@ impl OriginalInvocation {
         };
         if data.route != route
             || data.request.address.action != runtime_collab::approved_checks::ACTION_ID
-            || data.spec.kind != tilo_actions::OperationKind::Effect
-            || data.spec.contract.execution
+            || data.kind != tilo_actions::OperationKind::Effect
+            || data.contract.execution
                 != (tilo_actions::ExecutionMode::Background { cancellable: true })
-            || data.spec.contract.kind != tilo_actions::ActionKind::Undoable
+            || data.contract.kind != tilo_actions::ActionKind::Undoable
         {
             return Err("approved check target action or contract mismatch".into());
         }
@@ -759,7 +763,7 @@ impl OriginalInvocation {
         }
         Ok(actor)
     }
-    pub(super) fn check_lifecycle(&self) -> Result<(), String> {
+    pub(crate) fn check_lifecycle(&self) -> Result<(), String> {
         self.check_ownership()?;
         let state = self
             .broker
@@ -823,7 +827,7 @@ impl OriginalInvocation {
             if !actor.may_in(
                 workspace,
                 &self.data.node(workspace),
-                self.data.spec.contract.need().kind,
+                self.data.contract.need().kind,
                 seconds,
             ) {
                 return Err("original invocation caller is no longer authorized".to_string());
@@ -835,55 +839,68 @@ impl OriginalInvocation {
         Ok(())
     }
 }
+/// What a test asks for the original invocation a worker was delivered.
+#[cfg(test)]
+pub(crate) type OriginalLookup =
+    Arc<dyn Fn(&InvocationRequest) -> Result<Arc<OriginalInvocation>, String> + Send + Sync>;
+
+#[cfg(test)]
 impl AppBrokerState {
-    /// Allocate the actual socket and its opaque host-local callback together.
-    /// A second socket with an equal route/certificate gets a different token.
-    pub fn connect_local_worker_with_authorizer(
+    /// Connect one local host worker, with a lookup of the original
+    /// invocation a delivered request belongs to on that very connection: the
+    /// facts the daemon's rechecks read. A second socket with an equal
+    /// route and certificate is another registration.
+    pub(crate) fn connect_local_worker_with_originals(
         self: &Arc<Self>,
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<
-        (
-            std::os::unix::net::UnixStream,
-            PublishedInvocationAuthorizer,
-        ),
-        String,
-    > {
+    ) -> Result<(std::os::unix::net::UnixStream, OriginalLookup), String> {
         let registration = uuid::Uuid::new_v4();
         let stream =
             self.connect_local_worker_registered(route.clone(), certificate, Some(registration))?;
-        let broker = Arc::downgrade(self);
+        let daemon = Arc::downgrade(self);
         let worker = PrivateWorkerRegistration {
             route,
             certificate: certificate.clone(),
             identity: registration,
         };
-        let authorize = Arc::new(move |request: &PublishedInvocationRequest| -> Result<PublishedInvocationLease, String> {
-            let state = broker.upgrade().ok_or("original invocation broker retired")?;
+        let lookup = Arc::new(move |request: &InvocationRequest| {
+            let state = daemon.upgrade().ok_or("original invocation retired")?;
             let (peer, data) = {
-                let registry = state.pending_invocations.lock().map_err(|_| "invocation registry unavailable")?;
-                let pending = registry.get(&request.wire_id).ok_or("original invocation is not retained")?;
-                let data = pending.original.clone().ok_or("original invocation authority was not captured")?;
-                if data.request != *request || data.route != worker.route || pending.update.invocation() != request.invocation {
-                    return Err("delivered invocation differs from original request or worker route".into());
+                let registry = state
+                    .pending_invocations
+                    .lock()
+                    .map_err(|_| "invocation registry unavailable")?;
+                let pending = registry
+                    .get(&request.wire_id)
+                    .ok_or("original invocation is not retained")?;
+                let data = pending
+                    .original
+                    .clone()
+                    .ok_or("original invocation authority was not captured")?;
+                if data.request != *request
+                    || data.route != worker.route
+                    || pending.update.invocation() != request.invocation
+                {
+                    return Err(
+                        "delivered invocation differs from original request or worker route"
+                            .to_string(),
+                    );
                 }
                 let peer = pending.peer_id;
                 drop(registry);
                 (peer, data)
             };
-            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetOwnership::Registered(Box::new(worker.clone())), data });
+            let original = Arc::new(OriginalInvocation {
+                broker: daemon.clone(),
+                peer,
+                worker: TargetOwnership::Registered(Box::new(worker.clone())),
+                data,
+            });
             original.check_lifecycle()?;
-            let route = runtime_collab::route::RouteSpec {
-                app_id: worker.route.app_id.clone(),
-                cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker workspace")?,
-                document: (!worker.route.document_id.is_empty()).then(|| worker.route.document_id.clone()),
-            };
-            let check = original.clone();
-            PublishedInvocationLease::new(request.clone(), route, Arc::new(move || check.check_lifecycle()))
-                .with_dispatch_spec(original.dispatch_spec().clone())?
-                .with_owner_token(original)
+            Ok(original)
         });
-        Ok((stream, authorize))
+        Ok((stream, lookup))
     }
 }
 

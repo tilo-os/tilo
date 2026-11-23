@@ -112,7 +112,7 @@ class Writer {
   done() { return Uint8Array.from(this.bytes); }
 }
 
-const EXTENDED = {foreign: 1, can_administer_devices: 2, agent: 4, stand_in: 8, issued: 16, server_key: 32, browser_pages: 64, workspace_service: 128};
+const EXTENDED = {foreign: 1, agent: 4, stand_in: 8, issued: 16, server_key: 32, browser_pages: 64, workspace_service: 128};
 
 function uuidBytes(text) {
   const hex = text.replaceAll('-', '');

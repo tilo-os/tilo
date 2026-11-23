@@ -21,8 +21,9 @@ watch it in virt-manager (File > Add Connection > QEMU/KVM user session).
 `vm create` needs a forge token (`FORGEJO_TOKEN`, or an fgj or tea login) to
 download the disk; `tilo-vm guide platforms` covers the rest.
 
-For libvirt, QEMU and WHPX, creation selects and records an unused host SSH
-forwarding port starting at 2222. It checks registered VMs and local TCP bind
+For libvirt, QEMU and WHPX, creation selects and records an unused host
+forwarding port starting at 2222 (TCP for `vm ssh`, UDP for the device
+daemon). It checks registered VMs and local TCP bind
 availability. `--ssh-port PORT` requests an exact port and refuses a busy one
 before creating VM files. This is a preflight check, not a reservation: another
 process can take the port before the VM starts. Creating an already registered
@@ -71,9 +72,10 @@ boot while `box` runs; the next `vm branch box` of the same names boots it
 to be taken in).
 
 A board, a laptop or another real machine that runs a Tilo dev image is
-registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its
-owner's account, `--ssh <user>@<address> --key <file>` (`tilo-vm guide
-devices`). Every command below then works on it.
+registered instead by its device key: `tilo-vm vm add <name> --device <key>
+--address <address>` (`tilo-vm guide devices`). Every command below then
+works on it. tilo-vm asks every VM and machine as this computer's Tilo login
+(`tilo login`), and a VM it starts joins as one of your devices by itself.
 
 ## Use it
 

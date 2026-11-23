@@ -23,6 +23,7 @@ find "$work" -mindepth 1 -delete
 # The Python SDK and TypeScript SDK as the docs-examples check runs them: the ci-sdk image's
 # uv environment, bun cache and locked packages, copied because a job's image is read-only.
 sdk=$work/sdk
+mkdir -p "$sdk"
 export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never
 export UV_CACHE_DIR=$sdk/uv-cache UV_PROJECT_ENVIRONMENT=$sdk/python-venv
 cp -a /opt/tilo-sdk/uv-cache "$UV_CACHE_DIR"

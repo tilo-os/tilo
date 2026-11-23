@@ -107,11 +107,10 @@ impl<E: Effect> ResourceOperations for EffectEndpoint<E> {
         _doc: &mut Edits<'_>,
         _path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let (request, _ownership) = op.with_ownership();
+        let request = op.request();
         if request.type_id != E::OPERATION {
             return Ok(None);
         }
-        op.check()?;
         let effect = E::from_payload(request.payload).map_err(|error| error.to_string())?;
         let caller = EffectCaller {
             invocation: request.invocation,

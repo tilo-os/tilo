@@ -1624,11 +1624,8 @@ mod component_adapter {
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
             doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
+            _path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            if op.is_scoped() {
-                return crate::widget::start_in_children(self, op, doc, path);
-            }
             let binding = self.component.callback_binding();
             binding.note_input();
             let result = binding

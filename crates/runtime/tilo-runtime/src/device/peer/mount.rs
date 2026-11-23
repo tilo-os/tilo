@@ -24,6 +24,7 @@ const FOLDER_PASS: Duration = Duration::from_secs(1);
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Shown {
     /// A FUSE mount.
+    #[cfg(target_os = "linux")]
     Mounted,
     /// A folder synced both ways.
     Folder,
@@ -49,12 +50,20 @@ enum View {
 
 impl Drop for Showing {
     fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        if let View::Mount(session) = &mut self.view
-            && let Some(session) = session.take()
-            && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session, &self.at)
-        {
-            tracing::warn!(%error, at = %self.at.display(), "the workspace did not unmount cleanly");
+        match &mut self.view {
+            #[cfg(target_os = "linux")]
+            View::Mount(session) => {
+                if let Some(session) = session.take()
+                    && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session, &self.at)
+                {
+                    tracing::warn!(
+                        %error,
+                        at = %self.at.display(),
+                        "the workspace did not unmount cleanly"
+                    );
+                }
+            }
+            View::Folder(_) => {}
         }
     }
 }

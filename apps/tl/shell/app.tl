@@ -284,6 +284,12 @@ view workspace_menu() {
         ui.MenuItem("Overview", icon: .layout_grid) {
             on choose: session.overview()
         }
+        // The workspace's history is the system's, drawn by the Activity app: the menu opens that
+        // window on this workspace, so what happened, who did it and what can be taken back stand
+        // where the person expects the system's own views.
+        ui.MenuItem("History", icon: .history) {
+            on choose: session.activity(workspace: front_workspace(), view: "explore")
+        }
     }
 }
 
@@ -321,6 +327,12 @@ view person_menu() {
         }
         ui.MenuItem("Overview", icon: .layout_grid, group: "Workspaces") {
             on choose: session.overview()
+        }
+        ui.MenuItem("History", icon: .history, group: "Workspaces") {
+            on choose: session.activity(workspace: front_workspace(), view: "explore")
+        }
+        ui.MenuItem("About Tilo", icon: .info, group: "Tilo") {
+            on choose: session.about()
         }
     }
 }

@@ -142,9 +142,7 @@ pub struct GovernedAgent {
 /// Capabilities an agent's certificate never carries.
 pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
-    !(capabilities.can_own_workspaces
-        || capabilities.can_admit_devices
-        || capabilities.can_administer_devices)
+    !(capabilities.can_own_workspaces || capabilities.can_admit_devices)
 }
 
 impl PeerGovernance<'_> {

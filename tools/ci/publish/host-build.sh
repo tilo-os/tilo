@@ -8,8 +8,8 @@
 # With --dev it builds the development server image instead (t's image-host-dev), on the same base
 # and with the same stages, then the additions of os/Containerfile.host-dev on their last one
 # (t's image-host-dev programs, server-binaries.sh `host host-dev`, are built without LTO): the
-# server image's own programs, units, flavour and update policy with the dev-VM daemon and CLI,
-# tilo-vmd's boot units, a base.json naming how the programs were built, and systemd-sysext
+# server image's own programs, units, flavour and update policy with the runtime that runs the
+# device's steps and the dev-VM CLI, the device's boot units, a base.json naming how the programs were built, and systemd-sysext
 # merging layers at boot. It is never a release; seal-host-dev seals it as seal-host seals the
 # server image. A commit that changes a server program therefore costs its no-LTO compile and this
 # build, not the release server image's.
@@ -43,15 +43,15 @@ bins=(tilo-runtime tilo fs tilo-linux-vm tilo-hosted-jail tilo-api
       tilolang-process
       tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
       tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start)
-# tilo-vmd's units a development server enables: the record of the booted image (before
+# The device's units a development server enables: the record of the booted image (before
 # systemd-sysext merges anything), the accounts brought back after boot, and the layers an
 # installation left for the first boot, applied before the server starts.
 vm_units=(tilo-vm-reconcile-image.service tilo-vm-restore.service tilo-vm-incoming.service)
 if (( dev )); then
-  mapfile -t dev_bins < <(python3 os/scripts/install-components.py --dry-run --format bins vmd vm-cli)
+  mapfile -t dev_bins < <(python3 os/scripts/install-components.py --dry-run --format bins native-runtime-host device-steps vm-cli)
   bins+=("${dev_bins[@]}")
   for unit in "${vm_units[@]}"; do
-    [[ -f crates/dev/tilo-vmd/data/$unit ]] || die "no crates/dev/tilo-vmd/data/$unit"
+    [[ -f crates/os/tilo-device-steps/data/$unit ]] || die "no crates/os/tilo-device-steps/data/$unit"
   done
 fi
 for bin in "${bins[@]}"; do
@@ -122,8 +122,14 @@ if (( dev )); then
   # since that is the builder a layer says it was built by.
   mkdir -p "$context/vm-units"
   for unit in "${vm_units[@]}"; do
-    cp "crates/dev/tilo-vmd/data/$unit" "$context/vm-units/"
+    cp "crates/os/tilo-device-steps/data/$unit" "$context/vm-units/"
   done
+  # The device's step units and the rule and directories its daemon starts them with, as every
+  # image that carries tilo-runtime has them.
+  cp os/usr/lib/systemd/system/tilo-device-*@.service "$context/vm-units/"
+  mkdir -p "$context/device-steps"
+  cp os/etc/polkit-1/rules.d/49-tilo-device-steps.rules os/usr/lib/tmpfiles.d/tilo-device-control.conf \
+    "$context/device-steps/"
   cp os/components.toml "$context/os/"
   cp os/scripts/install-components.py os/scripts/finalize-dev-image.py "$context/os/scripts/"
   cp Cargo.lock "$context/"

@@ -30,6 +30,8 @@ use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
+#[path = "process/chat.rs"]
+mod chat;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.
@@ -2562,5 +2564,198 @@ fn a_form_asking_for_a_required_text_takes_it_before_it_answers() {
         tags_of(&host, &note),
         ["travel"],
         "the words the person typed are the tag"
+    );
+}
+
+struct HostedAgreementHost {
+    host: TilolangProcess,
+    window: Window,
+}
+
+impl tilolang_tilo::instance::testing::AgreementHost for HostedAgreementHost {
+    fn name(&self) -> &'static str {
+        "HostPlatform"
+    }
+
+    fn set_formats(&mut self, formats: tilo_formats::RegionFormats) {
+        let _ = self.host.set_formats(formats);
+    }
+
+    fn set_person_language(&mut self, locale: &str) {
+        let _ = self
+            .host
+            .instances_mut()
+            .next()
+            .expect("the probe runs")
+            .speak(locale);
+    }
+
+    fn invoke(
+        &mut self,
+        actor: &tilolang_tilo::runtime::Actor,
+        action_id: &str,
+        mut args: Vec<Value>,
+    ) {
+        let hosted = self.host.instances().next().expect("the probe runs");
+        let live = hosted.instance().host().expect("the runtime");
+        let entry = live
+            .root_of(tilolang_tilo::instance::testing::PROBE_APP)
+            .expect("the probe root");
+        args.insert(0, Value::resource(&entry));
+        live.runtime()
+            .invoke_action(actor, (action_id, args))
+            .expect("the probe action runs");
+    }
+
+    fn sync_and_read(&mut self) -> patch::Node {
+        settle(&mut self.host, &mut self.window);
+        self.window.root.clone().expect("the hosted root is shown")
+    }
+}
+
+/// A hosted window agrees with every other host on the shared table of dates, times, clocks,
+/// week starts and German typed dates.
+#[test]
+fn a_hosted_window_agrees_with_every_other_host_on_the_shared_table() {
+    use tilolang_tilo::instance::testing::{PROBE_APP, assert_platform_agrees, compile_probe};
+
+    let (compiled, actions) = compile_probe();
+    let probe_bundle = Bundle::new(&compiled, []);
+    let (host, window, _sent, _inbox, _route) = running_app("ada", PROBE_APP, probe_bundle);
+    let mut harness = HostedAgreementHost { host, window };
+    settle(&mut harness.host, &mut harness.window);
+    assert_platform_agrees(&mut harness, &actions);
+}
+
+/// A German person launching an English-only hosted app (`Spec::language = "de-DE"`): the window
+/// speaks English ("Today"), and a date typed in German words ("Freitag") is read.
+#[test]
+fn a_german_person_in_an_english_only_hosted_app_sees_english_and_parses_german_dates() {
+    use tilolang_tilo::instance::testing::{
+        PROBE_APP, change_mark_said, compile_probe, pinned_wall, tree_text, utc_zone,
+    };
+    use tilolang_tilo::runtime::Actor;
+    use tilolang_tilo::runtime::ids::MemberId;
+
+    struct ZoneGuard;
+    impl Drop for ZoneGuard {
+        fn drop(&mut self) {
+            tilo_clock::local::install(None);
+        }
+    }
+
+    let (compiled, actions) = compile_probe();
+    let probe_bundle = Bundle::new(&compiled, []);
+    tilo_clock::testing::with_wall(pinned_wall(), || {
+        tilo_clock::local::install(Some(utc_zone()));
+        let _zone = ZoneGuard;
+
+        let route = RouteSpec::app(PROBE_APP, uuid::Uuid::new_v4());
+        let mut host = TilolangProcess::new(wake());
+        let attributes = spec(1, "ada", &route).in_language("de-DE");
+        let (mut german_window, _sent, _inbox) = instance_on(
+            &mut host,
+            attributes,
+            probe_bundle,
+            &route,
+            Rc::default(),
+            &Rc::default(),
+        );
+        settle(&mut host, &mut german_window);
+        {
+            let hosted = host.instances().next().expect("probe runs");
+            let live = hosted.instance().host().expect("runtime");
+            let entry = live.root_of(PROBE_APP).expect("root");
+            let grace = Actor::Member(MemberId::person("grace"));
+            let ada = Actor::Member(MemberId::person("ada"));
+            // Ada invokes `read_day` before Grace's `set_day` so Grace's write remains the
+            // unseen change shown by `ui.ChangeMark(e)`.
+            live.runtime()
+                .invoke_action(
+                    &ada,
+                    (
+                        actions.read_day.as_str(),
+                        vec![Value::resource(&entry), Value::text("Freitag")],
+                    ),
+                )
+                .expect("ada parses Freitag");
+            live.runtime()
+                .invoke_action(
+                    &grace,
+                    (
+                        actions.set_day.as_str(),
+                        vec![Value::resource(&entry), Value::text("2026-06-30")],
+                    ),
+                )
+                .expect("grace sets today");
+        }
+        settle(&mut host, &mut german_window);
+        let root = german_window.root.as_ref().expect("root shown");
+        let said = change_mark_said(root).unwrap_or_default();
+        assert_eq!(
+            said, "moved it to Today",
+            "English-only hosted app speaks English for a German person"
+        );
+        let rendered = tree_text(root);
+        assert!(
+            rendered.contains("parsed:2026-10-30"),
+            "German 'Freitag' is parsed in an English-only hosted app: `{rendered}`"
+        );
+    });
+}
+
+/// Switching language on a translated hosted package moves `words_revision` and republishes
+/// action labels in the new language.
+#[test]
+fn a_hosted_window_advances_words_revision_and_republishes_translated_labels() {
+    let (mut notes_host, mut notes_window, _sent, _inbox, _route) =
+        running_app("ada", NOTES, notes());
+    settle(&mut notes_host, &mut notes_window);
+    let rev_en = {
+        let hosted = notes_host.instances().next().expect("notes runs");
+        assert!(
+            hosted
+                .published()
+                .iter()
+                .any(|action| action.action_label == "New note"),
+            "notes publishes English labels initially"
+        );
+        hosted
+            .instance()
+            .host()
+            .expect("notes runtime")
+            .runtime()
+            .words()
+            .revision()
+    };
+    assert!(
+        notes_host
+            .instances_mut()
+            .next()
+            .expect("notes runs")
+            .speak("de-DE"),
+        "notes ships German, so speaking de-DE switches its language"
+    );
+    settle(&mut notes_host, &mut notes_window);
+    let hosted = notes_host.instances().next().expect("notes runs");
+    let rev_de = hosted
+        .instance()
+        .host()
+        .expect("notes runtime")
+        .runtime()
+        .words()
+        .revision();
+    assert_ne!(
+        rev_de, rev_en,
+        "speaking another language advances words_revision"
+    );
+    let labels: Vec<&str> = hosted
+        .published()
+        .iter()
+        .map(|action| action.action_label.as_str())
+        .collect();
+    assert!(
+        labels.contains(&"Neue Notiz") && !labels.contains(&"New note"),
+        "published action labels update to German when words_revision moves: {labels:?}"
     );
 }

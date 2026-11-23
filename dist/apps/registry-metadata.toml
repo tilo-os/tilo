@@ -57,8 +57,6 @@ description = "Understand and control which connections your system accepts."
 description = "Browse history, review changes, and work with Git visually."
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
-[apps.imager]
-description = "Write verified Tilo and disk images to removable media."
 [apps.launcher]
 description = "Find apps, windows, files and actions from one search, and start them from the keyboard."
 [apps.logs]

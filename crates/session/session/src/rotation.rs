@@ -40,8 +40,7 @@ pub(crate) struct Rotation {
     /// The lock as the person's settings have it, and the orientation the panel shows.
     control: RotationControl,
     /// The settings document last read, so an unchanged one is not read again on every pass.
-    seen: bool,
-    stamp: Option<settings_store::SettingsStamp>,
+    settings: settings_store::SettingsFollower,
     /// When the sensor is read next.
     due: Option<Instant>,
     /// The built-in output and the turn it shows, when the last pass found both, so a device that
@@ -74,10 +73,7 @@ impl Rotation {
             self.due = None;
             return None;
         };
-        let stamp = settings_store::stamp();
-        if settings_store::document_changed(self.seen, self.stamp, stamp) {
-            self.seen = true;
-            self.stamp = stamp;
+        if self.settings.changed(settings_store::stamp()) {
             self.control
                 .set_locked(settings_store::hardware::ROTATION_LOCK.get());
         }

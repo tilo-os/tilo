@@ -1458,7 +1458,7 @@ fn stand_in(session: &Session, workspace: &str) {
         .expect("the session takes the switch");
 }
 
-/// What the projection says about the app's own new-note action: the question a window bar asks to
+/// What the projection says about the app's own `new_note` action: the question a window bar asks to
 /// offer New note.
 fn may_make_a_note(
     projection: &collab_types::action_authority::AppActionAuthorityProjection,
@@ -1466,7 +1466,7 @@ fn may_make_a_note(
     projection
         .authority()
         .decide(
-            &projection.app_node().action("new-note"),
+            &projection.app_node().action("new_note"),
             ActionKind::Undoable,
             &Context::at_secs(tilo_clock::unix_now()),
         )

@@ -30,7 +30,6 @@ pub mod certification_ceremony;
 #[cfg(unix)]
 pub mod device_admin;
 pub mod device_fleet;
-#[cfg(unix)]
 pub mod enrolled_transport;
 #[cfg(unix)]
 pub mod enrollment;

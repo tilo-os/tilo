@@ -153,6 +153,11 @@ pub struct IndexEntry {
     /// backlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
+    /// The picture the entry is about, as its address in the content store:
+    /// what the system's image analysis reads, so every app's pictures are
+    /// found by the words in them and by what they show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -215,6 +220,15 @@ pub fn merged_by_key(entries: impl IntoIterator<Item = IndexEntry>) -> Vec<Index
         }
     }
     merged
+}
+
+/// The picture `text` names, when it is a content address: what the system's
+/// image analysis reads, so a record that keeps a picture is found by the
+/// words in it and by what it shows.
+#[must_use]
+pub fn picture_address(text: &str) -> Option<String> {
+    let text = text.trim();
+    (text.starts_with("tilo-blob://") || text.starts_with("tilo.content:")).then(|| text.to_owned())
 }
 
 impl IndexEntry {
@@ -285,6 +299,9 @@ impl IndexEntry {
                 .filter(|reference| !reference.is_empty() && reference.len() <= MAX_ID_BYTES)
                 .take(MAX_FIELDS)
                 .collect(),
+            image: self.image.and_then(|image| {
+                (!image.is_empty() && image.len() <= MAX_ID_BYTES).then_some(image)
+            }),
             ..self
         })
     }
@@ -517,6 +534,20 @@ fn chunked(delta: IndexDelta) -> Vec<IndexDelta> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_content_address_is_a_picture_and_a_name_is_not() {
+        assert_eq!(
+            super::picture_address("tilo-blob://abc.def"),
+            Some("tilo-blob://abc.def".to_owned())
+        );
+        assert_eq!(
+            super::picture_address("tilo.content:abc"),
+            Some("tilo.content:abc".to_owned())
+        );
+        assert_eq!(super::picture_address("A dog on a beach"), None);
+        assert_eq!(super::picture_address(""), None);
+    }
+
     use super::*;
 
     fn entry(key: &str, title: &str) -> IndexEntry {

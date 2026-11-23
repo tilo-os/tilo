@@ -59,7 +59,7 @@ cap-std = "3.4.6"
 accounts = { path = "../../system/accounts", features = ["person"] }
 # The source readers live in a crate a plain laptop can build, so the CLI can
 # drive the same code without this crate's desktop stack.
-migration-sources = { path = "../migration-sources" }
+migration-sources = { path = "../../import/migration-sources" }
 account-credentials = { path = "../../system/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../../system/block-devices" }
@@ -81,6 +81,7 @@ toml.workspace = true
 uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../../session/install-profile-model", features = ["model"] }
+prepared-setup-model = { path = "../../session/prepared-setup-model" }
 # The destination side (`destination`).
 calendar = { path = "../../../apps/calendar", default-features = false, features = ["live"], optional = true }
 os-actions = { path = "../../system/os-actions", optional = true }
@@ -135,7 +136,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [dev-dependencies]
 # The destination namespace checks recognise the fixture roots the tests build in.
-migration-sources = { path = "../migration-sources", features = ["test-support"] }
+migration-sources = { path = "../../import/migration-sources", features = ["test-support"] }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 test-http = { path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }

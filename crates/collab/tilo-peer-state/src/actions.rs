@@ -271,6 +271,8 @@ struct Inner {
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
+    /// The uploads callers keep open between the steps of their content puts.
+    content_puts: tilo_actions::remote::HostedContentPuts,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
     /// Endpoints keyed apart from the device they answer for, by endpoint
@@ -323,6 +325,7 @@ impl ActionService {
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
+            content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds,
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -351,6 +354,7 @@ impl ActionService {
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
+            content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -452,6 +456,42 @@ impl ActionService {
         dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
     ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         (!Arc::ptr_eq(dispatcher, &self.0.dispatcher)).then(|| Arc::clone(dispatcher))
+    }
+
+    /// The content store a content put goes to: the one provider [`Self::authorize`] handed the
+    /// request to, else the dispatcher's, else the first provider beside it that keeps one.
+    fn content_puts(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        if let Some(alone) = self.alone(dispatcher) {
+            return alone.content_puts();
+        }
+        self.0.dispatcher.content_puts().or_else(|| {
+            self.0
+                .providers
+                .lock_recover()
+                .iter()
+                .find_map(tilo_actions::remote::ActionProvider::content_puts)
+        })
+    }
+
+    /// One step of bytes a caller hands the content store `dispatcher` reaches. A step writes at
+    /// most one piece: short enough to answer in place.
+    fn put_content(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+        caller: &Caller,
+        step: &tilo_actions::remote::ContentPutStep,
+    ) -> Result<tilo_actions::remote::ContentPutAnswer, tilo_actions::remote::ActionCallError> {
+        let Some(puts) = self.content_puts(dispatcher) else {
+            return Err(tilo_actions::remote::ActionCallError::Unavailable {
+                reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
+            });
+        };
+        self.0
+            .content_puts
+            .step(puts.as_ref(), caller, step.clone())
     }
 
     /// What owns invocation `id` for `caller`: the dispatcher where it keeps the invocation,
@@ -807,6 +847,13 @@ impl ActionService {
                 Some(RemoteActionMessage::CancelResponse {
                     invocation: *invocation,
                     result,
+                })
+            }
+            // Bytes a caller hands the device's content store, kept open between steps here.
+            RemoteActionMessage::ContentPutRequest { correlation, step } => {
+                Some(RemoteActionMessage::ContentPutResponse {
+                    correlation: *correlation,
+                    result: self.put_content(dispatcher, caller, step),
                 })
             }
             // An agent the person's device handed its requests to asks its person here, where its
@@ -1215,6 +1262,24 @@ impl RemoteDevice {
             completer.complete(reply.and_then(answer));
         });
         result
+    }
+
+    /// One step of a content put into the device's content store: what a caller hands a device
+    /// bytes by before it invokes an action that names them by hash.
+    pub fn content_put(
+        &self,
+        step: tilo_actions::remote::ContentPutStep,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::ContentPutAnswer, tilo_actions::remote::ActionCallError>,
+    > {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        self.ask(
+            RemoteActionMessage::ContentPutRequest { correlation, step },
+            |answer| match answer {
+                RemoteActionMessage::ContentPutResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
     }
 
     /// Invoke `request` on the device and follow it until it settles there:

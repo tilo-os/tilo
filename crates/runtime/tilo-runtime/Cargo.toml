@@ -160,10 +160,11 @@ tilo-server = { path = "../../server/tilo-server", features = ["web"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-# What the daemon's command line needs on Windows: the profile it names and the
+# What the daemon's command line needs on Windows: the private profile it names and the
 # MCP projection it can answer without a daemon.
 [target.'cfg(windows)'.dependencies]
 tilo-mcp = { path = "../tilo-mcp" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
@@ -171,7 +172,7 @@ uuid.workspace = true
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
 # in process, and Linux programs in the local hosted-VM service.
-ush = { path = "../ush", features = ["quic"] }
+ush = { path = "../../vm/ush", features = ["quic"] }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -183,6 +184,8 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 
 [dev-dependencies]
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
+# The action provider the workspace tests answer with.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.

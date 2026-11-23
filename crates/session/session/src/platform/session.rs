@@ -653,6 +653,8 @@ impl Session {
             notices: notices.clone(),
             overview: overview.open_flag(),
             handle: handle.clone(),
+            emoji: Rc::new(std::cell::Cell::new(false)),
+            about: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -1219,13 +1221,32 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own; the shortcuts themselves are saved and run by the
-        // device's own broker.
+        // of its own; the shortcuts themselves are saved into, and run from,
+        // this device's own workspace service, by the library the daemon
+        // installs too.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
+            .map_err(crate::Error::host)?;
+        let shortcut_library: Option<
+            std::sync::Arc<dyn tilo_workspace_service::apps::services::ShortcutLibraryServices>,
+        > = crate::sync::device_identity()
+            .map(|identity| {
+                tilo_runtime::device::shortcuts::Shortcuts::when_installed(
+                    workspace_service.clone(),
+                    identity.device_cert,
+                    identity.signer,
+                )
+                .map(|library| {
+                    std::sync::Arc::new(library)
+                        as std::sync::Arc<
+                            dyn tilo_workspace_service::apps::services::ShortcutLibraryServices,
+                        >
+                })
+            })
+            .transpose()
             .map_err(crate::Error::host)?;
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
@@ -1242,6 +1263,7 @@ impl Session {
             &options,
             &live_activities,
             &handle,
+            shortcut_library,
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
@@ -1520,6 +1542,8 @@ impl Session {
             &handle,
             shell_surfaces,
             Rc::clone(&shortcuts),
+            super_peek.clone(),
+            emoji.link(),
         );
         services
             .borrow_mut()

@@ -140,9 +140,7 @@ impl<A: serde::de::DeserializeOwned> ControlVerb<A> {
         &self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<A>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.kind != OperationKind::View || request.type_id != self.type_id {
             return Ok(None);
         }

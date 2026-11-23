@@ -8,7 +8,7 @@ Agents drive them through Browser's page actions.
 ## Where it runs
 
 Each hosted workspace has **one VM** on the VM hosts
-(`crates/runtime/linux-vm/src/hosted`), from **one guest image**
+(`crates/vm/linux-vm/src/hosted`), from **one guest image**
 (`os/Containerfile.hosted-guest`, pinned as `HOSTED_GUEST_X86_64_REF` in
 `os/hosted-guest-snapshot.env`): the workspace's toolchains, and a headless
 Tilo session (`--backend headless`, drawing on the CPU: the hosts have no

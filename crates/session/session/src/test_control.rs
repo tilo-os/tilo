@@ -70,7 +70,7 @@ pub const HEADLESS_OWNER_CONTROL_SOCKET_FILE: &str = "headless-owner-control.soc
 /// [`OPENED_BY_THIS_BUILD`]) and the path the command line named: `None` in a build that opens
 /// none, whatever was named; the named path, else `$TILO_TEST_CONTROL`'s, else the default
 /// `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` the tools that drive a desktop go to —
-/// what a dev image's login binds with nothing named, so `tilo-vmd` finds it where it looks.
+/// what a dev image's login binds with nothing named, so `tilo-device-step` finds it where it looks.
 #[must_use]
 pub fn path(opens: bool, named: Option<&str>) -> Option<PathBuf> {
     path_in(

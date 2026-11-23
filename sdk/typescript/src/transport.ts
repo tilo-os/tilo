@@ -9,7 +9,7 @@
  * them are the same either way.
  */
 
-import { NetworkError, ProtocolError } from "./errors.ts";
+import { ProtocolError, Unreachable } from "./errors.ts";
 
 /** The one function a client needs to reach an API server: `fetch`, unless you bring your own. */
 export type FetchLike = typeof fetch;
@@ -157,7 +157,7 @@ export class HttpTransport implements Transport {
     try {
       response = await this.fetch(url, { method, headers, body, signal: options.signal });
     } catch (error) {
-      throw new NetworkError(`could not reach the API server at ${this.url}: ${String(error)}`);
+      throw new Unreachable(`could not reach the API server at ${this.url}: ${String(error)}`);
     }
     return {
       status: response.status,
@@ -171,7 +171,7 @@ async function bytes(response: Response): Promise<Uint8Array> {
   try {
     return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
-    throw new NetworkError(`the API server's answer was cut short: ${String(error)}`);
+    throw new Unreachable(`the API server's answer was cut short: ${String(error)}`);
   }
 }
 
@@ -183,7 +183,7 @@ async function* bytesOfStream(stream: ReadableStream<Uint8Array>): AsyncGenerato
       try {
         read = await reader.read();
       } catch (error) {
-        throw new NetworkError(`the API server's stream was cut short: ${String(error)}`);
+        throw new Unreachable(`the API server's stream was cut short: ${String(error)}`);
       }
       if (read.done || read.value === undefined) {
         return;

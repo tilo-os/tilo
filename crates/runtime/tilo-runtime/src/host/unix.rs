@@ -1,32 +1,14 @@
 //! Unix transport/launch edge, shared by macOS and Linux.
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io,
     os::{
         fd::{AsRawFd, RawFd},
-        unix::{
-            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::UnixStream,
-            process::CommandExt,
-        },
+        unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
     },
     path::Path,
     process::{Child, Command},
 };
-
-/// Create `path` as a directory only this user can enter.
-pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true).mode(0o700).create(path)?;
-    let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_dir() || !tilo_files::native::private::owned_by_me(&metadata) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "runtime directory must be owned by this user and not a symlink",
-        ));
-    }
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
 
 /// Native automatic startup rejects a pre-existing public profile before any
 /// legacy profile initialization can change its permissions.
@@ -42,7 +24,7 @@ pub(crate) fn check_private_profile(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    private_directory(path)
+    tilo_files::native::private::directory(path)
 }
 
 /// The host's service sockets, as one app connects to them.
@@ -208,41 +190,18 @@ pub fn launch(
     command.spawn()
 }
 
-/// Open or create a private file, refusing symlinks and shared files.
+/// Open or create a private file, refusing symlinks, other links and another user's files.
 pub(crate) fn private_file(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    let refused = |why: &str| {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "{} {why}: a runtime file is this user's own, private and singly linked",
-                path.display()
-            ),
-        ))
-    };
-    if !metadata.is_file() {
-        return refused("is not a file");
-    }
-    if !tilo_files::native::private::owned_by_me(&metadata) {
-        return refused("belongs to another user");
-    }
-    if metadata.nlink() != 1 {
-        return refused("has another link");
-    }
     // One this user owns that others may read (an earlier Tilo made its files so) is made
-    // private: nobody but its owner and the superuser could have written it.
-    if metadata.permissions().mode() & 0o077 != 0 {
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    // private first: nobody but its owner and the superuser could have written it.
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && metadata.is_file()
+        && tilo_files::native::private::owned_by_me(&metadata)
+        && metadata.permissions().mode() & 0o077 != 0
+    {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
-    Ok(file)
+    tilo_files::native::private::lock_file(path)
 }
 
 #[cfg(test)]
@@ -261,10 +220,7 @@ mod tests {
         let other = dir.path().join("other.lock");
         std::fs::hard_link(&lock, &other).unwrap();
         let refused = super::private_file(&lock).expect_err("a file with another link");
-        assert!(
-            refused.to_string().contains("has another link"),
-            "{refused}"
-        );
+        assert!(refused.to_string().contains("singly linked"), "{refused}");
     }
 
     #[test]

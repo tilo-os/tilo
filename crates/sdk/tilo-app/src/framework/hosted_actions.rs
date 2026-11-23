@@ -198,11 +198,10 @@ impl ResourceOperations for HostedActions {
         _doc: &mut Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let (request, _ownership) = op.with_ownership();
+        let request = op.request();
         if request.type_id != self.link.operation {
             return Ok(None);
         }
-        op.check()?;
         self.link
             .shared
             .asked

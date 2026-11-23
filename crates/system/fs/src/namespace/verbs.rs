@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use fuser::FileType;
+use crate::node::FileType;
 
 use super::{Namespace, ROOT_ID, ROOT_INO, ResourceWrite, hash_from_hex, join, plain};
 

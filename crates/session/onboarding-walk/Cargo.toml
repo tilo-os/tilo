@@ -10,7 +10,7 @@ description = "Onboarding's first-login controls in a person's order, and the wa
 [lib]
 name = "onboarding_walk"
 
-# Standard library only: tools that drive a session (tilo-vmd, the legacy
+# Standard library only: tools that drive a session (tilo-device-step, the legacy
 # stream's headless shell) depend on it without taking on a dependency graph.
 [dependencies]
 

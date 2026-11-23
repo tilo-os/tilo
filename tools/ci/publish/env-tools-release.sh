@@ -32,7 +32,7 @@ arches=(x86_64 aarch64)
 # sources that shape an image. The runtime is in the tag beside it.
 catalog_fingerprint() {
   cat os/env-tools-catalog.txt os/Containerfile.env-tools \
-    crates/runtime/env-tools/src/{key,seal,sandbox,builder,image,resolve}.rs \
+    crates/vm/env-tools/src/{key,seal,sandbox,builder,image,resolve}.rs \
     | sha256sum | cut -c1-16
 }
 

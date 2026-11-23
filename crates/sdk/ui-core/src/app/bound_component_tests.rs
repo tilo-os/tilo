@@ -384,9 +384,7 @@ impl crate::widget::ResourceOperations for Probe {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
+        let crate::host_operation::OperationRequest { type_id, .. } = op.request();
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
                 // A refusal is the probe's to observe, not this view's.
@@ -995,8 +993,6 @@ impl ActionFixture {
 }
 
 include!("directory_permission_tests.rs");
-
-include!("invocation_locus_tests.rs");
 
 include!("owner_publication_tests.rs");
 
@@ -2354,7 +2350,6 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
                             invocation: tilo_actions::InvocationId::new(),
                             source_invocation: None,
                             ambient: None,
-                            scope: None,
                             route: None,
                         },
                     );

@@ -475,6 +475,7 @@ d-vidcax4k = Arbeitsbereichsmenü
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
 
 d-hac3p23j = Lautstärke
     .w-volume-muted = Lautstärke, stumm
@@ -669,7 +670,7 @@ d-76zs5p4r = Antwortzeile
     .w-send = Senden
     .w-write-a-reply-first = Schreib zuerst eine Antwort
 
-d-ny7ms2ry = Anzeige der Hardwaretasten
+d-ny7ms2ry = Bildschirmanzeige
 
 d-rcjzvfxp = Übersicht
     .w-overview = Übersicht
@@ -745,8 +746,8 @@ d-d5wzqn37 = Bluetooth-Kachel
     .w-bluetooth = Bluetooth
     .w-this-device-has-no-bluetooth = Dieses Gerät hat kein Bluetooth
 
-d-hnvxrx3k = VPN umschalten
-    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, egal in welche Richtung.
+d-hnvxrx3k = VPN ein- oder ausschalten
+    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, in welche Richtung auch immer.
 
 d-hnvxrx3k-v = V
 
@@ -770,7 +771,7 @@ d-72cehcnn = Mobilfunk-Kachel
 
 d-ntsyqtrw = Energiemodus-Kachel
     .w-power-saver = Energiesparen
-    .w-balanced = Ausgewogen
+    .w-balanced = Ausgeglichen
     .w-performance = Leistung
 
 d-w3fe7tjv = Pegel
@@ -1075,8 +1076,11 @@ d-dgtjjxex = Menü der Person
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
+    .w-about-tilo = Über Tilo
+    .w-tilo = Tilo
 
-d-zlo3t3an = Aufnahmeanzeige
+d-zlo3t3an = Aufnahmestatus
     .w-watching = { $label } sieht zu
     .w-watching-and-more = { $label } und { $more } weitere sehen zu
     .w-watching-2 = Sieht zu
@@ -1324,3 +1328,24 @@ d-ce3pp2or-key = Schlüssel
 d-ce3pp2or-size = Größe
 
 d-vi5fveaq = Modellwahl
+
+# Added from the source: new words.
+d-pdda7z3y = Hängendes Fenster
+
+d-n6arlzpq = Fenster anderswo
+    .w-on = { $origin_app } auf { $device_name }
+    .w-on-another-device = { $origin_app } auf einem anderen Gerät
+    .w-this-window-runs-on-that-device = Dieses Fenster läuft auf diesem Gerät. Öffne es dort, um es zu sehen.
+
+d-6rjhuenw = Emoji-Karte
+
+d-wdiwq4yt = Über-Fenster
+
+d-tkt6f7u6 = Über-Fenster
+    .w-updates = Aktualisierungen
+    .w-close = Schließen
+    .w-all-details = Alle Details
+
+d-vv7k7lcl = Super-Tasten
+
+d-fhub73iw = Platzinhalt

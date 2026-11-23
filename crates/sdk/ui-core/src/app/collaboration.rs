@@ -320,7 +320,7 @@ impl App {
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    let request = document_routes::part_request(mutation, None, commit);
+                    let request = document_routes::part_request(mutation, commit);
                     let result = self.collaboration.manager.try_send(request);
                     if self.note_document_send(&result) {
                         self.advance_primary_document(heads);

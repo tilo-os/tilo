@@ -128,8 +128,10 @@ pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
     NativeMediaServices,
 };
-pub use published_invocation::OriginalInvocation;
+#[cfg(test)]
+pub(crate) use published_invocation::OriginalLookup;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
+pub use published_invocation::{InvocationRequest, OriginalInvocation};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

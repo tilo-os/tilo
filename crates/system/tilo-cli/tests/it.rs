@@ -61,7 +61,13 @@ fn every_old_name_runs_its_help_through_the_alias() {
     std::fs::create_dir_all(&libexec).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
     let moved = moved();
-    assert!(moved.len() >= 10, "{moved:?}");
+    // The list parsed whole: its first, a middle and its last entry are there.
+    for known in ["tilo-crypto", "tilo-server", "tilo-vm"] {
+        assert!(
+            moved.iter().any(|name| name == known),
+            "{known} in {moved:?}"
+        );
+    }
     for name in &moved {
         let program = libexec.join(name);
         std::fs::write(&program, "#!/bin/sh\nprintf '%s|%s\\n' \"$0\" \"$*\"\n").unwrap();

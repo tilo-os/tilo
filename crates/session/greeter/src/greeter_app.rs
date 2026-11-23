@@ -2732,9 +2732,10 @@ impl ui::host_operation::ResourceOperations for GreeterApp {
         doc: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|r| r.type_id == console::OPERATION) else {
+        let request = op.request();
+        if request.type_id != console::OPERATION {
             return ui::host_operation::start_in_children(self, op, doc, path);
-        };
+        }
         let mut encoded = ui::tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
             payload: request.payload.to_vec(),

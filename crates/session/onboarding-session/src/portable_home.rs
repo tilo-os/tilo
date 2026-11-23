@@ -78,6 +78,7 @@ pub fn helper_executable() -> io::Result<&'static Path> {
 
 impl Kind for Home {
     type Declaration = PortableHome;
+    type StoredDeclaration = PortableHome;
     type Event = HelperEvent;
     const FAILURE: &'static str = "Portable home migration is pending or unavailable";
     const ROOT: &'static str = "prepared-home";
@@ -98,6 +99,9 @@ impl Kind for Home {
     const MONOTONIC_RECEIPTS: bool = true;
     const COMPLETION_NEEDS_PROOF: bool = false;
 
+    fn into_declaration(stored: Self::StoredDeclaration) -> Self::Declaration {
+        stored
+    }
     fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<PortableHome>> {
         prepared.portable_home(identity)
     }
@@ -235,7 +239,7 @@ pub mod fixtures {
         let declaration = PortableHome {
             schema: 1,
             setup_binding: "installed-operation".into(),
-            selection: "full_home".into(),
+            selection: prepared_setup_model::PortableHomeSelection::FullHome,
             applications: false,
         };
         Prepared::open(home.path())
@@ -370,6 +374,173 @@ mod tests {
             std::os::unix::fs::symlink(elsewhere.path(), root(home.path())).unwrap();
             assert!(Pending::open(home.path().into(), identity, declaration).is_err());
             assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+        }
+
+        phase portable_home_expectation_accepts_kind_flat_and_extra_keys;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+            let (home, identity, declaration) = fixture();
+            let directory = root(home.path());
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let ciphertext = b"fixture home ciphertext";
+            let expectation = prepared_setup_model::HomeExpectation {
+                operation: "home_op-1".into(),
+                filename: "home-home_op-1.sealed".into(),
+                setup_binding: declaration.setup_binding.clone(),
+                sealed_bytes: u64::try_from(ciphertext.len()).unwrap(),
+                plaintext_bytes: 16,
+                entries: 2,
+                ciphertext_sha256: [1; 32],
+                limits: prepared_setup_model::Limits {
+                    plaintext_bytes: 1024,
+                    entries: 16,
+                    metadata_bytes: 1024,
+                },
+                kind: prepared_setup_model::Home { runtime_sockets: 0 },
+            };
+            for (name, bytes) in [
+                (
+                    "expectation.json".to_owned(),
+                    serde_json::to_vec(&expectation).unwrap(),
+                ),
+                (expectation.filename.clone(), ciphertext.to_vec()),
+            ] {
+                let file = directory.join(name);
+                std::fs::write(&file, bytes).unwrap();
+                std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let pending = Pending::open(home.path().into(), identity, declaration.clone()).unwrap();
+            let (package, operation) = Home::package(pending.context(), &directory).unwrap();
+            assert_eq!(package, directory.join(&expectation.filename));
+            assert_eq!(operation, "home_op-1");
+
+            // Earlier flat shape and extra keys remain accepted, as on main;
+            // the helper owns exact ciphertext, bounds and footer validation.
+            let flat = serde_json::json!({
+                "schema": 1,
+                "operation": expectation.operation,
+                "purpose": "home",
+                "filename": expectation.filename,
+                "setup_binding": declaration.setup_binding,
+                "sealed_bytes": 999,
+                "plaintext_bytes": 16,
+                "entries": 2,
+                "runtime_sockets": 0,
+                "ciphertext_sha256": vec![1u8; 32],
+                "limits": {"plaintext_bytes": 1024, "entries": 16, "metadata_bytes": 1024},
+            });
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&flat).unwrap(),
+            )
+            .unwrap();
+            let (package, operation) = Home::package(pending.context(), &directory).unwrap();
+            assert_eq!(package, directory.join(&expectation.filename));
+            assert_eq!(operation, "home_op-1");
+
+            let mut with_extra = serde_json::to_value(&expectation).unwrap();
+            with_extra["unexpected"] = serde_json::json!(true);
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&with_extra).unwrap(),
+            )
+            .unwrap();
+            let (package, operation) = Home::package(pending.context(), &directory).unwrap();
+            assert_eq!(package, directory.join(&expectation.filename));
+            assert_eq!(operation, "home_op-1");
+
+            with_extra["setup_binding"] = serde_json::json!("other-binding");
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&with_extra).unwrap(),
+            )
+            .unwrap();
+            assert!(Home::package(pending.context(), &directory).is_err());
+        }
+    }
+
+    #[test]
+    fn main_home_choice_json_matches_literal_bytes_loads_and_refuses_unknown_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let (home, identity, declaration) = fixture();
+        let prepared = Prepared::open(home.path()).unwrap();
+
+        // Exact literal wire bytes produced by main's `Choice<PortableHome>`
+        // (`schema`, `setup_digest`, `declaration` with `schema`, `setup_binding`,
+        // `selection: "full_home"`, `applications: false`, `outcome`).
+        let main_choice = format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""schema":1,"setup_binding":"installed-operation","#,
+                r#""selection":"full_home","applications":false}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&prepared.digest()).unwrap(),
+        );
+        let choice_path = root(home.path()).join("choice.json");
+
+        // Writing a new Home choice emits byte-for-byte identical JSON to main.
+        let mut pending =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        pending.invoke("later", b"").unwrap();
+        assert_eq!(std::fs::read(&choice_path).unwrap(), main_choice.as_bytes());
+
+        // Reading main's literal bytes (and omitting the defaulted `applications` key) loads cleanly.
+        let main_choice_default_apps = format!(
+            concat!(
+                r#"{{"schema":1,"setup_digest":{digest},"declaration":{{"#,
+                r#""schema":1,"setup_binding":"installed-operation","#,
+                r#""selection":"full_home"}},"#,
+                r#""outcome":"deferred"}}"#
+            ),
+            digest = serde_json::to_string(&prepared.digest()).unwrap(),
+        );
+        std::fs::write(&choice_path, main_choice_default_apps.as_bytes()).unwrap();
+        std::fs::set_permissions(&choice_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut reopened =
+            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+        assert!(reopened.deferred());
+        assert!(!reopened.pending());
+        // Equal choice on disk is left untouched on re-acknowledgement.
+        reopened.invoke("later", b"").unwrap();
+        assert_eq!(
+            std::fs::read(&choice_path).unwrap(),
+            main_choice_default_apps.as_bytes()
+        );
+
+        // Unknown outer or declaration keys are refused, as on main.
+        for (label, bad) in [
+            (
+                "outer unknown",
+                main_choice.replacen(
+                    r#""outcome":"deferred"}"#,
+                    r#""outcome":"deferred","unexpected":true}"#,
+                    1,
+                ),
+            ),
+            (
+                "declaration unknown",
+                main_choice.replacen(
+                    r#""applications":false}"#,
+                    r#""applications":false,"extra":true}"#,
+                    1,
+                ),
+            ),
+        ] {
+            std::fs::write(&choice_path, bad.as_bytes()).unwrap();
+            assert!(
+                Pending::open(home.path().into(), identity.clone(), declaration.clone()).is_err(),
+                "open must refuse {label}"
+            );
+            assert!(
+                reopened.invoke("later", b"").is_err(),
+                "acknowledge must refuse {label}"
+            );
         }
     }
 }

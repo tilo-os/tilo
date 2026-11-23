@@ -91,6 +91,7 @@ tilo-desktop-surface = { path = "../desktop-surface" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
+tilo-vision-service = { path = "../vision-service" }
 settings-store = { path = "../../system/settings-store" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -271,7 +272,7 @@ tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # sandbox has no network (services::accounts).
 tilo-account-probe = { path = "../../platform/account-probe" }
 # The website session a selected ownership entry holds, and what it opens.
-browser-continuity = { path = "../../browser/browser-continuity" }
+browser-continuity = { path = "../../import/browser-continuity" }
 # The machine's readings, served to the apps the launcher connects at the
 # socket they dial.
 tilo-system-stats = { path = "../../system/system-stats" }
@@ -383,15 +384,15 @@ rustix = { workspace = true, features = ["fs", "process"] }
 # Planning and starting the apps the person opens.
 tilo-app-launch = { path = "../app-launch" }
 # The Windows compatibility service the Windows Apps manager reaches.
-compat-service = { path = "../../windows/compat-service" }
+compat-service = { path = "../../compat/compat-service" }
 # The udisks2 names the removable media are read and ejected by. The
 # blocking client is left out: this session speaks to the bus itself.
 block-devices = { path = "../../system/block-devices" }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
-# The sound resource's specs, for the audio service the session starts.
-tilo-audio-service = { path = "../audio-service", default-features = false }
+# The sound resource's specs and system sound cues, for the audio service the session starts.
+tilo-audio-service = { path = "../audio-service", default-features = false, features = ["sounds"] }
 # The desktop services the session starts on the buses; screen shares
 # stream the frames the session captured.
 tilo-portal = { path = "../portal", features = ["pipewire"] }
@@ -486,9 +487,9 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
 # A Windows program's launch planned on a computer without the Windows payloads,
 # and the catalogue that routes it.
-compat-service = { path = "../../windows/compat-service", features = ["test-support"] }
-compat-catalogue = { path = "../../windows/compat-catalogue" }
-windows-vm = { path = "../../windows/windows-vm" }
+compat-service = { path = "../../compat/compat-service", features = ["test-support"] }
+compat-catalogue = { path = "../../compat/compat-catalogue" }
+windows-vm = { path = "../../compat/windows-vm" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 # A packet relay on this machine's loopback, for two of the person's devices

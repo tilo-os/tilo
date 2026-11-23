@@ -487,7 +487,12 @@ mod tests {
                     crate::desktop::i18n::t("answer-why-no-sandbox"),
                     "tilo-launcher: so.tilo.settings ended: exit status: 1\n\
                      tilo-launcher: this computer allows no user namespaces, which every app's \
-                     sandbox is made in",
+                     sandbox is made in\n\
+                     tilo-launcher: kernel.apparmor_restrict_unprivileged_userns turns them off. \
+                     Turn them on with: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0. \
+                     Keep it on across restarts with the line \
+                     \"kernel.apparmor_restrict_unprivileged_userns = 0\" in a file under \
+                     /etc/sysctl.d/",
                 ),
             ),
         ];

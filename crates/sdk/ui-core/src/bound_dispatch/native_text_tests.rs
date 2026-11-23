@@ -122,7 +122,6 @@ fn edit(
                         invocation: tilo_actions::InvocationId::new(),
                         source_invocation: None,
                         ambient: None,
-                        scope: None,
                         api: None,
                     },
                 )

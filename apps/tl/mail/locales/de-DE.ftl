@@ -54,7 +54,7 @@ d-dtd4czyv = Ungelesen
 d-rxoe5vzb = Gesamt
 
 d-al2vjuet = Mehr
-    .doc = Ob der Server des Kontos Nachrichten hält, die älter sind als die, die dieser Arbeitsbereich hält: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
+    .doc = Ob der Server des Kontos ältere Nachrichten hat als dieser Arbeitsbereich: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
 
 d-ecbhcqdr-filter-unread = Ungelesen
 
@@ -259,7 +259,7 @@ d-arnkrvgw = Jetzt abrufen
     .doc = Fragt jetzt den Server des Kontos nach seiner Mail: was eine Person drückt, wenn das Fenster sagt, der Server sei nicht erreichbar gewesen oder was es geholt hat, habe sich nicht sichern lassen.
 
 d-wgbxl4or = Ältere Nachrichten anzeigen
-    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hält, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
+    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hat, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
 
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
@@ -322,7 +322,7 @@ d-ydo5gq5e = Als .eml exportieren
     .doc = Die Nachricht als `.eml`-Datei, die jedes Mailprogramm öffnet.
 
 d-3vrmj56n = Eine Nachrichtendatei öffnen
-    .doc = Öffnet eine Nachricht, die als Datei eines Mailprogramms vorliegt (`.eml`, eine einzelne Nachricht einer mbox oder Apples `.emlx`): ihre Kopfzeilen werden gelesen, und sie wird zu der Mail gelegt, die außerhalb der Konten gehalten wird, gelesen, im Posteingang.
+    .doc = Öffnet eine Nachricht, die als Datei eines Mailprogramms vorliegt (`.eml`, eine einzelne Nachricht einer mbox oder Apples `.emlx`): ihre Kopfzeilen werden gelesen, und sie wird zu der Mail gelegt, die außerhalb der Konten liegt, gelesen, im Posteingang.
     .w-the-file-holds-no-message = Die Datei enthält keine Nachricht
 
 d-3vrmj56n-file = Datei
@@ -366,7 +366,7 @@ d-xytb2lle = Löschen
 d-pz2ntes2 = Endgültig löschen
     .doc = Löscht die gelöschten Nachrichten der Unterhaltung endgültig, auch von ihrem Server, und mit ihnen die Unterhaltung, wenn keine Nachricht von ihr mehr übrig ist.
     .w-it-is-not-in-the-trash = Sie ist nicht im Papierkorb
-    .w-nothing-of-it-is-in-the = Nichts von ihr ist im Papierkorb
+    .w-nothing-of-it-is-in-the = Nichts davon liegt im Papierkorb
 
 d-le4lvs2c = Markieren
     .doc = Markiert die Unterhaltung oder nimmt die Markierung zurück.

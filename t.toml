@@ -80,8 +80,8 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # `python3 -I tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
-# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli
-# tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core tilo-vmd
+# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli tilo-device-steps
+# tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core
 # tilolang-cli tilolang-tilo ush windows-vm
 
 # Tests, one check per package: `test/<package>`. The driver runs nextest once over the whole
@@ -110,7 +110,7 @@ exclude = [
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
-    "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 # The tests that start sandboxes of their own need nested namespaces, which a job's sandbox does
@@ -118,7 +118,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the four the
 # chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
@@ -142,7 +142,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd"
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat@fast", "launcher:tilo-launcher@fast", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat@fast", "launcher:tilo-launcher@fast", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -161,10 +161,10 @@ packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
     "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
     "tilo-agent-session", "tilo-app-cli", "tilo-environment", "tilo-liveness",
-    "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli",
+    "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
-isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
+isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
@@ -224,7 +224,7 @@ packages = [
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
-    "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
+    "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-device-steps",
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-process", "tilolang-tilo",
     "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
@@ -291,7 +291,7 @@ exclude = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
-    "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 
@@ -327,7 +327,7 @@ packages = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
-    "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
+    "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
 matrix = { arch = ["x86_64", "aarch64"] }
 
@@ -390,7 +390,7 @@ exclude = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
-    "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 default = false
@@ -653,6 +653,7 @@ needs = ["app-models"]
 
 [[check]]
 name = "codemap"
+requires = ["arch=any"]
 run = "python3 -I tools/docs/codemap.py --check"
 fix = "python3 -I tools/docs/codemap.py"
 
@@ -706,6 +707,7 @@ git = true
 
 [[check]]
 name = "fmt"
+requires = ["arch=any"]
 run = "cargo fmt --check"
 fix = "cargo fmt"
 
@@ -719,14 +721,17 @@ fix = "cargo hakari generate && cargo hakari manage-deps --yes"
 
 [[check]]
 name = "sdk-licenses"
+requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_sdk_licenses.py && python3 -I tools/sdk/check_licenses.py"
 
 [[check]]
 name = "client-licenses"
+requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I tools/sdk/check_client_licenses.py"
 
 [[check]]
 name = "lockfile"
+requires = ["arch=any"]
 # Resolves against crates.io.
 egress = { to = ["index.crates.io:443", "static.crates.io:443"] }
 run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\npython3 tools/ci/check_lock_update.py --verify\n"
@@ -737,6 +742,7 @@ fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -
 env = { CARGO_NET_OFFLINE = "false" }
 [[check]]
 name = "deny"
+requires = ["arch=any"]
 # The RustSec advisory database (GitHub) and crates.io's index.
 egress = { to = ["github.com:443", "index.crates.io:443", "static.crates.io:443"] }
 run = "cargo deny --workspace check --hide-inclusion-graph"
@@ -751,6 +757,7 @@ heavy = true
 
 [[check]]
 name = "changes"
+requires = ["arch=any"]
 run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
@@ -783,6 +790,7 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]
 name = "workspace-layout"
+requires = ["arch=any"]
 run = "bash ./scripts/check-workspace-complete.sh\npython3 tools/policy/check_repository_layout.py\n"
 git = true
 
@@ -950,6 +958,7 @@ needs = ["signing-tools"]
 
 [[check]]
 name = "vendored"
+requires = ["arch=any"]
 # Resolves against crates.io.
 egress = { to = ["index.crates.io:443", "static.crates.io:443"] }
 run = "bash tools/ci/test-vendored-crates.sh"
@@ -976,6 +985,7 @@ heavy = true
 
 [[check]]
 name = "sdk-types"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check\n"
 fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
@@ -1097,6 +1107,7 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
 fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\""
@@ -1288,7 +1299,7 @@ heavy = true
 
 [[check]]
 name = "ush-guests"
-run = "set -eu\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"ush-guests: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\n# A filter that matches fewer tests than named still exits 0, and so does a\n# fixture that skips: compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  output=$(\"$@\" 2>&1) || { status=$?; printf '%s\\n' \"$output\"; return \"$status\"; }\n  printf '%s\\n' \"$output\"\n  case \"$output\" in\n    *\"skipping test at\"*|*\"not exercising\"*) echo \"selected fixture skipped: $*\" >&2; return 1 ;;\n  esac\n  actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n  if [ \"${actual:-}\" != \"$expected\" ]; then\n    echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n    return 1\n  fi\n}\n# Each fixture runs in a process of its own, as the test runner gives it.\none() {\n  run_tests 1 \"$@\" --nocapture --test-threads=1\n}\ncd crates/runtime/ush\nTMPDIR=/var/tmp/ush-root\nmkdir -p \"$TMPDIR\"\nfor test in \\\n  helper_runtime::tests::installed_loader_in_systemd_user_namespace_requires_immutable_filesystem \\\n  supervisor::tests::an_environment_asks_for_its_socket_in_its_records_workspace_and_binds_it \\\n  supervisor::tests::a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs \\\n  supervisor::tests::the_plan_comes_from_the_record_its_images_and_its_grants; do\n  TMPDIR=$TMPDIR one /target/vm/ush-lib --exact \"$test\"\ndone\n# The host shell is this account's own login shell, so it needs the passwd\n# entry only root has here; the guests below run as the session's user does.\nfor test in \\\n  host_serve::allows_last_as_long_as_the_person_said_and_only_the_shell_records_them \\\n  host_serve::the_host_shell_is_terminal_only_owner_only_and_asked_for_once; do\n  TMPDIR=$TMPDIR one /target/vm/ush-it --exact \"$test\"\ndone\n# The guests run as the session's user does: not root.\nhome=/var/tmp/ush-user\nmkdir -p \"$home\"\nchown 1000:1000 \"$home\"\nfor test in \\\n  serve_handoff::a_terminal_gets_a_shell_in_its_environment_over_the_service_socket \\\n  serve_handoff::a_new_session_runs_ushs_own_shell_and_marks_its_runs \\\n  serve_handoff::a_tilo_side_session_starts_its_guest_for_the_first_program_only \\\n  serve_handoff::terminals_in_two_workspaces_run_two_environments_each_with_its_own_files \\\n  serve_handoff::a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal \\\n  serve_handoff::the_public_ush_alias_creates_default_and_runs_a_confined_command \\\n  serve_handoff::a_guest_reaches_the_session_through_its_own_mcp_server \\\n  serve_handoff::a_sandbox_that_cannot_be_built_is_explained \\\n  serve_handoff::the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked \\\n  serve_handoff::each_workspace_lists_its_own_environments_and_an_app_cannot_name_another \\\n  helper_runtime::dynamic_helper_starts_from_private_closure_without_host_usr_and_keeps_shim_dispatch \\\n  network::a_guest_whose_hosts_cannot_be_enforced_does_not_start; do\n  one setpriv --reuid=1000 --regid=1000 --clear-groups \\\n    env HOME=\"$home\" TMPDIR=\"$home\" /target/vm/ush-it --exact \"$test\"\ndone\n"
+run = "set -eu\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"ush-guests: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\n# A filter that matches fewer tests than named still exits 0, and so does a\n# fixture that skips: compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  output=$(\"$@\" 2>&1) || { status=$?; printf '%s\\n' \"$output\"; return \"$status\"; }\n  printf '%s\\n' \"$output\"\n  case \"$output\" in\n    *\"skipping test at\"*|*\"not exercising\"*) echo \"selected fixture skipped: $*\" >&2; return 1 ;;\n  esac\n  actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n  if [ \"${actual:-}\" != \"$expected\" ]; then\n    echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n    return 1\n  fi\n}\n# Each fixture runs in a process of its own, as the test runner gives it.\none() {\n  run_tests 1 \"$@\" --nocapture --test-threads=1\n}\ncd crates/vm/ush\nTMPDIR=/var/tmp/ush-root\nmkdir -p \"$TMPDIR\"\nfor test in \\\n  helper_runtime::tests::installed_loader_in_systemd_user_namespace_requires_immutable_filesystem \\\n  supervisor::tests::an_environment_asks_for_its_socket_in_its_records_workspace_and_binds_it \\\n  supervisor::tests::a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs \\\n  supervisor::tests::the_plan_comes_from_the_record_its_images_and_its_grants; do\n  TMPDIR=$TMPDIR one /target/vm/ush-lib --exact \"$test\"\ndone\n# The host shell is this account's own login shell, so it needs the passwd\n# entry only root has here; the guests below run as the session's user does.\nfor test in \\\n  host_serve::allows_last_as_long_as_the_person_said_and_only_the_shell_records_them \\\n  host_serve::the_host_shell_is_terminal_only_owner_only_and_asked_for_once; do\n  TMPDIR=$TMPDIR one /target/vm/ush-it --exact \"$test\"\ndone\n# The guests run as the session's user does: not root.\nhome=/var/tmp/ush-user\nmkdir -p \"$home\"\nchown 1000:1000 \"$home\"\nfor test in \\\n  serve_handoff::a_terminal_gets_a_shell_in_its_environment_over_the_service_socket \\\n  serve_handoff::a_new_session_runs_ushs_own_shell_and_marks_its_runs \\\n  serve_handoff::a_tilo_side_session_starts_its_guest_for_the_first_program_only \\\n  serve_handoff::terminals_in_two_workspaces_run_two_environments_each_with_its_own_files \\\n  serve_handoff::a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal \\\n  serve_handoff::the_public_ush_alias_creates_default_and_runs_a_confined_command \\\n  serve_handoff::a_guest_reaches_the_session_through_its_own_mcp_server \\\n  serve_handoff::a_sandbox_that_cannot_be_built_is_explained \\\n  serve_handoff::the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked \\\n  serve_handoff::each_workspace_lists_its_own_environments_and_an_app_cannot_name_another \\\n  helper_runtime::dynamic_helper_starts_from_private_closure_without_host_usr_and_keeps_shim_dispatch \\\n  network::a_guest_whose_hosts_cannot_be_enforced_does_not_start; do\n  one setpriv --reuid=1000 --regid=1000 --clear-groups \\\n    env HOME=\"$home\" TMPDIR=\"$home\" /target/vm/ush-it --exact \"$test\"\ndone\n"
 needs = ["ush-guests-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_SETNS = "1", TILO_REQUIRE_LOADER = "1", TILO_USH_BIN = "/target/vm/tilo-ush" }
 requires = ["arch=x86_64"]
@@ -2472,6 +2483,7 @@ heavy = true
 
 [[check]]
 name = "mirror-images"
+requires = ["arch=any"]
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/mirror-images.sh"
@@ -3301,6 +3313,7 @@ default = false
 
 [[check]]
 name = "desktop-preflight"
+requires = ["arch=any"]
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -eu\n# dist/rpm/test-signing-contract.sh runs from dist/ci/run-payload-contract-tests.sh below.\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
@@ -3370,6 +3383,7 @@ pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 
 [[check]]
 name = "mirror-base"
+requires = ["arch=any"]
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/base-mirror.sh"
@@ -6543,6 +6557,9 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 # that deletes the Rust shell or app proves the replacement lost nothing. `scripts/headless-examples/walk.sh WALK`
 # runs it and brings back the page (walk.md, compare.md) with the baseline's shots beside this
 # tree's; inputs: `only=rust|tl` walks one version, `discover=1` keeps every step's controls.
+# The session runs as an ordinary account in the VM, as a person's desktop runs as the person:
+# Chromium refuses its sandbox as root, and the shell runtime is the person's user service
+# (tools/ci/app-walk.sh).
 [[check]]
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
@@ -7539,12 +7556,12 @@ outputs = ["/target/source-date/host"]
 default = false
 
 # The development server image's date: the same stages as the server image's, built on the same
-# base, with os/Containerfile.host-dev's additions (the dev-VM daemon and CLI, tilo-vmd's units,
-# base.json), which host-build.sh --dev appends. It names every one of those files, so the image's
+# base, with os/Containerfile.host-dev's additions (the device steps' runtime and the dev-VM CLI,
+# their units, base.json), which host-build.sh --dev appends. It names every one of those files, so the image's
 # date moves when any changes, and an unchanged set of them is the same image again.
 [[check]]
 name = "source-date-host-dev"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/host-dev os/Containerfile.host os/image/boot.Containerfile os/Containerfile.host-dev os/components.toml os/scripts/install-components.py os/scripts/finalize-dev-image.py Cargo.lock crates/dev/tilo-vmd/data os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host-dev os/Containerfile.host os/image/boot.Containerfile os/Containerfile.host-dev os/components.toml os/scripts/install-components.py os/scripts/finalize-dev-image.py Cargo.lock crates/os/tilo-device-steps/data os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/etc/polkit-1/rules.d/49-tilo-device-steps.rules os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
 git = true
 outputs = ["/target/source-date/host-dev"]
 default = false
@@ -7662,8 +7679,8 @@ timeout_secs = 3600
 default = false
 
 # The development server image, never a release (os/Containerfile.host-dev): the server image's
-# own stages, built on the base as image-host builds them, then the dev-VM daemon and CLI,
-# tilo-vmd's boot units, a base.json naming how the programs were built, and systemd-sysext
+# own stages, built on the base as image-host builds them, then the device steps' runtime and the
+# dev-VM CLI, their boot units, a base.json naming how the programs were built, and systemd-sysext
 # merging layers at boot, sealed as the server image is. An installed one takes a rebuilt
 # component as a layer, which a retry of the install proof swaps in instead of rebuilding the
 # image and its medium.
@@ -8225,6 +8242,7 @@ on = ["dispatch"]
 # make run and the CN20K object selection through Kbuild.
 [[check]]
 name = "os-build-contracts"
+requires = ["arch=any"]
 run = '''set -eu
 python3 os/tests/test_kernel_checkpoint_make.py
 python3 os/kernel/tests/test-cn20k-debugfs.py

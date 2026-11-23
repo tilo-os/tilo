@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn fixture(binary: bool) -> (tempfile::TempDir, ArtifactSwap) {
+pub(crate) fn fixture() -> (tempfile::TempDir, ArtifactSwap) {
     let dir = tempfile::tempdir().unwrap();
     let mut layers = Vec::new();
     let source = "a".repeat(40);
@@ -17,7 +17,7 @@ pub(crate) fn fixture(binary: bool) -> (tempfile::TempDir, ArtifactSwap) {
         let tree = dir.path().join(format!("{component}.tree"));
         std::fs::create_dir_all(tree.join("usr/bin")).unwrap();
         std::fs::write(tree.join("usr/bin/fixture"), component).unwrap();
-        let layer_hash = tilo_vm_protocol::layer_hash::tree_hash(&tree).unwrap();
+        let layer_hash = tilo_device_protocol::layer_hash::tree_hash(&tree).unwrap();
         let mut stream = Vec::new();
         crate::builderlayer::write_layer(
             &tree,
@@ -26,7 +26,6 @@ pub(crate) fn fixture(binary: bool) -> (tempfile::TempDir, ArtifactSwap) {
                 target: Some("x86_64-unknown-linux-gnu".into()),
                 toolchain: Some("rustc fixture".into()),
                 source_digest: Some(source_digest.clone()),
-                binary,
                 ..Packed::default()
             },
             &[],
@@ -105,19 +104,17 @@ tilo_test_env::scenario! {
 
     phase valid_full_cohort_is_verified_before_any_daemon_or_builder_use;
     {
-        for binary in [false, true] {
-            let (_dir, request) = fixture(binary);
-            let prepared = prepare(&request).unwrap();
-            assert_eq!(prepared.layers.len(), 4);
-            for layer in prepared.layers {
-                assert!(!layer.packed.reused);
-                assert_eq!(
-                    layer.provenance.source_commit.as_deref(),
-                    Some(request.source.as_str())
-                );
-                assert_eq!(layer.provenance.authority, "local");
-                assert!(layer.archive.as_file().metadata().unwrap().len() > 0);
-            }
+        let (_dir, request) = fixture();
+        let prepared = prepare(&request).unwrap();
+        assert_eq!(prepared.layers.len(), 4);
+        for layer in prepared.layers {
+            assert!(!layer.packed.reused);
+            assert_eq!(
+                layer.provenance.source_commit.as_deref(),
+                Some(request.source.as_str())
+            );
+            assert_eq!(layer.provenance.authority, "local");
+            assert!(layer.archive.as_file().metadata().unwrap().len() > 0);
         }
     }
 
@@ -134,7 +131,7 @@ tilo_test_env::scenario! {
             "header",
             "cached",
         ] {
-            let (_dir, mut request) = fixture(false);
+            let (_dir, mut request) = fixture();
             change(&mut request, |j| match case {
                 "source" => j["source_commit"] = "d".repeat(40).into(),
                 "builder" => {
@@ -171,7 +168,7 @@ tilo_test_env::scenario! {
             "footer",
             "reused",
         ] {
-            let (dir, mut request) = fixture(false);
+            let (dir, mut request) = fixture();
             let stream = dir.path().join("launcher.stream");
             match case {
                 "receipt" => request.receipt_sha256 = "f".repeat(64),

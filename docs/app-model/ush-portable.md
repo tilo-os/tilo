@@ -27,7 +27,7 @@ commands that need Linux, and only for as long as they need it.
 
 - **File commands are actions.** `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
   `truncate`, `touch` and `append` are the environment record's own verbs
-  ([`tilo_environment::files`](../../crates/runtime/environment/src/files.rs)):
+  ([`tilo_environment::files`](../../crates/vm/environment/src/files.rs)):
   checked as a whole against the record's grants, queued in its `files`
   outbox for the device whose disk they change, and undone from its History.
 - **Files are versioned.** Every write to a Tilo mount appends a version, and
@@ -158,7 +158,7 @@ agents and History see one model whichever tier ran a command.
    one command at a time ([`ush.md`](ush.md), "The session's shell").
 2. Tier 2: a WASI runner over Tilo's mount, with a few signed tool packages,
    on devices and hosts (wasmi) and in the browser (its own engine). The
-   runner is built for devices and hosts (`crates/runtime/ush-wasi`): the
+   runner is built for devices and hosts (`crates/vm/ush-wasi`): the
    shell's host runs a WASI preview 1 program a command names, with no
    Linux. The program reads only what the grants cover, each file it writes
    is one of the run's actions (one entry in History, undone together), and

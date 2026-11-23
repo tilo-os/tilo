@@ -22,7 +22,6 @@ fn native_media_leave_bypasses_wedged_document_and_retires_unmute_reply() {
         CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
     assert!(manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
-        authorization: None,
         commit: None,
     }));
     tilo_test_env::recv("the held document RPC", &observed);
@@ -101,7 +100,6 @@ fn native_media_manager_drop_tears_down_while_document_rpc_is_wedged() {
     );
     assert!(manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
-        authorization: None,
         commit: None,
     }));
     tilo_test_env::recv("the held document RPC", &observed);

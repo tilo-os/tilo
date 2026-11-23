@@ -48,7 +48,7 @@ pub enum Answer {
     Rates(Rates),
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rates {
     pub base: String,
     /// The day the rates are for, `YYYY-MM-DD`.

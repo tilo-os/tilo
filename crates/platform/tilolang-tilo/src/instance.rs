@@ -183,7 +183,12 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformBlobs, PlatformClipboard, PlatformWeb, PlatformWords};
+pub use platform::{
+    GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformWeb, PlatformWords,
+    Zoned, sentence_at, shown_at, wall_moment, wall_now,
+};
+#[cfg(all(not(target_family = "wasm"), feature = "test-support"))]
+pub mod testing;
 
 /// How an instance starts.
 pub struct Config {
@@ -2669,32 +2674,7 @@ fn resolved_value(value: Value, resolve: &dyn Fn(&ResourceRef) -> Option<Resourc
     }
 }
 
-/// A name in sentence case: `new_note` and `NewNote` read "New note".
-#[must_use]
-pub fn sentence(name: &str) -> String {
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    for ch in name.chars() {
-        if ch == '_' || ch == ' ' {
-            if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
-        } else if ch.is_uppercase() && !word.is_empty() {
-            words.push(std::mem::take(&mut word));
-            word.extend(ch.to_lowercase());
-        } else {
-            word.extend(ch.to_lowercase());
-        }
-    }
-    if !word.is_empty() {
-        words.push(word);
-    }
-    let joined = words.join(" ");
-    let mut chars = joined.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
+pub use crate::runtime::platform::sentence;
 
 /// The title of a resource, as every surface that names it shows it: its first text field's
 /// first line; else, for a package's root, the package's title; else what its type declares for

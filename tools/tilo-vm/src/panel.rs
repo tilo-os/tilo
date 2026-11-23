@@ -1,7 +1,7 @@
 //! What claiming the machine's display and giving it back did, in words a person reads: which
 //! session let go of it, and which took it back.
 
-use tilo_vm_protocol::Action;
+use tilo_device_protocol::Action;
 
 /// The greeter a laptop's display waits at while no account has claimed it.
 const GREETER_UNIT: &str = "greetd.service";

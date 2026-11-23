@@ -136,6 +136,74 @@ def search_answer_shown(answer: dict, query: str, wanted=()) -> bool:
     return all(any(name in title for title in titles) for name in wanted)
 
 
+def session_account():
+    """The account the session runs as, or None when this caller is the session's
+    own user already.
+
+    A person's desktop runs as the person, and so does everything on it: a
+    program that finds itself root is not on a seat (Chromium refuses to run
+    unsandboxed as root, and the shell runtime is a user service). A caller that
+    is root and starts a session beside its own work — a check in a VM of its own
+    — names the ordinary account in `$TILO_SESSION_USER`, and the session, its
+    apps and its services are started as that account; what the caller does
+    around it stays the caller's."""
+    name = os.environ.get("TILO_SESSION_USER")
+    if not name or os.geteuid() != 0:
+        return None
+    import pwd
+
+    try:
+        return pwd.getpwnam(name)
+    except KeyError:
+        raise Failed(f"$TILO_SESSION_USER names {name!r}, and this machine has no "
+                     "such account") from None
+
+
+def hand_over(path: Path, account) -> None:
+    """`path` and what is under it become the session account's, as a person's
+    own files are: the session writes there, and the caller only reads what it
+    made."""
+    targets = [str(path)]
+    for root, dirs, files in os.walk(path):
+        targets += [os.path.join(root, name) for name in dirs + files]
+    for target in targets:
+        held = os.lstat(target)
+        if (held.st_uid, held.st_gid) != (account.pw_uid, account.pw_gid):
+            os.chown(target, account.pw_uid, account.pw_gid, follow_symlinks=False)
+
+
+def as_account(account) -> list[str]:
+    """The prefix that runs a program as the session account, with that
+    account's groups and no others."""
+    return ["setpriv", f"--reuid={account.pw_uid}", f"--regid={account.pw_gid}",
+            "--init-groups", "--"]
+
+
+def account_env(account, state: Path) -> dict:
+    """What a program started as the session account needs of its own: the
+    account's home and scratch, its name, and the checkout and build it reads
+    even though the caller's account owns them (git would call them another
+    account's repository, and the session's provenance check reads the tree it
+    built from)."""
+    env = {
+        "HOME": account.pw_dir,
+        "USER": account.pw_name,
+        "LOGNAME": account.pw_name,
+        # The caller's temporary directory is the caller's alone; the session
+        # scratch belongs to the account like the rest of its state.
+        "TMPDIR": str(state / "tmp"),
+        # The caller's runtime directory is its own too, and private: the
+        # session makes one under /tmp, as a login without a seat does.
+        "XDG_RUNTIME_DIR": "",
+    }
+    # Behind any git settings the caller already gave its programs.
+    count = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    env.update({f"GIT_CONFIG_KEY_{count}": "safe.directory",
+                f"GIT_CONFIG_VALUE_{count}": "*",
+                "GIT_CONFIG_COUNT": str(count + 1)})
+    return env
+
+
 def control_binary() -> Path:
     """`tilo-control` of the build the session runs from."""
     return BUILD / "bin/tilo-control"
@@ -613,6 +681,8 @@ class Session:
         self.tag = ""
         self.launcher_log: Path | None = None
         self._launch_out = self.state
+        # The account the session runs as, when it is not the caller's own.
+        self.account = None
 
     # -- lifecycle --
 
@@ -631,6 +701,12 @@ class Session:
         self._launch_out = Path(out).resolve() if out else self.state
         self.state.mkdir(parents=True, exist_ok=True)
         self.tag = tag
+        # The session's state is the account's own: the builds a prepare step
+        # made as the caller under it become the session's to read and rewrite.
+        self.account = session_account()
+        if self.account is not None:
+            (self.state / "tmp").mkdir(exist_ok=True)
+            hand_over(self.state, self.account)
         # What this session was started with: a restart brings the same session
         # back — its apps, the tapps it installed and the arguments it was given
         # — so a person who signs in again meets the desktop they had.
@@ -652,6 +728,14 @@ class Session:
         if session_args:
             # Last: everything after the script's `--` is the session's own.
             argv += ["--", *session_args]
+        launch_env = {**os.environ,
+                      "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info"),
+                      **(env or {})}
+        if self.account is not None:
+            # The session and everything it starts are the person's: their
+            # account, their home, and the tree their account reads.
+            argv = [*as_account(self.account), *argv]
+            launch_env.update(account_env(self.account, self.state))
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
         # The session script picks its own private runtime directory (a login's
         # XDG_RUNTIME_DIR, or a short one of its own where a container's exec
@@ -661,9 +745,7 @@ class Session:
             with self.launcher_log.open("w") as log:
                 self.proc = subprocess.Popen(
                     argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                    env={**os.environ,
-                         "RUST_LOG": os.environ.get(
-                             "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
+                    env=launch_env,
                 )
             until("the session to start",
                   lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
@@ -938,9 +1020,20 @@ class Session:
         finally:
             self.control({"op": "key_up", "key": modifier})
 
+    def own(self, path: Path) -> Path:
+        """`path`, written for the session to read and change: the session
+        account's, as its state is, when the session runs as an account."""
+        if self.account is not None:
+            os.chown(path, self.account.pw_uid, self.account.pw_gid)
+        return path
+
     def snapshot(self, path: Path) -> Path:
         path = Path(path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
+        if self.account is not None:
+            # The session writes the image, so the directory it writes into is
+            # the session account's, as its state is.
+            os.chown(path.parent, self.account.pw_uid, self.account.pw_gid)
         self.control({"op": "snapshot", "path": str(path)})
         until(f"the snapshot {path.name}",
               lambda: path.is_file() and path.stat().st_size > 0, 30, 0.1)

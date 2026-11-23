@@ -645,10 +645,7 @@ impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
         _: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
+        let tilo_ui::host_operation::OperationRequest { kind, type_id, .. } = op.request();
         if !tilo_ui::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
             return Ok(None);
         }

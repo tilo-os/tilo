@@ -902,9 +902,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
             _: &mut crate::widget::Edits<'_>,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            let Some(request) = operation.unscoped() else {
-                return Ok(None);
-            };
+            let request = operation.request();
             if request.type_id != crate::host_chrome::edit::EDIT_OPERATION {
                 return Ok(None);
             }

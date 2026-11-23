@@ -292,6 +292,11 @@ pub enum AuthenticationError {
     UnattributedRequester,
 }
 
+/// Validates an application id asserted by the desktop portal frontend for a
+/// host application, which is chosen by that application or the host desktop
+/// rather than Tilo. Narrowing this check to the shared Tilo app id grammar
+/// would refuse real applications and break stored portal permissions for
+/// identifiers containing spaces, slashes, or single segments.
 fn validate_app_id(app_id: &str) -> Result<(), AuthenticationError> {
     if app_id.is_empty()
         || app_id.len() > MAX_APP_ID_BYTES
@@ -477,5 +482,21 @@ mod tests {
                 .unwrap_err(),
             AuthenticationError::UntrustedSender
         );
+    }
+
+    #[tokio::test]
+    async fn host_app_ids_outside_tilo_grammar_are_accepted() {
+        let owner: OwnedUniqueName = ":1.7".try_into().unwrap();
+        // Host applications and the host desktop choose portal app ids that
+        // need not match Tilo's reverse-DNS grammar (spaces, slashes, single
+        // segments); pin them so this check is not narrowed to `Grammar`.
+        for app_id in ["My Terminal", "/usr/bin/tool", "firefox"] {
+            assert_eq!(validate_app_id(app_id), Ok(()), "{app_id:?}");
+            let call = auth(":1.7")
+                .authenticate(Some(&owner), app_id, None)
+                .await
+                .unwrap();
+            assert_eq!(call.caller, PortalCaller::new(app_id));
+        }
     }
 }

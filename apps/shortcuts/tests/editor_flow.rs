@@ -357,7 +357,9 @@ fn every_operation_is_a_published_action() {
         "duplicate-draft",
         "duplicate-shortcut",
         "draft-shortcut",
-        "set-schedule",
+        "add-trigger",
+        "replace-trigger",
+        "remove-trigger",
         "add-step",
         "bind-argument",
         "remove-step",
@@ -684,7 +686,6 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
         "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}]
     }))).unwrap();
-    act(&mut app, "schedule-enabled", &Action::Focus);
     assert!(library_calls(&provider, "create").is_empty());
     assert!(
         app.state()
@@ -694,11 +695,16 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
             .unwrap()
             .program()
             .triggers
-            .is_empty()
+            .is_empty(),
+        "nothing starts the draft until a trigger is added"
     );
-    act(&mut app, "schedule-enabled", &Action::ToggleCheck);
-    act(&mut app, "schedule-hour", &Action::SetValue("09".into()));
-    act(&mut app, "schedule-minute", &Action::SetValue("15".into()));
+    act(
+        &mut app,
+        "trigger-kind",
+        &Action::SetValue("schedule_day".into()),
+    );
+    act(&mut app, "trigger-time", &Action::SetValue("09:15".into()));
+    act(&mut app, "add-trigger", &Action::Activate);
     let program = app.state().drafts.values().next().unwrap().program();
     assert_eq!(
         program.triggers,
@@ -715,7 +721,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     );
     assert!(
         library_calls(&provider, "create").is_empty(),
-        "schedule choice edits only the draft"
+        "a trigger edits only the draft"
     );
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
@@ -755,6 +761,135 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
             }
             .rule()
         ]
+    );
+}
+
+/// One trigger of every kind a person's shortcut may carry. A
+/// connector event is not one: it belongs to an app's robot.
+fn every_trigger_kind() -> Vec<Value> {
+    vec![
+        json!({"trigger": "keyboard", "chord": "Super+Shift+F10"}),
+        json!({"trigger": "schedule", "catch_up": "run_once", "schedule": {
+            "every": "calendar",
+            "at": {"hour": 7, "minute": 30},
+            "weekdays": ["monday", "wednesday"],
+        }}),
+        json!({"trigger": "schedule", "catch_up": "skip", "schedule": {"every": "interval", "seconds": 3600}}),
+        json!({"trigger": "once", "at_ms": 1_800_000_000_000_i64}),
+        json!({"trigger": "app_opened", "app_id": "so.tilo.chat"}),
+        json!({"trigger": "workspace_joined", "workspace": "team"}),
+        json!({"trigger": "file_changed", "capability": "shared-folder"}),
+        json!({"trigger": "focus_mode", "mode": "do_not_disturb", "transition": "enter"}),
+        json!({"trigger": "network_changed", "network": "wifi", "connected": false}),
+        json!({"trigger": "device_connected", "device_class": "camera"}),
+        json!({"trigger": "resource_changed", "kind": "notes.folder",
+           "actions": ["create"], "fields": ["title"], "by": "people"}),
+        json!({"trigger": "app_event", "app_id": "so.tilo.mail", "kind": "message"}),
+        json!({"trigger": "incoming_message", "app_id": "so.tilo.chat", "from": "sam"}),
+        json!({"trigger": "nearby_device", "device": "phone"}),
+        json!({"trigger": "resource_time", "kind": "tasks.issues", "field": "due_ms",
+           "offset_secs": -900, "filter": {"done": false}}),
+        json!({"trigger": "source_changed", "kind": "mail", "at": "inbox",
+           "every_secs": 300, "filter": {"from": "sam"}}),
+    ]
+}
+
+/// Every trigger a person's shortcut may carry is set through the published
+/// actions, shown on the page, and saved into the workspace's settings, which
+/// is where the session reads what to arm.
+#[test]
+fn every_trigger_kind_is_set_through_the_actions_and_saved() {
+    let (provider, _guard, mut app) = open();
+    app.invoke(Workbench::NEW_DRAFT.with("Every trigger"))
+        .unwrap();
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens");
+    let draft = app.state().drafts.ids().next().expect("the draft").clone();
+    app.invoke(Workbench::ADD_STEP.with((
+        draft.clone(),
+        String::new(),
+        json!({"step": "set_var", "name": "tidy", "value": {"literal": true}}),
+    )))
+    .unwrap();
+    let triggers = every_trigger_kind();
+    for trigger in &triggers {
+        app.invoke(Workbench::ADD_TRIGGER.with((draft.clone(), trigger.clone())))
+            .unwrap();
+    }
+    let expected: Vec<tilo_automation::TriggerSpec> = triggers
+        .iter()
+        .map(|trigger| serde_json::from_value(trigger.clone()).unwrap())
+        .collect();
+    assert_eq!(
+        app.state().drafts.get(&draft).unwrap().program().triggers,
+        expected,
+        "each kind is the automation value the session arms"
+    );
+    // What starts it is on the page, in the program text's own words.
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("trigger-0")
+                .name(tilo_automation::text::trigger_line(&expected[0]))
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("the page says what starts the shortcut");
+
+    // A changed trigger keeps its place; a removed one leaves the rest.
+    let changed = json!({"trigger": "keyboard", "chord": "Super+Shift+F11"});
+    app.invoke(Workbench::REPLACE_TRIGGER.with((draft.clone(), 0, changed.clone())))
+        .unwrap();
+    assert_eq!(
+        app.state().drafts.get(&draft).unwrap().program().triggers[0],
+        serde_json::from_value(changed).unwrap()
+    );
+    app.invoke(Workbench::REMOVE_TRIGGER.with((draft.clone(), 0)))
+        .unwrap();
+    assert_eq!(
+        app.state().drafts.get(&draft).unwrap().program().triggers,
+        expected[1..].to_vec()
+    );
+    // A connector event belongs to an app's robot; a person's shortcut never
+    // carries one, so the app refuses it.
+    assert!(
+        app.invoke(Workbench::ADD_TRIGGER.with((
+            draft.clone(),
+            json!({"trigger": "connector", "app_id": "so.tilo.mail", "source": "mail"}),
+        )))
+        .is_err(),
+        "a connector trigger is not a person's to set"
+    );
+
+    // Saving writes them into the workspace's shortcut library.
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("draft-problems")
+                .name("Ready to save")
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("the draft checks before it is saved");
+    app.harness().resize((1600, 1000)).unwrap();
+    press_bar(&mut app, "Review and save…");
+    app.harness()
+        .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
+        .expect("the save sheet shows");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("trigger-review-1")
+                .name(tilo_automation::text::trigger_line(&expected[2]))
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("the save review names every trigger the shortcut would carry");
+    act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
+    app.harness().key("Enter");
+    let created = library_calls(&provider, "create");
+    assert_eq!(created.len(), 1, "saved once through shortcuts#create");
+    let saved: tilo_automation::Shortcut =
+        serde_json::from_value(created[0]["shortcut"].clone()).unwrap();
+    assert_eq!(
+        saved.triggers,
+        app.state().drafts.get(&draft).unwrap().program().triggers,
+        "the session reads the same trigger set the page set"
     );
 }
 

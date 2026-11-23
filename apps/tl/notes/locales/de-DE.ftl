@@ -105,7 +105,7 @@ d-cdjz7d5y = Notizbuch exportieren
     .doc = Das Notizbuch als Zip, eine Markdown-Datei für jede Notiz: die einer Notiz unter dem Ordner der Notiz, in der sie steht, und die Bilder, die sie zeigt, in ihrem eigenen Ordner `images` daneben.
 
 d-hjwb45bx = Notizbuch als Markdown exportieren
-    .doc = Das Notizbuch als ein Markdown-Dokument: jede Notiz eine Überschrift eine Ebene tiefer als die Notiz, unter der sie steht (sechs auf der tiefsten), ihr Text darunter und danach die Notizen unter ihr: das Notizbuch als ein Text gelesen, in der Reihenfolge, die der Baum hält.
+    .doc = Das Notizbuch als ein Markdown-Dokument: jede Notiz eine Überschrift eine Ebene tiefer als die Notiz, unter der sie steht (sechs auf der tiefsten), ihr Text darunter und danach die Notizen unter ihr: das Notizbuch als ein Text gelesen, in der Reihenfolge, in der der Baum sie führt.
 
 d-t4nxxtng = Markdown importieren
     .doc = Importiert eine Markdown-Datei als Notiz oder öffnet die Notiz, die diese Datei schon angelegt hat: eine Notiz behält die Adresse der Datei, aus der sie kam, dieselbe Datei zweimal zu importieren ergibt also eine Notiz. Die Notiz steht unter der Notiz des Ordners, den der Pfad ihrer Datei nennt (`Q3 plan/Ideas.md` unter `Q3 plan.md`).

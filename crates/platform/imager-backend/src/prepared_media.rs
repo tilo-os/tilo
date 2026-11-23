@@ -28,19 +28,7 @@ impl IdentityKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PortableHomePlan {
-    pub schema: u32,
-    pub selection: PortableHomeSelection,
-    #[serde(default)]
-    pub applications: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PortableHomeSelection {
-    FullHome,
-}
+pub use prepared_setup_model::{PortableHomePlan, PortableHomeSelection};
 
 /// Syntax only on every platform: successful validation is not authentication, and native review
 /// still verifies the encrypted manifest. Refuses an unsupported schema or protocol version, empty,

@@ -21,10 +21,24 @@ const DEPTH: usize = 32;
 /// declared record type with no default. A field given a value holds what it was given.
 #[must_use]
 pub fn holds(field: &FieldInfo) -> bool {
-    field.kind == FieldKind::Register
-        && field.default.is_none()
-        && matches!(&field.ty, Ty::Record(key)
-            if !tilolang::host::is_value(key) && *key != tilolang::resource_key())
+    held_key(field.kind, &field.ty, field.default.is_some()).is_some()
+}
+
+/// The record type a field of `kind` and type `ty` holds when its resource is made without it:
+/// a declared record type, when the field declares no default.
+#[must_use]
+pub fn held_key(kind: FieldKind, ty: &Ty, has_default: bool) -> Option<&tilolang::types::TypeKey> {
+    match ty {
+        Ty::Record(key)
+            if kind == FieldKind::Register
+                && !has_default
+                && !tilolang::host::is_value(key)
+                && *key != tilolang::resource_key() =>
+        {
+            Some(key)
+        }
+        _ => None,
+    }
 }
 
 /// Whether a resource of `ty` holds a record of its own in a field it is made without.

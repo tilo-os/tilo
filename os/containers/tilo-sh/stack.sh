@@ -287,7 +287,8 @@ discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
 models_port=$((base + 43))     # the fake OpenAI sign-in and model providers
 control_port=$((base + 44))    # the held program's control port, for a stack on the build server
-last_port=$control_port  # the highest port a stack on this base takes
+person_port=$((base + 45))     # the stack's person's own device, UDP: never the 7703 a real login here holds
+last_port=$person_port   # the highest port a stack on this base takes
 
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
@@ -1131,6 +1132,7 @@ as_owner() {
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
+    TILO_DEVICE_PORT=$person_port \
     TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@" 9>&-
 }
 
@@ -1327,13 +1329,13 @@ vm_host() {
 }
 
 # The ticket this stack's VM host joins the person's devices with: printed on
-# the stack's own person's device (`tilo device add --capability admin`) at each
+# the stack's own person's device (`tilo device add`) at each
 # start. The host spends it once and keeps its login on its own state disk,
 # which is root's; a host that already holds one ignores the ticket it is given.
 # A ticket lets a computer in, so no failure prints it.
 host_ticket() {
   local issued
-  issued=$(owner_person device add --capability admin --server --json --no-wait) \
+  issued=$(owner_person device add --server --json --no-wait) \
     || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
   TILO_VM_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued") \
     || die "the stack's person printed no ticket (tilo device add --json answered no \"ticket\")"

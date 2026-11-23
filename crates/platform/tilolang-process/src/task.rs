@@ -45,32 +45,31 @@ use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
 use tilolang_tilo::task_reads::{StoreSource, TaskReads};
 
-/// How a day or a time of day reads in a sentence a person reads (`person_output`): the
-/// person's formats, from their settings, and their zone's clock. Until a region is installed,
-/// [`tilo_formats::shown`] leaves the stored text as it is.
+/// How a day or a time of day reads in a sentence a person reads (`person_output`): routes
+/// through the same shared [`tilolang_tilo::instance::shown_at`] helper that `Platform::shown`
+/// uses (one clock read, one zone lookup, no text built or parsed). An agent task session runs
+/// outside any window `Platform` (no per-window `Phrases`), so it supplies the toolkit's region
+/// formats and date words directly.
 fn shown_for_a_person(kind: &str, value: &str) -> String {
-    let now = ui::clock::local_now();
-    tilo_formats::shown(
+    let moment = tilolang_tilo::instance::wall_moment();
+    tilolang_tilo::instance::shown_at(
         kind,
         value,
+        &moment,
         ui::format::region::current(),
-        now.date(),
-        now.datetime(),
-        i64::from(now.offset().seconds()),
         ui::format::words(),
     )
 }
 
-/// How a day or a time of day named in a sentence a person reads (`"{d}"`) reads: the person's
-/// formats, from their settings, and their zone.
+/// How a day or a time of day named in a sentence a person reads (`"{d}"`) reads: routes through
+/// the same shared [`tilolang_tilo::instance::sentence_at`] helper that `Platform::sentence` uses.
 fn sentence_for_a_person(kind: &str, value: &str) -> String {
-    let now = ui::clock::local_now();
-    tilo_formats::sentence(
+    let moment = tilolang_tilo::instance::wall_moment();
+    tilolang_tilo::instance::sentence_at(
         kind,
         value,
+        &moment,
         ui::format::region::current(),
-        now.date(),
-        i64::from(now.offset().seconds()),
         ui::format::words(),
     )
 }

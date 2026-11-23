@@ -2,10 +2,9 @@
 //! always the exact next command; `see` names the guide topic to read.
 
 use serde_json::json;
-use tilo_vm_protocol::RpcError;
+use tilo_device_protocol::RpcError;
 
 use crate::host::Missing;
-use crate::remote::LOCAL_DAEMON;
 
 // Images are public on registry.tilo.so: pulls need no login. Only dev disk
 // downloads, from the forge's package registry, need a credential.
@@ -13,56 +12,13 @@ use crate::remote::LOCAL_DAEMON;
 pub const FORGE_TOKEN_USE: &str =
     "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
 
-pub const REBUILD: &str =
-    "cargo build -p tilo-vm, then run target/debug/tilo-vm   (any cargo drop-in works)";
-
 pub const NOT_BOOTC_FIX: &str = "create a VM from a dev image instead: tilo-vm vm create <name>   (the published dev disk; or --image <dev disk.qcow2>)   |   or ask whoever set this VM up to move it onto a dev image";
-
-const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be checked";
 
 pub fn no_disk_help() -> String {
     format!(
         "ask a human for a shared VM and use it: tilo-vm vm use <name>   |   or build a disk of this worktree on t: tilo-vm image build --disk, then tilo-vm vm create <name> --image target/tilo-vm/target/publish/os-dev-disk/{arch}/disk/disk.qcow2 (tilo-vm guide images)",
         arch = std::env::consts::ARCH
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerFailure {
-    /// No answer: offline, asleep, or no relay in common (2).
-    Unreachable,
-    /// The device refused this machine (3).
-    Refused,
-    /// Another device answered at the recorded endpoint (4).
-    OtherDevice,
-    /// This machine is not enrolled (5).
-    NotEnrolled,
-    /// Anything else.
-    Failed,
-}
-
-impl PeerFailure {
-    pub fn from_exit(code: Option<i32>) -> Self {
-        match code {
-            Some(2) => Self::Unreachable,
-            Some(3) => Self::Refused,
-            Some(4) => Self::OtherDevice,
-            Some(5) => Self::NotEnrolled,
-            _ => Self::Failed,
-        }
-    }
-}
-
-impl std::fmt::Display for PeerFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Unreachable => "it did not answer",
-            Self::Refused => "it refused this machine",
-            Self::OtherDevice => "another device answered for it",
-            Self::NotEnrolled => "this machine cannot dial it",
-            Self::Failed => "the dial failed",
-        })
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,14 +47,16 @@ pub enum CliError {
         lookup: String,
         wakeable: bool,
     },
-    #[error("device '{vm}' is not on this network, and {failure} over the peer network: {detail}")]
-    PeerRoute {
-        vm: String,
-        failure: PeerFailure,
-        detail: String,
-    },
-    #[error("this machine is not enrolled to administer devices: {detail}")]
-    NotEnrolledAdmin { detail: String },
+    #[error("this machine has no Tilo login to reach devices as: {detail}")]
+    NotLoggedIn { detail: String },
+    #[error(
+        "'{vm}' has not answered as a Tilo device yet, so tilo-vm does not know which device it is"
+    )]
+    NotJoined { vm: String },
+    #[error("'{vm}' does not let this machine act on {resource}")]
+    NotGranted { vm: String, resource: String },
+    #[error("'{vm}' runs an image that predates the {action} step")]
+    DeviceTooOld { vm: String, action: String },
     #[error("sent {vm}'s magic packet ({sent}), but it did not answer within {seconds}s")]
     WakeTimeout {
         vm: String,
@@ -106,38 +64,14 @@ pub enum CliError {
         seconds: u64,
         wake: Option<String>,
     },
-    #[error("cannot reach VM '{vm}' over SSH: {detail}")]
+    #[error("cannot reach '{vm}': {detail}")]
     Unreachable {
         vm: String,
         detail: String,
         debug: Vec<String>,
     },
-    #[error("VM '{vm}' has no tilo-vmd; it is not running a Tilo dev image")]
-    DaemonMissing { vm: String, bootc: Option<bool> },
     #[error("VM '{vm}' is not running a bootc dev image; {command} needs one")]
     NotBootc { vm: String, command: String },
-    #[error("VM '{vm}' refuses its root SSH key {key}")]
-    RootKeyRefused {
-        vm: String,
-        key: String,
-        install: String,
-        credentials: bool,
-    },
-    #[error("{user} on '{vm}' cannot run commands as root without a password (sudo -n: {detail})")]
-    SudoRefused {
-        vm: String,
-        /// `<user>@<host>[:<port>]`, as `vm add-device --ssh` takes it.
-        ssh: String,
-        user: String,
-        detail: String,
-    },
-    #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
-    ProtocolMismatch {
-        vm: String,
-        client: u32,
-        daemon: u32,
-        bootc: Option<bool>,
-    },
     #[error("{}", .0.message)]
     Remote(RpcError),
     #[error("{tool} is not installed (needed to {purpose})")]
@@ -164,12 +98,6 @@ pub enum CliError {
     },
     #[error("this host is {host} but the VM would be {requested}")]
     ArchMismatch { host: String, requested: String },
-    #[error(
-        "--local runs this machine's own tilo-vmd, which manages its /usr, units and accounts, and this is not root (uid {uid})"
-    )]
-    LocalNotRoot { uid: u32 },
-    #[error("this machine's tilo-vmd did not answer: {detail}")]
-    LocalDaemon { detail: String },
     #[error("not enough space on {place}: {free} is free, and tilo-vm keeps at least {floor} free")]
     LowDisk {
         place: String,
@@ -330,20 +258,17 @@ impl CliError {
             Self::DeviceAsleep { vm, wakeable: false, .. } => format!(
                 "wake it at its power button or keyboard, then tilo-vm vm status {vm}: that records its MAC and hostname, so a new address is found by name. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
             ),
-            Self::PeerRoute { vm, failure: PeerFailure::Unreachable, .. } => format!(
-                "it is asleep, offline, or cannot reach a relay: wake it (at the machine, or tilo-vm vm wake {vm} from its LAN), check its network, then rerun. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
-            ),
-            Self::PeerRoute { failure: PeerFailure::Refused, .. } => {
-                "the device said why above; fix that, then rerun (enrolling this machine is tilo-vm vm enrol-admin)".into()
+            Self::NotLoggedIn { .. } => {
+                "log this machine in as one of your devices: on a device of yours run tilo device add, then here tilo login <the ticket it prints>   (tilo-vm guide devices)".into()
             }
-            Self::PeerRoute { vm, failure: PeerFailure::OtherDevice, .. } => format!(
-                "the recorded route is stale: on its LAN, tilo-vm vm status {vm} records it again"
+            Self::NotJoined { vm } => format!(
+                "start it and let it answer once: tilo-vm vm start {vm}   |   a machine you set up yourself: tilo-vm vm add {vm} --device <its device key>   (tilo-vm guide devices)"
             ),
-            Self::PeerRoute { failure: PeerFailure::NotEnrolled, .. } | Self::NotEnrolledAdmin { .. } => {
-                "enrol this machine as one of the owner's devices: tilo-vm vm enrol-admin --via <the device that holds the identity>   (tilo-vm guide devices, \"Beyond the LAN\")".into()
-            }
-            Self::PeerRoute { vm, failure: PeerFailure::Failed, .. } => format!(
-                "rerun with the device on its LAN (tilo-vm vm status {vm}); tilo-device-admin dial --help shows the route by hand"
+            Self::NotGranted { resource, .. } => format!(
+                "grant this machine {resource} in your workspace, from a device that may grant it: tilo grant {resource} <this machine's device key>   (tilo-vm doctor names the key; tilo-vm guide devices)"
+            ),
+            Self::DeviceTooOld { vm, .. } => format!(
+                "move it onto a current dev image: tilo-vm vm upgrade {vm}   |   or create a new VM: tilo-vm vm create <name>"
             ),
             Self::WakeTimeout { vm, wake: Some(wake), .. } => format!(
                 "it reported: {wake}. Someone has to wake it at the machine; tilo-vm vm status {vm} tells when it answers, and tilo-vm vm awake {vm} --for 2h keeps it from sleeping again"
@@ -360,49 +285,7 @@ impl CliError {
                 }
                 hint
             }
-            Self::RootKeyRefused { install, credentials: true, .. } => format!(
-                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (tester, tilo): {install}"
-            ),
-            Self::RootKeyRefused { install, .. } => format!(
-                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
-            ),
-            Self::SudoRefused { vm, ssh, user, .. } => format!(
-                "tilo-vm runs tilo-vmd and its own commands as root, through sudo when it logs in as {user}; allow that once, typing {user}'s password on this terminal: tilo-vm vm add {vm} --ssh {ssh} --grant-sudo   (or log in as root: --ssh root@<host>)"
-            ),
-            Self::DaemonMissing { vm, bootc: Some(true) } => format!(
-                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
-            ),
-            Self::DaemonMissing { bootc: Some(false), .. } | Self::NotBootc { .. } => {
-                NOT_BOOTC_FIX.into()
-            }
-            Self::DaemonMissing { vm, bootc: None } => format!(
-                "{UNCHECKED_BOOTC}: tilo-vm vm status {vm}   (it says whether vm upgrade can move this VM onto a dev image)"
-            ),
-            Self::ProtocolMismatch { vm, client, daemon, bootc } if client > daemon => {
-                let name = if vm.is_empty() { String::new() } else { format!(" {vm}") };
-                let target = if vm.is_empty() { "<vm>" } else { vm.as_str() };
-                // Replacing the daemon needs no protocol: its layer is unpacked over SSH.
-                let replace = format!(
-                    "   |   or give it this tilo-vm's own tilo-vmd, over SSH: tilo-vm --target {target} swap vmd --account vm"
-                );
-                match bootc {
-                    Some(true) => format!(
-                        "the VM is older than this tilo-vm: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), or move it onto a current dev image with tilo-vm vm upgrade{name}{replace}"
-                    ),
-                    Some(false) => format!(
-                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>{replace}"
-                    ),
-                    None => format!(
-                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>{replace}"
-                    ),
-                }
-            }
-            Self::ProtocolMismatch { vm, .. } => {
-                let target = if vm.is_empty() { "<vm>" } else { vm.as_str() };
-                format!(
-                    "this tilo-vm is older than the VM's tilo-vmd: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), which is the version it ships; or update this checkout and rebuild it: {REBUILD}"
-                )
-            }
+            Self::NotBootc { .. } => NOT_BOOTC_FIX.into(),
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
             Self::CommandFailed { stderr, .. } if stderr.contains("no surface") => {
@@ -431,12 +314,6 @@ impl CliError {
             Self::ArchMismatch { .. } => {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
-            Self::LocalNotRoot { .. } => {
-                "run it as root: sudo tilo-vm --local <the same arguments>".into()
-            }
-            Self::LocalDaemon { .. } => format!(
-                "check the daemon this machine installs: {LOCAL_DAEMON} --version   (on a Tilo image it comes with the `vmd` component, os/components.toml)"
-            ),
             Self::LowDisk { .. } => {
                 "free space there (tilo-vm gc --dry-run, then tilo-vm gc)   |   or keep the VM's disk on a filesystem with room: tilo-vm vm create <name> --disk /path/on/another/filesystem.qcow2".into()
             }
@@ -586,14 +463,13 @@ impl CliError {
             | Self::DiskExists { .. }
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
-            | Self::RootKeyRefused { .. }
             | Self::Qemu { .. } => "platforms",
             Self::RenderNodeMissing { .. }
-            | Self::SudoRefused { .. }
             | Self::DeviceAsleep { .. }
             | Self::WakeTimeout { .. }
-            | Self::PeerRoute { .. }
-            | Self::NotEnrolledAdmin { .. } => "devices",
+            | Self::NotLoggedIn { .. }
+            | Self::NotJoined { .. }
+            | Self::NotGranted { .. } => "devices",
             Self::NotInWorktree | Self::AccountName { .. } | Self::Branch { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
@@ -618,10 +494,7 @@ impl CliError {
             | Self::Scenario { .. }
             | Self::NeedsWorktree { .. } => "scenarios",
             Self::Unreachable { .. }
-            | Self::DaemonMissing { .. }
-            | Self::ProtocolMismatch { .. }
-            | Self::LocalNotRoot { .. }
-            | Self::LocalDaemon { .. }
+            | Self::DeviceTooOld { .. }
             | Self::ToolMissing { .. }
             | Self::ForgeAuth { .. }
             | Self::CommandFailed { .. }
@@ -643,30 +516,6 @@ impl CliError {
             text.push_str(&see);
         }
         text
-    }
-}
-
-impl From<tilo_vm_protocol::ClientError> for CliError {
-    fn from(error: tilo_vm_protocol::ClientError) -> Self {
-        use tilo_vm_protocol::ClientError;
-        match error {
-            ClientError::Rpc(error) => Self::Remote(error),
-            ClientError::VersionMismatch { client, daemon } => Self::ProtocolMismatch {
-                vm: String::new(),
-                client,
-                daemon,
-                bootc: None,
-            },
-            ClientError::Io(source) => Self::Io {
-                context: "talking to tilo-vmd".into(),
-                source,
-            },
-            ClientError::Closed | ClientError::Protocol(_) => Self::CommandFailed {
-                command: "tilo-vmd rpc".into(),
-                status: "connection closed".into(),
-                stderr: error.to_string(),
-            },
-        }
     }
 }
 
@@ -703,63 +552,9 @@ mod tests {
                 detail: "d".into(),
                 debug: vec!["tilo-vm vm serial".into()],
             },
-            CliError::DaemonMissing {
-                vm: "dev".into(),
-                bootc: Some(true),
-            },
-            CliError::DaemonMissing {
-                vm: "dev".into(),
-                bootc: Some(false),
-            },
-            CliError::DaemonMissing {
-                vm: "dev".into(),
-                bootc: None,
-            },
             CliError::NotBootc {
                 vm: "dev".into(),
                 command: "vm upgrade".into(),
-            },
-            CliError::RootKeyRefused {
-                vm: "dev".into(),
-                key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t tester@vm '...'".into(),
-                credentials: true,
-            },
-            CliError::RootKeyRefused {
-                vm: "dev".into(),
-                key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t tester@vm '...'".into(),
-                credentials: false,
-            },
-            CliError::SudoRefused {
-                vm: "yoga".into(),
-                ssh: "me@10.0.0.2".into(),
-                user: "me".into(),
-                detail: "a password is required".into(),
-            },
-            CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 2,
-                daemon: 1,
-                bootc: Some(true),
-            },
-            CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 2,
-                daemon: 1,
-                bootc: Some(false),
-            },
-            CliError::ProtocolMismatch {
-                vm: String::new(),
-                client: 2,
-                daemon: 1,
-                bootc: None,
-            },
-            CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 1,
-                daemon: 2,
-                bootc: Some(true),
             },
             CliError::Remote(RpcError {
                 code: 1,
@@ -811,10 +606,6 @@ mod tests {
             CliError::ArchMismatch {
                 host: "x86_64".into(),
                 requested: "aarch64".into(),
-            },
-            CliError::LocalNotRoot { uid: 1000 },
-            CliError::LocalDaemon {
-                detail: "exit 1: no state root".into(),
             },
             CliError::LowDisk {
                 place: "VM".into(),
@@ -929,33 +720,17 @@ mod tests {
                 lookup: ", and no hostname is recorded to look it up by".into(),
                 wakeable: false,
             },
-            CliError::NotEnrolledAdmin {
+            CliError::NotLoggedIn {
                 detail: "no device key".into(),
             },
-            CliError::PeerRoute {
+            CliError::NotJoined { vm: "dev".into() },
+            CliError::NotGranted {
                 vm: "yoga".into(),
-                failure: PeerFailure::Unreachable,
-                detail: "no answer within 15s".into(),
+                resource: "devices/ab/vm".into(),
             },
-            CliError::PeerRoute {
-                vm: "yoga".into(),
-                failure: PeerFailure::Refused,
-                detail: "NotAdministrator: ...".into(),
-            },
-            CliError::PeerRoute {
-                vm: "yoga".into(),
-                failure: PeerFailure::OtherDevice,
-                detail: "device ab answered instead".into(),
-            },
-            CliError::PeerRoute {
-                vm: "yoga".into(),
-                failure: PeerFailure::NotEnrolled,
-                detail: "no certificate".into(),
-            },
-            CliError::PeerRoute {
-                vm: "yoga".into(),
-                failure: PeerFailure::Failed,
-                detail: "?".into(),
+            CliError::DeviceTooOld {
+                vm: "dev".into(),
+                action: "tree-sync".into(),
             },
             CliError::WakeTimeout {
                 vm: "yoga".into(),
@@ -1065,14 +840,12 @@ mod tests {
                 | CliError::AccountName { .. }
                 | CliError::Unreachable { .. }
                 | CliError::DeviceAsleep { .. }
-                | CliError::PeerRoute { .. }
-                | CliError::NotEnrolledAdmin { .. }
+                | CliError::NotLoggedIn { .. }
+                | CliError::NotJoined { .. }
+                | CliError::NotGranted { .. }
+                | CliError::DeviceTooOld { .. }
                 | CliError::WakeTimeout { .. }
-                | CliError::DaemonMissing { .. }
                 | CliError::NotBootc { .. }
-                | CliError::RootKeyRefused { .. }
-                | CliError::SudoRefused { .. }
-                | CliError::ProtocolMismatch { .. }
                 | CliError::Remote(_)
                 | CliError::ToolMissing { .. }
                 | CliError::CommandFailed { .. }
@@ -1082,8 +855,6 @@ mod tests {
                 | CliError::BootComponent { .. }
                 | CliError::ScopeMismatch { .. }
                 | CliError::ArchMismatch { .. }
-                | CliError::LocalNotRoot { .. }
-                | CliError::LocalDaemon { .. }
                 | CliError::LowDisk { .. }
                 | CliError::RawWrite { .. }
                 | CliError::InvalidSource(_)
@@ -1167,44 +938,6 @@ mod tests {
             }
 
             {
-                let mismatch = |client, daemon, bootc| CliError::ProtocolMismatch {
-                    vm: "dev".into(),
-                    client,
-                    daemon,
-                    bootc,
-                };
-                let upgrade = mismatch(2, 1, Some(true)).hint();
-                assert!(upgrade.contains("tilo-vm vm upgrade dev"), "{upgrade}");
-                assert!(upgrade.contains("tilo-vm vm client dev --"), "{upgrade}");
-                let no_bootc = mismatch(2, 1, Some(false)).hint();
-                assert!(!no_bootc.contains("vm upgrade dev"), "{no_bootc}");
-                assert!(
-                    no_bootc.contains("not running a bootc dev image"),
-                    "{no_bootc}"
-                );
-                assert!(no_bootc.contains("tilo-vm vm create <name>"), "{no_bootc}");
-                assert!(
-                    no_bootc.contains("ask whoever set this VM up"),
-                    "{no_bootc}"
-                );
-                let unknown = mismatch(2, 1, None).hint();
-                assert!(!unknown.contains("tilo-vm vm upgrade"), "{unknown}");
-                assert!(unknown.contains("tilo-vm vm status dev"), "{unknown}");
-                for bootc in [Some(true), Some(false), None] {
-                    let replace = mismatch(2, 1, bootc).hint();
-                    assert!(
-                        replace.contains("tilo-vm --target dev swap vmd --account vm"),
-                        "{replace}"
-                    );
-                    let rebuild = mismatch(1, 2, bootc).hint();
-                    assert!(!rebuild.contains("swap vmd"), "{rebuild}");
-                    assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
-                    assert!(rebuild.contains("tilo-vm vm client dev --"), "{rebuild}");
-                    assert!(!rebuild.contains("vm upgrade"), "{rebuild}");
-                }
-            }
-
-            {
                 let error = CliError::NotBootc {
                     vm: "dev".into(),
                     command: "vm upgrade".into(),
@@ -1216,21 +949,6 @@ mod tests {
                 assert!(error.hint().contains("tilo-vm vm create <name>"));
                 assert!(error.hint().contains("ask whoever set this VM up"));
                 assert!(!error.hint().contains("rerun it by hand"));
-                let missing = CliError::DaemonMissing {
-                    vm: "dev".into(),
-                    bootc: Some(false),
-                }
-                .hint();
-                assert!(!missing.contains("vm upgrade"), "{missing}");
-                let upgradable = CliError::DaemonMissing {
-                    vm: "dev".into(),
-                    bootc: Some(true),
-                }
-                .hint();
-                assert!(
-                    upgradable.contains("tilo-vm vm upgrade dev"),
-                    "{upgradable}"
-                );
             }
 
             {

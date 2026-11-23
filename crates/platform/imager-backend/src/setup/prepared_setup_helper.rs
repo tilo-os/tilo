@@ -117,35 +117,10 @@ mod original_controller_tests {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Receipt {
-    pub identity_public_key: [u8; 32],
-    pub account_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_identity: Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_sessions: Option<super::service_sessions::Declaration>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub device_label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_home: Option<PortableHomeDeclaration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_flatpak: Option<super::flatpak_transfer::portable::Expectation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser: Option<super::prepared_setup::BrowserHandoff>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mail: Vec<super::account_transfer::ThunderbirdImportReceipt>,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PortableHomeDeclaration {
-    pub schema: u32,
-    pub setup_binding: String,
-    pub selection: super::prepared_setup::PortableHomeSelection,
-    #[serde(default)]
-    pub applications: bool,
-}
+pub use prepared_setup_model::PortableHomeDeclaration;
+pub type Receipt = prepared_setup_model::PreparedSetupReceipt<
+    tilo_identity::enrolled_transport::CurrentDeviceDeclaration,
+>;
 fn failed() -> io::Error {
     io::Error::other("Prepared setup could not be imported")
 }
@@ -206,11 +181,76 @@ pub fn run(
     })
 }
 
+/// Admission probes run before target ownership writes.
+#[cfg(any(test, feature = "test-support"))]
+pub struct HelperAdmissions<H, S, A> {
+    pub home: H,
+    pub service_protocol: S,
+    pub applications: A,
+}
+
 pub fn run_with_home_admission(
     args: impl IntoIterator<Item = OsString>,
     input: &mut impl Read,
     output: &mut impl Write,
     admission: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    run_inner(
+        args,
+        input,
+        output,
+        admission,
+        |protocol, identity, binding| {
+            let installed = super::account_admission::installed()?;
+            if !installed.supports_service_session_protocol(protocol) {
+                if !super::account_admission::receiving_candidate(
+                    protocol,
+                    &installed.runtime_root_hash,
+                    identity,
+                    binding,
+                )? {
+                    return Err(failed());
+                }
+                return Ok(Some((protocol, installed.runtime_root_hash)));
+            }
+            Ok(None)
+        },
+        || super::applications_admission::installed().map(|_| ()),
+    )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn run_with_admissions<H, S, A>(
+    args: impl IntoIterator<Item = OsString>,
+    input: &mut impl Read,
+    output: &mut impl Write,
+    admissions: HelperAdmissions<H, S, A>,
+) -> io::Result<()>
+where
+    H: FnOnce() -> io::Result<()>,
+    S: FnOnce(u32) -> io::Result<()>,
+    A: FnOnce() -> io::Result<()>,
+{
+    run_inner(
+        args,
+        input,
+        output,
+        admissions.home,
+        |protocol, _, _| {
+            (admissions.service_protocol)(protocol)?;
+            Ok(None)
+        },
+        admissions.applications,
+    )
+}
+
+fn run_inner(
+    args: impl IntoIterator<Item = OsString>,
+    input: &mut impl Read,
+    output: &mut impl Write,
+    home_admission: impl FnOnce() -> io::Result<()>,
+    service_admission: impl FnOnce(u32, &[u8; 32], &str) -> io::Result<Option<(u32, String)>>,
+    applications_admission: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     let args = arguments(args)?;
     let mut password = Zeroizing::new(Vec::new());
@@ -232,25 +272,19 @@ pub fn run_with_home_admission(
     if review.manifest().account_credentials_protocol.is_some() {
         super::account_admission::installed()?;
     }
-    let mut candidate_service = None;
-    if let Some(sessions) = review.manifest().units.service_sessions() {
-        let installed = super::account_admission::installed()?;
-        if !installed.supports_service_session_protocol(sessions.consumer_protocol) {
-            if !super::account_admission::receiving_candidate(
-                sessions.consumer_protocol,
-                &installed.runtime_root_hash,
-                &review.manifest().identity_public_key,
-                &review.manifest().setup_binding,
-            )? {
-                return Err(failed());
-            }
-            candidate_service = Some((sessions.consumer_protocol, installed.runtime_root_hash));
-        }
-    }
+    let candidate_service = if let Some(sessions) = review.manifest().units.service_sessions() {
+        service_admission(
+            sessions.consumer_protocol,
+            &review.manifest().identity_public_key,
+            &review.manifest().setup_binding,
+        )?
+    } else {
+        None
+    };
     if review.manifest().units.portable_home().is_some()
         || review.manifest().units.portable_flatpak().is_some()
     {
-        admission()?;
+        home_admission()?;
     }
     if review
         .manifest()
@@ -258,7 +292,7 @@ pub fn run_with_home_admission(
         .portable_flatpak()
         .is_some_and(|apps| apps.kind.consumer_protocol == 2)
     {
-        super::applications_admission::installed()?;
+        applications_admission()?;
     }
     review.validate_destinations(identity, accounts)?;
     let current = if matches!(

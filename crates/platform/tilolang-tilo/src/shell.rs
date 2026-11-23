@@ -85,6 +85,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/session.tl"),
     ),
     (
+        "sheets.tl",
+        include_str!("../../../../apps/tl/shell/sheets.tl"),
+    ),
+    (
         "shell.tl",
         include_str!("../../../../apps/tl/shell/shell.tl"),
     ),

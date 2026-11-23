@@ -13,7 +13,7 @@ two could diverge:
     mounted at the same /work path in the dev build;
   * the dev build's environment is the Containerfile's ENV block, plus only
     the documented LOCALVERSION suffix;
-  * tilo-vmd builds a swapped kernel's initramfs with the dracut arguments
+  * the device's steps build a swapped kernel's initramfs with the dracut arguments
     os/scripts/build-initramfs.sh uses for the image's initramfs.
 
 Run: python3 tools/policy/check_kernel_dev_build.py
@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 CONTAINERFILE = REPO / "os/kernel/Containerfile"
 DEV_BUILD = REPO / "os/kernel/dev-build.sh"
 IMAGE_INITRAMFS = REPO / "os/scripts/build-initramfs.sh"
-VMD_BOOT = REPO / "crates/dev/tilo-vmd/src/boot.rs"
+VMD_BOOT = REPO / "crates/os/tilo-device-steps/src/boot.rs"
 
 SHARED_COMMANDS = ("prepare-source", "compile", "stage-modules")
 # Allowed only in the dev build, and why (see the header of dev-build.sh).
@@ -167,9 +167,9 @@ def main() -> int:
     if not image_args:
         fail(errors, "os/scripts/build-initramfs.sh: found no image initramfs dracut call")
     elif image_args != vmd_args:
-        fail(errors, "crates/dev/tilo-vmd/src/boot.rs: tilo-vmd's IMAGE_DRACUT_ARGS differ from "
+        fail(errors, "crates/os/tilo-device-steps/src/boot.rs: the device steps' IMAGE_DRACUT_ARGS differ from "
                      f"os/scripts/build-initramfs.sh's dracut arguments:\n    image:    {image_args}\n"
-                     f"    tilo-vmd: {vmd_args}")
+                     f"    device steps: {vmd_args}")
 
     if errors:
         for error in errors:
@@ -182,7 +182,7 @@ def main() -> int:
         print("\nThe dev kernel build must stay on the release build's path: see the header of "
               "os/kernel/dev-build.sh and `tilo-vm guide kernel`.", file=sys.stderr)
         return 1
-    print("os/kernel/dev-build.sh and tilo-vmd follow the release kernel and initramfs builds", file=sys.stderr)
+    print("os/kernel/dev-build.sh and the device's steps follow the release kernel and initramfs builds", file=sys.stderr)
     return 0
 
 

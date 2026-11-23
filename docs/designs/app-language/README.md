@@ -288,7 +288,10 @@ of whoever applied the action.
 
 The standard library is one of these packages (`tilo.std`, `crates/lang/tilolang/std/app.tl`):
 the frames every window gets. Every package compiles with it and sees its declarations as
-`std.X`, whether or not it writes a `use`.
+`std.X`, whether or not it writes a `use`. Like any package it is read from its source: the
+tool, run in a checkout, compiles against that checkout's library, so an edit of it takes effect
+at the next command without rebuilding the tool. The copy built into the tool is the packaged
+release's, used where no checkout holds one.
 
 The agent library is the other shipped one (`tilo.agent`,
 `crates/lang/tilolang/src/agent.rs`): the words a session talks to a workspace with. Its

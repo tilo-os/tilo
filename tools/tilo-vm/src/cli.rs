@@ -19,8 +19,8 @@ pub struct Cli {
     /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
     #[arg(long, global = true)]
     pub target: Option<String>,
-    /// Talk to this machine's own tilo-vmd with no SSH and no dev-VM registry: for an
-    /// installed server applying prebuilt layers at its first boot. Needs root.
+    /// Run this machine's own device steps, with no dev-VM registry: for an installed server
+    /// applying prebuilt layers at its first boot. Needs root.
     #[arg(long, global = true)]
     pub local: bool,
     #[command(subcommand)]
@@ -150,19 +150,6 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --account <account> --from layer:<hash>\nafterwards."
     )]
     ImportLayer(LocalLayerImport),
-    /// Apply the prebuilt component layers an installation left for this machine's first boot.
-    #[command(
-        after_help = "Examples:\n  tilo-vm --local apply-incoming\n  tilo-vm --local apply-incoming --dir /var/lib/tilo-vm/incoming --manifest /usr/share/tilo/components.toml\n\nRuns on the machine it applies to (no SSH, no dev-VM registry) and needs root,
-so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<component>.json` provenance per\ncomponent, which `tilo-vm layer-pack --component <name> --profile <profile>\n--incoming <dir>` writes. Components apply in os/components.toml order: a vm-scope\none into the vm account, a session-scope one into the device account, which merges\nit VM-wide. Each applied pair is removed; a bad layer stops the run and fails."
-    )]
-    ApplyIncoming {
-        /// The directory of `<component>.tar` + `<component>.json` pairs.
-        #[arg(long, default_value = crate::incoming::INCOMING_DIR)]
-        dir: PathBuf,
-        /// The component manifest whose declaration order decides the order.
-        #[arg(long, default_value = crate::incoming::INSTALLED_MANIFEST)]
-        manifest: PathBuf,
-    },
     /// Put a build of a component (or an app) into an account and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap tilo-session                      # your account, built in the VM from this worktree\n  tilo-vm swap tilo-session --profile dev        # faster compile, slower binary\n  tilo-vm swap --account vm fs               # VM-wide component into the vm account\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap tilo-session --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap tilo-session --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap tilo-session --builder host       # build on this Linux host instead\n  tilo-vm swap --account review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --account vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
@@ -197,7 +184,7 @@ so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<com
         #[arg(long)]
         jobs: Option<u32>,
         /// With --direct: the kernel command line (default: the running
-        /// VM's, read over SSH).
+        /// VM's).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
         /// Shell only: record phase CPU timing at each stand-in account startup.
@@ -301,9 +288,6 @@ so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<com
         /// Content hashes the target has verified; at most eight.
         #[arg(long)]
         cached_layer: Vec<String>,
-        /// Stream bounded raw chunks with a verified footer instead of base64.
-        #[arg(long)]
-        binary: bool,
         /// Write `<component>.tar` and `<component>.json` here for a machine's
         /// incoming layers instead of the framed stream.
         #[arg(long)]
@@ -890,19 +874,7 @@ pub enum GamepadCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "clap parses each subcommand in place; boxing one would make every match arm dereference it"
-)]
 pub enum VmCommand {
-    /// Carry the canonical semantic action operations over the owner's authenticated device route.
-    Actions {
-        /// The registered device (default: the one this worktree uses).
-        #[arg(long = "device")]
-        name: Option<String>,
-        #[command(subcommand)]
-        command: DeviceActionCommand,
-    },
     /// List registered VMs, which one this worktree uses, and what each was branched from.
     #[command(alias = "ls", after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -931,18 +903,7 @@ pub enum VmCommand {
         #[arg(last = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Copy the VM's own tilo-vm out and execute it with these arguments: the client whose protocol its tilo-vmd speaks.
-    #[command(
-        after_help = "Examples:\n  tilo-vm vm client dev -- swap tilo-session\n  tilo-vm vm client dev -- vm status\n  tilo-vm vm client dev                 # just fetch it and print where it is\n\nA dev disk keeps the tilo-vmd it was built with, so a VM from another commit speaks another protocol than this checkout's tilo-vm; the image ships the matching client. `vm client` copies it out once and executes it, so the tool you were using keeps working on that VM. Without arguments it only fetches and names the image the VM boots, its daemon's protocol and the copied client."
-    )]
-    Client {
-        /// The VM (default: the one this worktree uses).
-        name: Option<String>,
-        /// Arguments for the fetched client, after `--`.
-        #[arg(last = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-    /// Is the VM up, reachable, and running a compatible daemon?
+    /// Is the VM up and does its device answer this machine?
     #[command(after_help = "Examples:\n  tilo-vm vm status\n  tilo-vm vm status shared")]
     Status {
         /// The VM (default: the one this worktree uses).
@@ -958,12 +919,12 @@ pub enum VmCommand {
         after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n  tilo-vm vm branch dev a --no-admit   # make a without booting it\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). Boot the source once on a current image first: only an\nimage with tilo-device-branch.service records the UUID it compares against.\n\nA workspace takes a new device in only through its host, and the source hosts\nthe workspaces it made. So vm branch then boots the source and the branches\n(as many at once as the host's memory allows), waits until each branch has\nre-keyed and every workspace the source hosts has taken it in, and stops\nthem again: the source as it was, the branches off. --no-admit skips that.\nlibvirt, whpx and utm. Details: tilo-vm guide concepts."
     )]
     Branch(BranchArgs),
-    /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
+    /// Register a real machine of yours that runs a Tilo dev image (a board or a laptop), after checking that its device answers this machine.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --account device tilo-session --from sha:1a2b3c4      # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+        after_help = "Examples:\n  tilo-vm vm add opi --device 3f2a...e1 --address 10.0.0.108\n  tilo-vm vm add yoga --device 9c41...07 --ssh me@10.0.0.223   # vm ssh opens a shell there\n  tilo-vm vm use yoga\n  tilo-vm swap --account device tilo-session --from sha:1a2b3c4      # a board's own session\n\ntilo-vm asks the device's own daemon, as this machine's device of your\nidentity (tilo login), and the device lets it act on devices/<id>/vm once\nyour workspace grants that. vm add checks the device answers, names the fix\nwhen it does not, and registers it once it does. tilo-vm cannot power a\ndevice on, so vm restart reboots it. Details: tilo-vm guide devices."
     )]
     Add(AddArgs),
-    /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
+    /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until the device's daemon answers.
     #[command(
         after_help = "Examples:\n  tilo-vm vm wake yoga\n  tilo-vm vm wake          # the VM this worktree uses\n\nA device's MAC, hostname and wake setting are recorded whenever tilo-vm\nreaches it (vm add, vm status), so wake it once by hand if none is recorded.\nThe packet goes from this machine to 255.255.255.255 and the device's subnet\nbroadcast, port 9: this machine must be on the device's LAN. Whether the\ndevice wakes on it depends on its network interface; vm status shows what it\nreported (enabled, disabled, unsupported). Details: tilo-vm guide devices."
     )]
@@ -987,7 +948,7 @@ pub enum VmCommand {
     },
     /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to tilo-vmd holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."
+        after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to the device's daemon holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."
     )]
     Awake {
         /// The VM or device (default: the one this worktree uses).
@@ -999,22 +960,13 @@ pub enum VmCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Join this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
-    #[command(
-        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it prints the ticket this machine logs in with\n  tilo-vm vm enrol-admin              # this machine's key, and the two commands that join it\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine joins once, like\nany other device: on the device where the owner adds new devices,\n`tilo device add --capability admin` prints a one-use ticket, and `tilo login`\nhere spends it. That also lists the machine among their devices (Settings\ncan remove it). With --via tilo-vm runs both over SSH on the device it logs in\nwith; that account must own the identity (an owner-account device: vm add\n--ssh <owner>@...). Needs tilo-device-admin beside tilo-vm, and the tilo\ncommand here. Details: tilo-vm guide devices."
-    )]
-    EnrolAdmin {
-        /// A registered device that holds the owner's identity: it prints the ticket this machine logs in with.
-        #[arg(long)]
-        via: Option<String>,
-    },
-    /// Boot the VM and wait until SSH answers.
+    /// Boot the VM and wait until its device answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
         /// The VM (default: the one this worktree uses).
         name: Option<String>,
     },
-    /// Shut the VM down cleanly, wait until it is off, start it, and wait for tilo-vmd.
+    /// Shut the VM down cleanly, wait until it is off, start it, and wait for the device's daemon.
     #[command(after_help = "Examples:\n  tilo-vm vm restart\n  tilo-vm vm restart shared")]
     Restart {
         /// The VM (default: the one this worktree uses).
@@ -1106,52 +1058,23 @@ pub enum VmCommand {
     },
 }
 
-/// Transport-only spelling of the existing console semantic operations.
-#[derive(Debug, Subcommand)]
-pub enum DeviceActionCommand {
-    /// List the device's declared actions and typed arguments.
-    #[command(
-        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
-    )]
-    List {
-        /// Filter declared actions by this query (default: list all actions).
-        query: Option<String>,
-    },
-    /// Invoke a declared action; private arguments come only from stdin.
-    #[command(
-        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll@device-unlock --confirm --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
-    )]
-    Invoke {
-        /// The provider returned by vm actions list.
-        provider: String,
-        /// The action as ACTION@RESOURCE, from vm actions list.
-        id: String,
-        /// Confirm an action whose contract asks for confirmation.
-        #[arg(long)]
-        confirm: bool,
-        /// Read the action's JSON arguments from stdin, including private fields.
-        #[arg(long, required = true)]
-        args_stdin: bool,
-    },
-}
-
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// The name to register the device under.
     pub name: String,
-    /// `<user>@<host>[:<port>]`. Commands run as root: directly as root@, or
-    /// through `sudo -n` as any other user.
+    /// The device's key, as `tilo device list` shows it.
     #[arg(long)]
-    pub ssh: String,
-    /// The SSH identity of a non-root user (default: ssh's own, from ~/.ssh
-    /// or the agent). As root@, vm add makes the device's own key instead.
+    pub device: String,
+    /// Its address on this network (an IP or host name, with `:<port>` when its daemon does not
+    /// bind the usual UDP 7703), tried before its relay.
+    #[arg(long)]
+    pub address: Option<String>,
+    /// `<user>@<host>[:<port>]` for `vm ssh`, the interactive shell; nothing else uses SSH.
+    #[arg(long)]
+    pub ssh: Option<String>,
+    /// The SSH identity for --ssh (default: ssh's own, from ~/.ssh or the agent).
     #[arg(long)]
     pub key: Option<PathBuf>,
-    /// Let the --ssh user run commands as root without a password
-    /// (`/etc/sudoers.d/tilo-vm-<user>` on the device, checked by visudo); sudo
-    /// asks for that user's password once, on this terminal.
-    #[arg(long)]
-    pub grant_sudo: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1401,7 +1324,7 @@ pub enum AccountCommand {
             value_delimiter = ',',
             num_args = 1
         )]
-        outputs: Vec<tilo_vm_protocol::OutputSpec>,
+        outputs: Vec<tilo_device_protocol::OutputSpec>,
         /// Give the account's user an identity, so apps open: a throwaway test
         /// identity in a private root (the default; needs a dev image's
         /// shell), or `device`: the user becomes this VM's person through the
@@ -1442,7 +1365,7 @@ pub enum AccountCommand {
         #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
         account_flag: Option<String>,
         /// Seconds before the command is stopped.
-        #[arg(long, default_value_t = tilo_vm_protocol::EXEC_TIMEOUT_SECONDS)]
+        #[arg(long, default_value_t = tilo_device_protocol::EXEC_TIMEOUT_SECONDS)]
         timeout: u64,
         /// The command, after `--`.
         #[arg(last = true, required = true, allow_hyphen_values = true)]
@@ -1484,7 +1407,7 @@ pub enum AccountAppsCommand {
     List,
     /// Install an app set with the VM's package manager, then restart the account's session so it sees it.
     #[command(
-        after_help = "Examples:\n  tilo-vm account apps install --set verification\n  tilo-vm account apps install --set verification --account review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every account on the VM can use them\nafter its session restarts; this command restarts the account's session.\n\nThe sets and their apps are listed by tilo-vm account apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
+        after_help = "Examples:\n  tilo-vm account apps install --set verification\n  tilo-vm account apps install --set verification --account review-a\n\nThe packages come from the distribution, not from Tilo: the device's daemon runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every account on the VM can use them\nafter its session restarts; this command restarts the account's session.\n\nThe sets and their apps are listed by tilo-vm account apps list (the data is\ntools/tilo-vm/data/app-sets.toml)."
     )]
     Install {
         /// The account whose session restarts to see the apps (default: your account).
@@ -1496,7 +1419,7 @@ pub enum AccountAppsCommand {
         #[arg(long, value_name = "SET")]
         set: String,
         /// Seconds before the install is stopped.
-        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        #[arg(long, default_value_t = tilo_device_protocol::INSTALL_TIMEOUT_SECONDS)]
         timeout: u64,
     },
 }
@@ -1541,33 +1464,6 @@ pub enum AccountIdentity {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn vm_client_takes_the_fetched_clients_arguments_after_a_separator() {
-        let cli = Cli::try_parse_from([
-            "tilo-vm",
-            "vm",
-            "client",
-            "dev",
-            "--",
-            "swap",
-            "tilo-session",
-        ])
-        .unwrap();
-        let Some(Command::Vm(VmCommand::Client { name, command })) = cli.command else {
-            panic!("vm client expected");
-        };
-        assert_eq!(name.as_deref(), Some("dev"));
-        assert_eq!(command, ["swap", "tilo-session"]);
-        let cli = Cli::try_parse_from(["tilo-vm", "vm", "client"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Vm(VmCommand::Client {
-                name: None,
-                ref command
-            })) if command.is_empty()
-        ));
-    }
-
     tilo_test_env::scenario! {
         fn swap_and_account_create_take_their_flags;
 
@@ -1646,7 +1542,7 @@ mod tests {
                 panic!("account create did not parse");
             };
             assert_eq!(
-                tilo_vm_protocol::display::format_outputs(&outputs),
+                tilo_device_protocol::display::format_outputs(&outputs),
                 "2560x1600@2,1920x1080@1"
             );
             assert!(
@@ -1811,7 +1707,7 @@ mod tests {
                 &["account", "exec", "--", "true"],
                 &["logs"],
                 &["vm", "ssh"],
-                &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
+                &["vm", "ssh", "--", "systemctl", "status", "tilo-daemon"],
                 &["scenario", "install", "--dry-run"],
             ] {
                 assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
@@ -1859,31 +1755,17 @@ mod tests {
             assert!(help.contains("dev-overrides"), "{help}");
         }
 
-        phase vm_add_takes_a_name_and_an_address;
+        phase vm_add_takes_a_name_and_the_devices_key;
         {
-            let cli =
-                Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
-                    .unwrap();
-            assert!(
-                matches!(cli.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref name, ref ssh, key: None, grant_sudo: false }))) if name == "opi" && ssh == "root@10.0.0.108")
-            );
-            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
-            assert!(writes_receipt(cli.command.as_ref()));
-            let owner = Cli::try_parse_from([
-                "tilo-vm",
-                "vm",
-                "add",
-                "yoga",
-                "--ssh",
-                "me@10.0.0.223",
-                "--key",
-                "/k/yoga",
-                "--grant-sudo",
+            let cli = Cli::try_parse_from([
+                "tilo-vm", "vm", "add", "opi", "--device", "ab", "--address", "10.0.0.108",
             ])
             .unwrap();
             assert!(
-                matches!(owner.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref key, grant_sudo: true, .. }))) if key.as_deref() == Some(std::path::Path::new("/k/yoga")))
+                matches!(cli.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref name, ref device, ref address, ssh: None, key: None }))) if name == "opi" && device == "ab" && address.as_deref() == Some("10.0.0.108"))
             );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
+            assert!(writes_receipt(cli.command.as_ref()));
         }
 
         phase swap_takes_an_optional_account;

@@ -208,7 +208,7 @@ mod tests {
             doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            let request = op.unscoped().expect("a local operation");
+            let request = op.request();
             assert_eq!(request.kind, OperationKind::Effect);
             assert_eq!(request.type_id, "mutable.effect");
             assert_eq!(request.payload, b"payload");

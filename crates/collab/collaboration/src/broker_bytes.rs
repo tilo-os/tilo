@@ -103,22 +103,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(handle);
             }
         }
-        CollabRequest::Document {
-            mutation,
-            authorization,
-            ..
-        } => {
-            match mutation {
-                DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
-                    meter.bytes(data)
-                }
+        CollabRequest::Document { mutation, .. } => match mutation {
+            DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
+                meter.bytes(data)
             }
-            if let Some(authorization) = authorization {
-                meter.0 = meter
-                    .0
-                    .and_then(|bytes| bytes.checked_add(authorization.retained_bytes()?));
-            }
-        }
+        },
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);

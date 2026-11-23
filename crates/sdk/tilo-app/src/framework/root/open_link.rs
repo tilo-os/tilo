@@ -70,7 +70,8 @@ impl ResourceRoot {
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        let (Some(request), Some(open)) = (op.unscoped(), &self.open_link) else {
+        let request = op.request();
+        let Some(open) = &self.open_link else {
             return Ok(None);
         };
         if request.type_id != tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {

@@ -25,7 +25,7 @@ impl Drop for Header {
 }
 
 const MAGIC: &[u8; 8] = b"TILOMIG1";
-pub(crate) const CHUNK: usize = 1024 * 1024;
+pub(crate) const CHUNK: usize = prepared_setup_model::CHUNK;
 const MAX_ENVELOPE: usize = CHUNK + 256;
 
 fn invalid(message: &str) -> io::Error {

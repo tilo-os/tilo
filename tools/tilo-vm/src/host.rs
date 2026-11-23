@@ -98,7 +98,6 @@ pub fn parse_guests(capabilities: &str) -> Vec<Guest> {
 pub const TOOLS: &[&str] = &[
     "ssh",
     "git",
-    "rsync",
     "curl",
     "cargo",
     "python3",
@@ -154,34 +153,7 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
             found.push(candidate);
         }
     }
-    if cfg!(windows)
-        && tool == "rsync"
-        && let Some(home) = std::env::var_os("USERPROFILE")
-    {
-        let candidate = PathBuf::from(home).join("msys64/usr/bin/rsync.exe");
-        if candidate.is_file() && !found.contains(&candidate) {
-            found.push(candidate);
-        }
-    }
     found
-}
-
-pub fn rsync_program() -> Option<String> {
-    if cfg!(windows) {
-        which_all("rsync")
-            .first()
-            .map(|path| path.display().to_string())
-    } else {
-        Some("rsync".into())
-    }
-}
-
-/// MSYS2 rsync needs the OpenSSH executable from the same POSIX runtime.
-/// Native Windows OpenSSH cannot carry its stdin/stdout protocol reliably.
-pub fn rsync_ssh_program() -> Option<PathBuf> {
-    let rsync = rsync_program()?;
-    let sibling = PathBuf::from(rsync).with_file_name("ssh.exe");
-    sibling.is_file().then_some(sibling)
 }
 
 impl HostFacts {

@@ -1,6 +1,5 @@
 //! Opaque ownership observations. These never enter historical presentation inputs.
 use super::{HistoryRegistrationError, HistoryResource};
-use crate::bound_dispatch::StoreActions as _;
 use crate::{
     bound_dispatch::CallbackBinding,
     resource::{DocumentCheckout, ResourceStore},
@@ -22,7 +21,6 @@ pub(crate) enum OwnedDocumentPublication {
     Blocked,
     Changed {
         mutation: collab_types::DocumentMutation,
-        authorization: Option<crate::invocation_scope::DocumentAuthorization>,
         heads: Vec<automerge::ChangeHash>,
         /// The document the mutation was read from: what a change that continues an earlier one names
         /// its action through.
@@ -67,21 +65,6 @@ pub(crate) enum OwnerKind {
     },
 }
 impl HistoryOwner {
-    pub(crate) fn check_invocation_lifetime(&self) -> Result<(), String> {
-        match &self.0 {
-            OwnerKind::Component(binding) => binding
-                .enter()
-                .map(|_| ())
-                .map_err(|error| format!("{error:?}")),
-            OwnerKind::Record { lifetime, .. } => {
-                if lifetime.upgrade().is_some_and(|life| life.active.get()) {
-                    Ok(())
-                } else {
-                    Err("invocation record owner has retired".into())
-                }
-            }
-        }
-    }
     pub(crate) fn component(binding: CallbackBinding) -> Self {
         Self(OwnerKind::Component(binding))
     }
@@ -268,7 +251,6 @@ impl HistoryOwner {
             needs_snapshot: bool,
             blocked: bool,
             own: &crate::state::WritingActors,
-            provenance: &crate::invocation_scope::InvocationProvenance,
         ) -> OwnedDocumentPublication {
             if document.pending_ops() != 0 {
                 return OwnedDocumentPublication::Unfinished;
@@ -280,13 +262,6 @@ impl HistoryOwner {
             if blocked {
                 return OwnedDocumentPublication::Blocked;
             }
-            // What this app holds that the route does not: its own unsent
-            // changes, never the ones the route delivered.
-            let from = if needs_snapshot {
-                Vec::new()
-            } else {
-                sent.heads().to_vec()
-            };
             #[cfg(test)]
             OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
             let mut document = document.clone();
@@ -303,35 +278,21 @@ impl HistoryOwner {
                 }
                 collab_types::DocumentMutation::Incremental(delta)
             };
-            let Ok(authorization) = provenance.capture(&mut document, &from, &mutation) else {
-                return OwnedDocumentPublication::Blocked;
-            };
             OwnedDocumentPublication::Changed {
                 mutation,
-                authorization,
                 heads,
                 document,
             }
         }
 
         let (store, checkout) = self.store_checkout();
-        let provenance = store
-            .invocation_provenance(&checkout.id)
-            .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         let own = store
             .writing_actors(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         match &self.0 {
             OwnerKind::Component(binding) => binding
                 .read_document(outer, |document, _| {
-                    inspect(
-                        document,
-                        sent,
-                        needs_snapshot,
-                        blocked,
-                        &own,
-                        &provenance.borrow(),
-                    )
+                    inspect(document, sent, needs_snapshot, blocked, &own)
                 })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
             OwnerKind::Record {
@@ -348,14 +309,7 @@ impl HistoryOwner {
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
                 store
                     .read_checked(&checkout.id, |document| {
-                        inspect(
-                            document,
-                            sent,
-                            needs_snapshot,
-                            blocked,
-                            &own,
-                            &provenance.borrow(),
-                        )
+                        inspect(document, sent, needs_snapshot, blocked, &own)
                     })
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)
             }
@@ -525,21 +479,18 @@ impl Drop for ResourceOwnerLifetime {
     }
 }
 
-/// A stored record in a temporary profile and the owner a test opens scopes and History sources for.
+/// A stored record in a temporary profile.
 #[cfg(test)]
 pub(crate) struct ResourceOwnerFixture {
     _temp: tempfile::TempDir,
     _owners: crate::resource::ResourceOwners,
     pub(crate) store: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
-    pub(crate) owner: HistoryOwner,
-    _lifetime: Rc<ResourceOwnerLifetime>,
 }
 
 #[cfg(test)]
 impl ResourceOwnerFixture {
-    /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and `owner: id`, with
-    /// invocation provenance required.
+    /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and `owner: id`.
     pub(crate) fn in_workspace(id: u64, workspace: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().join("profile"));
@@ -559,16 +510,11 @@ impl ResourceOwnerFixture {
                 Ok(())
             })
             .unwrap();
-        store.require_invocation_provenance(&checkout).unwrap();
-        let lifetime = ResourceOwnerLifetime::new();
-        let owner = HistoryOwner::record(store.clone(), checkout.clone(), &lifetime, true);
         Self {
             _temp: temp,
             _owners: owners,
             store,
             checkout,
-            owner,
-            _lifetime: lifetime,
         }
     }
 }

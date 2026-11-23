@@ -50,7 +50,13 @@ pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
 }
 
 #[cfg(unix)]
-fn mount_trash(path: &Path) -> Result<(), ::trash::Error> {
+fn mount_trash(path: &Path) -> Result<(), String> {
+    // An Android app sees only its own storage, which is one filesystem with its Trash: nothing
+    // it holds is on another one.
+    #[cfg(target_os = "android")]
+    {
+        Err(format!("{} has no Trash on its filesystem", path.display()))
+    }
     #[cfg(target_os = "macos")]
     {
         use ::trash::macos::{DeleteMethod, TrashContextExtMacos as _};
@@ -59,11 +65,11 @@ fn mount_trash(path: &Path) -> Result<(), ::trash::Error> {
         // without a GUI session. NSFileManager moves the item itself.
         let mut context = ::trash::TrashContext::new();
         context.set_delete_method(DeleteMethod::NsFileManager);
-        context.delete(path)
+        context.delete(path).map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     {
-        ::trash::delete(path)
+        ::trash::delete(path).map_err(|error| error.to_string())
     }
 }
 

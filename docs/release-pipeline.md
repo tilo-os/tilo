@@ -273,8 +273,8 @@ path. A local machine builds the same two layers with `os/build-host.sh`.
 
 The development server image a dev VM runs as a server is that path's own, and never waits for
 the release image: `image-host-dev` builds the server image's stages on the cached `host-base`
-and then the additions of `os/Containerfile.host-dev` (the dev-VM daemon and CLI, tilo-vmd's
-units, base.json). Its programs come from `host-binaries-dev`, which compiles the server image's
+and then the additions of `os/Containerfile.host-dev` (the runtime that runs the device's
+steps, the dev-VM CLI, their units, base.json). Its programs come from `host-binaries-dev`, which compiles the server image's
 `os/components.toml` components and the dev additions without LTO, as the development OS is
 compiled, so the compiler cache keeps a one-crate change to that crate's compile and the links
 instead of the release image's whole-program ones. `test-image-host-dev` proves the sealed image

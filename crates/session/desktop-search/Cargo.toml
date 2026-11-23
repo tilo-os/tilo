@@ -25,6 +25,9 @@ catalogue = ["dep:app-catalogue"]
 [dependencies]
 # Where choosing a notice lands, as a search hit opens it.
 tilo-service = { version = "0.1.0", path = "../service" }
+# Exchange-rate conversion shared with the confined network-answers helper;
+# without `fetch`, search links no HTTP client and no sandbox.
+tilo-net-answers = { version = "0.1.0", path = "../../system/net-answers", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Every Tilo app's manifest metadata: where it runs, its names and keywords.
 app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }

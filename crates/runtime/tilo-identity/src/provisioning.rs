@@ -574,7 +574,9 @@ pub fn complete_enrolled_device(
 /// Make the person of `cert`, the certificate a login with a ticket brought, this account's
 /// identity: the device's enrolment becomes theirs, replacing one of another person (the root a
 /// computer made for itself before it logged in, or an earlier login's), since the person just
-/// chose this one; and the account acts as them from now on.
+/// chose this one; and the account acts as them from now on. An account that holds this person's
+/// root keeps acting through it: logging in as yourself on the computer that keeps your root does
+/// not make it a mere device of yours.
 ///
 /// # Errors
 /// The certificate is not one this device may take, or the identity cannot be written.
@@ -602,6 +604,14 @@ pub fn adopt_login_certificate(
         installed => installed.map_err(|error| io::Error::other(error.to_string()))?,
     }
     complete_enrolled_device(identity_dir, paths, now_ns)?;
+    let holds_their_root = crate::store::resolve_active_identity(identity_dir)
+        .and_then(|active| crate::store::load_metadata_from_path(&active).ok())
+        .is_some_and(|active| {
+            active.single_device && active.group_public_key == cert.user_public_key
+        });
+    if holds_their_root {
+        return Ok(());
+    }
     crate::store::set_active_identity(
         identity_dir,
         &public_record_id(&hex::encode(cert.user_public_key)),
@@ -1494,6 +1504,30 @@ mod tests {
                 "a root opened on a page founded its workspace there"
             );
         }
+    }
+
+    #[test]
+    fn logging_in_as_the_person_whose_root_is_kept_here_keeps_acting_through_the_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = temp.path().join("identity");
+        let paths = IdentityPaths::under(temp.path().join("device"));
+        let person = create_person(&identity, &paths, "Ada", "laptop", FILES).unwrap();
+        let mut cert = persist::read_device_cert(&paths.device_cert).unwrap();
+        assert_eq!(cert.user_public_key, person);
+        // The certificate a login ticket brings: this computer's key, as a device that admits none.
+        cert.capabilities.can_admit_devices = false;
+        let root = crate::store::load_from_path(identity.join(PRIMARY_IDENTITY_FILE)).unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+
+        adopt_login_certificate(&identity, &paths, &cert, tilo_clock::unix_now_ns()).unwrap();
+
+        let active = crate::store::resolve_active_identity(&identity).unwrap();
+        let active = crate::store::load_metadata_from_path(&active).unwrap();
+        assert_eq!(active.group_public_key, person);
+        assert!(
+            active.single_device,
+            "the login demoted the root kept here to a device record"
+        );
     }
 
     tilo_test_env::scenario! {

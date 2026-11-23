@@ -352,10 +352,7 @@ impl Capacity {
         }
         if let Some(volume) = &basis.linux_btrfs_volume
             && (volume.first_lba != c.first_lba
-                || !super::same_guid(
-                    &c.type_guid,
-                    crate::destination::disks::LINUX_FILESYSTEM_GUID,
-                )
+                || !super::same_guid(&c.type_guid, staging_handoff_model::gpt::LINUX_FILESYSTEM)
                 || minimum > size_bytes)
         {
             return Err(PlanError::Unsupported(

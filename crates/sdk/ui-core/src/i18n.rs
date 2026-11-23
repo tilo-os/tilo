@@ -277,6 +277,11 @@ pub enum I18nError {
 
 thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
+    /// Explicit person locale installed on this thread ([`set_person_locale`]), kept separate from
+    /// the window's display locale (`I18nManager::current_locale`). `None` falls back directly to
+    /// [`preferred_language`] from Settings / the system locale.
+    static PERSON_LOCALE: std::cell::RefCell<Option<LanguageIdentifier>> =
+        const { std::cell::RefCell::new(None) };
     static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
     static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
     /// Messages resolved without variables, under the manager and revision they were resolved at
@@ -443,33 +448,64 @@ fn preferred_locale() -> Option<LanguageIdentifier> {
     preferred_language().and_then(|language| parse_locale(&language).ok())
 }
 
+/// The language the person prefers (`de-DE`), from an explicit [`set_person_locale`] on this
+/// thread or else from Settings / the device ([`preferred_language`]).
+///
+/// One source for both choosing a window's display language ([`window_language`]) and parsing
+/// dates and times the person types in words — never narrowed by an English-only app's display
+/// locale (`I18nManager::set_locale`).
+#[must_use]
+pub fn person_locale() -> Option<String> {
+    PERSON_LOCALE
+        .with(|held| held.borrow().clone())
+        .or_else(preferred_locale)
+        .map(|locale| locale.to_string())
+}
+
+/// Set the person's preferred language on this thread, separately from the window's display
+/// language (`I18nManager::set_locale`), returning the previous thread-local override (`None` when
+/// none was set, so callers restoring state can distinguish "unset" from a resolved setting).
+/// `None` (or `C` / an unparseable tag) clears the thread override so [`person_locale`] reads
+/// Settings / the device again.
+///
+/// Does not move [`I18nManager::revision`]: nothing drawn by a view changes unless the window's
+/// display locale also moves.
+pub fn set_person_locale(locale: Option<&str>) -> Option<String> {
+    let parsed = locale.and_then(|tag| parse_locale(tag).ok());
+    PERSON_LOCALE
+        .with(|held| std::mem::replace(&mut *held.borrow_mut(), parsed))
+        .map(|previous| previous.to_string())
+}
+
 /// Select the language the person chose on this thread, when it is not the one selected: a choice made
 /// in Settings while the app runs relabels it (the [`I18nManager::revision`] moves).
 pub fn follow_configured_language() {
-    match preferred_locale() {
-        Some(locale) => {
-            let loaded = MANAGER.with(|manager| {
-                manager
-                    .borrow()
-                    .as_ref()
-                    .is_none_or(|manager| manager.speaks(&locale))
-            });
-            if !loaded {
-                refresh_language_packs();
-            }
-            I18nManager::set_locale(&locale.to_string());
+    if let Some(locale) = preferred_locale() {
+        let tag = locale.to_string();
+        let _ = set_person_locale(Some(&tag));
+        let loaded = MANAGER.with(|manager| {
+            manager
+                .borrow()
+                .as_ref()
+                .is_none_or(|manager| manager.speaks(&locale))
+        });
+        if !loaded {
+            refresh_language_packs();
         }
-        None => I18nManager::set_locale_or_source("C"),
+        I18nManager::set_locale(&tag);
+    } else {
+        let _ = set_person_locale(None);
+        I18nManager::set_locale_or_source("C");
     }
 }
 
-/// The language a window speaks, chosen once from the person's preference and the languages what the
-/// window shows ships (`shipped`, the locales of its catalogues): the language they prefer when it is
-/// among them, the same language in another region when that is, the source language when it ships
-/// that, else the first it ships.
+/// The language a window speaks, chosen once from the person's preference ([`person_locale`]) and
+/// the languages what the window shows ships (`shipped`, the locales of its catalogues): the
+/// language they prefer when it is among them, the same language in another region when that is,
+/// the source language when it ships that, else the first it ships.
 #[must_use]
 pub fn window_language(shipped: &[&str]) -> String {
-    let preference = preferred_locale().map(|locale| locale.to_string());
+    let preference = person_locale();
     tilo_history::window_language(preference.as_deref(), shipped)
 }
 
@@ -1772,7 +1808,8 @@ mod tests {
 
         phase an_english_only_app_leaves_the_window_english;
         // A window speaks one language: an app that ships English only leaves the toolkit's words and the
-        // platform's formats English too, whatever the person's preference.
+        // platform's formats English too, whatever the person's preference, while the person's own
+        // language stays German for typed input without bumping the display revision.
         {
             let _restore = RestoreLookupState::capture();
             I18nManager::install(
@@ -1784,6 +1821,23 @@ mod tests {
                 ],
             )
             .unwrap();
+            let catalog_rev = || I18nManager::revision().wrapping_sub(crate::format::region::revision());
+            let rev_before = catalog_rev();
+            assert_eq!(
+                set_person_locale(Some("de-DE")),
+                None,
+                "previous override is None when unset"
+            );
+            assert_eq!(
+                catalog_rev(),
+                rev_before,
+                "setting only the person's language does not bump the display revision"
+            );
+            assert_eq!(
+                window_language(&["en-US", "de-DE"]),
+                "de-DE",
+                "window_language and person_locale read the same single source"
+            );
             assert_eq!(I18nManager::lookup_plain("de-only"), "Deutsch");
             let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
             assert_eq!(
@@ -1791,6 +1845,21 @@ mod tests {
                 "the app ships English only, so its window does"
             );
             assert_eq!(I18nManager::current_locale(), "en-US");
+            assert_eq!(
+                person_locale().as_deref(),
+                Some("de-DE"),
+                "narrowing the window to English leaves the person's language German"
+            );
+            // A subsequent `I18nManager::set_locale("en-US")` (e.g. from ToUi::Speak) leaves
+            // `person_locale` untouched as well.
+            I18nManager::set_locale("en-US");
+            assert_eq!(person_locale().as_deref(), Some("de-DE"));
+            assert_eq!(set_person_locale(None).as_deref(), Some("de-DE"));
+            assert_eq!(
+                set_person_locale(None),
+                None,
+                "clearing restores None rather than a resolved setting"
+            );
             assert_eq!(I18nManager::lookup_plain("d-new"), "New");
             assert_eq!(
                 I18nManager::lookup_plain("de-only"),
@@ -2123,6 +2192,7 @@ mod tests {
 
     struct RestoreLookupState {
         manager: Option<I18nManager>,
+        person_locale: Option<LanguageIdentifier>,
         pseudo: PseudoLocale,
         pseudo_revision: u64,
     }
@@ -2131,6 +2201,7 @@ mod tests {
         fn capture() -> Self {
             Self {
                 manager: MANAGER.with(|manager| manager.borrow_mut().take()),
+                person_locale: PERSON_LOCALE.with(|held| held.borrow_mut().take()),
                 pseudo: PSEUDO_LOCALE.with(Cell::get),
                 pseudo_revision: PSEUDO_REVISION.with(Cell::get),
             }
@@ -2140,6 +2211,7 @@ mod tests {
     impl Drop for RestoreLookupState {
         fn drop(&mut self) {
             MANAGER.with(|manager| *manager.borrow_mut() = self.manager.take());
+            PERSON_LOCALE.with(|held| *held.borrow_mut() = self.person_locale.take());
             PSEUDO_LOCALE.with(|mode| mode.set(self.pseudo));
             PSEUDO_REVISION.with(|revision| revision.set(self.pseudo_revision));
         }

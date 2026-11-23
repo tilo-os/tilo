@@ -34,9 +34,7 @@ impl RowAction<(usize, bool)> {
         &self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<(usize, bool)>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.kind != crate::tilo_actions::OperationKind::View || request.type_id != CHECK_ROW
         {
             return Ok(None);
@@ -52,9 +50,7 @@ impl RowAction<(usize, bool, bool)> {
         &self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<(usize, bool, bool)>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.kind != crate::tilo_actions::OperationKind::View || request.type_id != CLICK_ROW
         {
             return Ok(None);

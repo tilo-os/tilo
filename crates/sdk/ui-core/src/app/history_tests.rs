@@ -2656,12 +2656,9 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
         _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest {
+        let crate::host_operation::OperationRequest {
             type_id, payload, ..
-        }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
+        } = op.request();
         if !crate::widget::resource_operation_handlers(self).contains(type_id) {
             return Ok(None);
         }
@@ -3231,15 +3228,12 @@ impl crate::widget::ResourceOperations for ComponentControlOwner {
         _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest {
+        let crate::host_operation::OperationRequest {
             invocation,
             type_id,
             payload,
             ..
-        }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
+        } = op.request();
         if type_id != self.operation {
             return Ok(None);
         }
@@ -4797,17 +4791,15 @@ impl crate::widget::ResourceOperations for DomainControlsRoot {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.type_id == "fixture.control")
-        else {
+        let request = op.request();
+        if request.type_id != "fixture.control" {
             return crate::widget::start_operation(
                 &mut *self.child,
                 op,
                 &mut crate::widget::Edits::lend(doc.document_mut()),
                 path,
             );
-        };
+        }
         self.log
             .borrow_mut()
             .push(serde_json::from_slice(request.payload).unwrap());

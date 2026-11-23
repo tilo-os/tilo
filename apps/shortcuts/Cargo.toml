@@ -31,6 +31,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-automation = { path = "../../crates/collab/automation", features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
+# A trigger's one moment, read from the date and time the person types.
+jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

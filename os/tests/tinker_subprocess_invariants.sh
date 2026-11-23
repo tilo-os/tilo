@@ -4,7 +4,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-SOURCE="$ROOT/crates/system/tinker/src/main.rs"
+SOURCE="$ROOT/crates/vm/tinker/src/main.rs"
 
 if [ ! -r "$SOURCE" ]; then
     echo "FAIL: cannot inspect $SOURCE" >&2

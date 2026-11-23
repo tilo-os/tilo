@@ -32,8 +32,25 @@ export TILO_NESTED_SESSION_BUILD=$build
 # The walks are scripts, not modules: nothing may drop bytecode into the tree.
 export PYTHONDONTWRITEBYTECODE=1
 
+# The walk's session runs as an ordinary account, as a person's desktop does on
+# their own machine: Chromium refuses its sandbox as root, and the shell runtime
+# is the person's user service. This script itself runs as root in the check's
+# VM, where the walk stages the mail provider's host names, trust bundles and
+# mail ports; the session and everything it starts are the account's
+# (scripts/headless-examples/real_apps.py, $TILO_SESSION_USER).
+if [[ $(id -u) == 0 ]]; then
+    walk_account=${TILO_SESSION_USER:-walker}
+    id "$walk_account" >/dev/null 2>&1 \
+        || useradd --create-home --shell /bin/bash "$walk_account"
+    export TILO_SESSION_USER=$walk_account
+fi
+
 out=$(realpath -m "$out")
 run=$(mktemp -d)
+# The session account reads the packages and pages the walk hands it; the job's
+# temporary directory is this caller's alone, so it is made passable too.
+chmod 0755 "$run"
+chmod o+x "$(dirname "$run")"
 rm -rf -- "$out"
 mkdir -p -- "$out"
 # What a person reads a walk by: its page, its verdict, the snapshots and the logs.

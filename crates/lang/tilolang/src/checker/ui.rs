@@ -1329,12 +1329,11 @@ impl Checker<'_> {
 
     /// An argument of a view call, as a property of its node: any value a parameter takes.
     pub(super) fn arg_prop(&mut self, node: Ex, name: &str, v: Ex) {
-        let imp = match v.ty.repr() {
+        let imp = match v.ty.abi_repr() {
             None => return,
-            Some(crate::types::Vt::I64) => Imp::UiPropI,
-            Some(crate::types::Vt::F64) => Imp::UiPropF,
-            Some(crate::types::Vt::I32) if v.ty == Ty::Bool => Imp::UiPropI,
-            Some(crate::types::Vt::I32) => Imp::UiPropH,
+            Some(crate::types::Repr::I64 | crate::types::Repr::Bool) => Imp::UiPropI,
+            Some(crate::types::Repr::F64) => Imp::UiPropF,
+            Some(crate::types::Repr::Handle) => Imp::UiPropH,
         };
         let v = if v.ty == Ty::Bool {
             conv(Some(Conv::BoolToInt), v, Ty::Int)

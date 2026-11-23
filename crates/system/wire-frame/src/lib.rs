@@ -41,12 +41,13 @@ use std::io::{self, Read, Write};
 mod async_io;
 mod line;
 mod reader;
+pub mod sse;
 #[cfg(feature = "postcard")]
 mod value;
 
-pub use line::read_line;
+pub use line::{read_line, read_line_or_eof};
 #[cfg(feature = "tokio")]
-pub use line::read_line_async;
+pub use line::{read_line_async, read_line_or_eof_async};
 pub use reader::FrameReader;
 #[cfg(feature = "postcard")]
 pub use value::decode_value;

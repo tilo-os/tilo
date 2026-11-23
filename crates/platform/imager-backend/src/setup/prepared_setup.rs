@@ -178,14 +178,8 @@ impl MailHandoff {
         Ok(())
     }
 }
-/// Selected browser data authenticated with the same identity and setup as installation.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BrowserHandoff {
-    pub plan: browser_continuity::Plan,
-    pub payload: super::browser_transfer::Expectation,
-}
 pub use crate::prepared_media::{IdentityKind, PortableHomePlan, PortableHomeSelection};
+pub use prepared_setup_model::BrowserHandoff;
 /// Password-authenticated pending request, not source-group authority,
 /// a mount grant or a completed Home receipt. A future producer must bind
 /// actual source and target grants before sealing; delivery reattests media.

@@ -250,6 +250,15 @@ fn session() -> Session {
     })
 }
 
+/// A session whose shell is the tilolang package, drawing the whole screen (`--shell screen`).
+fn shell_session() -> Session {
+    crate::common::headless(Options {
+        collab: false,
+        shell: true,
+        ..Options::default()
+    })
+}
+
 /// A session whose app lists are `lists` : what the shell offers to open.
 fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     crate::common::headless(Options {

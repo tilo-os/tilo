@@ -2,7 +2,7 @@
 """Assemble the existing apps+runtime component in private final-path mounts.
 
 No OS/kernel build and no host /usr writes. The caller owns the normal native
-build admission. The result is only a staged component; tilo-vmd still owns
+build admission. The result is only a staged component; the device's steps still own
 source authority, import, activation and the account lifecycle.
 """
 import argparse
@@ -610,7 +610,7 @@ def package_inside(args):
     if tilolang:
         env['TILOLANG_BIN'] = str(target / 'release/tilolang')
     # A complete cohort carries each app once, as its installed tree and signed
-    # record; tilo-vmd rebuilds the archive it installs from those.
+    # record; the device's steps rebuild the archive it installs from those.
     if args.app is not None:
         env.update(TAPP_OUT=str(stage / 'work/selected.tapp'),
                    STAGE=str(stage / 'work/selected-pack'))

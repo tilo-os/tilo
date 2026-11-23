@@ -181,7 +181,7 @@ ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "system", "termios", "thread", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "stdio", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -422,7 +422,7 @@ ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "system", "termios", "thread", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "stdio", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -522,7 +522,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -559,7 +559,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -595,7 +595,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -632,7 +632,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

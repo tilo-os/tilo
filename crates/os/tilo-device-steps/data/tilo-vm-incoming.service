@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply the component layers an installation left for this machine's first boot
+ConditionDirectoryNotEmpty=/var/lib/tilo-vm/incoming
+After=local-fs.target tilo-vm-restore.service
+Before=tilo-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo/tilo-device-step apply-incoming
+RemainAfterExit=yes
+# A first boot may import several large layers and restart units; never cut it
+# short. A bad layer fails this unit on purpose.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

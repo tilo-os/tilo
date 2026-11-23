@@ -248,7 +248,7 @@ impl Drop for Connection {
 }
 
 /// Register a private host worker for `route`, connect it as `peer` and join
-/// with the signed presentation. Returns the connection and its lease authorizer.
+/// with the signed presentation. Returns the connection and the lookup of the originals delivered on it.
 pub async fn join_worker(
     state: &Arc<AppBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
@@ -256,12 +256,9 @@ pub async fn join_worker(
     cert: &DeviceCert,
     key: &SigningKey,
     peer: u64,
-) -> (
-    Connection,
-    collaboration::invocation_scope::PublishedInvocationAuthorizer,
-) {
-    let (socket, authorize) = state
-        .connect_local_worker_with_authorizer(route.clone(), cert)
+) -> (Connection, crate::apps::collab_app_broker::OriginalLookup) {
+    let (socket, originals) = state
+        .connect_local_worker_with_originals(route.clone(), cert)
         .unwrap();
     let pending = state.workers.lock().unwrap().pop().unwrap();
     let (rpc, server, client) = rpc_pair(
@@ -285,7 +282,7 @@ pub async fn join_worker(
             server,
             client,
         },
-        authorize,
+        originals,
     )
 }
 
@@ -473,10 +470,7 @@ impl OriginalWorkspace {
     pub async fn join_worker(
         &self,
         peer: u64,
-    ) -> (
-        Connection,
-        collaboration::invocation_scope::PublishedInvocationAuthorizer,
-    ) {
+    ) -> (Connection, crate::apps::collab_app_broker::OriginalLookup) {
         join_worker(
             &self.state,
             &self.directories,

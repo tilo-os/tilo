@@ -1,0 +1,16 @@
+// The device's daemon (user tilo) runs each step of device control a caller was admitted to
+// as that step's own oneshot unit, tilo-device-<action>@<invocation>.service, and stops it
+// when the caller cancels. This lets user tilo start and stop exactly those units and nothing
+// else; who may call a step is the daemon's grant check, not this rule's.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "tilo") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    var verb = action.lookup("verb") || "";
+    if ((verb === "start" || verb === "stop") &&
+        /^tilo-device-(status|account-create|account-list|account-restart|account-rm|account-show|layer-import|layer-list|layer-verify|swap|userspace-apply|rollback|seat-claim|seat-release|shot|control|input|gc|app-install|boot-confirm|awake|device-unlock-enrol|build|ci-layer|exec|install-packages|tree-sync|upgrade|reboot|poweroff|logs|network-wake)@[0-9a-f]{32}\.service$/.test(unit)) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

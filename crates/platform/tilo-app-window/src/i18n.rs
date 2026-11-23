@@ -90,6 +90,46 @@ pub fn revision() -> u64 {
     ui::i18n::I18nManager::revision()
 }
 
+/// The platform's phrase `id` with `args` in the window's language, or `id` when no catalogue
+/// holds it: the shared `Platform::phrase` for hosts backed by the toolkit's catalogues.
+#[must_use]
+pub fn phrase(id: &str, args: &[(String, String)]) -> String {
+    word(id, args, id)
+}
+
+/// The language the person prefers (`de`, `en`), from the single [`ui::i18n::person_locale`]
+/// source, even when the window speaks an English-only package's source language: what typed
+/// dates and times are parsed in.
+#[must_use]
+pub fn language() -> String {
+    ui::i18n::person_locale()
+        .map(|locale| ui::i18n::language_of(&locale))
+        .filter(|language| !language.is_empty())
+        .unwrap_or_else(|| "en".to_owned())
+}
+
+/// Take in a package's catalogues for a single-package window: the window's own package chooses
+/// the one language the window speaks (`speak_window_language`), while packages it uses ride
+/// along in that language (`add_shared_catalogues`).
+pub fn add_window_words(window: bool, catalogues: &[(String, String)]) {
+    if window {
+        ui::i18n::speak_window_language(catalogues);
+    } else {
+        add_shared_catalogues(catalogues);
+    }
+}
+
+/// Take in a package's catalogues inside the session process: the session hosts several packages
+/// on one thread and owns the desktop's active locale, so loading a package adds its catalogues
+/// without narrowing the thread's active locale to that package alone.
+pub fn add_session_words(window: bool, catalogues: &[(String, String)]) {
+    if window {
+        add_catalogues(catalogues);
+    } else {
+        add_shared_catalogues(catalogues);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +206,44 @@ mod tests {
         );
         ui::i18n::I18nManager::set_locale("en-US");
         assert_eq!(t("tilolang-sort"), "Sort");
+    }
+
+    /// A hosted window receiving `ToUi::Speak("en-US")` for an English-only app narrows only the
+    /// window's display locale; a German person's preferred language stays German for typed dates.
+    #[test]
+    fn speak_from_a_hosted_english_app_leaves_the_persons_language_german() {
+        use tilo_render_protocol::patch::{ToUi, Transport as _};
+
+        struct Restore(Option<String>, String);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ui::i18n::set_person_locale(self.0.as_deref());
+                ui::i18n::I18nManager::set_locale(&self.1);
+            }
+        }
+
+        ensure();
+        let prev_locale = ui::i18n::I18nManager::current_locale();
+        let prev_person = ui::i18n::set_person_locale(Some("de-DE"));
+        let _restore = Restore(prev_person, prev_locale);
+        assert_eq!(language(), "de");
+
+        let (mut app_end, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = crate::AppWindow::new(Box::new(window_end), Vec::new());
+        app_end
+            .send(
+                tilo_render_protocol::patch::encode_batch(&[ToUi::Speak("en-US".to_owned())])
+                    .unwrap(),
+            )
+            .unwrap();
+        window.receive();
+
+        assert_eq!(ui::i18n::I18nManager::current_locale(), "en-US");
+        assert_eq!(t("tilolang-sort"), "Sort");
+        assert_eq!(
+            language(),
+            "de",
+            "ToUi::Speak with the window's narrowed English locale does not overwrite the person's German"
+        );
     }
 }

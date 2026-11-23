@@ -31,8 +31,8 @@ use tilo_session_client::device::Device as Entered;
 use crate::agent::{self, Agent};
 use crate::api::Client;
 pub(crate) use tilo_api::daemon::enter::{
-    IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, connect, debug_why, enter_said,
-    host_of, server_of, signed_over_iroh,
+    IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, choose_workspace, connect,
+    debug_why, enter_said, host_of, server_of, signed_over_iroh,
 };
 pub use tilo_device_identity::login::{Device, LOGIN_DAMAGED, Place, load, load_public, store};
 
@@ -482,6 +482,52 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     Ok(ExitCode::SUCCESS)
 }
 
+/// `tilo login --server`: log this computer in at the server `host` names (its `web-host.json`
+/// line, or that file's path) as the device the person's root, held here, certified: the computer
+/// that holds the root needs no ticket. The daemon serving the login then takes in every workspace
+/// of the person's that server keeps, and answers its asks for the content it holds of them.
+///
+/// # Errors
+/// This computer holds no identity, `host` is no server's line, the server is not reached or keeps
+/// no workspace of the person's, or the login cannot be kept.
+pub fn login_at_server(host: &str) -> Result<ExitCode> {
+    trust_test_certificates()?;
+    let person = crate::identity::held()?.ok_or_else(|| {
+        anyhow!(
+            "Only a computer that holds your Tilo identity logs in at a server by itself: log in \
+             here with a ticket from `tilo device add` on one of your devices."
+        )
+    })?;
+    let text = match std::fs::read_to_string(host.trim()) {
+        Ok(read) => read,
+        Err(_) => host.to_owned(),
+    };
+    let host: tilo_server_protocol::web::PageHost = serde_json::from_str(text.trim())
+        .map_err(|error| anyhow!("That is not a server's line from its web-host.json: {error}"))?;
+    let runtime = runtime()?;
+    let device = runtime.block_on(tilo_api::daemon::enter::log_in_at(
+        &person.device,
+        &person.cert,
+        host,
+        None,
+    ))?;
+    let login_place = Place::here(crate::identity::paths())?;
+    store(&login_place, &device)?;
+    println!(
+        "Logged in at {}: this computer is your own device there, and takes in every workspace of \
+         yours it keeps, starting with {}.",
+        host_of(&device.host_origin),
+        device
+            .workspace_name
+            .as_deref()
+            .unwrap_or(&device.workspace)
+    );
+    let place = DaemonPlace::of(login_place.dir(), &person.device.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)?;
+    restart_after_login(&place)?;
+    Ok(ExitCode::SUCCESS)
+}
+
 /// What the agent does once Tilo's tools are in: the one visible thing that
 /// tells the person, in their own tab, that it is there.
 pub(crate) fn first_act(agent: &Agent) -> String {
@@ -846,57 +892,6 @@ fn held_device_cert(
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person.root)?;
     Ok(cert)
-}
-
-/// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
-/// else the first the person made of their own, else the first they were let in to. A login names
-/// no workspace to have every one of the person's: the peer it starts gives each of the others a
-/// folder as well, so the one entered first is only where it starts.
-pub(crate) fn choose_workspace(
-    listed: &[tilo_server_session::workspaces::PersonalWorkspace],
-    asked: Option<&str>,
-) -> Result<(String, String)> {
-    let pick = |found: &tilo_server_session::workspaces::PersonalWorkspace| {
-        (found.workspace.clone(), found.name.clone())
-    };
-    if let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) {
-        return listed
-            .iter()
-            .find(|found| {
-                found.workspace.eq_ignore_ascii_case(asked)
-                    || found.name.eq_ignore_ascii_case(asked)
-            })
-            .map(pick)
-            .ok_or_else(|| {
-                anyhow!(
-                    "You have no workspace called \"{asked}\" there; {}",
-                    names_of(listed)
-                )
-            });
-    }
-    let first = |own: bool| {
-        listed
-            .iter()
-            .filter(|found| !own || found.role.as_deref() == Some("owner"))
-            .min_by_key(|found| {
-                (
-                    found.made_at_ms.unwrap_or(i64::MAX),
-                    found.workspace.clone(),
-                )
-            })
-    };
-    first(true)
-        .or_else(|| first(false))
-        .map(pick)
-        .ok_or_else(|| anyhow!("You have no workspace there yet: make one in Tilo first."))
-}
-
-fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
-    let names: Vec<_> = listed
-        .iter()
-        .map(|found| format!("\"{}\"", found.name))
-        .collect();
-    format!("yours are {}.", names.join(", "))
 }
 
 /// A login kept below `dir` for a test, as `tilo login` keeps one: `env` names `dir`'s `state`

@@ -70,6 +70,13 @@ pub struct Apps {
 pub(crate) trait LaunchGrantsSource: Send + Sync {
     /// What a launch into `workspace` hands its apps
     /// ([`tilo_desktop_model::Workspace::launch_grants`]).
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants;
 }
 
@@ -157,6 +164,13 @@ impl Apps {
 
     /// What a launch into this runtime's workspace is granted: the
     /// workspace's own sandbox, and nothing until a source is open.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
         self.grants
             .get()
@@ -167,6 +181,13 @@ impl Apps {
 
     /// What this runtime's launch of `app` hands it: the workspace's grants
     /// that name the app, as `tilo-launcher`'s capability file carries them.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn app_grants(&self, app: &InstalledApp) -> collab_types::caps::LaunchGrants {
         self.launch_grants().for_app(app.app_id.as_str())
     }
@@ -318,6 +339,14 @@ impl Apps {
 
     /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            unreachable_code,
+            unused_variables,
+            reason = "with no app sandbox here, the launch is refused before it starts"
+        )
+    )]
     pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
         if workspace != self.workspace {
             return Err(format!(
@@ -474,6 +503,13 @@ impl LauncherServices for Apps {
 }
 
 /// The profile's service sockets, as an app is connected to them.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    expect(
+        dead_code,
+        reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+    )
+)]
 struct Sockets {
     collab: PathBuf,
     identity: PathBuf,

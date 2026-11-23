@@ -42,6 +42,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NAME = "workspace-unify"
 HAKARI = "workspace-hack"
 DIR = ROOT / "tools" / NAME
+# From the manifest's directory up to the root: how its lines name a package by path.
+UP = "/".join(".." for _ in DIR.relative_to(ROOT).parts)
 # The families whose builds this package unifies, as t.toml declares them: those naming it in
 # `unify`. A run of one that asks for a few of its packages builds those beside this one, whose
 # manifest gives every shared library the features all of their whole builds together resolve.
@@ -194,7 +196,7 @@ def lines(packages: dict, members: set[str], root: Path, features_of) -> dict[st
         if package_id in members or source is None:
             directory = Path(package["manifest_path"]).parent.relative_to(root.resolve())
             key = name if package_id in members else f"{name}-{package['version']}"
-            where = f'path = "../../../{directory}"'
+            where = f'path = "{UP}/{directory}"'
         elif source.startswith("registry+"):
             key = f"{name}-{package['version']}"
             where = f'version = "^{package["version"]}"'

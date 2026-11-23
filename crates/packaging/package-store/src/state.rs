@@ -16,8 +16,7 @@ pub struct WorkspaceState {
     pub files: usize,
 }
 
-/// The directory every workspace is under. Mirrors `launcher::appdir::WORKSPACES_DIR`, which the
-/// installer cannot link.
+/// The directory every workspace is under, shared with `launcher::appdir`.
 pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
 /// Every workspace in which `package_id` has data, sorted by workspace name. A package that was
@@ -97,9 +96,12 @@ pub fn human_bytes(bytes: u64) -> String {
     "0 B".to_string()
 }
 
-/// Matches `launcher::appdir`'s component sanitiser: the installer would otherwise look for data
-/// under a name the launcher never wrote.
-fn sanitise(raw: &str) -> String {
+/// Turn a package id into a single path component that cannot escape its parent.
+///
+/// Shared with `launcher::appdir` so the installer looks for data under the exact name the
+/// launcher wrote.
+#[must_use]
+pub fn sanitise(raw: &str) -> String {
     let mapped: String = raw
         .trim()
         .chars()
@@ -117,8 +119,9 @@ fn sanitise(raw: &str) -> String {
     mapped
 }
 
-/// The same FNV-1a the launcher uses for the same purpose.
-fn fnv1a(raw: &str) -> String {
+/// Short, stable FNV-1a hex digest for an id refused verbatim, shared with `launcher::appdir`.
+#[must_use]
+pub fn fnv1a(raw: &str) -> String {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, raw.as_bytes());
     format!("{:016x}", std::hash::Hasher::finish(&hasher))
@@ -219,10 +222,18 @@ mod tests {
         phase state_paths_read_like_the_launchers;
         {
             // The installer and the launcher have to agree on the directory name, or "remove this app's
-            // data" would silently miss it.
-            assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
+            // data" would silently miss it. These literals pin the on-disk names.
+            for (package_id, expected) in [
+                ("so.tilo.notes", "so.tilo.notes"),
+                ("dev/tilo notes", "dev_tilo_notes"),
+                ("", "pkg_cbf29ce484222325"),
+                ("..", "pkg_07da1a07b4a03f2d"),
+                ("...", "pkg_f7d93e17ec4b1219"),
+                ("so.tilo.büro", "so.tilo.b_ro"),
+            ] {
+                assert_eq!(sanitise(package_id), expected, "package_id={package_id:?}");
+            }
             assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
-            assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
         }
     }
 }

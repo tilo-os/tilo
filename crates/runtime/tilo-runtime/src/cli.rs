@@ -77,7 +77,7 @@ fn run() -> io::Result<()> {
             configure_profile(&args.profile)?;
         } else {
             // The person's own profile, made on the first start.
-            crate::host::private_directory(&args.profile)?;
+            tilo_files::native::private::directory(&args.profile)?;
         }
     }
     let _ = tracing_subscriber::fmt()

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
+import {unhex} from './hex.mjs';
+import {bytesOfHex, createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -189,6 +190,45 @@ test('a picture the live session delivers is admitted as it comes, with nothing 
   assert.equal(f.call.stats().counters.pictures, 1);
   const again = f.call.takePictures(taken.cursor);
   assert.equal(again.pictures.length, 0, 'each picture is taken once');
+});
+
+test('voice hex decoding uses the shared checker and drops malformed audio and picture frames', async () => {
+  assert.equal(bytesOfHex, unhex);
+  assert.deepEqual([...bytesOfHex('')], []);
+  assert.deepEqual([...bytesOfHex('0203')], [2, 3]);
+  assert.deepEqual([...bytesOfHex('0500')], [5, 0]);
+  assert.deepEqual([...bytesOfHex('deadBEEF')], [0xde, 0xad, 0xbe, 0xef]);
+  for (const bad of ['abc', 'zz', '1g']) assert.throws(() => bytesOfHex(bad), RangeError);
+
+  const f = fixture();
+  f.call.join(CALL);
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
+  assert.deepEqual(f.keyframes, [[BOB, 'camera']]);
+
+  for (const bad of ['abc', 'zz', '1g']) {
+    f.event({kind: 'heard', from: BOB, sequence: 9, timestamp48k: 960, opus: bad});
+    f.event({kind: 'picture', from: BOB, source: 'camera', keyframe: true, object: bad});
+  }
+  f.event({kind: 'picture', from: BOB, source: 'camera', keyframe: true});
+  assert.equal(f.audio.played.length, 0, 'malformed audio frames are never played');
+  assert.equal(f.call.stats().counters.heard, 0, 'dropped audio frames are not counted as heard');
+  assert.equal(f.call.takePictures(0).pictures.length, 0, 'malformed picture frames are never admitted');
+  assert.equal(f.call.stats().counters.pictures, 0, 'dropped picture frames are not counted');
+
+  // A malformed frame must not poison sequence tracking or satisfy a pending keyframe.
+  f.event({kind: 'heard', from: BOB, sequence: 3, timestamp48k: 960, opus: '0203'});
+  assert.equal(f.audio.played.length, 1);
+  assert.deepEqual([...f.audio.played[0].payload], [2, 3]);
+  f.call.showPictures([]);
+  f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
+  assert.deepEqual(f.keyframes, [[BOB, 'camera'], [BOB, 'camera']], 'a dropped keyframe does not mark the stream ready');
+  f.event({kind: 'picture', from: BOB, source: 'camera', keyframe: true, object: '0500'});
+  const taken = f.call.takePictures(0);
+  assert.equal(taken.pictures.length, 1);
+  assert.equal(taken.pictures[0].object, 'BQA=');
 });
 
 test('what the app shows is told to the live session, and a device starting to show a source is asked for a keyframe', async () => {

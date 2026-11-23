@@ -13,12 +13,11 @@ layout remains outside this generic SDK adapter's two-executable policy.
 
 At the initial implementation's source revision, the plan contains 45 SDK apps.
 Ten manifests exclude macOS: containers, disks, firewall, logs, osk, print-centre,
-settings, store, vpn, windows. Browser and Imager support macOS but are separately
-excluded here: their CEF/helpers and privileged host writer/assets respectively
-require their existing specialized packagers. These are **packager coverage gaps**,
-not claims that those apps cannot run on a Mac. See `scripts/browser/package.py`
-and `apps/imager/packaging/package-host.sh`. This tool does not fabricate generic
-replacements. The Store/runtime `Tilo.app` remains `dist/macos/build-app.sh`;
+settings, store, vpn, windows. Browser supports macOS but is separately excluded
+here: its CEF engine and helpers require its specialized packager. This is a
+**packager coverage gap**, not a claim that it cannot run on a Mac. See
+`scripts/browser/package.py`. This tool does not fabricate a generic replacement.
+The installer is not an app; `apps/imager/packaging/package-host.sh` builds it. The Store/runtime `Tilo.app` remains `dist/macos/build-app.sh`;
 File Provider integration is not included. A future app is selected from its
 manifest, but SDK capability checks and actual builds can still refuse it.
 

@@ -12,9 +12,11 @@ service.
 |---|---|
 | `agent/` | Provider configuration, model gateway, and local-model services |
 | `collab/` | Production collaboration protocols, actions, identity primitives, and reference state |
+| `compat/` | Running Windows programs: the compatibility catalogue, its broker and the managed Windows VM |
 | `dev/` | The dev-image daemon and its device-admin route; developer tools live in `../tools/` |
 | `doc/` | Native document model, format-provider interfaces and import/export adapters |
 | `hosting/` | Relay and home-peer services |
+| `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
 | `platform/` | Per-capability platform crates with one API on Linux, macOS and the web; the only place app-reachable code may use target `cfg` |
@@ -23,7 +25,7 @@ service.
 | `session/` | Desktop shell, greeter, installer, unlock helper, and power entrypoints |
 | `system/` | OS integration, policy, settings, device services, and system tools |
 | `text/` | Shared text services such as spellchecking |
-| `windows/` | Windows compatibility catalogue, services, and managed VM integration |
+| `vm/` | VMs and sandboxes: Linux VMs, ush environments and their images, tinker layers |
 
 ## Developer tools and fixtures
 

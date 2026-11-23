@@ -1,0 +1,26 @@
+[package]
+name = "prepared-setup-model"
+description = "Shared wire types and validation for prepared setup receipts and sealed transfer expectations"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[features]
+default = ["receipt"]
+receipt = ["dep:browser-continuity", "dep:sha2"]
+
+[dependencies]
+browser-continuity = { workspace = true, optional = true }
+serde.workspace = true
+sha2 = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

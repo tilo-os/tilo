@@ -111,7 +111,7 @@ vm_bin=${TILO_VM_BIN:?TILO_VM_BIN names the tilo-vm binary}
 # The worker's disk: the newest development disk main published for this architecture (a
 # tilo-vm-disk-candidate version named <commit>-<tooling>-<run>-<attempt>-<arch>; board disks
 # add a suffix), checked against its candidate record. tilo-vm-disk-latest is not used: its
-# x86_64 disk lags weeks behind, with a tilo-vmd too old for today's tilo-vm.
+# x86_64 disk lags weeks behind, with device steps too old for today's tilo-vm.
 cache=${TILO_WORKER_DISK_CACHE:-/var/tmp/tilo-worker-disk}/$arch
 mkdir -p "$cache"
 read -r disk_file disk_sha disk_url < <(python3 - "$arch" <<'EOF'

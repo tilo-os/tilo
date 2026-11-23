@@ -77,9 +77,7 @@ impl Presentation {
         doc: &AutoCommit,
         content: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         match request.type_id {
             tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
                 self.activation_requested.set(true);

@@ -24,10 +24,10 @@ pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, 
             "profile path must be absolute",
         ));
     }
-    host::private_directory(profile)?;
+    tilo_files::native::private::directory(profile)?;
     let paths = environment(profile);
     for (_, path) in &paths {
-        host::private_directory(path)?;
+        tilo_files::native::private::directory(path)?;
     }
     Ok(paths)
 }
@@ -46,7 +46,7 @@ fn environment(profile: &Path) -> [(&'static str, PathBuf); 4] {
 /// Hold `root` exclusively for this process, recording the owner so a
 /// second start can name it.
 pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
-    host::private_directory(root)?;
+    tilo_files::native::private::directory(root)?;
     let lock_path = root.join("runtime.lock");
     let lock = advisory_lock::FileLock::try_exclusive(host::private_file(&lock_path)?).map_err(
         |error| match error {

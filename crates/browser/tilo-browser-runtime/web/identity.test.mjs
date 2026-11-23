@@ -60,8 +60,11 @@ test('hex reads and writes bytes, and refuses anything else', () => {
   assert.equal(hex, sharedHex);
   assert.equal(hex(Uint8Array.from([0, 15, 255])), '000fff');
   assert.deepEqual([...unhex('00ff10')], [0, 255, 16]);
+  assert.deepEqual([...unhex('00FF10')], [0, 255, 16]);
   assert.deepEqual([...unhex('')], []);
-  for (const text of ['0', 'zz', '0g']) assert.throws(() => unhex(text), IdentityError);
+  for (const text of ['0', 'abc', 'zz', '1g', '0g']) {
+    assert.throws(() => unhex(text), error => error instanceof IdentityError && error.code === 'malformed');
+  }
 });
 
 test('a profile is looked for the same way, and only one naming the person counts', async () => {

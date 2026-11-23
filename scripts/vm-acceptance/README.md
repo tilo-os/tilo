@@ -118,7 +118,7 @@ check passes.
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime --connect`: the person's consent is answered through the control socket's
 `permission-prompts` actions, the MCP server must offer the path-addressed agent tools, `tilo_ls`
-must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
+must list Notes as a running app (it is open), a note made with `notes#new_note` (the harness
 grants the test agent Notes for the session) is read back through the desktop, and refusals
 must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 (fix/mcp-server) they report **xfail** with that reason: an expected failure does not fail the
@@ -149,7 +149,7 @@ environment's agent asking for the other workspace is refused before anyone is a
 "Always allow" admits a second session there without the sheet, as the next instance (E05);
 Stop on one leaves the other working (E06); a program of the login outside the environments is
 refused on an environment's socket (E07). E08 is an agent's own change, a note through
-`notes#new-note` taken in the run the server starts for its connection, landing in its workspace
+`notes#new_note` taken in the run the server starts for its connection, landing in its workspace
 and not the other's. E09 is one that asks first, a file through `terminal#run`: its run puts the
 question to the person on the shell's sheet (Allow once, Always allow the agent, Deny), the harness
 allows it once by its named control, and the file lands in the agent's own workspace's tree.
@@ -193,7 +193,7 @@ the resume arrives and unlocks. I05-I08 are `calibrating`: their observables com
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
 the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
-report descriptor (see `tools/tilo-vm-protocol/src/profile.rs`).
+report descriptor (see `crates/os/tilo-device-protocol/src/profile.rs`).
 
 Pull requests touching the input path, tilo-vm(d), the profiles or the MCP server run only
 these areas (`ci_select.py`).
@@ -378,7 +378,7 @@ store's token.
 | `idle.frames` | count | R01 | frames painted while still |
 | `idle.ram_mib` | MiB | R01 | guest `MemTotal - MemAvailable` with no app open |
 | `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
-| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
+| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, the device's step and tilo-vm units, root's ssh sessions); `idle.ram_mib` less it |
 | `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
 | `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
 | `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
@@ -776,13 +776,7 @@ is not its record instance. Unrelated existing pages publishing late do not
 become candidates, and missing/foreign launch associations fail without another
 Open or navigation of an existing page.
 
-When the published base disk uses a different management protocol, CI builds a
-second `tilo-vm` from that exact base commit. It creates and starts the throwaway
-VM with that client, then runs the ordinary `swap vmd --account vm --builder host`
-from the clean target checkout. The target client must read back the VM-wide
-management layer before any session is created. P01 records this explicit
-management swap even with `swap=none`; equal-protocol `swap=none` tests the base
-without a management swap. Failures abort P00 instead of relaxing the protocol
-check. For a local older fixture, pass `--bootstrap-tilo-vm <matching-client>`
-and `--bootstrap-from <clean-target-checkout>` together. This bootstrap uses
-the existing layer admission and activation path, and does not reboot.
+tilo-vm reaches the VM through the device daemon's actions and the step units
+its image ships (`tilo-device-<action>@.service`). A disk whose image has no
+such units cannot be driven by this client, and P00 fails on it; build a newer
+disk rather than bridging it with a layer swap.

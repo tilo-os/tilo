@@ -27,8 +27,8 @@
 #                                       it
 #   TILO_VM_TICKET                      the ticket this host joins the person's
 #                                       devices with, printed by `tilo device
-#                                       add --capability admin` on an owner
-#                                       device (spent once, on this host's disk)
+#                                       add` on an owner device (spent once,
+#                                       on this host's disk)
 #   TILO_SH_HOSTED_VM_SIZE=default      the size a workspace's VM runs at, as
 #                                       the plans file names it (`small`,
 #                                       `default`, `large`, `xlarge`): the
@@ -191,15 +191,17 @@ member_device() {
   local device started=$SECONDS
   while ((SECONDS - started < 180)); do
     device=$(podman exec "$host_container" setpriv --reuid=10001 --regid=10001 --init-groups \
-      --inh-caps=-all tilo-device-admin key \
-      --identity-root /var/lib/tilo-hosted/member/identity 2>/dev/null |
+      --inh-caps=-all -- env HOME=/var/lib/tilo-hosted/member/home \
+      XDG_STATE_HOME=/var/lib/tilo-hosted/member/profile/state \
+      TILO_IDENTITY_ROOT=/var/lib/tilo-hosted/member/identity \
+      tilo device key 2>/dev/null |
       json_field device)
     if [ -n "$device" ]; then printf '%s' "$device"; return 0; fi
     [ "$(podman inspect --format '{{.State.Running}}' "$host_container" 2>/dev/null)" = true ] \
       || fail "the host stopped before it joined: $(podman logs --tail 3 "$host_container" 2>&1)"
     sleep 2
   done
-  fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add --capability admin\` printed (podman logs $host_container says why)"
+  fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add\` printed (podman logs $host_container says why)"
 }
 
 # The plans file the server and the host admit by (docs/hosted-browser.md,
@@ -253,7 +255,7 @@ up() {
   [ -n "${TILO_SH_IMAGE_VM_HOST:-}" ] || fail 'TILO_SH_IMAGE_VM_HOST: the vm-host image is not named'
   [ -n "${TILO_SH_HOSTED_GUEST:-}" ] || fail 'TILO_SH_HOSTED_GUEST: the guest image is not named'
   [ -n "${TILO_VM_TICKET:-}" ] || [ "${TILO_VM_FOUND:-0}" = 1 ] \
-    || fail 'TILO_VM_TICKET: the ticket `tilo device add --capability admin` printed on an owner device'
+    || fail 'TILO_VM_TICKET: the ticket `tilo device add` printed on an owner device'
   local device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
   if [ -f "$image" ]; then
     image=$(podman load -q -i "$image" | sed -n 's/^Loaded image[s]*: *//p' | tail -n 1)

@@ -710,7 +710,6 @@ pub(super) struct Published {
 struct Part {
     route: crate::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentAuthority>>,
     heads: Vec<automerge::ChangeHash>,
     document: automerge::AutoCommit,
 }
@@ -728,9 +727,6 @@ fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::Workspace
     // Every unit of the pass, by the workspace it belongs to.
     let mut groups: Vec<(uuid::Uuid, Vec<(usize, collab_types::UnitMutation)>)> = Vec::new();
     for (index, part) in parts.iter_mut().enumerate() {
-        if part.authorization.is_some() {
-            continue;
-        }
         let workspace = part.route.cluster_id;
         let unit = collab_types::UnitMutation {
             app: &part.route.app_id,
@@ -775,14 +771,12 @@ pub(super) fn unit_commits(
 /// no action's.
 pub(super) fn part_request(
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentAuthority>>,
     commit: Option<collab_types::WorkspaceCommit>,
 ) -> CollabRequest {
     match commit {
         Some(commit) => CollabRequest::document_action(mutation, commit),
         None => CollabRequest::Document {
             mutation,
-            authorization,
             commit: None,
         },
     }
@@ -853,7 +847,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 entry.needs_snapshot,
                 entry.pending.failure.is_some(),
             );
-            let (mutation, authorization, heads, document) = match publication {
+            let (mutation, heads, document) = match publication {
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
                     blocked.get_or_insert("an owned document has unfinished changes");
@@ -865,10 +859,9 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 }
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
                     mutation,
-                    authorization,
                     heads,
                     document,
-                }) => (mutation, authorization, heads, document),
+                }) => (mutation, heads, document),
                 Err(_) => {
                     blocked.get_or_insert("an owned document is unreadable");
                     continue;
@@ -877,10 +870,6 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             parts.push(Part {
                 route: entry.route.clone(),
                 mutation,
-                authorization: authorization.map(|authorization| {
-                    std::sync::Arc::new(authorization)
-                        as std::sync::Arc<dyn crate::collaboration::DocumentAuthority>
-                }),
                 heads,
                 document,
             });
@@ -889,7 +878,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         for (part, commit) in parts.into_iter().zip(commits) {
             let route = part.route;
             let heads = part.heads;
-            let request = part_request(part.mutation, part.authorization, commit);
+            let request = part_request(part.mutation, commit);
             #[cfg(test)]
             let result = if let Some(refusal) = self.refuse_for_test.clone() {
                 Err(refusal)
@@ -1076,7 +1065,6 @@ mod tests {
         Part {
             route,
             mutation,
-            authorization: None,
             heads: Vec::new(),
             document: automerge::AutoCommit::new(),
         }
@@ -1145,7 +1133,7 @@ mod tests {
 
             // Every unit the action wrote goes out as a part of it.
             for (part, commit) in parts.into_iter().zip(commits) {
-                let request = part_request(part.mutation, part.authorization, commit.clone());
+                let request = part_request(part.mutation, commit.clone());
                 match commit {
                     Some(commit) => assert!(
                         matches!(

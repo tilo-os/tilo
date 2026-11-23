@@ -22,6 +22,7 @@ from ._errors import (
     ProtocolError,
     Refused,
     SurfaceChanged,
+    Unreachable,
     UnsupportedVersion,
 )
 from ._models import (
@@ -86,6 +87,7 @@ __all__ = [
     "SurfaceChanged",
     "Tilo",
     "Transport",
+    "Unreachable",
     "UnsupportedVersion",
     "Usage",
     "Workspace",

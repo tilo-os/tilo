@@ -927,9 +927,7 @@ impl crate::widget::ResourceOperations for Stepper {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         Ok(self
             .select_station_operation(request.kind, request.type_id, request.payload)?
             .then(|| {

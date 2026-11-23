@@ -1,10 +1,9 @@
-//! The external-moderation endpoint as a dispatched operation target and an
-//! invocation scope use it: the exact record route, the exact invocation and
-//! operation, one bounded endpoint per route.
+//! The external-moderation endpoint as a dispatched operation target uses it:
+//! the exact record route, the exact invocation and operation, one bounded
+//! endpoint per route.
 
 use crate::collaboration::external_moderation::{admit_for_test, enqueue};
 use crate::collaboration::{CollabRequest, RouteSpec};
-use std::sync::Arc;
 
 use crate::host_operation::OperationTarget;
 use registry_types::{ExternalModerationOperation, ModerationDestination, ModerationMutation};
@@ -78,81 +77,6 @@ async fn external_moderation_bridge_preserves_exact_record_invocation_operation_
     drop(pending);
     drop(first);
     assert!(target.external_moderation(invocation, operation).is_err());
-}
-
-#[tokio::test]
-async fn external_moderation_bridge_scoped_ownership_rejects_changed_parameters_and_cancelled_receipt()
- {
-    use crate::invocation_scope::{
-        PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
-    };
-    let fixture = crate::history_mode::owner::ResourceOwnerFixture::in_workspace(
-        1980,
-        "77777777-7777-4777-8777-777777777777",
-    );
-    let route = fixture.owner.broker_route().unwrap();
-    let (_endpoint, mut receive) = admit_for_test(route.channel_id()).unwrap();
-    let operation = operation();
-    let invocation = tilo_actions::InvocationId::new();
-    let lease = PublishedInvocationLease::new(
-        PublishedInvocationRequest {
-            wire_id: 1980,
-            invocation,
-            address: tilo_actions::ActionAddress::new("fixture", "submit-report"),
-            argument: Some(format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({
-                    "app": "org.example.app",
-                    "operation": serde_json::to_string(&operation).unwrap(),
-                })
-            )),
-            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
-            presence: None,
-        },
-        route,
-        Arc::new(|| Ok(())),
-    )
-    .with_owner_token(Arc::new("original moderation caller"))
-    .unwrap();
-    let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
-    let mut changed = operation.clone();
-    changed.destination.base_url = "https://other-registry.example".into();
-    assert!(scope.external_moderation(changed).is_err());
-    assert!(
-        receive.try_recv().is_err(),
-        "changed destination must never reach the host"
-    );
-    let mut changed = operation.clone();
-    if let ModerationMutation::FileReport { summary, .. } = &mut changed.mutation {
-        summary.push('!');
-    }
-    assert!(scope.external_moderation(changed).is_err());
-    assert!(receive.try_recv().is_err());
-    let pending = scope.external_moderation(operation.clone()).unwrap();
-    let CollabRequest::ExternalModeration {
-        command,
-        on_behalf_of,
-        reply,
-    } = receive.try_recv().unwrap()
-    else {
-        panic!("wrong request")
-    };
-    assert_eq!(command.operation, operation);
-    assert_eq!(on_behalf_of, invocation);
-    scope.cancel();
-    reply.send(Ok(registry_types::ModerationCase {
-        case_id: "case".into(),
-        package_id: "org.example.app".into(),
-        publisher_pubkey_hex: "ef".repeat(32),
-        status: registry_types::ModerationCaseStatus::Open,
-        opened_at_unix: 101,
-        updated_at_unix: 101,
-        latest_sequence: 1,
-    }));
-    assert!(pending.await.unwrap_err().contains("retired"));
-    assert!(scope.external_moderation(operation).is_err());
-    assert!(receive.try_recv().is_err());
 }
 
 #[test]

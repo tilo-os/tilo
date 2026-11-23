@@ -426,7 +426,6 @@ fn queue_components(pending: &mut std::collections::VecDeque<PathBuf>, path: &Pa
 
 /// The path the kernel reports for `path` itself, a symlink not followed: each component as the disk
 /// spells it.
-
 #[cfg(target_os = "macos")]
 fn on_disk(path: &Path) -> Option<PathBuf> {
     use std::ffi::{CString, OsStr};

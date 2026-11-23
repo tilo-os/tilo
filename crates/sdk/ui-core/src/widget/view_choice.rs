@@ -143,9 +143,7 @@ impl ViewChoice {
         &self,
         op: &super::ResourceOperation<'_>,
     ) -> Result<Option<String>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.kind != tilo_actions::OperationKind::View || request.type_id != CHOICE_SELECT {
             return Ok(None);
         }

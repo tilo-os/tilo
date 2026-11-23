@@ -29,6 +29,8 @@ pub mod compute;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod content;
+#[cfg(target_os = "linux")]
+pub mod control;
 mod host_runs;
 mod keep;
 #[cfg(target_os = "linux")]
@@ -39,7 +41,7 @@ mod person;
 pub mod processes;
 pub mod serve;
 pub mod services;
-mod shortcuts;
+pub mod shortcuts;
 pub mod take_work;
 mod ticket;
 #[cfg(test)]

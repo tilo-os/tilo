@@ -129,17 +129,17 @@ enum = "Reply"
 reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the server environments, and both ends of the socket ship in one image"
 
 [[break]]
-file = "crates/runtime/ush/src/supervisor.rs"
+file = "crates/vm/ush/src/supervisor.rs"
 enum = "ServeRequest"
 reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the server environment's client asked `list-relays`, and it went with that client"
 
 [[break]]
-file = "crates/runtime/ush/src/supervisor.rs"
+file = "crates/vm/ush/src/supervisor.rs"
 enum = "ServeResponse"
 reason = "one JSON line per answer over the supervisor's socket, tagged by its `result` name; only the server picker's ask was answered as `relays`, and it went with that picker"
 
 [[break]]
-file = "crates/runtime/ush/src/supervisor/session_end.rs"
+file = "crates/vm/ush/src/supervisor/session_end.rs"
 enum = "EndReport"
 reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described server sessions no longer served"
 
@@ -199,7 +199,7 @@ enum = "GovernanceRow"
 reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared layout is no longer a governed row, and every operation stored before it is one that names a row that still exists"
 
 [[break]]
-file = "crates/runtime/linux-vm/src/hosted/size.rs"
+file = "crates/vm/linux-vm/src/hosted/size.rs"
 enum = "VmSize"
 reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
@@ -363,7 +363,7 @@ file = "crates/dev/ui-graph/src/component.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 [[break]]
-file = "tools/tilo-vm-protocol/src/lib.rs"
+file = "crates/os/tilo-device-protocol/src/lib.rs"
 enum = "Request"
 reason = "the account-slot variants are renamed at the same indexes; the request names are JSON-RPC between the tilo-vm CLI and its daemon, built and shipped together, so no older reader meets them"
 
@@ -477,7 +477,7 @@ enum = "SessionTarget"
 reason = "the variant is renamed from `Legacy` to `LinuxVm` because that is the VM's name. A target is JSON in the terminal's own session record, where an unknown kind decodes as no target and the tab opens its default, so a record written by another build cannot be misread; nothing else sends it (the supervisor's target type does not carry a VM target)"
 
 [[break]]
-file = "crates/runtime/ush/src/broker.rs"
+file = "crates/vm/ush/src/broker.rs"
 enum = "Request"
 reason = "the variant is renamed from `LegacyLaunch` to `LinuxVmLaunch` because that is the VM's name. A request is one JSON frame on the runtime's local broker socket, written and read by the same executable: nothing keeps it and nothing at another version sends it"
 
@@ -681,12 +681,12 @@ enum = "Change"
 reason = "`SetMemberRoles` went and came back as `RetiredSetMemberRoles` in its place. It held that place from the first build with custom roles, so every workspace those builds kept numbers `SetMemberCustomRole` and `TransferOwnership` after it; while it was gone a kept ownership transfer did not read, the workspace replayed to the owner it was handed away from, and its state no longer opened. Only operations written in the hours it was gone read differently now"
 
 [[break]]
-file = "crates/runtime/linux-vm/src/hosted/control.rs"
+file = "crates/vm/linux-vm/src/hosted/control.rs"
 enum = "Request"
 reason = "the hosted-VM control protocol is one request and one reply per connection on the host's local socket, never kept; the host and its every client (ush, the member, the CLI) ship in one image, so no bytes written by another build are read"
 
 [[break]]
-file = "crates/runtime/linux-vm/src/hosted/control.rs"
+file = "crates/vm/linux-vm/src/hosted/control.rs"
 enum = "Reply"
 reason = "the host's answer on the same local connection, never kept, between ends shipped in one image"
 
@@ -699,3 +699,8 @@ reason = "the host-kept call frames go (`VoiceCall` to `VoiceShow`): being in a 
 file = "crates/browser/tilo-browser-runtime/src/peer_js_state.rs"
 enum = "JsVoiceEvent"
 reason = "the host's call events go with the host-kept calls: a page reads who is in a call from its presence. The events are JSON tagged by name, handed from the page's wasm to its own JavaScript of the same build, and kept nowhere"
+
+[[break]]
+file = "crates/os/tilo-device-protocol/src/lib.rs"
+enum = "LayerSource"
+reason = "a device-control action's argument, JSON by name, read once by the step that imports the layer and never kept. `Upload` named bytes sent in request lines to tilo-vmd, which is gone: a layer now arrives as a content blob the action names"

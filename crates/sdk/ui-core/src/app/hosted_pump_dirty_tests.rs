@@ -38,9 +38,7 @@ impl crate::widget::ResourceOperations for HostedPumpProbe {
         _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         assert_eq!(request.kind, OperationKind::View);
         assert_eq!(request.type_id, COUNTER_TYPE);
         *self.pending_label.borrow_mut() = Some("After".into());

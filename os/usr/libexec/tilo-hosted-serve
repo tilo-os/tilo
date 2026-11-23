@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start the hosted-VM service on the machine that owns its VMs (crates/runtime/
+# Start the hosted-VM service on the machine that owns its VMs (crates/vm/
 # linux-vm/src/hosted): fetch the guest this build pins, then
 # `tilo-linux-vm hosted serve` as the service's own account.
 #

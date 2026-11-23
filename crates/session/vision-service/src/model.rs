@@ -1,0 +1,306 @@
+//! What the device's image model is, and how an image reaches it.
+//!
+//! A [`VisionModel`] answers about one picture: what it shows, the text in
+//! it, the objects and pets in it, and which pictures show the same face.
+//! [`LocalVision`] is the one this device runs: the AI settings hub's chosen
+//! provider and model, reached through the model gateway's connection, which
+//! holds the provider's key and never hands it over. Models are discovered
+//! from [`agent_provider_config::ProviderConfig`] as the settings hub writes
+//! it, so choosing a model in Settings is what this service answers with; a
+//! session with no model refuses in words rather than answering empty.
+
+use std::os::fd::{AsFd, OwnedFd};
+
+use agent_provider_config::ProviderConfig;
+use serde::{Deserialize, Serialize};
+
+use crate::ImageModelReading;
+
+/// The most text kept from an OCR engine: below the CRDT's practical change
+/// budget, so one pathological scan is never a collaborative payload.
+pub const MAX_OCR_CHARS: usize = 32 * 1024;
+
+/// Why the model did not answer. A refusal is the model's own word (its
+/// provider said no, or a policy did), and stays one to the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelError {
+    /// No model is chosen or ready on this device.
+    Unavailable(String),
+    /// The model or its provider refused the request.
+    Refused(String),
+    /// It ran and failed.
+    Failed(String),
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(reason) | Self::Refused(reason) | Self::Failed(reason) => {
+                formatter.write_str(reason)
+            }
+        }
+    }
+}
+
+/// Everything one model call answers about a picture: what it shows, the
+/// words in it, and the objects and pets it holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Analysis {
+    pub description: String,
+    pub ocr_text: String,
+    pub objects: Vec<String>,
+    pub pets: Vec<String>,
+    pub model: String,
+    pub revision: String,
+}
+
+/// One group of pictures the model found the same face in. Ids are the
+/// caller's own, so the model never names a photograph.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaceBatch {
+    pub model: String,
+    pub revision: String,
+    pub clusters: Vec<FaceCluster>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaceCluster {
+    pub id: String,
+    pub images: Vec<String>,
+}
+
+/// The device's image model, as actions ask it. Every method takes the
+/// decoded bytes of the pictures it reads, never a path.
+pub trait VisionModel: Send + Sync {
+    /// Which model answers now, and why none does.
+    fn reading(&self) -> ImageModelReading;
+
+    /// Everything the model answers about the picture in one call: what it
+    /// shows, the words in it, the objects and pets.
+    ///
+    /// # Errors
+    /// [`ModelError`] when no model answers.
+    fn analyze(&self, image: &[u8]) -> Result<Analysis, ModelError>;
+
+    /// The text in the picture, read on this device. Separate from
+    /// [`Self::analyze`] because it needs no model: a device with no language
+    /// model still reads text.
+    ///
+    /// # Errors
+    /// [`ModelError`] when no engine reads it.
+    fn ocr(&self, image: &[u8], language: &str) -> Result<String, ModelError>;
+
+    /// Which of `images` show the same face, each named by the caller's own
+    /// id.
+    ///
+    /// # Errors
+    /// [`ModelError`] when no face model answers.
+    fn faces(&self, images: &[(String, Vec<u8>)]) -> Result<FaceBatch, ModelError>;
+}
+
+/// This device's model: the AI settings hub's local vision and face models,
+/// reached through the session's model gateway connection.
+pub struct LocalVision {
+    gateway: Option<OwnedFd>,
+}
+
+impl LocalVision {
+    /// The model this device runs, with the model gateway connection this
+    /// session holds (`None` when no gateway runs here: OCR still answers).
+    #[must_use]
+    pub fn new(gateway: Option<OwnedFd>) -> Self {
+        Self { gateway }
+    }
+
+    /// The session's connection to the model gateway, made as the launcher
+    /// makes one for an app it starts, as `so.tilo.vision`.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn gateway() -> Option<OwnedFd> {
+        let name = launcher::services::MODEL_GATEWAY_SERVICE;
+        let requirement = launcher::manifest::ServiceReq::parse(
+            name,
+            &format!("optional@{}", runtime_portal::RUNTIME_INTERFACE_VERSION),
+        )
+        .ok()?;
+        let wanted = std::collections::BTreeMap::from([(name.to_owned(), requirement)]);
+        let context = launcher::services::ServiceLaunchContext {
+            app_id: crate::APP,
+            workspace_id: None,
+        };
+        match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
+            Ok(resolved) => resolved.into_iter().next().map(|service| service.host),
+            Err(error) => {
+                tracing::debug!(%error, "no model gateway for image analysis");
+                None
+            }
+        }
+    }
+
+    /// The model gateway's connection, when this device has one.
+    #[cfg(target_os = "linux")]
+    fn connected(&self) -> Result<&OwnedFd, ModelError> {
+        self.gateway.as_ref().ok_or_else(|| {
+            ModelError::Unavailable(
+                "No model gateway runs for this session, so no model answers".to_owned(),
+            )
+        })
+    }
+
+    /// The picture's bytes decoded as the toolkit's pixels, which every model
+    /// takes.
+    fn decode(image: &[u8]) -> Result<tilo_image_codec::DecodedImage, ModelError> {
+        tilo_image_codec::decode_now(image, Some(tilo_vision::MAX_INPUT_EDGE))
+            .map_err(|error| ModelError::Failed(format!("the picture cannot be read: {error}")))
+    }
+}
+
+/// The local vision capability the settings hub chose, if any.
+fn vision_capability() -> Option<tilo_vision::LocalVisionCapability> {
+    tilo_vision::discover_local_capability(&ProviderConfig::load())
+}
+
+/// The local face capability the settings hub chose, if any.
+fn face_capability() -> Option<tilo_vision::LocalFaceCapability> {
+    tilo_vision::discover_local_face_capability(&ProviderConfig::load())
+}
+
+/// The reading of the chosen model: which provider, model and revision
+/// answer, or why none does. It never names a key or an endpoint.
+#[must_use]
+pub fn reading() -> ImageModelReading {
+    let config = ProviderConfig::load();
+    let vision = vision_capability();
+    let face = face_capability();
+    let model = vision
+        .as_ref()
+        .map(|capability| capability.model_label.clone());
+    let provider = vision
+        .as_ref()
+        .map(|capability| capability.profile_id.clone());
+    let revision = vision
+        .as_ref()
+        .map(|capability| capability.revision.clone());
+    let detail = if vision.is_none() {
+        match config.active_profile() {
+            None => "No model provider is set up. Choose one in Settings, under Agent models.",
+            Some(_) => {
+                "No local image model is ready. Install one in Settings, under Agent models."
+            }
+        }
+        .to_owned()
+    } else {
+        String::new()
+    };
+    ImageModelReading {
+        available: vision.is_some(),
+        provider: provider.unwrap_or_default(),
+        model: model.unwrap_or_default(),
+        revision: revision.unwrap_or_default(),
+        faces: face.is_some(),
+        detail,
+    }
+}
+
+#[cfg(unix)]
+fn gateway_error(error: &tilo_model_client::ClientError) -> ModelError {
+    use agent_provider_config::protocol::ErrorKind;
+    let kind = error.model_error().kind;
+    match kind {
+        ErrorKind::Unavailable => ModelError::Unavailable(error.to_string()),
+        ErrorKind::PermissionDenied | ErrorKind::Authentication => {
+            ModelError::Refused(error.to_string())
+        }
+        _ => ModelError::Failed(error.to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl VisionModel for LocalVision {
+    fn reading(&self) -> ImageModelReading {
+        reading()
+    }
+
+    fn analyze(&self, image: &[u8]) -> Result<Analysis, ModelError> {
+        let capability = vision_capability().ok_or_else(|| {
+            ModelError::Unavailable(
+                "No local image model is ready. Install one in Settings, under Agent models."
+                    .to_owned(),
+            )
+        })?;
+        let decoded = Self::decode(image)?;
+        let prepared = tilo_vision::prepare(&decoded, image)
+            .map_err(|error| ModelError::Failed(error.user_message().to_owned()))?;
+        let analysis = tilo_vision::analyze_on(self.connected()?.as_fd(), &capability, prepared)
+            .map_err(|error| match error {
+                tilo_vision::Error::Gateway(error) => gateway_error(&error),
+                error => ModelError::Failed(error.user_message().to_owned()),
+            })?;
+        Ok(Analysis {
+            description: truncate(analysis.description, tilo_vision::MAX_DESCRIPTION_CHARS),
+            ocr_text: analysis.ocr,
+            objects: analysis.labels,
+            pets: analysis.pets,
+            model: capability.model_id,
+            revision: capability.revision,
+        })
+    }
+
+    fn ocr(&self, image: &[u8], language: &str) -> Result<String, ModelError> {
+        if language.is_empty()
+            || !language
+                .bytes()
+                .all(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        {
+            return Err(ModelError::Failed(
+                "A language is named by its letters only, such as `eng`".to_owned(),
+            ));
+        }
+        let decoded = Self::decode(image)?;
+        let document = tilo_ocr::recognize(&decoded, language)
+            .map_err(|error| ModelError::Failed(error.user_message().to_owned()))?;
+        Ok(truncate(document.plain_text(), MAX_OCR_CHARS))
+    }
+
+    fn faces(&self, images: &[(String, Vec<u8>)]) -> Result<FaceBatch, ModelError> {
+        let capability = face_capability().ok_or_else(|| {
+            ModelError::Unavailable(
+                "No local face model is ready. Install one in Settings, under Agent models."
+                    .to_owned(),
+            )
+        })?;
+        let prepared = images
+            .iter()
+            .map(|(id, bytes)| Ok((id.clone(), Self::decode(bytes)?, bytes.clone())))
+            .collect::<Result<Vec<_>, ModelError>>()?;
+        let response =
+            tilo_vision::cluster_faces_on(self.connected()?.as_fd(), &capability, prepared)
+                .map_err(|error| match error {
+                    tilo_vision::Error::Gateway(error) => gateway_error(&error),
+                    error => ModelError::Failed(error.user_message().to_owned()),
+                })?;
+        Ok(FaceBatch {
+            model: capability.model_id,
+            revision: capability.revision,
+            clusters: response
+                .clusters
+                .into_iter()
+                .map(|cluster| FaceCluster {
+                    id: cluster.id,
+                    images: cluster.photo_ids,
+                })
+                .collect(),
+        })
+    }
+}
+
+/// `value` cut to at most `max` characters.
+fn truncate(value: String, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value;
+    }
+    value.chars().take(max).collect()
+}

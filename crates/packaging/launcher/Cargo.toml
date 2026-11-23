@@ -57,7 +57,6 @@ tilo-paths.workspace = true
 tilo-process = { path = "../../platform/tilo-process" }
 # Where the files a person chose for the app are served (the paths only).
 tilo-documents.workspace = true
-fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 # Launch phase marks, handed to the app so its startup file covers the time

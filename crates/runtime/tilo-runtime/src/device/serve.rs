@@ -351,12 +351,9 @@ async fn serve_held<E: Enter>(
     shared: Arc<Shared<E>>,
     holding: Holding,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    // A socket left by a holder that ended without removing it.
-    let _ = std::fs::remove_file(place.socket());
-    let listener = tilo_files::native::socket::bind(place.socket())
+    // Replaces a socket left by a holder that ended without removing it.
+    let listener = tilo_files::native::private::bind_socket(place.socket())
         .with_context(|| format!("listen at {}", place.socket().display()))?;
-    std::fs::set_permissions(place.socket(), std::fs::Permissions::from_mode(0o600))?;
     serve_api(place, &shared)?;
     let linger = match holding {
         Holding::Linger(linger) => {
@@ -679,15 +676,12 @@ impl Drop for Watching {
 /// would cut this one off at the server. While the device is not in the workspace, each call
 /// answers why.
 fn serve_api<E: Enter>(place: &DaemonPlace, shared: &Arc<Shared<E>>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let _ = std::fs::remove_file(place.api());
-    let listener = tilo_files::native::socket::bind(place.api())
+    let listener = tilo_files::native::private::bind_socket(place.api())
         .and_then(|listener| {
             listener.set_nonblocking(true)?;
             tokio::net::UnixListener::from_std(listener)
         })
         .with_context(|| format!("listen at {}", place.api().display()))?;
-    std::fs::set_permissions(place.api(), std::fs::Permissions::from_mode(0o600))?;
     let shared = Arc::clone(shared);
     tokio::spawn(tilo_api::direct::serve_current(listener, move || {
         let shared = Arc::clone(&shared);

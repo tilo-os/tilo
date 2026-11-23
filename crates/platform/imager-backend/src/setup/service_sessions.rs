@@ -5,12 +5,14 @@ pub mod source;
 use super::account_transfer::{Connector, PasswordSealedAccounts};
 use accounts::person::AccountList;
 use accounts::{Account, AccountId, SecretVault};
-#[cfg(all(target_os = "linux", feature = "installation"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "installation", feature = "test-support")
+))]
 use browser_continuity::sessions::OriginStorage;
 use browser_continuity::sessions::Service;
 #[cfg(target_os = "linux")]
 use browser_continuity::sessions::SessionCookies;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
@@ -18,81 +20,34 @@ use std::{io, path::Path};
 #[cfg(target_os = "linux")]
 use zeroize::Zeroize;
 
-/// Public ciphertext-only declaration, authenticated by the prepared setup manifest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Declaration {
-    pub schema: u32,
-    #[serde(
-        default = "legacy_protocol",
-        skip_serializing_if = "is_legacy_protocol"
-    )]
-    pub consumer_protocol: u32,
-    pub sessions: Vec<SelectedSession>,
-    pub sealed_bytes: u64,
-    pub ciphertext_sha256: [u8; 32],
+pub use prepared_setup_model::{SelectedSession, ServiceSessionsDeclaration as Declaration};
+
+/// The workspace's account of this website session, bound to the setup operation `binding`.
+#[must_use]
+pub fn account(session: &SelectedSession, binding: &str) -> Account {
+    let mut account = Account::new(
+        session.id.clone(),
+        account_credentials::service_sessions::SERVICE_SESSION_TYPE,
+    );
+    account.config =
+        serde_json::json!({"service": session.service.as_str(), "setup_binding": binding});
+    account
 }
-fn legacy_protocol() -> u32 {
-    1
-}
-fn is_legacy_protocol(value: impl std::borrow::Borrow<u32>) -> bool {
-    *value.borrow() == 1
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SelectedSession {
-    pub id: String,
-    pub service: Service,
-}
-impl SelectedSession {
-    /// The workspace's account of this website session, bound to the setup operation `binding`.
-    #[must_use]
-    pub fn account(&self, binding: &str) -> Account {
-        let mut account = Account::new(
-            self.id.clone(),
-            account_credentials::service_sessions::SERVICE_SESSION_TYPE,
-        );
-        account.config =
-            serde_json::json!({"service": self.service.as_str(), "setup_binding": binding});
-        account
+
+/// # Errors
+/// Refuses changed ciphertext before authentication/import.
+pub fn verify_ciphertext(
+    declaration: &Declaration,
+    artifact: &PasswordSealedAccounts,
+) -> io::Result<()> {
+    declaration.validate()?;
+    if declaration.sealed_bytes
+        != u64::try_from(artifact.as_bytes().len()).map_err(|_| invalid())?
+        || declaration.ciphertext_sha256 != <[u8; 32]>::from(Sha256::digest(artifact.as_bytes()))
+    {
+        return Err(invalid());
     }
-}
-impl Declaration {
-    /// # Errors
-    /// Refuses unsupported declarations, duplicate IDs/services or oversized ciphertext.
-    pub fn validate(&self) -> io::Result<()> {
-        if self.schema != 1
-            || !matches!(self.consumer_protocol, 1 | 2)
-            || self.sessions.is_empty()
-            || self.sessions.len() > 2
-            || self.sealed_bytes == 0
-            || self.sealed_bytes > 8 * 1024 * 1024 + 1024
-        {
-            return Err(invalid());
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        let mut services = std::collections::BTreeSet::new();
-        for session in &self.sessions {
-            if !browser_continuity::sessions::valid_id(&session.id)
-                || !ids.insert(&session.id)
-                || !services.insert(session.service.as_str())
-            {
-                return Err(invalid());
-            }
-        }
-        Ok(())
-    }
-    /// # Errors
-    /// Refuses changed ciphertext before authentication/import.
-    pub fn verify_ciphertext(&self, artifact: &PasswordSealedAccounts) -> io::Result<()> {
-        self.validate()?;
-        if self.sealed_bytes != u64::try_from(artifact.as_bytes().len()).map_err(|_| invalid())?
-            || self.ciphertext_sha256 != <[u8; 32]>::from(Sha256::digest(artifact.as_bytes()))
-        {
-            return Err(invalid());
-        }
-        Ok(())
-    }
+    Ok(())
 }
 /// Retains only an owned private staging vault. Original browser stores remain read-only.
 pub struct PreparedSessions {
@@ -226,7 +181,7 @@ impl PreparedSessions {
             let mut secret =
                 account_credentials::service_sessions::service_session_secret(&session)
                     .map_err(|_| invalid())?;
-            let account = chosen.account(&binding);
+            let account = account(&chosen, &binding);
             vault.put(&account.id, &secret);
             secret.password.zeroize();
             if let Some(token) = secret.token.as_mut() {
@@ -258,7 +213,7 @@ impl PreparedSessions {
         for selected in &self.selected {
             let session = credential_store
                 .service_session(
-                    &selected.account(&self.binding),
+                    &account(selected, &self.binding),
                     self.identity,
                     &self.binding,
                 )
@@ -275,8 +230,54 @@ impl PreparedSessions {
             sealed_bytes: u64::try_from(artifact.as_bytes().len()).map_err(|_| invalid())?,
             ciphertext_sha256: Sha256::digest(artifact.as_bytes()).into(),
         };
-        declaration.verify_ciphertext(&artifact)?;
+        verify_ciphertext(&declaration, &artifact)?;
         Ok((artifact, declaration))
+    }
+
+    /// Stage one synthetic schema-2 Discord origin session so cross-crate tests can
+    /// seal and import a protocol 2 service session without linking LevelDB.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    pub fn from_protocol_2_origin_fixture(identity: [u8; 32], binding: String) -> io::Result<Self> {
+        let stage = private_stage()?;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = SessionCookies {
+            schema: 2,
+            session_id: session_id.clone(),
+            service: Service::Discord,
+            identity_public_key: identity,
+            setup_binding: binding.clone(),
+            source_snapshot_digest: [9; 32],
+            cookies: Vec::new(),
+            origin_storage: vec![OriginStorage {
+                origin: "https://discord.com".into(),
+                key: "token".into(),
+                value: "\"fixture-discord-origin-session\"".into(),
+                source_snapshot_digest: [9; 32],
+            }],
+        };
+        let chosen = SelectedSession {
+            id: session_id,
+            service: Service::Discord,
+        };
+        let mut secret = account_credentials::service_sessions::service_session_secret(&session)
+            .map_err(|_| invalid())?;
+        let mut record = AccountList::default();
+        let mut vault = SecretVault::open_in(stage.path());
+        let account = account(&chosen, &binding);
+        vault.put(&account.id, &secret);
+        secret.password.zeroize();
+        if let Some(token) = secret.token.as_mut() {
+            token.zeroize();
+        }
+        record.keep(&account).map_err(|_| invalid())?;
+        vault.try_save().map_err(|_| invalid())?;
+        record.stage_in(stage.path()).map_err(|_| invalid())?;
+        Ok(Self {
+            stage,
+            identity,
+            binding,
+            selected: vec![chosen],
+        })
     }
 }
 pub fn transport_binding(binding: &str) -> Vec<u8> {
@@ -292,7 +293,7 @@ pub fn validate_artifact(
     identity: [u8; 32],
     binding: &str,
 ) -> io::Result<()> {
-    declaration.verify_ciphertext(artifact)?;
+    verify_ciphertext(declaration, artifact)?;
     let stage = private_stage()?;
     import_checked_stage(
         artifact,
@@ -341,7 +342,7 @@ fn import_checked_stage(
     binding: &str,
     target: &Path,
 ) -> io::Result<()> {
-    declaration.verify_ciphertext(artifact)?;
+    verify_ciphertext(declaration, artifact)?;
     let ids: Vec<_> = declaration
         .sessions
         .iter()
@@ -359,7 +360,7 @@ fn import_checked_stage(
     let mut consumer_protocol = 1;
     for selected in &declaration.sessions {
         let session = credential_store
-            .service_session(&selected.account(binding), identity, binding)
+            .service_session(&account(selected, binding), identity, binding)
             .map_err(|_| invalid())?;
         if session.service != selected.service {
             return Err(invalid());
@@ -552,7 +553,7 @@ mod tests {
         let session =
             account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
                 .service_session(
-                    &declaration.sessions[0].account("exact-operation"),
+                    &account(&declaration.sessions[0], "exact-operation"),
                     [7; 32],
                     "exact-operation",
                 )

@@ -23,20 +23,20 @@
 //! process's own read-only memory: the sender can still write the object, but never what the
 //! receiver validated. The writable ring and `SharedMemory` need seals, so they stay Linux's.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::collections::VecDeque;
 use std::io;
 use std::os::fd::OwnedFd;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::NonNull;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use rustix::fs::{MemfdFlags, SealFlags};
 use rustix::mm::{MapFlags, ProtFlags};
 
 /// Seals every memfd carries.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const SIZE_SEALS: SealFlags = SealFlags::SHRINK
     .union(SealFlags::GROW)
     .union(SealFlags::SEAL);
@@ -57,7 +57,7 @@ impl Mapping {
     /// Map `fd` read-only after checking it is a memfd sealed against
     /// resizing (and against writes when `immutable`), at least `min_len`
     /// bytes and at most `max_len`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn map_sealed(
         fd: &OwnedFd,
         immutable: bool,
@@ -108,7 +108,7 @@ impl Mapping {
     /// size is rounded up to whole pages, so it may exceed `max_len` by less than a page; what
     /// lies beyond `max_len` is not copied. A writable buffer (`immutable` false) needs seals and
     /// is refused.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     pub fn map_sealed(
         fd: &OwnedFd,
         immutable: bool,
@@ -246,7 +246,7 @@ impl Drop for Mapping {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn memfd(name: &str) -> io::Result<OwnedFd> {
     Ok(rustix::fs::memfd_create(
         name,
@@ -261,7 +261,7 @@ pub fn sealed_blob(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     tilo_sandbox::shm::from_bytes(name, bytes)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// The app's side of the ring: a writable mapping and the records the
 /// service has not finished with yet.
 pub struct RingWriter {
@@ -274,12 +274,12 @@ pub struct RingWriter {
     head: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 // SAFETY: the writable mapping belongs to this value alone; moving it to
 // another thread moves the only writer.
 unsafe impl Send for RingWriter {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 impl RingWriter {
     /// A ring of `len` bytes, sealed against resizing.
     pub fn create(len: usize) -> io::Result<Self> {
@@ -386,7 +386,7 @@ impl RingWriter {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 impl Drop for RingWriter {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the mapping made in `create`.
@@ -394,7 +394,7 @@ impl Drop for RingWriter {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// A writable shared memfd: a buffer the service without a GPU draws into
 /// and the app attaches as `wl_shm`. Sealed against shrinking, so the
 /// compositor's mapping of it never faults.
@@ -404,11 +404,11 @@ pub struct SharedMemory {
     len: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 // SAFETY: the writable mapping belongs to this value alone.
 unsafe impl Send for SharedMemory {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 impl SharedMemory {
     /// `len` zeroed bytes.
     pub fn create(name: &str, len: usize) -> io::Result<Self> {
@@ -443,7 +443,7 @@ impl SharedMemory {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the mapping made in `create`.

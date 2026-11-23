@@ -838,22 +838,24 @@ impl BrokerHandle {
             .connect_local_worker(route, certificate)
     }
 
-    /// Connects one local host worker together with its published-invocation authorizer.
-    pub fn connect_local_worker_with_authorizer(
+    /// Connects one local host worker with a lookup of the original
+    /// invocations delivered to it.
+    #[cfg(test)]
+    pub(crate) fn connect_local_worker_with_originals(
         &self,
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<
         (
             std::os::unix::net::UnixStream,
-            collaboration::invocation_scope::PublishedInvocationAuthorizer,
+            crate::apps::collab_app_broker::OriginalLookup,
         ),
         String,
     > {
         self.fanout
             .app_broker()
-            .ok_or("broker unavailable")?
-            .connect_local_worker_with_authorizer(route, certificate)
+            .ok_or("unavailable")?
+            .connect_local_worker_with_originals(route, certificate)
     }
 
     /// Cloneable handle for the live resource/action search provider.

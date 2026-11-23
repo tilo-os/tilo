@@ -16,10 +16,12 @@ proves, for one check:
 """
 
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -301,6 +303,29 @@ def counting_reads(read: list[Path]):
         return judgement
 
     return factory
+
+
+class GitTimeoutTests(unittest.TestCase):
+    """A git call that does not finish refuses the commit, naming the step."""
+
+    def test_a_git_call_that_does_not_finish_refuses_with_the_step_named(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = judged_module.subprocess.run
+
+            def slow(*args, **kwargs):
+                self.assertEqual(kwargs.get("timeout"), judged_module.GIT_TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(args[0], judged_module.GIT_TIMEOUT_SECONDS)
+
+            judged_module.subprocess.run = slow
+            stderr = io.StringIO()
+            try:
+                with redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
+                    judged_module.git(Path(directory), "diff", "--cached", "--name-only")
+            finally:
+                judged_module.subprocess.run = original
+            self.assertEqual(refused.exception.code, 2)
+            self.assertIn("git diff did not finish within", stderr.getvalue())
+            self.assertIn("refusing rather than holding the commit", stderr.getvalue())
 
 
 class JudgedTests(unittest.TestCase):
