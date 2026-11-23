@@ -1141,7 +1141,7 @@ impl ServerAgents {
             let kept = |agent: &&Agent| {
                 !agent.is_retired() && agent.mcp_client.is_none() && agent.sub.is_none()
             };
-            let answering: BTreeSet<String> = agents
+            let tracked: BTreeSet<String> = agents
                 .agents
                 .iter()
                 .filter(kept)
@@ -1171,7 +1171,7 @@ impl ServerAgents {
                         tracing::warn!(workspace = %id, agent = %agent.id.0, %error, "a new agent's triggers were not saved");
                     }
                 }
-                for gone in before.difference(&answering) {
+                for gone in before.difference(&tracked) {
                     let shortcut = triggered::shortcut_id(gone);
                     if !saved.contains(&shortcut) {
                         continue;
@@ -1189,7 +1189,7 @@ impl ServerAgents {
                     .filter(answers)
                     .map(|agent| (agent.id.0.clone(), agent.name.clone())),
             );
-            now.insert(id, holding);
+            now.insert(id, tracked);
         }
         *known = Some(now);
         answering.sort();
