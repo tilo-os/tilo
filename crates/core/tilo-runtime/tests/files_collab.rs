@@ -1,11 +1,16 @@
 //! What a workspace's own host keeps and answers over time: a branch of its Files, a document a
 //! remote member wrote sealed and read cold afterwards, a link a host mints under its web entry,
-//! and a view asked while a record's read is slow.
+//! and a view asked while a provider's call is slow.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tilo_actions::remote::{ActionProvider as _, CatalogueQuery, ViewResourceQuery};
+use tilo_actions::remote::{
+    ActionProvider as _, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
+    TestProvider, ViewResourceQuery,
+};
+use tilo_actions::{ActionAddress, ActionOutput};
 
 use crate::files_support::{
     Session, content_at, content_bytes, keeps, kept_when, put, said, tree_if_kept, varied,
@@ -232,9 +237,83 @@ fn the_server_mints_a_message_link_with_its_range() {
     });
 }
 
-/// A registered read whose worker takes long to answer holds up nothing else: a view of another
-/// record of the same workspace answers meanwhile within a small multiple of what it costs with
-/// nothing running.
+/// The provider whose calls take long: each one holds the thread it is asked on until the test
+/// lets it go or [`SLOW`] passes, as a provider doing a large import, a long effect or one that
+/// hangs does.
+const SLOW_PROVIDER: &str = "so.tilo.slow";
+/// How long a slow call holds its thread at most before it answers.
+const SLOW: Duration = Duration::from_secs(4);
+/// How many times a view's normal cost the one asked while a slow call goes on may take.
+const RATIO: u32 = 3;
+/// What a view may take beyond that: a shared machine has to find a core for the thread the
+/// call goes on in, which costs tens of milliseconds when every core is taken, and the slow
+/// call holds its own for seconds.
+const SLACK: Duration = Duration::from_millis(500);
+
+/// A provider registered on the device whose every call holds its thread: it says when one
+/// starts, and answers once `let_go` is dropped or [`SLOW`] passes.
+fn slow_provider(
+    started: Arc<tokio::sync::Notify>,
+    let_go: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+) -> Arc<TestProvider> {
+    Arc::new(
+        TestProvider::new()
+            .with_catalogue(|caller, query| {
+                let row = CatalogueRow::for_action(
+                    SLOW_PROVIDER,
+                    SLOW_PROVIDER,
+                    tilo_actions::ActionDescriptor {
+                        did: None,
+                        state: tilo_actions::ActionState::default(),
+                        semantic_identity: None,
+                        address: ActionAddress::new("slow", "import"),
+                        resource_kind: "slow".into(),
+                        resource_label: "Slow".into(),
+                        action_label: "Import".into(),
+                        keywords: Vec::new(),
+                        icon: None,
+                        description: None,
+                        locus: tilo_actions::ExecutionLocus::ClientLocal,
+                        kind: tilo_actions::OperationKind::Effect,
+                        contract: tilo_actions::ActionContract::default(),
+                        input: tilo_actions::InputSpec::None,
+                        params: Vec::new(),
+                        view: None,
+                    },
+                );
+                let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
+                if query.provider.is_none() {
+                    page.providers.push(CatalogueProvider {
+                        provider: SLOW_PROVIDER.into(),
+                        app_id: SLOW_PROVIDER.into(),
+                        workspace: caller.workspace().unwrap_or_default().to_owned(),
+                        document_id: String::new(),
+                        browsable: true,
+                    });
+                }
+                Ok(page)
+            })
+            .completing(move |_| {
+                started.notify_one();
+                let held = let_go.lock().unwrap().take();
+                if let Some(held) = held {
+                    // Either the test lets go (its sender dropped) or the bound passes.
+                    let _ = held.recv_timeout(SLOW);
+                }
+                ActionOutput::default()
+            }),
+    )
+}
+
+/// The middle of `samples`.
+fn median(mut samples: Vec<Duration>) -> Duration {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+/// A call of a provider the device registered that takes long to answer holds up nothing else: a
+/// view of a record of the same workspace answers meanwhile within a small multiple of what it
+/// costs with nothing running.
 #[test]
 fn a_slow_read_leaves_its_thread_answering() {
     const ROUNDS: usize = 7;
@@ -265,22 +344,63 @@ fn a_slow_read_leaves_its_thread_answering() {
         );
         assert!(!failed, "{text}");
 
+        let started = Arc::new(tokio::sync::Notify::new());
+        let let_go = Arc::new(Mutex::new(None));
+        host.daemon().provide(
+            SLOW_PROVIDER,
+            slow_provider(Arc::clone(&started), Arc::clone(&let_go)) as _,
+        );
+
         let view = issue_view(&host, &workspace).await;
+        viewed(&host, &workspace, view.clone()).await;
         // What a view of the issue costs with nothing running: the middle of a few.
         let mut alone = Vec::new();
         for _ in 0..ROUNDS {
             alone.push(viewed(&host, &workspace, view.clone()).await);
         }
-        alone.sort_unstable();
-        let _alone = alone[alone.len() / 2];
+        let alone = median(alone);
 
-        // Each round, the chat record's read takes long to answer, and the issue's view is asked
-        // while it does. Making one record's registered read slow is agent-session's
-        // `slowed::Slowed`, a test switch that went with its `WorkspaceActions`; a device's
-        // daemon has no production-visible way to hold a worker's read.
-        panic!(
-            "a device's daemon has no way to make a registered read slow: `slowed::Slowed` went \
-             with agent-session's WorkspaceActions, so a view cannot be timed beside one"
+        // Each round, a key's call of the slow provider holds its thread, and the issue's view
+        // is asked while it does: it waits for nothing of the slow call's.
+        let mut beside = Vec::new();
+        for _ in 0..ROUNDS {
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            *let_go.lock().unwrap() = Some(held);
+            let slow_key = host.key("Importer");
+            let in_workspace = workspace.clone();
+            let call = tokio::spawn(async move {
+                said(
+                    &slow_key
+                        .tool(
+                            "tilo_do",
+                            &json!({"workspace": in_workspace, "path": "slow#import",
+                                "args": {}}),
+                        )
+                        .await,
+                )
+            });
+            tokio::time::timeout(SLOW, started.notified())
+                .await
+                .expect("the key's call reaches the slow provider");
+            let took = viewed(&host, &workspace, view.clone()).await;
+            println!("a view of the issue beside the slow call took {took:?}");
+            // Let the slow call answer, so the round ends and the next starts from a quiet
+            // thread.
+            drop(release);
+            let (text, failed) = call.await.expect("the slow call ends");
+            assert!(!failed, "the slow call is answered: {text}");
+            beside.push(took);
+        }
+        let beside = median(beside);
+        let ratio = beside.as_secs_f64() / alone.as_secs_f64().max(1e-6);
+        println!(
+            "a view of the issue took {alone:?} with nothing running and {beside:?} while a \
+             provider's call was slow: {ratio:.1}x"
+        );
+        assert!(
+            beside <= alone * RATIO + SLACK,
+            "a view of the issue took {beside:?} while a provider's slow call went on, against \
+             {alone:?} with nothing running ({ratio:.1}x)"
         );
     });
 }
