@@ -2046,6 +2046,26 @@ tilo_test_env::scenario! {
         assert!(governor.admit_certificate(cert, &a, now).is_err());
     }
 
+    phase a_members_further_device_is_admitted_and_a_strangers_is_not;
+    {
+        let (mut governor, a, _, _, now) = seeded();
+        let (_, mut cert, _) = add_member_with(&mut governor, &a, now, 0x45, 0x46);
+        cert.device_public_key = SigningKey::from_bytes(&[0x47; 32]).verifying_key().to_bytes();
+        sign_device_cert(&mut cert, &SigningKey::from_bytes(&[0x45; 32])).unwrap();
+        assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert!(governor.permissions(cert.device_public_key, now).is_ok());
+
+        let stranger = SigningKey::from_bytes(&[0x48; 32]);
+        cert.user_public_key = stranger.verifying_key().to_bytes();
+        cert.device_public_key = SigningKey::from_bytes(&[0x49; 32])
+            .verifying_key()
+            .to_bytes();
+        sign_device_cert(&mut cert, &stranger).unwrap();
+        let refused = governor.admit_certificate(cert.clone(), &a, now).unwrap_err();
+        assert!(refused.contains("not a member"), "{refused}");
+        assert!(governor.permissions(cert.device_public_key, now).is_err());
+    }
+
     phase expired_known_identity_does_not_block_governed_join;
     {
         let (mut governor, a, _, _, now) = seeded();
