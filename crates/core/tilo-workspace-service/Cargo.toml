@@ -16,8 +16,9 @@ path = "src/lib.rs"
 test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
-# ([`agents`]).
-agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+# ([`agents`]). Their turns write tilolang records through the store an app's window
+# writes through, so they serve apps too.
+agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
