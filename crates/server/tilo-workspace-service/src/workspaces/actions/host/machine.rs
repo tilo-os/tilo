@@ -17,7 +17,7 @@
 //! machine's own device key. Every device of the person reads it there, as Passwords does, and
 //! nothing else does.
 
-use super::{Args, answer, refused};
+use super::{Args, answer};
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::Workspaces;
 use crate::workspaces::servers::{self, Servers, WaitingPlan};
@@ -78,11 +78,13 @@ async fn keep_recovery_key(
 ) -> Result<Value, ActionCallError> {
     let key = key.trim();
     if key.is_empty() || key.len() > MAX_RECOVERY_KEY_BYTES || key.chars().any(char::is_control) {
-        return Err(refused(&"a disk recovery key is 1 to 256 bytes of text"));
+        return Err(ActionCallError::refused(
+            "a disk recovery key is 1 to 256 bytes of text",
+        ));
     }
     if !crate::workspaces::person_workspace::holds_person_workspace(workspaces).await {
-        return Err(refused(
-            &"this device does not hold your Servers workspace, so it keeps no recovery key",
+        return Err(ActionCallError::refused(
+            "this device does not hold your Servers workspace, so it keeps no recovery key",
         ));
     }
     let machine = hex::encode(device.device_public_key);
@@ -108,11 +110,13 @@ async fn keep_recovery_key(
     let opened = workspaces
         .open_vault(&workspace)
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
     workspaces
         .write_vault(&opened, vec![VaultChange::Keep(entry)])
         .await
-        .map_err(|error| refused(&format!("the recovery key was not kept: {error}")))?;
+        .map_err(|error| {
+            ActionCallError::refused(format!("the recovery key was not kept: {error}"))
+        })?;
     answer(&machine)
 }
 
@@ -122,7 +126,7 @@ async fn recovery_keys(workspaces: &Workspaces) -> Result<Vec<RecoveryKey>, Acti
     let opened = workspaces
         .open_vault(&workspace)
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
     Ok(opened
         .entries()
         .iter()
@@ -141,8 +145,8 @@ async fn recovery_keys(workspaces: &Workspaces) -> Result<Vec<RecoveryKey>, Acti
 /// reaches its machine: what the command prints.
 async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, ActionCallError> {
     if !may_admit_devices(workspaces.serving_certificate()) {
-        return Err(refused(
-            &"this device may not admit another device; plan it from one of your own devices",
+        return Err(ActionCallError::refused(
+            "this device may not admit another device; plan it from one of your own devices",
         ));
     }
     let plan = args.required_text("plan")?.to_owned();
@@ -153,16 +157,16 @@ async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, Act
         .unwrap_or(INSTALLER_URL)
         .to_owned();
     if !crate::workspaces::person_workspace::holds_person_workspace(workspaces).await {
-        return Err(refused(
-            &"your own workspace has not reached this device yet; plan the machine once it has",
+        return Err(ActionCallError::refused(
+            "your own workspace has not reached this device yet; plan the machine once it has",
         ));
     }
     let document: install_profile_model::plan::Plan = serde_json::from_str(&plan)
-        .map_err(|_| refused(&"a machine's plan is its own document"))?;
+        .map_err(|_| ActionCallError::refused("a machine's plan is its own document"))?;
     let id = document.plan.clone();
     servers::apply(workspaces, Servers::PLAN_MACHINE.with((plan, label)))
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
     let waiting = Box::pin(shown(workspaces, &id)).await?;
     Ok(Value::String(described(
         &waiting,
@@ -220,9 +224,9 @@ fn described(waiting: &WaitingPlan, token_file: &str, installer_url: &str) -> St
 async fn waiting(workspaces: &Workspaces) -> Result<Vec<WaitingPlan>, ActionCallError> {
     servers::read(workspaces)
         .await
-        .map_err(|error| refused(&error))?
+        .map_err(ActionCallError::refused)?
         .waiting_plans()
-        .map_err(|error| refused(&error))
+        .map_err(ActionCallError::refused)
 }
 
 /// The person's servers in service: each one the document names that is
@@ -232,7 +236,7 @@ async fn person_servers(
 ) -> Result<Vec<tilo_server_protocol::servers::PersonServer>, ActionCallError> {
     let servers = servers::read(workspaces)
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
     Ok(servers
         .servers
         .iter()
@@ -254,9 +258,9 @@ async fn person_servers(
 async fn shown(workspaces: &Workspaces, plan: &str) -> Result<WaitingPlan, ActionCallError> {
     servers::read(workspaces)
         .await
-        .map_err(|error| refused(&error))?
+        .map_err(ActionCallError::refused)?
         .waiting_plan(plan.trim())
-        .map_err(|error| refused(&error))
+        .map_err(ActionCallError::refused)
 }
 
 /// Take the server `args` names in among the person's servers: its entry in their Servers
@@ -267,15 +271,16 @@ pub(super) async fn admit_server(
     args: &Args,
 ) -> Result<Value, ActionCallError> {
     let encoded = args.required_text("cert")?;
-    let bytes = hex::decode(encoded).map_err(|_| refused(&"a server's certificate is hex"))?;
+    let bytes = hex::decode(encoded)
+        .map_err(|_| ActionCallError::refused("a server's certificate is hex"))?;
     let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| refused(&"a server's certificate is its own bytes"))?;
+        .map_err(|_| ActionCallError::refused("a server's certificate is its own bytes"))?;
     let endpoint: iroh_base::EndpointAddr =
         serde_json::from_str(args.required_text("endpoint")?)
-            .map_err(|_| refused(&"a server's endpoint is its own JSON"))?;
+            .map_err(|_| ActionCallError::refused("a server's endpoint is its own JSON"))?;
     servers::admit(workspaces, &cert, &endpoint)
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
     answer(&"admitted")
 }
 
@@ -293,6 +298,6 @@ async fn admit(workspaces: &Workspaces, args: &Args) -> Result<Value, ActionCall
         Servers::BEGIN_INSTALL.with((device, nonce, drives, ask)),
     ))
     .await
-    .map_err(|error| refused(&error))?;
+    .map_err(ActionCallError::refused)?;
     answer(&"admitted")
 }

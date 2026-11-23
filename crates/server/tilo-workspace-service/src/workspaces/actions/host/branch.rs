@@ -9,7 +9,7 @@ use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::{Refusal, WorkspaceLabels, check_labels};
 use tilo_user_identity::DeviceCert;
 
-use super::{Args, OWN_INVITATION_SECONDS, expiry, invalid, refused};
+use super::{Args, OWN_INVITATION_SECONDS, expiry};
 use crate::workspaces::Workspaces;
 
 /// What branching a workspace takes.
@@ -58,21 +58,22 @@ impl Workspaces {
         let source = args.required_text("workspace")?;
         let name = args.required_text("name")?;
         let branch = match args.text("branch")? {
-            Some(branch) => uuid::Uuid::parse_str(branch)
-                .map_err(|_| invalid("`branch` is a workspace's identity, a UUID"))?,
+            Some(branch) => uuid::Uuid::parse_str(branch).map_err(|_| {
+                ActionCallError::invalid_request("`branch` is a workspace's identity, a UUID")
+            })?,
             None => uuid::Uuid::new_v4(),
         }
         .to_string();
         let labels: Option<WorkspaceLabels> = args.object("labels")?;
         if let Some(labels) = &labels {
-            check_labels(labels).map_err(invalid)?;
+            check_labels(labels).map_err(ActionCallError::invalid_request)?;
         }
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
         let own = self
             .own()
-            .ok_or_else(|| refused(&Refusal::NotYourOwn.to_reason()))?;
+            .ok_or_else(|| ActionCallError::refused(Refusal::NotYourOwn.to_reason()))?;
         // A branch is a workspace made: a grant for one workspace makes none,
         // as it makes no other workspace.
         let makes = device
@@ -82,7 +83,7 @@ impl Workspaces {
         // Only a workspace of the person's own, which they read whole, is
         // theirs to branch; anyone else's is not theirs, as for deleting it.
         if !makes || !own.is_of(&person, source) || !self.lists_to(device, source) {
-            return Err(refused(&Refusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
         }
         // A retry waits for the try it repeats, and answers the branch it made.
         let making = own.making(branch.clone()).await;
@@ -90,9 +91,11 @@ impl Workspaces {
         let summary = if own.is_of(&person, &branch) && !self.unfinished_branch(&branch) {
             self.summary(&branch)
                 .await
-                .map_err(|error| refused(&error))?
+                .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if !self.let_in(&person, now).await {
-            return Err(refused(&self.not_let_in().await.to_reason()));
+            return Err(ActionCallError::refused(
+                self.not_let_in().await.to_reason(),
+            ));
         } else {
             let made = self.make_branch(source, &branch, name, person).await?;
             // The branch holds what its source holds: running commands
@@ -104,7 +107,7 @@ impl Workspaces {
         };
         if let Some(labels) = labels {
             own.label(&summary.workspace, labels)
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
         }
         drop(making);
         self.invite_own_person(
@@ -127,7 +130,7 @@ impl Workspaces {
     ) -> Result<crate::workspaces::WorkspaceSummary, ActionCallError> {
         self.branch_own(source, branch, name, person)
             .await
-            .map_err(|not_made| refused(&not_made.refusal()))
+            .map_err(|not_made| ActionCallError::refused(not_made.refusal()))
     }
 
     /// A host built without the apps' records reads no record whole to fork.
@@ -143,6 +146,8 @@ impl Workspaces {
         _name: &str,
         _person: [u8; 32],
     ) -> Result<crate::workspaces::WorkspaceSummary, ActionCallError> {
-        Err(refused(&"this host does not branch workspaces"))
+        Err(ActionCallError::refused(
+            "this host does not branch workspaces",
+        ))
     }
 }

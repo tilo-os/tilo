@@ -298,7 +298,7 @@ impl Initiative {
         self.inner
             .events
             .get()
-            .ok_or_else(|| unavailable("this server has started no events yet".to_owned()))
+            .ok_or_else(|| ActionCallError::unavailable("this server has started no events yet"))
     }
 
     /// Where `workspace` keeps what its assistant's initiative keeps.
@@ -620,7 +620,9 @@ impl Initiative {
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Rejected { error } => Err(error),
-            _ => Err(unavailable("the events did not answer at once".to_owned())),
+            _ => Err(ActionCallError::unavailable(
+                "the events did not answer at once",
+            )),
         }
     }
 
@@ -650,9 +652,8 @@ impl Initiative {
     ) -> Result<Option<u64>, ActionCallError> {
         match wanted {
             Some(limit) if asked.asker != Asker::Person && limit > kept.day_limit() => {
-                Err(refused(
-                    "only the person themselves raises what looking round may spend in a day"
-                        .to_owned(),
+                Err(ActionCallError::refused(
+                    "only the person themselves raises what looking round may spend in a day",
                 ))
             }
             wanted => Ok(wanted),
@@ -706,7 +707,7 @@ impl Initiative {
                 kept.day_limit_micros = limit;
             }
         })
-        .map_err(unavailable)
+        .map_err(ActionCallError::unavailable)
     }
 
     async fn turn_off(&self, asked: &Asked<'_>) -> Result<(), ActionCallError> {
@@ -724,7 +725,7 @@ impl Initiative {
         let limit = Self::limit(asked, &kept, wanted.day_limit_micros)?;
         if let Some(when) = wanted.when.as_deref().map(rhythm).transpose()? {
             let event = self.event(asked, &kept).await?.ok_or_else(|| {
-                refused("it has no rhythm to change before it was turned on".to_owned())
+                ActionCallError::refused("it has no rhythm to change before it was turned on")
             })?;
             self.of_events(
                 asked,
@@ -735,7 +736,7 @@ impl Initiative {
         }
         if limit.is_some() {
             self.change(&asked.workspace, |kept| kept.day_limit_micros = limit)
-                .map_err(unavailable)?;
+                .map_err(ActionCallError::unavailable)?;
         }
         Ok(())
     }
@@ -984,7 +985,7 @@ impl Initiative {
         asked: &Asked<'_>,
         wanted: Propose,
     ) -> Result<Proposal, ActionCallError> {
-        let wanted = proposals::checked(wanted).map_err(refused)?;
+        let wanted = proposals::checked(wanted).map_err(ActionCallError::refused)?;
         self.reconcile(&asked.workspace).await;
         let id = uuid::Uuid::new_v4().to_string();
         let now_ms = tilo_clock::unix_now_ms_i64();
@@ -992,8 +993,8 @@ impl Initiative {
             .change(&asked.workspace, |kept| {
                 kept.book.propose(wanted, id, None, now_ms)
             })
-            .map_err(unavailable)?
-            .map_err(refused)?;
+            .map_err(ActionCallError::unavailable)?
+            .map_err(ActionCallError::refused)?;
         // An event is a card to look at, and the same thing proposed again
         // is the task that stands already.
         let Some(tracker) = self
@@ -1012,13 +1013,13 @@ impl Initiative {
                     kept.book.stands_as(&proposal.id, task);
                     kept.book.get(&proposal.id).cloned()
                 })
-                .map_err(unavailable)?
-                .map_err(refused),
+                .map_err(ActionCallError::unavailable)?
+                .map_err(ActionCallError::refused),
             Err(why) => {
                 // What its person cannot find among their tasks was not
                 // proposed.
                 let _ = self.change(&asked.workspace, |kept| kept.book.withdraw(&proposal.id));
-                Err(unavailable(format!(
+                Err(ActionCallError::unavailable(format!(
                     "the proposal could not be filed as a task: {why}"
                 )))
             }
@@ -1043,8 +1044,8 @@ impl Initiative {
                     .accept(&nod.proposal, now_ms)
                     .map(|accepted| (accepted, waited))
             })
-            .map_err(unavailable)?
-            .map_err(refused)?;
+            .map_err(ActionCallError::unavailable)?
+            .map_err(ActionCallError::refused)?;
         if !first {
             return Ok(accepted);
         }
@@ -1079,11 +1080,14 @@ impl Initiative {
                     kept.book.set_up_as(&accepted.id, made.id);
                     kept.book.get(&accepted.id).cloned()
                 })
-                .map_err(unavailable)?
-                .map_err(refused);
+                .map_err(ActionCallError::unavailable)?
+                .map_err(ActionCallError::refused);
         }
         if let (Some(task), Some(tracker)) = (&accepted.task, self.tracker(asked)) {
-            tracker.give(&task.issue).await.map_err(unavailable)?;
+            tracker
+                .give(&task.issue)
+                .await
+                .map_err(ActionCallError::unavailable)?;
         }
         Ok(accepted.clone())
     }
@@ -1103,8 +1107,8 @@ impl Initiative {
                     .decline(&no.proposal, now_ms)
                     .map(|declined| (declined, waited))
             })
-            .map_err(unavailable)?
-            .map_err(refused)?;
+            .map_err(ActionCallError::unavailable)?
+            .map_err(ActionCallError::refused)?;
         if first {
             if let (Some(task), Some(tracker)) = (&declined.task, self.tracker(asked))
                 && let Err(error) = tracker.cancel(&task.issue).await
@@ -1184,7 +1188,7 @@ impl Asked<'_> {
         if self.asker == asker {
             Ok(())
         } else {
-            Err(refused(why.to_owned()))
+            Err(ActionCallError::refused(why))
         }
     }
 }
@@ -1209,18 +1213,20 @@ fn told(instruction: &str, findings: &Value) -> String {
 
 /// `when` as a look-round's rhythm, written the one way it is kept.
 fn rhythm(when: &str) -> Result<String, ActionCallError> {
-    let trigger = tilo_automation::text::trigger_of_line(when).map_err(refused)?;
+    let trigger = tilo_automation::text::trigger_of_line(when).map_err(ActionCallError::refused)?;
     match &trigger {
         TriggerSpec::Schedule {
             schedule: Schedule::Interval { seconds },
             ..
-        } if *seconds < workspace_initiative::MIN_PERIOD_SECS => Err(refused(format!(
-            "it looks round every {} seconds at the most often",
-            workspace_initiative::MIN_PERIOD_SECS
-        ))),
+        } if *seconds < workspace_initiative::MIN_PERIOD_SECS => {
+            Err(ActionCallError::refused(format!(
+                "it looks round every {} seconds at the most often",
+                workspace_initiative::MIN_PERIOD_SECS
+            )))
+        }
         TriggerSpec::Schedule { .. } => Ok(tilo_automation::text::trigger_line(&trigger)),
-        _ => Err(refused(
-            "a look-round has a rhythm: `every 1800 seconds`, `every day at 09:00`".to_owned(),
+        _ => Err(ActionCallError::refused(
+            "a look-round has a rhythm: `every 1800 seconds`, `every day at 09:00`",
         )),
     }
 }
@@ -1301,21 +1307,13 @@ fn person_of(person: &str) -> Result<[u8; 32], StepError> {
         })
 }
 
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
-fn unavailable(reason: String) -> ActionCallError {
-    ActionCallError::Unavailable { reason }
-}
-
 /// The runtime the initiative works on, where there is one.
 fn runtime() -> Option<tokio::runtime::Handle> {
     tokio::runtime::Handle::try_current().ok()
 }
 
 fn no_runtime() -> ActionCallError {
-    unavailable("this server is not running its workspaces".to_owned())
+    ActionCallError::unavailable("this server is not running its workspaces")
 }
 
 /// What an action does to the workspace's initiative, as its policy weighs
@@ -1343,12 +1341,12 @@ fn argument<T: serde::de::DeserializeOwned>(
 }
 
 fn said<T: Serialize>(answer: &T) -> Result<Value, ActionCallError> {
-    serde_json::to_value(answer).map_err(|error| refused(error.to_string()))
+    serde_json::to_value(answer).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 /// What another of the server's own providers answered, read as `T`.
 fn heard<T: serde::de::DeserializeOwned>(answer: Value) -> Result<T, ActionCallError> {
-    serde_json::from_value(answer).map_err(|error| unavailable(error.to_string()))
+    serde_json::from_value(answer).map_err(|error| ActionCallError::unavailable(error.to_string()))
 }
 
 /// The resource an action is of.

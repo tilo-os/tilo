@@ -392,5 +392,5 @@ fn one_account(request: &InvokeRequest) -> Result<String, ActionCallError> {
         .and_then(Value::as_str)
         .filter(|account| !account.trim().is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| super::invalid("the request names its account"))
+        .ok_or_else(|| ActionCallError::invalid_request("the request names its account"))
 }

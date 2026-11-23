@@ -964,18 +964,6 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     }
 }
 
-fn invalid(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::InvalidRequest {
-        reason: reason.into(),
-    }
-}
-
-fn refused(error: &impl ToString) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: error.to_string(),
-    }
-}
-
 /// Keep the secret a requested bot's connector needs in this holder's store
 /// for that connector, where its worker asks for it. Only the secrets a
 /// connector is known to take are kept; the caller already holds the
@@ -988,9 +976,13 @@ fn connector_secret(args: &Args) -> Result<Value, ActionCallError> {
         .iter()
         .copied()
         .find(|(known_app, known_purpose)| *known_app == app && *known_purpose == purpose)
-        .ok_or_else(|| invalid(format!("{app} takes no secret named {purpose}")))?;
+        .ok_or_else(|| {
+            ActionCallError::invalid_request(format!("{app} takes no secret named {purpose}"))
+        })?;
     if secret.is_empty() || secret.len() > MAX_CONNECTOR_SECRET {
-        return Err(invalid("the secret is empty or too long"));
+        return Err(ActionCallError::invalid_request(
+            "the secret is empty or too long",
+        ));
     }
     #[cfg(feature = "agents")]
     {
@@ -998,13 +990,15 @@ fn connector_secret(args: &Args) -> Result<Value, ActionCallError> {
         tilo_secrets::SecretStore::for_app(app)
             .item(purpose, "default")
             .put_blocking(secret.as_bytes())
-            .map_err(|error| refused(&format!("the host could not keep the secret: {error}")))?;
+            .map_err(|error| {
+                ActionCallError::refused(format!("the host could not keep the secret: {error}"))
+            })?;
         Ok(json!({ "kept": true }))
     }
     #[cfg(not(feature = "agents"))]
     {
         let _ = purpose;
-        Err(refused(&"this host runs no connectors"))
+        Err(ActionCallError::refused("this host runs no connectors"))
     }
 }
 
@@ -1016,7 +1010,9 @@ impl Args {
         match argument {
             InvokeArgument::None => Ok(Self(Map::new())),
             InvokeArgument::Json(object) => Ok(Self(object.clone())),
-            InvokeArgument::Text(_) => Err(invalid("workspace governance takes named arguments")),
+            InvokeArgument::Text(_) => Err(ActionCallError::invalid_request(
+                "workspace governance takes named arguments",
+            )),
         }
     }
 
@@ -1024,7 +1020,9 @@ impl Args {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(text)) => Ok(Some(text)),
-            Some(_) => Err(invalid(format!("`{name}` must be text"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be text"
+            ))),
         }
     }
 
@@ -1039,10 +1037,14 @@ impl Args {
                 .iter()
                 .map(|(key, value)| match value {
                     Value::String(text) => Ok((key.clone(), text.clone())),
-                    _ => Err(invalid(format!("`{name}.{key}` must be text"))),
+                    _ => Err(ActionCallError::invalid_request(format!(
+                        "`{name}.{key}` must be text"
+                    ))),
                 })
                 .collect(),
-            Some(_) => Err(invalid(format!("`{name}` must be an object of text"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be an object of text"
+            ))),
         }
     }
 
@@ -1055,21 +1057,22 @@ impl Args {
             None | Some(Value::Null) => Ok(None),
             Some(value) => serde_json::from_value(value.clone())
                 .map(Some)
-                .map_err(|error| invalid(format!("`{name}`: {error}"))),
+                .map_err(|error| ActionCallError::invalid_request(format!("`{name}`: {error}"))),
         }
     }
 
     fn required_text(&self, name: &str) -> Result<&str, ActionCallError> {
         self.text(name)?
-            .ok_or_else(|| invalid(format!("`{name}` is required")))
+            .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
     }
 
     fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionCallError> {
         self.text(name)?
             .map(|text| {
                 let mut key = [0; 32];
-                hex::decode_to_slice(text, &mut key)
-                    .map_err(|_| invalid(format!("`{name}` must be 64 hex characters")))?;
+                hex::decode_to_slice(text, &mut key).map_err(|_| {
+                    ActionCallError::invalid_request(format!("`{name}` must be 64 hex characters"))
+                })?;
                 Ok(key)
             })
             .transpose()
@@ -1077,16 +1080,15 @@ impl Args {
 
     fn required_key(&self, name: &str) -> Result<[u8; 32], ActionCallError> {
         self.key(name)?
-            .ok_or_else(|| invalid(format!("`{name}` is required")))
+            .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
     }
 
     fn integer(&self, name: &str) -> Result<Option<u64>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(None),
-            Some(value) => value
-                .as_u64()
-                .map(Some)
-                .ok_or_else(|| invalid(format!("`{name}` must be a whole number"))),
+            Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+                ActionCallError::invalid_request(format!("`{name}` must be a whole number"))
+            }),
         }
     }
 
@@ -1096,12 +1098,14 @@ impl Args {
             Some(Value::Array(items)) => items
                 .iter()
                 .map(|item| {
-                    item.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| invalid(format!("`{name}` must list text")))
+                    item.as_str().map(str::to_owned).ok_or_else(|| {
+                        ActionCallError::invalid_request(format!("`{name}` must list text"))
+                    })
                 })
                 .collect(),
-            Some(_) => Err(invalid(format!("`{name}` must be a list of text"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be a list of text"
+            ))),
         }
     }
 
@@ -1131,7 +1135,11 @@ impl Args {
                 person: self.required_key("person")?,
             },
             "show" => return Ok(None),
-            other => return Err(invalid(format!("no call operation `{other}`"))),
+            other => {
+                return Err(ActionCallError::invalid_request(format!(
+                    "no call operation `{other}`"
+                )));
+            }
         }))
     }
 
@@ -1140,7 +1148,9 @@ impl Args {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(otherwise),
             Some(Value::Bool(flag)) => Ok(*flag),
-            Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be true or false"
+            ))),
         }
     }
 
@@ -1148,7 +1158,9 @@ impl Args {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(false),
             Some(Value::Bool(flag)) => Ok(*flag),
-            Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
+            Some(_) => Err(ActionCallError::invalid_request(format!(
+                "`{name}` must be true or false"
+            ))),
         }
     }
 
@@ -1156,7 +1168,8 @@ impl Args {
     /// place or an owner's.
     fn place_at(&self, name: &str) -> Result<super::MemberPlace, ActionCallError> {
         let text = self.required_text(name)?;
-        super::MemberPlace::parse(text).ok_or_else(|| invalid(format!("no role `{text}`")))
+        super::MemberPlace::parse(text)
+            .ok_or_else(|| ActionCallError::invalid_request(format!("no role `{text}`")))
     }
 
     /// The part an invitation the argument `name` names hands out, and
@@ -1176,7 +1189,7 @@ impl Args {
         let text = self.required_text(name)?;
         Role::parse(text)
             .filter(|role| role.assignable())
-            .ok_or_else(|| invalid(format!("no role `{text}`")))
+            .ok_or_else(|| ActionCallError::invalid_request(format!("no role `{text}`")))
     }
 }
 
@@ -1647,11 +1660,13 @@ impl Workspaces {
             return Err(ActionCallError::UnknownAction);
         }
         let InvokeArgument::Json(argument) = &request.argument else {
-            return Err(invalid("a stop names its grant and session"));
+            return Err(ActionCallError::invalid_request(
+                "a stop names its grant and session",
+            ));
         };
         let stop: mcp_server::AgentSessionRef =
             serde_json::from_value(Value::Object(argument.clone()))
-                .map_err(|error| invalid(error.to_string()))?;
+                .map_err(|error| ActionCallError::invalid_request(error.to_string()))?;
         if self.inner.mcp_server.stop(&stop.grant, &stop.session) {
             Ok(Value::Null)
         } else {
@@ -1977,11 +1992,11 @@ impl Workspaces {
             return self
                 .check_signed_now(device, workspace, op)
                 .await
-                .map_err(|error| refused(&error));
+                .map_err(|error| ActionCallError::refused(error.to_string()));
         }
         self.check_now(device, Some(workspace), op)
             .await
-            .map_err(|error| refused(&error))
+            .map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
     async fn governance_run(
@@ -2023,16 +2038,17 @@ impl Workspaces {
             args,
         } = call;
         let channel = args.required_text("channel")?.to_owned();
-        collab_types::calls::validate_channel(&channel).map_err(invalid)?;
+        collab_types::calls::validate_channel(&channel)
+            .map_err(ActionCallError::invalid_request)?;
         if let Some(change) = args.call_change()? {
             self.moderate_call(workspace, device, request_id, &channel, change)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
         }
         let rule = self
             .call_rule(workspace, &channel)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({ "channel": channel, "call": rule }))
     }
 
@@ -2042,7 +2058,7 @@ impl Workspaces {
         let grants = self
             .grants_of(call.workspace, &call.device.user_public_key)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({"grants": grants}))
     }
 
@@ -2060,7 +2076,7 @@ impl Workspaces {
         let grants = self
             .grants_of(call.workspace, &call.device.user_public_key)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let persons_own =
             call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
         let own = id == mine
@@ -2074,7 +2090,7 @@ impl Workspaces {
         let changed = self
             .revoke_grant(call.workspace, &id, now_ms)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         if !changed {
             return Err(ActionCallError::Refused {
                 reason: "that key is revoked already, or this workspace never admitted it".into(),
@@ -2110,7 +2126,7 @@ impl Workspaces {
                 let default_role = Role::parse(text)
                     .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
                     .ok_or_else(|| {
-                        invalid(format!(
+                        ActionCallError::invalid_request(format!(
                             "a public workspace hands out viewer, commenter or editor, not `{text}`"
                         ))
                     })?;
@@ -2121,13 +2137,13 @@ impl Workspaces {
                 self.publish(workspace, device, listing)
                     .await
                     .map(|listing| listed(Some(listing)))
-                    .map_err(|error| refused(&error))
+                    .map_err(|error| ActionCallError::refused(error.to_string()))
             }
             UNPUBLISH => self
                 .unpublish(workspace, device)
                 .await
                 .map(|()| listed(None))
-                .map_err(|error| refused(&error)),
+                .map_err(|error| ActionCallError::refused(error.to_string())),
             _ => Ok(listed(self.listing(workspace).await)),
         }
     }
@@ -2157,11 +2173,13 @@ impl Workspaces {
         } else {
             WorkspaceMembershipCommand::WithdrawBotRequest { entry }
         };
-        command.validate().map_err(invalid)?;
+        command
+            .validate()
+            .map_err(ActionCallError::invalid_request)?;
         let done = self
             .ask_for_bot(workspace, device, request_id, command)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({ "generation": done.generation }))
     }
 
@@ -2186,8 +2204,8 @@ impl Workspaces {
             if let Some(file) = &file
                 && !self.keeps_app_file(workspace, file)
             {
-                return Err(refused(
-                    &"the workspace's host does not have this package file: hand it over with `upload-app-file` first",
+                return Err(ActionCallError::refused(
+                    "the workspace's host does not have this package file: hand it over with `upload-app-file` first",
                 ));
             }
             WorkspaceMembershipCommand::InstallApp(AppRelease {
@@ -2202,15 +2220,17 @@ impl Workspaces {
         } else {
             WorkspaceMembershipCommand::UninstallApp { app: app.clone() }
         };
-        command.validate().map_err(invalid)?;
+        command
+            .validate()
+            .map_err(ActionCallError::invalid_request)?;
         let done = self
             .govern_app(workspace, device, request_id, command)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let running = self
             .app_versions(workspace)
             .await
-            .map_err(|error| refused(&error))?
+            .map_err(|error| ActionCallError::refused(error.to_string()))?
             .into_iter()
             .find(|installed| installed.release.app == app);
         Ok(json!({ "generation": done.generation, "running": running }))
@@ -2223,18 +2243,20 @@ impl Workspaces {
         let file = args.required_text("file")?;
         let offset = args
             .integer("offset")?
-            .ok_or_else(|| invalid("`offset` is required"))?;
+            .ok_or_else(|| ActionCallError::invalid_request("`offset` is required"))?;
         let total = args
             .integer("total")?
-            .ok_or_else(|| invalid("`total` is required"))?;
-        let data =
-            hex::decode(args.required_text("data")?).map_err(|_| invalid("`data` must be hex"))?;
+            .ok_or_else(|| ActionCallError::invalid_request("`total` is required"))?;
+        let data = hex::decode(args.required_text("data")?)
+            .map_err(|_| ActionCallError::invalid_request("`data` must be hex"))?;
         if data.len() > super::app_files::APP_FILE_PIECE_BYTES {
-            return Err(invalid("a piece is at most 256 KiB"));
+            return Err(ActionCallError::invalid_request(
+                "a piece is at most 256 KiB",
+            ));
         }
         match self
             .upload_app_file(workspace, file, offset, total, &data)
-            .map_err(|error| refused(&error))?
+            .map_err(ActionCallError::refused)?
         {
             super::app_files::Uploaded::Partial(received) => Ok(json!({ "received": received })),
             super::app_files::Uploaded::Complete => Ok(json!({ "received": total, "kept": true })),
@@ -2391,7 +2413,7 @@ impl Workspaces {
             )
             .await
         }
-        .map_err(|error| refused(&error))?;
+        .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let native_link = tilo_peer_state::join_transport::retained_invitation_link(
             &issued.signed_invitation,
             now,
@@ -2456,7 +2478,7 @@ impl Workspaces {
                 let pending = self
                     .pending(workspace, device)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Ok(pending
                     .iter()
                     .map(|invitation| {
@@ -2470,7 +2492,7 @@ impl Workspaces {
             MEMBERS => Ok(self
                 .members(workspace)
                 .await
-                .map_err(|error| refused(&error))?
+                .map_err(|error| ActionCallError::refused(error.to_string()))?
                 .into()),
             NAME => {
                 self.name_self(
@@ -2480,7 +2502,7 @@ impl Workspaces {
                     tilo_clock::unix_now_ns(),
                 )
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Ok(json!({}))
             }
             CANCEL_INVITATION => {
@@ -2493,7 +2515,7 @@ impl Workspaces {
                     },
                 )
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Ok(json!({}))
             }
             _ => Err(ActionCallError::UnknownAction),
@@ -2524,11 +2546,11 @@ impl Workspaces {
         };
         self.add_member(workspace, device, request)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(self
             .members(workspace)
             .await
-            .map_err(|error| refused(&error))?
+            .map_err(|error| ActionCallError::refused(error.to_string()))?
             .into())
     }
 
@@ -2550,17 +2572,19 @@ impl Workspaces {
                     .text("role")?
                     .map(|role| serde_json::from_value(Value::String(role.to_owned())))
                     .transpose()
-                    .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
+                    .map_err(|_| {
+                        ActionCallError::invalid_request("`role` is `key_holder` or `store`")
+                    })?
                     .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
                 self.add_server(workspace, args.required_text("host")?, role)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 None
             }
             REMOVE_SERVER => Some(
                 self.remove_server(workspace, args.required_text("server")?)
                     .await
-                    .map_err(|error| refused(&error))?,
+                    .map_err(ActionCallError::refused)?,
             ),
             MOVE_SERVER => Some(
                 self.move_server(
@@ -2569,14 +2593,16 @@ impl Workspaces {
                     args.required_text("host")?,
                 )
                 .await
-                .map_err(|error| refused(&error))?,
+                .map_err(ActionCallError::refused)?,
             ),
             SET_COPIES => {
                 let count = |name| {
                     args.integer(name)?
                         .map(u32::try_from)
                         .transpose()
-                        .map_err(|_| invalid(format!("`{name}` is too large")))
+                        .map_err(|_| {
+                            ActionCallError::invalid_request(format!("`{name}` is too large"))
+                        })
                 };
                 let (key_holders, stores) = (count("key_holders")?, count("stores")?);
                 let policy = (key_holders.is_some() || stores.is_some()).then(|| {
@@ -2587,7 +2613,7 @@ impl Workspaces {
                 });
                 self.choose_copies(workspace, policy)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 None
             }
             _ => None,
@@ -2595,11 +2621,11 @@ impl Workspaces {
         let hosts = self
             .keeping_devices(workspace)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(ActionCallError::refused)?;
         let copies = self
             .copies(workspace)
             .await
-            .map_err(|error| refused(&error.to_string()))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let mut answered = json!({ "workspace": workspace, "servers": hosts });
         if let Some(fields) = answered.as_object_mut() {
             fields.insert("copies".into(), json!(copies));
@@ -2642,7 +2668,7 @@ impl Workspaces {
             UNLIST => self
                 .unlist(workspace, device, args.required_key("entry")?, now)
                 .await
-                .map_err(|error| refused(&error))?,
+                .map_err(|error| ActionCallError::refused(error.to_string()))?,
             MAIL_INVITATION => self
                 .mail_invite(
                     workspace,
@@ -2652,13 +2678,13 @@ impl Workspaces {
                     now,
                 )
                 .await
-                .map_err(|error| refused(&error))?,
+                .map_err(|error| ActionCallError::refused(error.to_string()))?,
             _ => {}
         }
         let entries = self
             .wait_list(workspace, device, now)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({
             "mails": self.mail_entry().is_some(),
             "entries": entries
@@ -2691,7 +2717,7 @@ impl Workspaces {
         };
         let generation = |done: Result<super::GovernanceCompletion, CollaborationError>| {
             done.map(|done| json!({ "generation": done.generation }))
-                .map_err(|error| refused(&error))
+                .map_err(|error| ActionCallError::refused(error.to_string()))
         };
         match action {
             governance::UNBAN => {
@@ -2702,11 +2728,11 @@ impl Workspaces {
                 let person = member(args.required_key("person")?);
                 self.remove_member(workspace, device, person)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Ok(self
                     .members(workspace)
                     .await
-                    .map_err(|error| refused(&error))?
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?
                     .into())
             }
             governance::BAN => {

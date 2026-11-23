@@ -235,7 +235,7 @@ impl TurnPages {
             return Err(ActionCallError::UnknownAction);
         }
         if !asked_as.may_take(&self.workspace, &on_browser(action)) {
-            return Err(refused(NOT_YOURS));
+            return Err(ActionCallError::refused(NOT_YOURS));
         }
         let Some(browsers) = &self.browsers else {
             return Err(ActionCallError::UnknownAction);
@@ -265,7 +265,7 @@ impl TurnPages {
         let address = public_address(&request.argument)
             .map_err(|reason| ActionCallError::Refused { reason })?;
         let Some(window) = browsers.window_provider(self.workspace_id) else {
-            return Err(refused(NO_WINDOW));
+            return Err(ActionCallError::refused(NO_WINDOW));
         };
         let mut arguments = Map::new();
         arguments.insert(ADDRESS.to_owned(), json!(address.as_str()));
@@ -300,7 +300,7 @@ impl TurnPages {
         let arguments = sifted(action, takes, &request.argument, NOT_READ)
             .map_err(|reason| ActionCallError::Refused { reason })?;
         let Some(window) = browsers.window_provider(self.workspace_id) else {
-            return Err(refused(NO_WINDOW));
+            return Err(ActionCallError::refused(NO_WINDOW));
         };
         let handed = to_window(window, invocation, action, arguments);
         let ended = browsers
@@ -337,7 +337,7 @@ impl TurnPages {
         let arguments = sifted(action, takes, &request.argument, NOT_CLICKED)
             .map_err(|reason| ActionCallError::Refused { reason })?;
         let Some(window) = browsers.window_provider(self.workspace_id) else {
-            return Err(refused(NO_WINDOW));
+            return Err(ActionCallError::refused(NO_WINDOW));
         };
         let handed = to_window(window, invocation, action, arguments);
         let ended = browsers
@@ -411,13 +411,6 @@ fn on_browser(action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
         provider: APP.to_owned(),
         address: ActionAddress::new(PAGE_RESOURCE, action),
-    }
-}
-
-/// This server's refusal, in `words`.
-fn refused(words: &str) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: words.to_owned(),
     }
 }
 

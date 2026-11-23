@@ -70,9 +70,7 @@ use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems}
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
-use tilo_actions::remote::ActionCallError::{
-    self, InvalidRequest, NotPermitted, Refused, UnknownAction,
-};
+use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
@@ -287,7 +285,7 @@ impl KeptAskKind for OpenAsk {
     }
 
     fn refused(reason: impl Into<String>) -> Self::Error {
-        refused(reason)
+        ActionCallError::refused(reason)
     }
 }
 
@@ -653,12 +651,6 @@ fn site_name(origin: &str) -> &str {
     }
 }
 
-fn refused(reason: impl Into<String>) -> ActionCallError {
-    Refused {
-        reason: reason.into(),
-    }
-}
-
 /// The arguments `request` carries.
 fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     match &request.argument {
@@ -852,26 +844,28 @@ impl Workspaces {
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.workspace_root(&using.workspace);
-        let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        let (item, kind, places) = wanted.wanted(&root).map_err(ActionCallError::refused)?;
         let word = person_vault::use_word(&request.target);
         // Validate the item and places in the vault, then check the workspace's
         // `tilo-action-policy` grant instead of a bespoke per-item leave table.
         let items = self
             .open_vault(&using.workspace)
             .await
-            .map_err(refused)?
+            .map_err(ActionCallError::refused)?
             .items();
         items
             .fits(&item, kind, &places)
-            .map_err(|error| refused(error.to_string()))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let stands = self
             .governed_permission_stands(
                 &using.person,
                 &vault_use_scope(&using, &request.target, &item, &places),
             )
             .await
-            .map_err(refused)?;
-        wanted.sendable(self, &items).map_err(refused)?;
+            .map_err(ActionCallError::refused)?;
+        wanted
+            .sendable(self, &items)
+            .map_err(ActionCallError::refused)?;
         drop(items);
         // A leave that covers the use is what allowed it; else an allow its
         // person gave this very use, which is spent by being found.
@@ -892,7 +886,7 @@ impl Workspaces {
                 .carry_out(self, (&using.workspace, &root), &using.name, purpose)
                 .await
                 .map(TurnUse::Done)
-                .map_err(refused);
+                .map_err(ActionCallError::refused);
         }
         let belongs = places.iter().map(ToString::to_string).collect();
         self.ask_first(
@@ -1065,7 +1059,7 @@ impl Workspaces {
         hex::decode_to_slice(&kept.person, &mut person).map_err(|_| UnknownAction)?;
         let root = self.workspace_root(&kept.workspace);
         if kept.detail != *shown {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "The question is not the one this server asked: nothing was used",
             ));
         }
@@ -1083,14 +1077,14 @@ impl Workspaces {
                 .page_answered(&using, kept, answer)
                 .await
                 .map(Some)
-                .map_err(refused);
+                .map_err(ActionCallError::refused);
         }
         let wanted = Use::read(&target, &kept.arguments)?;
         let word = person_vault::use_word(&target);
-        let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        let (item, kind, places) = wanted.wanted(&root).map_err(ActionCallError::refused)?;
         let destination = json!(places.iter().map(Place::as_str).collect::<Vec<_>>());
         if kept.detail.pointer("/use/item/belongsTo") != Some(&destination) {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "Where the secret goes changed after it was asked about",
             ));
         }
@@ -1099,17 +1093,17 @@ impl Workspaces {
         if always {
             self.open_vault(&using.workspace)
                 .await
-                .map_err(refused)?
+                .map_err(ActionCallError::refused)?
                 .items()
                 .fits(&item, kind, &places)
-                .map_err(|error| refused(error.to_string()))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
             self.grant_always_in_workspace(&using.person, &scope)
                 .await
-                .map_err(refused)?;
+                .map_err(ActionCallError::refused)?;
         } else {
             self.governed_permission_stands(&using.person, &scope)
                 .await
-                .map_err(refused)?;
+                .map_err(ActionCallError::refused)?;
         }
         if matches!(wanted, Use::Call(_)) {
             // What a call answers goes to whoever made it, so nothing is
@@ -1130,7 +1124,7 @@ impl Workspaces {
             .carry_out(self, (&using.workspace, &root), &using.name, purpose)
             .await
             .map(Some)
-            .map_err(refused)
+            .map_err(ActionCallError::refused)
     }
 }
 
@@ -1266,17 +1260,17 @@ impl Workspaces {
     ) -> Result<TurnRelease, ActionCallError> {
         let target = person_vault::page_target();
         let using = self.turn_uses_for(turn, &target).await?;
-        let (item, site) = page_wanted(fill).map_err(refused)?;
+        let (item, site) = page_wanted(fill).map_err(ActionCallError::refused)?;
         let kind = {
             let items = self
                 .open_vault(&using.workspace)
                 .await
-                .map_err(refused)?
+                .map_err(ActionCallError::refused)?
                 .items();
             let facts = items
                 .belongs_at(&item, &site)
-                .map_err(|error| refused(error.to_string()))?;
-            page_field(facts.kind).map_err(refused)?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+            page_field(facts.kind).map_err(ActionCallError::refused)?;
             facts.kind
         };
         let stands = self
@@ -1285,12 +1279,12 @@ impl Workspaces {
                 &vault_use_scope(&using, &target, &item, std::slice::from_ref(&site)),
             )
             .await
-            .map_err(refused)?;
+            .map_err(ActionCallError::refused)?;
         if stands || self.once_allowed(&using, &item, &site) {
             return page_text(self, &using.workspace, (&item, kind), &site, &using.name)
                 .await
                 .map(TurnRelease::Released)
-                .map_err(refused);
+                .map_err(ActionCallError::refused);
         }
         let reason = fill.reason.trim();
         let mut arguments = Map::new();

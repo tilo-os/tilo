@@ -116,7 +116,10 @@ impl Workspaces {
         let workspace = reach.workspace.to_string();
         match action {
             person_vault::LIST => {
-                let opened = self.open_vault(&workspace).await.map_err(refused)?;
+                let opened = self
+                    .open_vault(&workspace)
+                    .await
+                    .map_err(ActionCallError::refused)?;
                 answer(kept(&opened.items()))
             }
             person_vault::ADD => {
@@ -152,9 +155,12 @@ impl Workspaces {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
                 let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
-                let opened = self.open_vault(&workspace).await.map_err(refused)?;
-                let mut history =
-                    uses(&opened.items(), &of.item).map_err(|err| refused(err.to_string()))?;
+                let opened = self
+                    .open_vault(&workspace)
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                let mut history = uses(&opened.items(), &of.item)
+                    .map_err(|err| ActionCallError::refused(err.to_string()))?;
                 history.always = self
                     .vault_approvals(workspace_id, cert, &of.item, None)
                     .await?;
@@ -167,9 +173,12 @@ impl Workspaces {
                 )?;
                 let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
-                let opened = self.open_vault(&workspace).await.map_err(refused)?;
-                let mut history =
-                    uses(&opened.items(), &taking.item).map_err(|err| refused(err.to_string()))?;
+                let opened = self
+                    .open_vault(&workspace)
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                let mut history = uses(&opened.items(), &taking.item)
+                    .map_err(|err| ActionCallError::refused(err.to_string()))?;
                 history.always = self
                     .vault_approvals(workspace_id, cert, &taking.item, Some(&taking))
                     .await?;
@@ -232,7 +241,7 @@ impl Workspaces {
         let workspace = self
             .workspace(&name)
             .await
-            .map_err(|err| refused(err.to_string()))?;
+            .map_err(|err| ActionCallError::refused(err.to_string()))?;
         let mut workspace = workspace.lock().await;
         let at = tilo_clock::wall();
         let access = workspace
@@ -269,7 +278,7 @@ impl Workspaces {
             if !ids.is_empty() {
                 self.change_approval(&mut workspace, at, ApprovalChange::Revoke(&ids))
                     .await
-                    .map_err(refused)?;
+                    .map_err(ActionCallError::refused)?;
             }
         }
         let grants = kept
@@ -356,7 +365,7 @@ impl Workspaces {
                     "an ask for a secret names its kind, where it belongs and, when known, the \
                      name it signs in with, and never the secret",
                 )?;
-                let asked = asked.checked().map_err(refused)?;
+                let asked = asked.checked().map_err(ActionCallError::refused)?;
                 let id = workspace_id.map(|id| id.to_string()).unwrap_or_default();
                 let workspace = self.summary(&id).await.map_or(id, |summary| summary.name);
                 let question = secret_question(caller, &by, &workspace, &asked);
@@ -514,10 +523,6 @@ fn entries_of<'a>(
 fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, ActionCallError> {
     let refused = |reason: String| ActionCallError::Refused { reason };
     serde_json::to_value(outcome.map_err(refused)?).map_err(|error| refused(error.to_string()))
-}
-
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
 }
 
 /// What `grant` lets an agent always use of the workspace's vault item

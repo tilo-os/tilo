@@ -81,7 +81,7 @@ impl Workspaces {
         let held = self
             .workspace_accounts(workspace)
             .await
-            .map_err(refused_with)?;
+            .map_err(ActionCallError::refused)?;
         answer(&Ok::<_, String>(mail_accounts(
             &held,
             &self.workspace_root(workspace),
@@ -359,9 +359,9 @@ impl Workspaces {
                 // they are shown that reading, and that reading is what
                 // leaves on their yes: nothing is read again from what was
                 // begun.
-                let staged = Staged::read(dir, beginning).map_err(refused_with)?;
+                let staged = Staged::read(dir, beginning).map_err(ActionCallError::refused)?;
                 if reach.answer != tilo_action_policy::Answer::Allow {
-                    let shown = staged.shown().map_err(refused_with)?;
+                    let shown = staged.shown().map_err(ActionCallError::refused)?;
                     // A message that left already is answered as the send
                     // it was: its person is asked nothing more.
                     if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
@@ -405,7 +405,11 @@ impl Workspaces {
         let root = signing.root;
         match request.target.address.action.as_str() {
             person_accounts::LIST => {
-                let held = signing.vault.accounts().await.map_err(refused_with)?;
+                let held = signing
+                    .vault
+                    .accounts()
+                    .await
+                    .map_err(ActionCallError::refused)?;
                 let mut listed = mail_accounts(&held, root);
                 if agent {
                     // Whose sign-in is running is no agent's business.
@@ -471,10 +475,6 @@ pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
     }
 }
 
-fn refused_with(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
 /// Turn one action's answer into what the caller reads, or the reason it was
 /// refused.
 pub(super) fn answer<T: serde::Serialize>(
@@ -490,22 +490,18 @@ pub(super) fn answer<T: serde::Serialize>(
     }
 }
 
-fn invalid(reason: &str) -> ActionCallError {
-    ActionCallError::InvalidRequest {
-        reason: reason.to_owned(),
-    }
-}
-
 /// The arguments of a request, as the value its action names.
 pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
 ) -> Result<T, ActionCallError> {
     let InvokeArgument::Json(argument) = &request.argument else {
-        return Err(invalid(&format!("a request names {what}")));
+        return Err(ActionCallError::invalid_request(format!(
+            "a request names {what}"
+        )));
     };
     serde_json::from_value(Value::Object(argument.clone())).map_err(|error| {
-        invalid(&format!(
+        ActionCallError::invalid_request(format!(
             "{what} is not readable: {}",
             without_values(&error)
         ))
@@ -565,7 +561,7 @@ pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, Actio
         .and_then(Value::as_str)
         .filter(|provider| !provider.trim().is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| invalid("the provider is named by its id"))
+        .ok_or_else(|| ActionCallError::invalid_request("the provider is named by its id"))
 }
 
 /// Add `adding` once `tester` saw its server accept its sign-in: the secret

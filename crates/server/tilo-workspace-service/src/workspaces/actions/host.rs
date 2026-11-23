@@ -33,8 +33,7 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, agents, invalid,
-    refused, request_id,
+    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, agents, request_id,
 };
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::authority::WorkspaceOp;
@@ -544,7 +543,7 @@ fn host_workspace_params() -> Vec<ActionParam> {
 fn hex_postcard(value: &impl serde::Serialize) -> Result<String, ActionCallError> {
     postcard::to_stdvec(value)
         .map(hex::encode)
-        .map_err(|error| refused(&error))
+        .map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 fn create_params() -> Vec<ActionParam> {
@@ -649,7 +648,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
 }
 
 fn answer(value: &impl serde::Serialize) -> Result<Value, ActionCallError> {
-    serde_json::to_value(value).map_err(|error| refused(&error))
+    serde_json::to_value(value).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 /// When an invitation issued at `now` for `seconds` stops being redeemable.
@@ -733,7 +732,7 @@ impl Workspaces {
         let changed = self
             .enter(workspace, device)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let own = IssueInvitationRequest {
             request_id,
             role: Role::Editor,
@@ -751,7 +750,7 @@ impl Workspaces {
         let issued = self
             .issue_from(workspace, device, own, false, None, address)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         answer(&EnteredWorkspace {
             changed,
             invitation: ActionInvitation::of(&issued),
@@ -783,43 +782,43 @@ impl Workspaces {
         match operation {
             ServiceOperation::CreateWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.create_invoke(device, &args, request_id, now).await
             }
             ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.create_own_invoke(device, &args, request_id, now).await
             }
             ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 answer(&self.listed(device, &Listed::default()).await)
             }
             ServiceOperation::DeleteOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 let workspace = args.required_text("workspace")?;
                 self.delete(workspace)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 Ok(serde_json::json!({ "deleted": workspace }))
             }
             ServiceOperation::BranchOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.branch_own_invoke(device, &args, request_id, now).await
             }
             ServiceOperation::ReadPersonalList
             | ServiceOperation::KeepPersonalList
             | ServiceOperation::NamePersonalDevice => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.personal_invoke(device, operation, &args).await
             }
             ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 answer(&self.revocations().iter().cloned().collect::<Vec<_>>())
             }
             ServiceOperation::EnterWorkspace => {
@@ -831,12 +830,12 @@ impl Workspaces {
             }
             operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Box::pin(machine::invoke(self, device, operation, &args)).await
             }
             ServiceOperation::AdmitServer => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Box::pin(machine::admit_server(self, &args)).await
             }
             _ => Err(ActionCallError::UnknownAction),
@@ -908,8 +907,8 @@ impl Workspaces {
                     && first_invitation(args, request_id, now)?
                         .is_some_and(|(terms, _)| terms.recipient_user_public_key != Some(person))
                 {
-                    return Err(refused(
-                        &"an agent's grant invites only its own person to a workspace it makes",
+                    return Err(ActionCallError::refused(
+                        "an agent's grant invites only its own person to a workspace it makes",
                     ));
                 }
                 false
@@ -921,7 +920,7 @@ impl Workspaces {
                 let theirs =
                     person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
                 if !theirs || !self.lists_to(device, workspace) {
-                    return Err(refused(&Refusal::NotYourOwn.to_reason()));
+                    return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
                 }
                 false
             }
@@ -953,7 +952,9 @@ impl Workspaces {
         // the site's entry: they hear the entry's own refusal, with its wait
         // list.
         if entering && !self.let_in(&person, now).await {
-            return Err(refused(&self.not_let_in().await.to_reason()));
+            return Err(ActionCallError::refused(
+                self.not_let_in().await.to_reason(),
+            ));
         }
         Ok(())
     }
@@ -1035,7 +1036,7 @@ impl Workspaces {
                 labels: args.object("labels")?.unwrap_or_default(),
                 workspace: args.text("workspace")?.map(str::to_owned),
             };
-            check_labels(&only.labels).map_err(invalid)?;
+            check_labels(&only.labels).map_err(ActionCallError::invalid_request)?;
             let here = self.listed(device, &only).await;
             let mut list = self.personal(device, &here, &only).await;
             if only.workspace.is_some() {
@@ -1048,16 +1049,16 @@ impl Workspaces {
             let name = args.required_text("name")?;
             self.name_device(device, key, name)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
             return Ok(serde_json::json!({ "named": key }));
         }
         let list: PersonalList = args
             .object("list")?
-            .ok_or_else(|| invalid("`list` is required"))?;
+            .ok_or_else(|| ActionCallError::invalid_request("`list` is required"))?;
         let kept = self
             .keep_personal(device, list)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(ActionCallError::refused)?;
         self.note_own_device(device).await;
         Ok(serde_json::json!({ "kept": kept }))
     }
@@ -1120,13 +1121,13 @@ impl Workspaces {
         let summary = self
             .create_for(name, workspace, device.user_public_key)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(ActionCallError::refused)?;
         let invitation = match first {
             Some((terms, makes_administrator)) => Some(ActionInvitation::of(
                 &self
                     .issue_as(&summary.workspace, inviter, terms, makes_administrator)
                     .await
-                    .map_err(|error| refused(&error))?,
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?,
             )),
             None => None,
         };
@@ -1267,7 +1268,7 @@ impl Workspaces {
         let moving = args.text("workspace")?;
         let labels: Option<WorkspaceLabels> = args.object("labels")?;
         if let Some(labels) = &labels {
-            check_labels(labels).map_err(invalid)?;
+            check_labels(labels).map_err(ActionCallError::invalid_request)?;
         }
         let seconds = args
             .integer("expires_in_seconds")?
@@ -1293,7 +1294,7 @@ impl Workspaces {
                         .is_some_and(|scope| scope.reaches(workspace))
                 }))
         {
-            return Err(refused(&Refusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
         }
         // What could be made twice at once waits for the first: a workspace
         // the ask names (a retried create answers the one the first made),
@@ -1312,14 +1313,14 @@ impl Workspaces {
         {
             self.refuse_revoked_key(moving, device)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
         }
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.
             self.summary(moving)
                 .await
-                .map_err(|error| refused(&error))?
+                .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if let Some(joined) = moving.filter(|_| name.is_none())
             && let Some(role) = self.role_of(joined, person, now).await
         {
@@ -1332,7 +1333,7 @@ impl Workspaces {
             let summary = self
                 .summary(joined)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
             let role = if role == Role::Owner {
                 Role::Editor
             } else {
@@ -1346,16 +1347,16 @@ impl Workspaces {
             // never made. The host makes a person's own workspace under an id
             // of its own choosing, so an id it does not know is never theirs,
             // and it is never read as some other workspace they have.
-            return Err(refused(&Refusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
         } else if name.is_none()
             && let Some(first) = own.first_of(&person)
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(&first)
                 .await
-                .map_err(|error| refused(&error))?
+                .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if !makes {
-            return Err(refused(&Refusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]):
             // there is no bound on how many a person keeps, and one they did
@@ -1364,14 +1365,14 @@ impl Workspaces {
             let summary = self
                 .create_for(&name, moving, person)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
             own.record(&person, &summary.workspace)
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
             summary
         };
         if let Some(labels) = labels {
             own.label(&summary.workspace, labels)
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
         }
         drop(making);
         self.invite_own_person(
@@ -1399,12 +1400,12 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
-            _ => return Err(refused(&Refusal::NotYourOwn.to_reason())),
+            _ => return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason())),
         };
         let summary = self
             .summary(workspace)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         self.invite_own_person(
             summary,
             device.user_public_key,
@@ -1453,7 +1454,7 @@ impl Workspaces {
         let issued = self
             .issue(&summary.workspace, &self.inner.host.cert, terms)
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let mut workspace = listing(&summary);
         if let Some(own) = self.own()
             && own.is_of(&person, &summary.workspace)
@@ -1519,16 +1520,18 @@ impl Workspaces {
                     args.flag("first")?,
                 )
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
             return Ok(serde_json::json!({ "kept": kept }));
         }
         if action == CATCH_UP_STANDING {
-            let after = crate::workspaces::decode_hex(args.required_text("after")?)
-                .map_err(|error| invalid(format!("`after` is no lineage: {error}")))?;
+            let after =
+                crate::workspaces::decode_hex(args.required_text("after")?).map_err(|error| {
+                    ActionCallError::invalid_request(format!("`after` is no lineage: {error}"))
+                })?;
             let (cursors, more) = self
                 .standing_after(device, workspace, after)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
             return answer(&StandingPage {
                 cursors: hex_postcard(&cursors)?,
                 more,
@@ -1537,8 +1540,8 @@ impl Workspaces {
         let absent = if args.flag("absent_parts")? {
             self.absent_handed(device.device_public_key, workspace)
                 .ok_or_else(|| {
-                    refused(
-                        &"the list of content the asking device keeps none of is not \
+                    ActionCallError::refused(
+                        "the list of content the asking device keeps none of is not \
                           here: hand it again",
                     )
                 })?
@@ -1548,7 +1551,7 @@ impl Workspaces {
         let (cursors, content_missing, fetched) =
             Box::pin(self.catch_up_from(device, workspace, args.flag("names_content")?, &absent))
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
         // A store stands on a lineage per record and author: a device
         // that reads the rest after is answered the first page.
         let (cursors, more_cursors) = if args.flag("cursor_pages")? {
@@ -1577,42 +1580,49 @@ impl Workspaces {
         match operation {
             ServiceOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 let request = super::super::HostWorkspaceRequest {
                     workspace: args.required_text("workspace")?.to_owned(),
                     workspace_id: WorkspaceId::parse(args.required_text("workspace_id")?)
-                        .ok_or_else(|| invalid("`workspace_id` is a workspace id"))?,
+                        .ok_or_else(|| {
+                            ActionCallError::invalid_request("`workspace_id` is a workspace id")
+                        })?,
                     holder_hint: super::super::decode_hex(args.required_text("holder_hint")?)
-                        .map_err(|error| invalid(format!("`holder_hint`: {error}")))?,
-                    bootstrap: super::super::decode_hex(args.required_text("bootstrap")?)
-                        .map_err(|error| invalid(format!("`bootstrap`: {error}")))?,
+                        .map_err(|error| {
+                            ActionCallError::invalid_request(format!("`holder_hint`: {error}"))
+                        })?,
+                    bootstrap: super::super::decode_hex(args.required_text("bootstrap")?).map_err(
+                        |error| ActionCallError::invalid_request(format!("`bootstrap`: {error}")),
+                    )?,
                     role: serde_json::from_value(Value::String(
                         args.required_text("role")?.to_owned(),
                     ))
-                    .map_err(|_| invalid("`role` is `key_holder` or `store`"))?,
+                    .map_err(|_| {
+                        ActionCallError::invalid_request("`role` is `key_holder` or `store`")
+                    })?,
                 };
                 Box::pin(self.kept_for(device, &request, now))
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 let hint = Box::pin(self.hold(device, &request))
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 answer(&HostedWorkspace {
                     host_hint: hex_postcard(&hint)?,
                 })
             }
             ServiceOperation::UnhostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 let stopped = self
                     .unhold(device, args.required_text("workspace")?)
                     .await
-                    .map_err(|error| refused(&error))?;
+                    .map_err(ActionCallError::refused)?;
                 Ok(serde_json::json!({ "stopped": stopped }))
             }
             ServiceOperation::CatchUpWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 #[cfg(any(test, feature = "test-support"))]
                 if self.speaks_no_catch_up_now() {
                     return Err(ActionCallError::UnknownAction);
