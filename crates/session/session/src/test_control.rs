@@ -38,6 +38,7 @@ use tilo_session_core::surfaces::Surfaces;
 
 use crate::engine::Engine;
 use crate::mcp_server::{self, PeerRefusal};
+use crate::session_provider::{SessionProvider, Snapshot};
 
 mod gesture_input;
 mod state;
@@ -254,6 +255,8 @@ pub(crate) struct Control {
     fingers_down: std::cell::Cell<Option<u32>>,
     /// The session state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
+    /// When the loop last read the desktop into the session's own provider, as the same stamp.
+    read_state: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
     /// What asked anything but the session's input since the last pass: it is answered after the
     /// frame, where it sees the session the frame shows.
@@ -540,8 +543,13 @@ impl Control {
     pub(crate) fn open(options: &crate::Options, host: Arc<mcp_server::Host>) -> Self {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let person = SessionProvider::new(
+            Arc::new(host.as_ref().clone().for_local_person()),
+            Arc::clone(&snapshot),
+        );
         let actions = Arc::new(Actions {
-            person: host.as_ref().clone().for_local_person(),
+            person,
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
             front: Front::default(),
@@ -578,6 +586,7 @@ impl Control {
             held: RefCell::new(BTreeSet::new()),
             fingers_down: std::cell::Cell::new(None),
             published: std::cell::Cell::new(None),
+            read_state: std::cell::Cell::new(None),
             changes,
             waiting: RefCell::new(Vec::new()),
         }
@@ -635,6 +644,7 @@ impl Control {
     /// Take the connections waiting, publish the session its watchers read, and answer what was asked
     /// of the loop since the last pass.
     pub(crate) fn serve(&self, compositor: &mut Compositor, session: &Session<'_>) {
+        self.keep_state(compositor, session);
         self.shared
             .actions
             .set_workspace(session.handle.read(|tree| {
@@ -675,16 +685,7 @@ impl Control {
     /// Tell the watchers where the session stands, when it moved since the last pass: the state dump
     /// is only built when someone reads it.
     pub(crate) fn publish(&self, session: &Session<'_>) {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::hash::DefaultHasher::new();
-        session.handle.navigation_revision().hash(&mut hasher);
-        session.locked.hash(&mut hasher);
-        for part in Part::ALL {
-            session.overlays.is_open(part).hash(&mut hasher);
-        }
-        session.overview.get().hash(&mut hasher);
-        presence_stamp(session, &mut hasher);
-        let stamp = hasher.finish();
+        let stamp = state_stamp(session);
         let moved = self.published.get() != Some(stamp);
         if moved {
             self.published.set(Some(stamp));
@@ -693,6 +694,35 @@ impl Control {
             session.handle.read(|tree| state_dump(tree, session))
         });
     }
+
+    /// The loop read the desktop: the session's own resources answer with what the pass shows,
+    /// when it moved since the last read.
+    fn keep_state(&self, compositor: &Compositor, session: &Session<'_>) {
+        let stamp = state_stamp(session);
+        if self.read_state.get() == Some(stamp) {
+            return;
+        }
+        self.read_state.set(Some(stamp));
+        self.shared
+            .actions
+            .person
+            .keep(state::snapshot(compositor, session));
+    }
+}
+
+/// The stamp of the session state a pass shows: what `publish` and the state the session's own
+/// resources answer move with.
+fn state_stamp(session: &Session<'_>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    session.handle.navigation_revision().hash(&mut hasher);
+    session.locked.hash(&mut hasher);
+    for part in Part::ALL {
+        session.overlays.is_open(part).hash(&mut hasher);
+    }
+    session.overview.get().hash(&mut hasher);
+    presence_stamp(session, &mut hasher);
+    hasher.finish()
 }
 
 impl Socket {
@@ -1437,8 +1467,8 @@ struct Actions {
     front: Front,
     /// The broker as the person at this device invokes through it
     /// ([`mcp_server::Host::for_local_person`]): what a frame on the owner's or the development
-    /// socket is answered by.
-    person: mcp_server::Host,
+    /// socket is answered by — the session's own resources and actions beside it.
+    person: SessionProvider<mcp_server::Host>,
     /// Whether the screen is locked, as the loop last read it: the owner's socket invokes nothing
     /// there.
     locked: AtomicBool,
@@ -1555,12 +1585,11 @@ fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
         );
     }
     let caller = actions.caller(ctx);
-    let provider = if ctx.scope.is_some() {
-        actions.host.as_ref()
+    if ctx.scope.is_some() {
+        remote::answer_message(actions.host.as_ref(), &caller, message, HOST_WAIT)
     } else {
-        &actions.person
-    };
-    remote::answer_message(provider, &caller, message, HOST_WAIT)
+        remote::answer_message(&actions.person, &caller, message, HOST_WAIT)
+    }
 }
 
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it

@@ -6,9 +6,11 @@ use std::collections::BTreeSet;
 use std::hash::Hash as _;
 
 use serde_json::{Value as Json, json};
+use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TileContent};
 
 use super::{Audience, Context, Part, Scope, Session};
+use crate::session_provider::Snapshot;
 
 /// What a socket at `who` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's API sees it too — except while the screen is locked, where it learns
@@ -437,6 +439,104 @@ pub(super) fn tile_kind(tile: &tilo_desktop_model::TileContent) -> (String, Json
         ),
         _ => (String::new(), Json::Null),
     }
+}
+
+/// What the loop last read of the desktop, as the session's own resources answer it: the same
+/// envelopes the control socket's reads answered, so a tool reading the walk sees what it saw.
+/// Nothing of a locked session leaves it: the state says it is locked and the lock's own frame
+/// shows, and no windows, workspaces or notices are named.
+pub(super) fn snapshot(compositor: &Compositor, session: &Session<'_>) -> Snapshot {
+    let mut dump = session.handle.read(|tree| state_dump(tree, session));
+    if session.locked {
+        dump = owner_shown(Audience::Owner, dump);
+    }
+    let layout = dump
+        .get("state")
+        .and_then(|state| state.get("workspace_tree"))
+        .cloned()
+        .unwrap_or(Json::Null);
+    let windows = if session.locked {
+        Vec::new()
+    } else {
+        let rect_of = |id: u64| compositor.window_rect(id);
+        let frames_of = |id: u64| compositor.window_frames(id);
+        let places = session.layout.borrow().reading().places;
+        let resource_of = |tab: u64| {
+            places
+                .iter()
+                .find(|place| place.key == tab.to_string())
+                .map(|place| place.resource.clone())
+                .filter(|resource| !resource.is_empty())
+        };
+        session
+            .handle
+            .read(|tree| window_rows(tree, rect_of, frames_of, resource_of))
+    };
+    let questions: Vec<Json> = session
+        .questions
+        .map(tilo_service::Questions::pending)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|question| {
+            json!({
+                "handle": question.handle,
+                "resource": tilo_service::question_resource(&question.handle),
+                "kind": question.kind,
+                "app": question.app_id,
+                "label": question.label,
+                "details": question.details,
+            })
+        })
+        .collect();
+    let (query, rows) = session.handle.search_rows();
+    let rows: Vec<Json> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "title": row.title,
+                "subtitle": row.subtitle,
+                "kind": row.kind,
+                "facts": row.facts,
+            })
+        })
+        .collect();
+    let devices = if session.locked {
+        Vec::new()
+    } else {
+        session
+            .handle
+            .read(|tree| keeping_devices_all(tree, session))
+    };
+    Snapshot {
+        state: dump,
+        windows: json!({"answer": {"windows": windows}}),
+        layout: json!({"answer": {"layout": layout}}),
+        questions: json!({"answer": {"questions": questions}}),
+        search: json!({"answer": {
+            "query": query,
+            "rows": rows,
+            "searching": session.handle.search_searching(),
+        }}),
+        devices: json!({"answer": {"workspaces": devices}}),
+    }
+}
+
+/// [`keeping_devices`] with no app narrowing: the person at this device sees every workspace it
+/// holds.
+fn keeping_devices_all(tree: &Layout, session: &Session<'_>) -> Vec<Json> {
+    tree.workspaces
+        .iter()
+        .filter_map(|workspace| {
+            let hosting = session.engine?.hosting(workspace.id())?;
+            Some(json!({
+                "workspace": workspace.id().to_string(),
+                "name": workspace.name.clone(),
+                "host": hosting.host,
+                "hosted_here": hosting.here,
+                "awaiting_host": !hosting.admitted,
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]

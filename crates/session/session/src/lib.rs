@@ -372,6 +372,8 @@ mod services;
 #[cfg(target_os = "linux")]
 pub mod session_package;
 #[cfg(target_os = "linux")]
+pub mod session_provider;
+#[cfg(target_os = "linux")]
 mod settings_sync;
 #[cfg(target_os = "linux")]
 mod setup;
