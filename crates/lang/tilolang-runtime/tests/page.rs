@@ -19,7 +19,7 @@ type Feed {
 }
 
 action look(f: Feed) uses page {
-    f.text = page.call("{\"request\":\"outline\"}")
+    f.text = page.call("\{\"request\":\"outline\"}")
 }
 "#;
 
