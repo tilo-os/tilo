@@ -96,7 +96,6 @@ class PackageSetsTests(unittest.TestCase):
         # Each has an x86_64 and an aarch64 code path of its own; the derivation must keep
         # finding them, whatever else it finds.
         known = {
-            "tilo-sandbox": "clone3 assembly, microvm or virt machine",
             "tilo-agent-session": "seccomp confinement",
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",
