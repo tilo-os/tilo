@@ -314,6 +314,12 @@ impl ServiceSessions {
                 tokio::spawn(async move { carrying.carry_vaults_over().await });
             }
         }
+        // One store of the calls that wait for a person's yes serves this device: every
+        // dispatch here keeps its asked call in it, `tilo.asking#list` lists them, and
+        // `tilo.invocations#resolve` answers them, whichever embedder opened the service.
+        Box::pin(workspaces.open_asked_store(tokio::runtime::Handle::current()))
+            .await
+            .map_err(ServiceError::Workspaces)?;
         Ok((
             sessions,
             Some(Governed {

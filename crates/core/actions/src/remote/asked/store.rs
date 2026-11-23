@@ -147,6 +147,33 @@ impl AskedStore {
         let _ = self.here.set(hex::encode(device));
     }
 
+    /// The one store a host keeps the calls that wait in: grants people give with an approve
+    /// are written through `grants`, every record that waits is kept through `keeping` as well,
+    /// and each of `earlier` — the records kept before the host started — waits here again.
+    /// Both `grants` and `keeping` are the host's own, and a host that supplies neither keeps a
+    /// store that forgets its records and grants nothing.
+    ///
+    /// # Errors
+    /// A store that keeps its records somewhere already.
+    pub fn opened(
+        grants: Option<Arc<dyn AskedGrants>>,
+        keeping: Option<Arc<dyn AskedKeeping>>,
+        earlier: Vec<KeptAsk>,
+    ) -> Result<Arc<Self>, String> {
+        let store = Arc::new(Self::default());
+        if let Some(grants) = grants {
+            store.grants_through(grants);
+        }
+        match keeping {
+            Some(keeping) => store.keep_through(keeping, earlier)?,
+            None if earlier.is_empty() => {}
+            None => {
+                return Err("a store handed records to wait for keeps them nowhere".to_owned());
+            }
+        }
+        Ok(store)
+    }
+
     /// Write the grants people give with an approve through `grants`; without, no answer
     /// grants anything.
     pub fn grants_through(&self, grants: Arc<dyn AskedGrants>) {

@@ -711,18 +711,14 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         workspaces: server.server.workspaces().cloned(),
         environments: server.server.environments(),
         runtime: tokio::runtime::Handle::current(),
-        certification: server.server.confirmations(),
         hand: server.server.hand(),
     });
-    // One store keeps every call that waits for a person's yes here, whichever dispatch
-    // keeps the call; the person's answer comes back to that dispatch.
-    let asked = Arc::new(tilo_actions::remote::asked::AskedStore::default());
-    asked.grants_through(workspaces.asked_grants(tokio::runtime::Handle::current()));
-    let earlier = workspaces.asked_kept().await;
-    asked
-        .keep_through(workspaces.asked_keeping(), earlier)
-        .expect("the store keeps the wanted calls");
-    workspaces.keep_asked_in(&asked);
+    // The server keeps one store for every call that waits for a person's yes here; the
+    // Browser window's own questions wait in it, and the person's answer comes back to the
+    // window that asked.
+    let asked = workspaces
+        .asked_store()
+        .expect("the server keeps the calls that wait");
     browsers.keep_asked_in(&asked);
     browsers
         .place(WS_NAME, WS, WINDOW_RECORD)

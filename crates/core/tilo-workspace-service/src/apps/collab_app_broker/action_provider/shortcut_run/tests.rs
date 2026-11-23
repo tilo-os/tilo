@@ -1050,7 +1050,8 @@ impl Asked {
         let Err(ActionCallError::ConfirmationRequired(facts)) = fixture.invoke().await else {
             panic!("a run whose step the grant leaves to the person asks before it starts");
         };
-        let store = Arc::new(tilo_actions::remote::asked::AskedStore::default());
+        let store = tilo_actions::remote::asked::AskedStore::opened(None, None, Vec::new())
+            .expect("the store keeps the call");
         let carried = Arc::new(Carried::default());
         let dispatch: Arc<dyn tilo_actions::remote::asked::AskedDispatch> = carried.clone();
         let record = store

@@ -175,13 +175,12 @@ struct Device {
 
 impl Device {
     fn start(kept: &Arc<Kept>, workspace: &Arc<Workspace>) -> Self {
-        let store = Arc::new(AskedStore::default());
-        store
-            .keep_through(
-                Arc::clone(kept) as Arc<dyn AskedKeeping>,
-                kept.0.lock().unwrap().clone(),
-            )
-            .unwrap();
+        let store = AskedStore::opened(
+            None,
+            Some(Arc::clone(kept) as Arc<dyn AskedKeeping>),
+            kept.0.lock().unwrap().clone(),
+        )
+        .expect("the store keeps what waits");
         let invocations: Arc<Invocations> = Arc::default();
         let again = Arc::clone(workspace);
         let admits: Admits = Box::new(move |run| {

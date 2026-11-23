@@ -996,30 +996,16 @@ impl ActionProvider for AdmittedAgain {
     }
 }
 
-/// The one store of the calls here that wait for a person's yes: each kept in its workspace's
-/// record of its asked calls, so what waited before the daemon started again waits again, and
-/// answered through the workspaces here, which write the grant an approve gives.
+/// The one store of the calls here that wait for a person's yes, which the workspaces this
+/// device serves opened and answered through: each kept in its workspace's record of its asked
+/// calls, so what waited before the daemon started again waits again, and answered through the
+/// workspaces here, which write the grant an approve gives.
 fn asked_store(
     workspaces: &Arc<ServiceWorkspaces>,
 ) -> io::Result<Arc<tilo_actions::remote::asked::AskedStore>> {
-    let asked = Arc::new(tilo_actions::remote::asked::AskedStore::default());
-    asked.asks_on(&workspaces.device_cert().device_public_key);
-    let copies = workspaces.copies().clone();
-    let runtime = tilo_rt::app().handle().clone();
-    asked.grants_through(copies.asked_grants(runtime.clone()));
-    let kept = {
-        let copies = copies.clone();
-        block_on_owned(async move { copies.asked_kept().await })
-    };
-    let keeping = {
-        let _entered = runtime.enter();
-        copies.asked_keeping()
-    };
-    asked
-        .keep_through(keeping, kept)
-        .map_err(io::Error::other)?;
-    copies.keep_asked_in(&asked);
-    Ok(asked)
+    workspaces.copies().asked_store().ok_or_else(|| {
+        io::Error::other("the workspaces this device serves keep no calls that wait")
+    })
 }
 
 /// `person`'s own workspace, at the id their key names.

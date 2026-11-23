@@ -97,7 +97,7 @@ struct Host {
 }
 
 fn host() -> Host {
-    host_on(Arc::new(AskedStore::default()))
+    host_on(AskedStore::opened(None, None, Vec::new()).expect("a fresh store keeps its records"))
 }
 
 /// The host's dispatch, keeping its calls in `store`.
@@ -497,11 +497,14 @@ fn a_forged_approve_is_refused() {
 #[test]
 fn a_call_waits_in_its_record_across_a_restart() {
     let state = Arc::new(State::default());
-    let before = host();
-    before
-        .store
-        .keep_through(Arc::clone(&state) as Arc<dyn AskedKeeping>, Vec::new())
-        .unwrap();
+    let before = host_on(
+        AskedStore::opened(
+            None,
+            Some(Arc::clone(&state) as Arc<dyn AskedKeeping>),
+            Vec::new(),
+        )
+        .expect("the store keeps what waits"),
+    );
     let call = set_alarm();
     let at = before
         .records
@@ -510,11 +513,14 @@ fn a_call_waits_in_its_record_across_a_restart() {
     assert_eq!(state.kept().len(), 1, "kept once written");
     drop(before);
 
-    let after = host_on(Arc::new(AskedStore::default()));
-    after
-        .store
-        .keep_through(Arc::clone(&state) as Arc<dyn AskedKeeping>, state.kept())
-        .unwrap();
+    let after = host_on(
+        AskedStore::opened(
+            None,
+            Some(Arc::clone(&state) as Arc<dyn AskedKeeping>),
+            state.kept(),
+        )
+        .expect("the store keeps what waited"),
+    );
     let listed = after.records.asked_of(&ADA);
     assert_eq!(listed.len(), 1, "it waits for Ada after the restart");
     assert_eq!(listed[0].record, at);

@@ -222,6 +222,30 @@ impl Workspaces {
         told
     }
 
+    /// This host's one store of the calls that wait for a person's yes, kept and answered
+    /// through its workspaces: grants written on the runtime `runtime` names, every waiting
+    /// record kept in the record of the workspace it acts in, and the calls that waited before
+    /// the host started waiting here again. The store asks on this device, and is handed every
+    /// dispatch of this host ([`Self::keep_asked_in`]), so `tilo.asking#list` lists what waits
+    /// and `tilo.invocations#resolve` answers it.
+    ///
+    /// # Errors
+    /// The workspaces keep no store of the calls that wait.
+    pub async fn open_asked_store(
+        &self,
+        runtime: tokio::runtime::Handle,
+    ) -> Result<Arc<AskedStore>, String> {
+        let earlier = self.asked_kept().await;
+        let store = AskedStore::opened(
+            Some(self.asked_grants(runtime)),
+            Some(self.asked_keeping()),
+            earlier,
+        )?;
+        store.asks_on(&self.device_cert().device_public_key);
+        self.keep_asked_in(&store);
+        Ok(store)
+    }
+
     /// Keep every call that waits for a person's yes as its asked record in `store`, which the
     /// host hands this once and hands every dispatch of its own: a person's answer to one comes
     /// back to the dispatch that keeps it.

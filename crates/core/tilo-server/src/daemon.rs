@@ -155,6 +155,10 @@ pub struct Server {
     web: Box<WebContext>,
     /// The workspaces this server governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// The Browser this host places for its workspaces' pages, when it serves
+    /// Browser ([`crate::hosted_browser::HostedBrowsers::from_env`]).
+    #[cfg(all(feature = "web", feature = "agents"))]
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
     /// What this host keeps for each workspace it serves.
     content: Arc<tilo_content::WorkspaceStores>,
     /// The links to its workspaces' files its web origin serves.
@@ -765,6 +769,45 @@ impl Server {
             governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(&control))));
             control
         };
+        // A host that sells Linux machines places its workspaces' Browser in them: the
+        // questions a window asks reach the person through the same store every other call on
+        // this device waits in, and their answer goes back to the window that asked.
+        #[cfg(all(feature = "web", feature = "agents"))]
+        let browsers = match crate::hosted_browser::HostedBrowsers::from_env() {
+            Ok(None) => None,
+            Ok(Some(browsers)) => {
+                let browsers = Arc::new(browsers);
+                if let Some((key, cert)) =
+                    crate::web::stand_in_for(&cfg.state_root, &identity.user_public_key)
+                {
+                    browsers.serve_from(crate::hosted_browser::Authority {
+                        user_public_key: identity.user_public_key,
+                        cert,
+                        key,
+                        server: endpoint.addr(),
+                        workspaces: Some(governed.clone()),
+                        environments: handler.environments.clone(),
+                        runtime: tokio::runtime::Handle::current(),
+                        hand: governed.hand(),
+                    });
+                }
+                browsers.ask_from(
+                    governed.action_service(),
+                    endpoint.clone(),
+                    governed.clone(),
+                    tokio::runtime::Handle::current(),
+                );
+                if let Some(store) = governed.asked_store() {
+                    browsers.keep_asked_in(&store);
+                }
+                Some(browsers)
+            }
+            Err(error) => {
+                return Err(ServerError::Identity(format!(
+                    "this host's Browser: {error}"
+                )));
+            }
+        };
         Ok((
             Self {
                 endpoint,
@@ -781,6 +824,8 @@ impl Server {
                 mesh_profile,
                 web,
                 workspaces: Some(governed),
+                #[cfg(all(feature = "web", feature = "agents"))]
+                browsers,
                 content,
                 #[cfg(feature = "web")]
                 content_links: Arc::default(),
@@ -941,6 +986,13 @@ impl Server {
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
+    }
+
+    /// The Browser this host places for its workspaces' pages, when it serves Browser.
+    #[cfg(all(feature = "web", feature = "agents"))]
+    #[must_use]
+    pub const fn browsers(&self) -> Option<&Arc<crate::hosted_browser::HostedBrowsers>> {
+        self.browsers.as_ref()
     }
 
     /// The devices this server certified for its browser environments, and the
