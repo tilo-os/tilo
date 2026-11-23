@@ -346,9 +346,13 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
         .collect()
 }
 
+/// The installer's id for its own window and resource. It runs before Tilo exists, so it is no
+/// first-party app of a workspace and has no entry in the app catalogue.
+pub const APP_ID: &str = "so.tilo.imager";
+
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
-    const ID: &'static str = tilo_app_id::apps::IMAGER;
+    const ID: &'static str = crate::resource::APP_ID;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const TITLE_KEY: &'static str = "installer-app-title";
@@ -429,7 +433,7 @@ mod tests {
 
     impl ResourceApp for SampleImager {
         type Resource = Imager;
-        const ID: &'static str = tilo_app_id::apps::IMAGER;
+        const ID: &'static str = crate::resource::APP_ID;
         const TITLE: &'static str = "Disk Imager";
 
         fn view(cx: &mut ViewCx<Imager>) -> Element {

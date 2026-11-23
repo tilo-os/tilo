@@ -731,7 +731,6 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         | apps::FIREWALL
         | apps::REMOTE
         | apps::BACKUPS
-        | apps::IMAGER
         | apps::THEMES => 25,
         apps::API_TESTER
         | apps::SNIPPETS

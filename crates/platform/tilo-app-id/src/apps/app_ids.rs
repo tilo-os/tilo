@@ -30,7 +30,6 @@ first_party_apps! {
     FIREWALL => "so.tilo.firewall",
     GIT_CLIENT => "so.tilo.git-client",
     HEX_EDITOR => "so.tilo.hex-editor",
-    IMAGER => "so.tilo.imager",
     LAUNCHER => "so.tilo.launcher",
     LOGS => "so.tilo.logs",
     MAIL => "so.tilo.mail",

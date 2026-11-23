@@ -139,7 +139,6 @@ tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" 
 # The destination side (`destination`): checks a self-hosted account server's
 # address.
 url = { workspace = true, optional = true }
-tilo-app-id = { version = "0.1.0", path = "../../crates/platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../crates/collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
