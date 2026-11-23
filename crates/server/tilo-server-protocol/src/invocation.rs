@@ -252,8 +252,8 @@ pub fn verify_invocation(
 /// # Errors
 ///
 /// The first check that fails, as [`InvocationError`]:
-/// [`InvocationError::NotInvoker`] when another person signed than the one
-/// the change names.
+/// [`InvocationError::NotInvoker`] when the person who signed is none the
+/// change names.
 pub fn verify_recorded(
     context: &tilo_actions::ActionContext,
     workspace: &str,
@@ -281,14 +281,15 @@ pub fn verify_recorded(
         return Err(StatementMismatch::Arguments.into());
     }
     let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
+    // The signer is a person the change names: the invoker, the person it works for, or one
+    // further down its chain who bounds that work (the person an agent belongs to when it
+    // answers someone else, the starter's person of a sub-agent). Each of them bounds what the
+    // change may do, so naming the signer among them gives it nothing more.
     let person = hex::encode(cert.user_public_key);
-    let names_signer = context.invoker.as_ref().is_some_and(|invoker| {
-        [
-            invoker.acting.person_id(),
-            invoker.acting.acted_for_person(),
-        ]
-        .contains(&Some(&person))
-    });
+    let names_signer = context
+        .invoker
+        .as_ref()
+        .is_some_and(|invoker| invoker.acting.people().contains(&person.as_str()));
     if !names_signer {
         return Err(InvocationError::NotInvoker);
     }
@@ -782,6 +783,71 @@ mod tests {
             // A sub-agent the agent started works under the agent's key.
             let helper = Acting::handed_agent("helper", person.as_str());
             assert_eq!(kept(&by_agent, &helper, true), Ok(Some(agent)));
+        }
+
+        phase a_person_further_down_the_chain_signs_and_the_chain_still_bounds_the_change;
+        // Ada's agent answers Bo, and Ada's device signs: Ada is named, so the signature checks,
+        // but the change may do only what Bo and Ada both may. Bo may not touch mail.
+        {
+            use tilo_action_policy::{
+                ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
+                WorkspacePolicy,
+            };
+            let (ada_root, _) = UserIdentity::generate("Ada", 1);
+            let (bo_root, _) = UserIdentity::generate("Bo", 1);
+            let (eve_root, _) = UserIdentity::generate("Eve", 1);
+            let ada = hex::encode(ada_root.verifying_key().to_bytes());
+            let bo = hex::encode(bo_root.verifying_key().to_bytes());
+            let laptop = SigningKey::from_bytes(&[21; 32]);
+            let ada_device = cert_of(&ada_root, &laptop, None);
+            let eve_device = cert_of(&eve_root, &SigningKey::from_bytes(&[22; 32]), None);
+            let answering_bo = Acting::handed_agent("scout", bo.as_str()).agent_of(ada.as_str());
+            let kept = |asked: &InvokeRequest| {
+                verify_recorded(
+                    &tilo_actions::ActionContext {
+                        source_invocation: Some(asked.invocation),
+                        signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
+                        invoker: Some(tilo_actions::ActionInvoker::admitted(&answering_bo)),
+                        ..tilo_actions::ActionContext::default()
+                    },
+                    WORKSPACE,
+                    &RevocationList::new(),
+                )
+            };
+            let by_ada = signed(&request(), &ada_device, &laptop, NOW);
+            assert_eq!(kept(&by_ada), Ok(Some(ada_device)));
+            // A person the chain does not name signs nothing in it.
+            let by_eve = signed(&request(), &eve_device, &SigningKey::from_bytes(&[22; 32]), NOW);
+            assert_eq!(kept(&by_eve), Err(InvocationError::NotInvoker));
+
+            let mut policy = WorkspacePolicy::new(WORKSPACE, ada.as_str());
+            policy.members.insert(bo.clone(), Role::Editor);
+            let mut policy = policy.with_current_roles();
+            let mail = TreePath::workspace(WORKSPACE).app("mail");
+            policy.grants.push(Grant::new(
+                "bo-no-mail",
+                Grantee::person(bo.as_str()),
+                mail.clone(),
+                KindSet::ALL,
+                Answer::Deny,
+                Grantee::person(ada.as_str()),
+            ));
+            let archive = mail.kind("mail.message").resource("m1").action("archive");
+            let notes = TreePath::workspace(WORKSPACE).app("notes").action("append");
+            let cx = Context::at(NOW);
+            let signer = MemberAccess::person(policy, ada.as_str());
+            assert_eq!(
+                signer.answer(&archive, ActionKind::Undoable, &cx),
+                Answer::Allow,
+                "Ada may archive mail"
+            );
+            let change = signer.invoked_by(&answering_bo);
+            assert_eq!(
+                change.answer(&archive, ActionKind::Undoable, &cx),
+                Answer::Deny,
+                "her signature gives the change nothing Bo may not do"
+            );
+            assert_eq!(change.answer(&notes, ActionKind::Undoable, &cx), Answer::Allow);
         }
 
         phase one_invocation_id_names_one_request;
