@@ -911,20 +911,16 @@ impl Workspaces {
             let Some(state) = state else {
                 return;
             };
-            let revision = {
+            let listed = {
                 let held = state.lock().await;
-                if !always && held.membership.contains(&cert.device_public_key) {
-                    return;
-                }
-                held.membership_revision
+                held.members
+                    .member_devices
+                    .contains(&cert.device_public_key)
             };
-            if let Err(error) = crate::workspace_io::enrol(&state, &cert, revision).await {
-                tracing::warn!(
-                    %error,
-                    device = %hex::encode(cert.device_public_key),
-                    "a member's device was not enrolled on its link"
-                );
+            if !always && listed {
+                return;
             }
+            crate::workspace_io::enrol(&state, &cert).await;
         });
     }
 

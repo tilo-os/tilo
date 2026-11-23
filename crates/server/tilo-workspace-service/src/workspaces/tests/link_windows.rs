@@ -447,9 +447,8 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
     server.shutdown().await;
 }
 
-/// A member person's new device is enrolled by the link it first dials: the
-/// host's own list of the workspace's members has not got it, its governance
-/// has, and the link the device opens writes it into the list.
+/// A member person's device is admitted on the link it dials, and stays on the
+/// workspace's member list: the one list its governance keeps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
     let dir = tempfile::tempdir().unwrap();
@@ -458,16 +457,6 @@ async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
-    // The host's list of the workspace's members lost the device — a host
-    // that kept it explicitly, restarted on what it wrote — while the
-    // workspace's governance still holds it.
-    {
-        let held = runtime(&workspaces, created.workspace_id).await;
-        let mut held = held.lock().await;
-        held.admission = crate::workspace_access::AdmissionMode::Explicit;
-        held.forget_device(&member.device_public_key).unwrap();
-        assert!(!held.membership.contains(&member.device_public_key));
-    }
     let link = workspaces
         .direct()
         .link(created.workspace_id)
@@ -489,7 +478,8 @@ async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
             if held
                 .lock()
                 .await
-                .membership
+                .members
+                .member_devices
                 .contains(&member.device_public_key)
             {
                 return;

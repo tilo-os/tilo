@@ -94,29 +94,6 @@ use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
-/// How a workspace admits devices beyond its exact membership.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum AdmissionMode {
-    /// Only exact member devices and admitted user roots.
-    #[default]
-    Explicit,
-    /// Native governance owns admission; nothing is ever auto-enrolled, and
-    /// no later binding may relax it.
-    Governed,
-}
-
-impl AdmissionMode {
-    /// The mode a workspace takes when a binding asks for `requested`:
-    /// governance, once set, is never relaxed.
-    #[must_use]
-    pub(crate) const fn rebind(self, requested: Self) -> Self {
-        match self {
-            Self::Governed => Self::Governed,
-            Self::Explicit => requested,
-        }
-    }
-}
-
 /// The protocol asking. Protocols differ only in the three properties below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceOperation {
