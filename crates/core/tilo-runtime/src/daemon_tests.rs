@@ -944,7 +944,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
 
     // The laptop's first command: through the place every client finds the daemon at.
     FOUNDING_PEER.store(OWN, Ordering::SeqCst);
-    daemon.found().unwrap();
+    daemon.found(Some("Ada")).unwrap();
     // The person's certificate names the device now, so the daemon starts their services; the
     // device's own actions stand in for them here.
     native.serve_the_person(super::Endpoint {
@@ -969,6 +969,15 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     let person = who["person"].as_str().expect("a person now").to_owned();
     assert_eq!(who["claimed"], true, "{who}");
     assert_eq!(who["device"], device, "{who}");
+    // The person is made where a session on this account reads them, named as asked and holding
+    // their root here: what `tilo login --new-identity` and first-run setup ask for.
+    let identity_dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    let active = tilo_identity::store::resolve_active_identity(&identity_dir)
+        .expect("the person's record, where the session reads it");
+    let metadata = tilo_identity::store::load_metadata_from_path(&active).unwrap();
+    assert_eq!(hex::encode(metadata.group_public_key), person);
+    assert_eq!(metadata.display_name, "Ada");
+    assert!(metadata.single_device, "this computer holds the root");
 
     let (refused, why) = found(OWN);
     assert!(refused, "a device with a person started another: {why}");
@@ -977,12 +986,19 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         "{why}"
     );
     daemon
-        .found()
+        .found(Some("Someone else"))
         .expect("a command on a device with a person goes on as that person");
     assert_eq!(
         ask(OWN, json!({"native": "account#who"}))["person"],
         person,
         "the person stays the one first started"
+    );
+    assert_eq!(
+        tilo_identity::store::load_metadata_from_path(&active)
+            .unwrap()
+            .display_name,
+        "Ada",
+        "a second ask names nobody again"
     );
 }
 

@@ -99,14 +99,24 @@ start_bus() {
 # its files sit in the tree the CLI and the session both read.
 mint_identity() {
   [ -f "$TILO_IDENTITY_ROOT/device-private/keypair.bin" ] && return 0
-  # A session is not up yet, and `tilo login` needs none to make a person of
-  # this profile. It is bounded: a login that waits on something answers the
-  # cycle's question nowhere.
+  # A person is made by the device's daemon alone: it runs for the founding,
+  # then lets the device go to the session. Both are bounded: a login that
+  # waits on something answers the cycle's question nowhere.
+  local daemon made=0
+  setsid "$(guest_bin tilo-runtime)" >> "$root/logs/daemon.log" 2>&1 < /dev/null &
+  daemon=$!
+  for _ in $(seq 1 360); do
+    [ -S "$XDG_RUNTIME_DIR/tilo/native.sock" ] && break
+    sleep 0.5
+  done
   timeout 180 "$tilo_bin" login --new-identity --name "plan cycle owner" \
-    > "$root/logs/identity.log" 2>&1 || {
-    tail -n 40 "$root/logs/identity.log" >&2 || true
+    > "$root/logs/identity.log" 2>&1 && made=1
+  kill -- "-$daemon" 2>/dev/null || true
+  wait "$daemon" 2>/dev/null || true
+  if [ "$made" != 1 ]; then
+    tail -n 40 "$root/logs/identity.log" "$root/logs/daemon.log" >&2 || true
     return 1
-  }
+  fi
 }
 
 case "$mode" in

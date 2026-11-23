@@ -129,22 +129,26 @@ pub fn held() -> Result<Option<Person>> {
 
 /// The person kept here, made first when there is none: whether it was made
 /// now. `name` names a new one; one already kept stays as it is.
+///
+/// A person is made one way: this computer's daemon makes them (`devices#found`), with the class
+/// this computer is, so it needs the daemon running; nothing makes one here instead.
 pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let made = !holds_root();
+    // A person goes by the name they give, else by none until they give one: never their
+    // computer's account name or a made-up one.
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
     if made {
-        let dir = dir()?;
-        // A person goes by the name they give, else by none until they give one: never their
-        // computer's account name or a made-up one.
-        tilo_identity::provisioning::create_person(
-            &dir,
-            &paths(),
-            name.map(str::trim).unwrap_or_default(),
-            &login::label("tilo", &login::hostname()),
-            IdentityStorage::for_session(),
-        )
-        .with_context(|| format!("make the identity in {}", dir.display()))?;
+        login::ensure_daemon()?;
+        tilo_api::daemon::this_computer()
+            .and_then(|place| place.found(name))
+            .map_err(anyhow::Error::msg)?;
     }
-    let person = held()?.context("the identity just made is not there")?;
+    let mut person =
+        held()?.context("this computer's daemon made no person it holds the root of")?;
+    // The daemon may have made the person as it started, before it was told their name.
+    if made && let Some(name) = name {
+        keep_name(&mut person, name)?;
+    }
     Ok((person, made))
 }
 
@@ -382,42 +386,18 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_new_identity_is_one_the_session_reads_and_admits() {
-        let home = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", home.path())
-            .set("XDG_CONFIG_HOME", home.path().join("config"))
-            .set("TILO_IDENTITY_ROOT", home.path().join("system"))
-            .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let (person, made) = ensure(Some("Ada")).unwrap();
-        assert!(made, "a computer with no identity makes one");
-        assert!(holds_root());
-        let kept = held().unwrap().expect("the person just made");
-        assert_eq!(kept.public_key(), person.public_key());
-        assert_eq!(kept.name, "Ada");
-        // The registry the session reads names the person, and this device is
-        // enrolled in their fleet: the session's broker admits their own
-        // actions under the certificate.
-        let profile = tilo_identity::store::identity_for_workspace("any")
-            .unwrap()
-            .expect("the registry names the person");
-        assert_eq!(profile.user_public_key, person.public_key());
-        let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
-            .unwrap()
-            .load(&profile.id)
-            .unwrap();
-        assert!(
-            fleet
-                .certificates
-                .iter()
-                .any(|known| known.device_public_key == kept.cert.device_public_key),
-            "this device is in the identity's fleet"
-        );
-        let (again, made) = ensure(Some("Someone else")).unwrap();
-        assert!(!made, "the person is kept");
-        assert_eq!(again.public_key(), person.public_key());
-        assert_eq!(again.name, "Ada");
+    /// A person made on this computer account as its daemon makes one
+    /// ([`tilo_identity::provisioning::create_person`]), for a test that needs one there.
+    fn made_here(name: &str) -> Person {
+        tilo_identity::provisioning::create_person(
+            &dir().unwrap(),
+            &paths(),
+            name,
+            "",
+            IdentityStorage::for_session(),
+        )
+        .unwrap();
+        held().unwrap().expect("the person just made")
     }
 
     #[test]
@@ -431,12 +411,12 @@ mod tests {
         };
         let first = tempfile::tempdir().unwrap();
         at(&mut env, first.path());
-        let (ada, _) = ensure(Some("Ada")).unwrap();
+        let ada = made_here("Ada");
         let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
         let words = tilo_identity::store::recovery_words(&active).unwrap();
         let other = tempfile::tempdir().unwrap();
         at(&mut env, other.path());
-        ensure(Some("Bea")).unwrap();
+        made_here("Bea");
         let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
         let bea_words = tilo_identity::store::recovery_words(&active).unwrap();
 

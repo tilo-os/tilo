@@ -559,14 +559,14 @@ impl OnboardingView {
         let import_paths = session.identity_paths();
         let words_paths = session.identity_paths();
         let minter: Minter = Box::new(move || {
-            let paths = mint_paths
-                .as_ref()
-                .ok_or_else(session::identity_root_unavailable)?;
             match context {
-                OnboardingContext::FullSystem => crate::identity::mint_into(&mint_dir, paths),
-                OnboardingContext::HostDesktop => {
-                    crate::identity::mint_into_for_legacy_linux_host(&mint_dir, paths)
+                OnboardingContext::FullSystem => {
+                    let paths = mint_paths
+                        .as_ref()
+                        .ok_or_else(session::identity_root_unavailable)?;
+                    crate::identity::mint_into(&mint_dir, paths)
                 }
+                OnboardingContext::HostDesktop => crate::identity::found_by_daemon(&mint_dir),
             }
             .map_err(|e| e.to_string())
         });

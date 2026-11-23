@@ -299,10 +299,10 @@ impl DeviceOnly {
         receipt
     }
 
-    /// Start a new person on this device ([`FOUND`]), as its own account asks: their root is kept
-    /// here and certifies this device's key, and the daemon serves them from then on. Answers the
-    /// person's id.
-    fn found(&self) -> Result<String, String> {
+    /// Start a new person on this device ([`FOUND`]), as its own account asks, named as `args`'
+    /// `name` says (unnamed without one): their root is kept here and certifies this device's key,
+    /// and the daemon serves them from then on. Answers the person's id.
+    fn found(&self, args: &Value) -> Result<String, String> {
         if self.claimed() {
             return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
         }
@@ -312,7 +312,8 @@ impl DeviceOnly {
         if !own {
             return Err("only this device's own account starts a person on it".to_owned());
         }
-        super::services::found_a_person(self.keys())
+        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
+        super::services::found_a_person(self.keys(), name)
             .map_err(|error| format!("this device could not make a new person: {error}"))?;
         self.person()
             .map(hex::encode)
@@ -435,14 +436,17 @@ impl ActionProvider for DeviceOnly {
                 Pending::ready(Ok(receipt))
             }
             FOUND => Pending::ready(
-                self.found()
-                    .map(|person| {
-                        self.keep(
-                            invocation,
-                            succeeded(invocation, serde_json::json!({ "person": person })),
-                        )
-                    })
-                    .map_err(|reason| ActionCallError::Refused { reason }),
+                self.found(&match &request.argument {
+                    InvokeArgument::Json(argument) => Value::Object(argument.clone()),
+                    _ => Value::Null,
+                })
+                .map(|person| {
+                    self.keep(
+                        invocation,
+                        succeeded(invocation, serde_json::json!({ "person": person })),
+                    )
+                })
+                .map_err(|reason| ActionCallError::Refused { reason }),
             ),
             _ => Pending::ready(Err(self.needs_a_person())),
         }

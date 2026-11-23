@@ -113,9 +113,14 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
     let secrets = home.root().join("secrets");
     // One tree for the person and their device, as a disposable profile has
     // it: the directory the session reads is where the command wrote.
+    // The session is Tilo OS's, whose devices are native.
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
-        .set("TILO_SECRETS_DIR", &secrets);
+        .set("TILO_SECRETS_DIR", &secrets)
+        .set(
+            tilo_identity::provisioning::TEST_PLATFORM_ENV,
+            tilo_identity::provisioning::TILO_OS_PLATFORM,
+        );
     login(&identity);
     let socket = home.runtime().join("test-control.sock");
     let mut session = crate::common::headless(Options {

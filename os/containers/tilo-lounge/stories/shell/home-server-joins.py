@@ -35,6 +35,8 @@ def steps(story: Story) -> None:
     shared: dict = {}
     try:
         def signs_in():
+            # Her computer's daemon makes the person, so it runs first.
+            ada.start_daemon()
             said = ada.json("login", "--new-identity", "--name", "Ada", "--json")
             if not said.get("user_public_key"):
                 raise Failed(f"the sign-in made no identity: {said}")

@@ -145,6 +145,18 @@ class Computer:
             raise Failed(f"`tilo {redact(' '.join(args))}` on {self.name} answered no JSON: "
                          f"{redact(said.strip()[:1500])}") from None
 
+    def start_daemon(self) -> None:
+        """Start this computer's daemon, as its service would run it, and wait until it answers:
+        a person is made by the daemon alone (`tilo login --new-identity` asks it)."""
+        runtime = cli().parent / "tilo-runtime"
+        if not runtime.is_file():
+            raise Failed(f"no tilo-runtime beside {cli()}")
+        with open(self.logs / "daemon.log", "ab") as log:
+            subprocess.Popen([str(runtime)], env=self.env(), stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=log, start_new_session=True)
+        socket = self.root / "run" / "tilo" / "native.sock"
+        until(f"{self.name}'s daemon to answer", socket.is_socket, 60, 0.2)
+
     # -- what the computer is --
 
     def device_key(self) -> str:
@@ -179,7 +191,7 @@ def signal_pid(pid: int, number: int) -> None:
 
 
 def daemons(markers: list[str]) -> list[int]:
-    """The pids of the daemons (`tilo-runtime --hold`) started with any of
+    """The pids of the daemons (`tilo-runtime`) started with any of
     `markers` in their environment: the computers whose commands started one."""
     found = []
     for entry in Path("/proc").iterdir():
@@ -189,7 +201,7 @@ def daemons(markers: list[str]) -> list[int]:
             command = (entry / "cmdline").read_bytes()
         except OSError:
             continue
-        if b"tilo-runtime" not in command or b"--hold" not in command:
+        if b"tilo-runtime" not in command:
             continue
         try:
             environment = (entry / "environ").read_bytes()

@@ -226,6 +226,27 @@ impl DeviceClass {
         }
     }
 
+    /// The class of this device, as the computer it runs on is: native on Tilo
+    /// OS, whose system unit runs the device's daemon, and foreign on an
+    /// operating system Tilo does not control. A test says which platform it
+    /// plays with [`TEST_PLATFORM_ENV`]; a release build reads only the
+    /// computer.
+    fn here() -> Self {
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        if let Some(platform) = std::env::var_os(TEST_PLATFORM_ENV) {
+            return if platform == TILO_OS_PLATFORM {
+                Self::Native
+            } else {
+                Self::Foreign
+            };
+        }
+        if tilo_paths::machine::system_daemon() {
+            Self::Native
+        } else {
+            Self::Foreign
+        }
+    }
+
     /// The class of the identity in `identity_dir` provisioned as `class`:
     /// a throwaway test identity stays one whoever provisions it again, so
     /// its renewed certificate expires as the first did.
@@ -239,6 +260,15 @@ impl DeviceClass {
     }
 }
 
+/// The platform a test plays, for the class of the device it certifies
+/// ([`TILO_OS_PLATFORM`] for Tilo OS, anything else for an operating system
+/// Tilo does not control). Read only by a test build.
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+pub const TEST_PLATFORM_ENV: &str = "TILO_TEST_PLATFORM";
+/// [`TEST_PLATFORM_ENV`]'s word for Tilo OS.
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+pub const TILO_OS_PLATFORM: &str = "tilo-os";
+
 mod renewal;
 
 pub use renewal::{
@@ -250,8 +280,6 @@ pub use renewal::{
 enum IdentityProvisioningContext {
     /// Native Tilo: the dedicated OOBE owns the identity and storage policy.
     NativeTilo,
-    /// Tilo Desktop added to a pre-existing Linux distribution and user account.
-    LegacyLinuxHost,
     /// A disposable identity a dev-image test session mints for itself.
     #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
     ThrowawayTest,
@@ -392,9 +420,7 @@ fn ensure_primary_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
-        if context != IdentityProvisioningContext::LegacyLinuxHost {
-            protect_identity_record(identity_dir, storage)?;
-        }
+        protect_identity_record(identity_dir, storage)?;
         return Ok(ProvisionOutcome::Existing);
     }
 
@@ -404,7 +430,6 @@ fn ensure_primary_identity_in_context(
     let pubkey_hex = hex::encode(root.verifying_key().as_bytes());
     let display_name = match context {
         IdentityProvisioningContext::NativeTilo => String::new(),
-        IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
         IdentityProvisioningContext::ThrowawayTest => THROWAWAY_TEST_IDENTITY_NAME.to_owned(),
     };
@@ -458,12 +483,7 @@ pub fn ensure_collaboration_identity_with_device_label(
     storage: IdentityStorage,
     label: &str,
 ) -> Result<ProvisionOutcome, io::Error> {
-    if label.trim().is_empty() || label.len() > 64 || label.chars().any(char::is_control) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "device label must contain 1 to 64 bytes without control characters",
-        ));
-    }
+    approved_label(label)?;
     ensure_collaboration_identity_in_context(
         identity_dir,
         paths,
@@ -474,15 +494,15 @@ pub fn ensure_collaboration_identity_with_device_label(
     )
 }
 
-/// [`ensure_collaboration_identity`] for a Tilo runtime on an operating system
-/// Tilo does not control. Its device certificates are marked foreign, so
-/// workspace policy caps its role; a native certificate left on disk by an
-/// earlier build is re-issued as foreign for the same device key.
+/// [`ensure_collaboration_identity`] with the class this device is: native on
+/// Tilo OS, foreign on an operating system Tilo does not control, whose
+/// certificates workspace policy caps the role of. A certificate of the other
+/// class left on disk by an earlier build is re-issued for the same device key.
 ///
 /// # Errors
 ///
 /// As [`ensure_collaboration_identity`].
-pub fn ensure_foreign_collaboration_identity(
+pub fn certify_this_device(
     identity_dir: &Path,
     paths: &IdentityPaths,
     storage: IdentityStorage,
@@ -492,31 +512,20 @@ pub fn ensure_foreign_collaboration_identity(
         paths,
         IdentityProvisioningContext::NativeTilo,
         storage,
-        DeviceClass::Foreign,
+        DeviceClass::here(),
         None,
     )
 }
 
-/// Provision collaboration identity for Tilo Desktop installed on an existing
-/// Linux distribution.
-///
-/// A newly minted identity is labelled from the current passwd entry so it is
-/// visibly associated with the already-authenticated Unix user. An existing
-/// identity record is used as-is: this compatibility path does not introduce
-/// another login, password, or storage migration.
-pub fn ensure_collaboration_identity_for_legacy_linux_host(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    storage: IdentityStorage,
-) -> Result<ProvisionOutcome, io::Error> {
-    ensure_collaboration_identity_in_context(
-        identity_dir,
-        paths,
-        IdentityProvisioningContext::LegacyLinuxHost,
-        storage,
-        DeviceClass::Native,
-        None,
-    )
+/// Refuse a device label that is empty, longer than 64 bytes or holds a control character.
+fn approved_label(label: &str) -> io::Result<()> {
+    if label.trim().is_empty() || label.len() > 64 || label.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device label must contain 1 to 64 bytes without control characters",
+        ));
+    }
+    Ok(())
 }
 
 /// Restore the person encoded in their recovery words and certify this device.
@@ -924,9 +933,7 @@ fn ensure_collaboration_identity_in_context(
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
         if let Some(path) = crate::store::resolve_active_identity(identity_dir) {
-            if context != IdentityProvisioningContext::LegacyLinuxHost {
-                protect_identity_record_at(identity_dir, &path, storage)?;
-            }
+            protect_identity_record_at(identity_dir, &path, storage)?;
             (path, ProvisionOutcome::Existing)
         } else {
             let outcome = ensure_primary_identity_in_context(identity_dir, context, storage)?;
@@ -1400,10 +1407,11 @@ pub fn collaboration_identity_paths() -> IdentityPaths {
 
 /// Make a new person whose root this account holds: a fresh root kept as this
 /// account's identity in `identity_dir`, named `display_name` (unnamed while
-/// it is empty), and this device certified by it as `device_label` in `paths`,
-/// as a session provisions its own. How `tilo login --new-identity` makes one,
-/// so a session started on this account later is that same person. Answers
-/// the person's user public key.
+/// it is empty), and this device certified by it as `device_label` in `paths`
+/// (named for the machine while that is empty), with the class this device is
+/// ([`certify_this_device`]). The one way a person is made: the device's
+/// daemon does it (`devices#found`), for onboarding and `tilo login
+/// --new-identity` alike. Answers the person's user public key.
 ///
 /// # Errors
 ///
@@ -1426,10 +1434,21 @@ pub fn create_person(
             ),
         ));
     }
+    let label = device_label.trim();
+    if !label.is_empty() {
+        approved_label(label)?;
+    }
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     import_single_device_root(identity_dir, &root, display_name, storage)?;
     mark_founding(identity_dir)?;
-    ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, device_label)?;
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::NativeTilo,
+        storage,
+        DeviceClass::here(),
+        (!label.is_empty()).then_some(label),
+    )?;
     Ok(root.verifying_key().to_bytes())
 }
 
@@ -1748,6 +1767,9 @@ mod tests {
 
         phase the_shell_issues_native_certificates_and_the_runtime_foreign_ones;
         {
+            // The runtime plays an operating system Tilo does not control.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(super::TEST_PLATFORM_ENV, "macos");
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
@@ -1764,8 +1786,8 @@ mod tests {
             );
 
             // A runtime profile left with native certificates is re-issued as
-            // foreign, keeping the device key and label.
-            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            // foreign on such a system, keeping the device key and label.
+            super::certify_this_device(&personal, &paths, FILES).unwrap();
             let foreign = device_certificates(&paths, &personal);
             for ((_, before), (_, after)) in native.iter().zip(&foreign) {
                 assert!(after.capabilities.foreign);
@@ -1773,7 +1795,7 @@ mod tests {
                 assert_eq!(after.device_label, before.device_label);
             }
             let foreign_bytes = foreign.clone().map(|(path, _)| fs::read(path).unwrap());
-            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            super::certify_this_device(&personal, &paths, FILES).unwrap();
             assert_eq!(
                 foreign.map(|(path, _)| fs::read(path).unwrap()),
                 foreign_bytes
@@ -1782,7 +1804,7 @@ mod tests {
             let fresh = tempfile::tempdir().expect("tempdir");
             let personal = fresh.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(fresh.path().join("system"));
-            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            super::certify_this_device(&personal, &paths, FILES).unwrap();
             for (_, cert) in device_certificates(&paths, &personal) {
                 assert!(cert.capabilities.foreign);
             }
@@ -2006,12 +2028,6 @@ mod tests {
     ) -> Result<ProvisionOutcome, io::Error> {
         super::ensure_collaboration_identity(identity_dir, paths, FILES)
     }
-    fn ensure_collaboration_identity_for_legacy_linux_host(
-        identity_dir: &Path,
-        paths: &IdentityPaths,
-    ) -> Result<ProvisionOutcome, io::Error> {
-        super::ensure_collaboration_identity_for_legacy_linux_host(identity_dir, paths, FILES)
-    }
 
     use std::sync::{Arc, Barrier};
 
@@ -2234,48 +2250,11 @@ mod tests {
                 ProvisionOutcome::Existing
             );
         }
-
-        phase legacy_linux_host_associates_a_fresh_identity_with_the_unix_account;
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let personal = tmp.path().join("config/tilo/identity");
-            let paths = IdentityPaths::under(tmp.path().join("system"));
-
-            assert!(matches!(
-                ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
-                    .expect("provision host identity"),
-                ProvisionOutcome::Created { .. }
-            ));
-            let identity = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
-                .expect("load host identity");
-            assert_eq!(identity.display_name(), login_account_display_name());
-        }
-
-        phase legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity;
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let personal = tmp.path().join("config/tilo/identity");
-            let paths = IdentityPaths::under(tmp.path().join("system"));
-            ensure_primary_identity(&personal).expect("seed existing identity");
-            let record_path = personal.join(PRIMARY_IDENTITY_FILE);
-            let before = std::fs::read(&record_path).expect("read identity before host setup");
-
-            assert_eq!(
-                ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
-                    .expect("associate existing host identity"),
-                ProvisionOutcome::Existing
-            );
-            assert_eq!(
-                std::fs::read(record_path).expect("read identity after host setup"),
-                before,
-                "the legacy-host compatibility path must use an existing identity as-is"
-            );
-        }
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn legacy_host_resumes_partial_identity_beneath_atomic_fedora_home_link() {
+    fn a_partial_identity_resumes_beneath_atomic_fedora_home_link() {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2298,7 +2277,7 @@ mod tests {
         assert!(!paths.device_privkey.exists());
 
         assert_eq!(
-            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+            ensure_collaboration_identity(&personal, &paths)
                 .expect("resume the partial host identity"),
             ProvisionOutcome::Existing
         );

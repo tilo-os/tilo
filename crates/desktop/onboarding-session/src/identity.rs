@@ -332,40 +332,37 @@ pub fn mint_into(
     identity_dir: &Path,
     identity_paths: &tilo_device_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
-    mint_into_with_paths(identity_dir, identity_paths, false)
+    mint_into_with_paths(identity_dir, identity_paths)
 }
 
-/// Mint for Tilo Desktop running on a pre-existing Linux distribution.
-///
-/// This is the only path that associates a fresh identity with the current
-/// Unix account's passwd display name.
+/// How long first use waits for this computer's daemon to answer before it says it did not.
+const DAEMON_ANSWERING: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Have this computer's daemon make the person (`devices#found`), the one way a person is made,
+/// for Tilo Desktop on an operating system Tilo does not control, and describe what landed in
+/// `identity_dir`, this account's own: the daemon runs as this account, with the class this
+/// computer is.
 ///
 /// # Errors
 ///
-/// Returns an error if the compatibility identity ceremony cannot create or
-/// read back the collaboration identity.
-pub fn mint_into_for_legacy_linux_host(
-    identity_dir: &Path,
-    identity_paths: &tilo_device_identity::IdentityPaths,
-) -> Result<MintedIdentity, OnboardingError> {
-    mint_into_with_paths(identity_dir, identity_paths, true)
+/// The daemon does not answer or could not make the person, or what it made cannot be read.
+pub fn found_by_daemon(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| {
+            place.wait_for_native(DAEMON_ANSWERING)?;
+            place.found(None)
+        })
+        .map_err(OnboardingError::Mint)?;
+    existing_identity_in(identity_dir)
 }
 
 fn mint_into_with_paths(
     identity_dir: &Path,
     identity_paths: &tilo_device_identity::IdentityPaths,
-    legacy_linux_host: bool,
 ) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{
-        ProvisionOutcome, ensure_collaboration_identity,
-        ensure_collaboration_identity_for_legacy_linux_host,
-    };
-    let outcome = if legacy_linux_host {
-        ensure_collaboration_identity_for_legacy_linux_host(identity_dir, identity_paths)
-    } else {
-        ensure_collaboration_identity(identity_dir, identity_paths)
-    }
-    .map_err(|e| OnboardingError::from_provisioning(&e))?;
+    use crate::firstboot::{ProvisionOutcome, ensure_collaboration_identity};
+    let outcome = ensure_collaboration_identity(identity_dir, identity_paths)
+        .map_err(|e| OnboardingError::from_provisioning(&e))?;
     match outcome {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
             fingerprint: pubkey_hex,
@@ -431,8 +428,9 @@ pub fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
     })
 }
 
-/// Resume transport only for the exact durable identity and certified device.
-/// This grants no app access; native owner/session admission remains separate.
+/// Resume transport only for the exact durable identity and certified device,
+/// of whichever class the daemon certified it as. This grants no app access;
+/// native owner/session admission remains separate.
 pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     if existing_identity_at(&minted.path).map_or(true, |current| current != *minted) {
         return false;
@@ -444,9 +442,8 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
         return false;
     };
     let room = collab_types::person_workspace(&person);
-    tilo_identity::trusted_device::current(&room.to_string()).is_ok_and(|(_, certificate)| {
-        certificate.user_public_key == person && !certificate.capabilities.foreign
-    })
+    tilo_identity::trusted_device::current(&room.to_string())
+        .is_ok_and(|(_, certificate)| certificate.user_public_key == person)
 }
 
 /// Whether the record at `path` carries no secret of the identity: neither a

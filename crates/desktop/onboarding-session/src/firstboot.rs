@@ -264,23 +264,6 @@ pub fn ensure_throwaway_test_identity(
     )
 }
 
-/// [`tilo_identity::provisioning::ensure_collaboration_identity_for_legacy_linux_host`]
-/// in this session's identity storage.
-///
-/// # Errors
-///
-/// Returns any provisioning, verification, migration or registry error.
-pub fn ensure_collaboration_identity_for_legacy_linux_host(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-) -> Result<ProvisionOutcome, io::Error> {
-    tilo_identity::provisioning::ensure_collaboration_identity_for_legacy_linux_host(
-        identity_dir,
-        paths,
-        IDENTITY_STORAGE,
-    )
-}
-
 /// Version of the host-session input import. It lives in this device's input
 /// section: it says this device's host was imported, not another's.
 const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";

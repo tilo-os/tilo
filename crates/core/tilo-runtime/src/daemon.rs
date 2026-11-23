@@ -124,7 +124,7 @@ fn running(profile: &Path) -> io::Result<Status> {
             Ok(status) => {
                 if !tilo_api::daemon::system_daemon() {
                     tilo_api::daemon::this_computer()
-                        .and_then(|place| place.found())
+                        .and_then(|place| place.found(None))
                         .map_err(io::Error::other)?;
                 }
                 return Ok(status);
@@ -277,7 +277,11 @@ impl Running {
     /// # Errors
     /// The person's services did not start in time, or the shell did not.
     #[cfg(target_os = "linux")]
-    pub fn start_shell(&self, command: Command, within: Duration) -> io::Result<std::process::Child> {
+    pub fn start_shell(
+        &self,
+        command: Command,
+        within: Duration,
+    ) -> io::Result<std::process::Child> {
         self.person.within(within)?.start_shell(command)
     }
 
@@ -380,7 +384,9 @@ impl ShellSession {
 
     /// The shell's process.
     pub fn shell(&mut self) -> &mut std::process::Child {
-        self.shell.as_mut().expect("the shell runs until the session stops")
+        self.shell
+            .as_mut()
+            .expect("the shell runs until the session stops")
     }
 
     /// Stop the shell, then the daemon, and return once both ended.

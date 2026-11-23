@@ -153,10 +153,16 @@ fn provision(
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     if needs_first_run_flow(identity_path) {
+        // Tilo Desktop on another operating system has its person made by this computer's
+        // daemon, as every person is.
         let provisioned = if host_desktop {
-            firstboot::ensure_collaboration_identity_for_legacy_linux_host(identity_dir, paths)
+            tilo_onboarding_session::identity::found_by_daemon(identity_dir)
+                .map(drop)
+                .map_err(|error| error.to_string())
         } else {
             firstboot::ensure_collaboration_identity(identity_dir, paths)
+                .map(drop)
+                .map_err(|error| error.to_string())
         };
         return match provisioned {
             Ok(_) => {

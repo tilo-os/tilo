@@ -682,9 +682,14 @@ fn session_keeping_workspaces(home: &mut tilo_test_env::TestHome) -> Session {
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let secrets = home.root().join("secrets");
+    // The session is Tilo OS's, whose devices are native.
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
-        .set("TILO_SECRETS_DIR", &secrets);
+        .set("TILO_SECRETS_DIR", &secrets)
+        .set(
+            tilo_identity::provisioning::TEST_PLATFORM_ENV,
+            tilo_identity::provisioning::TILO_OS_PLATFORM,
+        );
     tilo_identity::provisioning::create_person(
         &identity,
         &tilo_device_identity::IdentityPaths::under(&identity),

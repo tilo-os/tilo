@@ -108,7 +108,11 @@ pub fn in_own_process(body: impl FnOnce(&Path)) {
         return;
     }
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
-    tilo_runtime::device::services::found_a_person(&tilo_identity::provisioning::collaboration_identity_paths()).unwrap();
+    tilo_runtime::device::services::found_a_person(
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        "",
+    )
+    .unwrap();
     body(&profile);
 }
 
@@ -212,7 +216,11 @@ pub struct Host {
 
 impl Host {
     fn start(profile: &Path) -> Self {
-        tilo_runtime::device::services::found_a_person(&tilo_identity::provisioning::collaboration_identity_paths()).unwrap();
+        tilo_runtime::device::services::found_a_person(
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+            "",
+        )
+        .unwrap();
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
         let identities = tilo_identity::store::identity_dir_from_env().unwrap();
         let active = tilo_identity::store::resolve_active_identity(&identities)

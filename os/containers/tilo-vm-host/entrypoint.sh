@@ -25,8 +25,9 @@
 #      handed to the member's daemon as its `tilo.ticket` credential, which it
 #      spends at its first start and leaves alone once a certificate names its
 #      key. A host given no ticket and with no certificate fails, unless
-#      TILO_VM_FOUND=1: then it founds its own identity first, as a machine
-#      with no owner before it does (`tilo login --new-identity`).
+#      TILO_VM_FOUND=1: then, once the member's daemon runs, it asks it to
+#      found the host's own identity, as a machine with no owner before it
+#      does (`tilo login --new-identity`).
 #   4. the member: `tilo-runtime`, as the service, under the member
 #      identity, its endpoint on TILO_DEVICE_PORT (7703 where none is named),
 #      an ordinary device of the workspaces it serves that takes their Linux
@@ -108,13 +109,8 @@ elif [ -n "${TILO_VM_TICKET:-}" ]; then
   chown tilo-hosted:tilo-hosted "$credentials/tilo.ticket"
   chmod 0600 "$credentials/tilo.ticket"
 elif [ "${TILO_VM_FOUND:-0}" = 1 ]; then
-  say "this host founds its own identity, as a machine with no owner before it does"
-  HOME=$member/home TILO_IDENTITY_ROOT=$identity \
-    XDG_CONFIG_HOME=$profile/config XDG_DATA_HOME=$profile/data \
-    XDG_CACHE_HOME=$profile/cache XDG_STATE_HOME=$profile/state \
-    setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
-    tilo login --new-identity >/dev/null \
-    || { say "this host could not found its own identity"; exit 1; }
+  # The member's daemon makes the person (step 4), as it makes every person.
+  found_here=1
 else
   say "this host has no identity and no TILO_VM_TICKET: make a ticket with \`tilo device add --server\` on an owner device"
   exit 1
@@ -140,6 +136,22 @@ mountpoint -q "$home" || mount --bind "$member/home" "$home" \
     sleep 5
   done
 ) &
+
+# A host that founds its own identity asks its member's daemon to, once the daemon answers: a
+# person is made by the daemon alone.
+if [ "${found_here:-0}" = 1 ]; then
+  say "this host founds its own identity, as a machine with no owner before it does"
+  for _ in $(seq 1 120); do
+    [ -S "$profile/native.sock" ] && break
+    sleep 1
+  done
+  HOME=$home TILO_IDENTITY_ROOT=$identity TILO_RUNTIME_PROFILE=$profile \
+    XDG_CONFIG_HOME=$profile/config XDG_DATA_HOME=$profile/data \
+    XDG_CACHE_HOME=$profile/cache XDG_STATE_HOME=$profile/state \
+    setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
+    tilo login --new-identity >/dev/null \
+    || { say "this host could not found its own identity"; exit 1; }
+fi
 
 # 5. the guest and the service: tilo-hosted-serve, the start the server OS runs
 # too (it fetches the pinned guest, then serves the VMs as the service's own

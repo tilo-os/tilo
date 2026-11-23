@@ -61,8 +61,14 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
     )
     .map_err(|error| format!("{error:#}"))?;
     let system = system_daemon();
+    // A daemon serving a profile named apart (a VM host's member) listens in that profile, as it
+    // is started over it: a command run beside it with the same profile asks it there.
+    let named = std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
+        .filter(|profile| !profile.is_empty());
     let sockets = if system {
         PathBuf::from(SYSTEM_SOCKETS)
+    } else if let Some(profile) = named {
+        PathBuf::from(profile)
     } else {
         own_sockets(login.dir())?
     };
@@ -273,7 +279,7 @@ impl DaemonPlace {
             if tilo_files::native::socket::connect(socket).is_ok() {
                 // A device no person's certificate names serves nobody yet.
                 if !self.system && who::who().is_ok_and(|who| !who.claimed) {
-                    self.found()?;
+                    self.found(None)?;
                 }
                 return Ok(());
             }
@@ -295,12 +301,13 @@ impl DaemonPlace {
 
 impl DaemonPlace {
     /// Ask the daemon to found this computer's person ([`tilo_device_identity::login::FOUND`]),
-    /// as a person's own computer's first command does. A device a person's certificate names
-    /// already refuses it, which is no failure here: that person is served.
+    /// named `name` when one is given, as a person's own computer's first command and `tilo login
+    /// --new-identity` do. A device a person's certificate names already refuses it, which is no
+    /// failure here: that person is served.
     ///
     /// # Errors
     /// The daemon does not answer, or could not found the person.
-    pub fn found(&self) -> Result<(), String> {
+    pub fn found(&self, name: Option<&str>) -> Result<(), String> {
         use std::io::{BufRead as _, Write as _};
         let mut native = tilo_files::native::socket::connect(&self.native())
             .map_err(|error| error.to_string())?;
@@ -314,7 +321,10 @@ impl DaemonPlace {
                     tilo_device_identity::login::RESOURCE,
                     tilo_device_identity::login::FOUND
                 ),
-                "args": {},
+                "args": name.map_or_else(
+                    || serde_json::json!({}),
+                    |name| serde_json::json!({ "name": name }),
+                ),
             }},
         });
         writeln!(native, "{line}").map_err(|error| error.to_string())?;

@@ -1132,10 +1132,12 @@ owner_run() {
 # run it. tilo starts it only through this account's systemd user unit or launchd agent, which
 # serve this account's own login: their unit would take its place, and with the person's
 # private runtime directory there is no user bus to reach. So the stack runs it, and
-# stop_people_holders stops it with the rest of the stack.
+# stop_people_holders stops it with the rest of the stack. `--before-person` starts it before
+# there is a person: the daemon is what makes one (stack_person).
 owner_daemon() {
   local runtime log=$state/logs/person.log
-  [[ -f $state/owner/home/.local/state/tilo/device/login.json ]] || return 0
+  [[ ${1-} == --before-person || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
+    || return 0
   [[ -z $(people_holders) ]] || return 0
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
@@ -1155,6 +1157,7 @@ stack_person() {
   local made
   if [[ ! -s $state/owner/key ]]; then
     mkdir -p "$state/owner"
+    owner_daemon --before-person
     made=$(as_owner login --new-identity --json) \
       || die 'tilo made no person for the stack (tilo login --new-identity)'
     python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made" \
