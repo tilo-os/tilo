@@ -240,15 +240,7 @@ pub fn add_registry(
         return Err(ConfigError::DuplicateName(name.to_string()));
     }
     let url = reqwest::Url::parse(base_url).map_err(|_| ConfigError::InvalidUrl)?;
-    let loopback_http =
-        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if (url.scheme() != "https" && !loopback_http)
-        || url.host().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
+    if !tilo_net::secure_endpoint(&url) || url.query().is_some() || url.fragment().is_some() {
         return Err(ConfigError::InvalidUrl);
     }
     if owner_pubkey_hex.len() != 64
@@ -290,4 +282,35 @@ pub fn set_registry_enabled(
         .ok_or_else(|| ConfigError::NotFound(name.to_string()))?;
     registry.enabled = enabled;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_registry_checks_secure_endpoint_and_refuses_query_and_fragment() {
+        let key = "ab".repeat(32);
+        let mut regs = RegistriesFile::default();
+        add_registry(&mut regs, "ipv6", "http://[::1]:8080/", &key).unwrap();
+        assert_eq!(regs.registries[0].base_url, "http://[::1]:8080");
+        add_registry(&mut regs, "local-sub", "http://tilo.localhost:8080", &key).unwrap();
+        assert_eq!(regs.registries[1].base_url, "http://tilo.localhost:8080");
+        for unsafe_url in [
+            "http://example.test/",
+            "http://localhost.example.test/",
+            "https://placeholder:placeholder@example.test/",
+            "http://placeholder:placeholder@[::1]:8080/",
+            "https://example.test/?token=1",
+            "https://example.test/#frag",
+            "file:///tmp/apps",
+        ] {
+            assert!(
+                matches!(
+                    add_registry(&mut regs, "rejected", unsafe_url, &key),
+                    Err(ConfigError::InvalidUrl)
+                ),
+                "unsafe registry URL was accepted: {unsafe_url}"
+            );
+        }
+    }
 }

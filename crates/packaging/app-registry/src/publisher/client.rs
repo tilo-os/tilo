@@ -45,15 +45,10 @@ impl RegistryClient {
     /// no HTTP client is made.
     pub fn validate_url(base: &str) -> Result<()> {
         let url = reqwest::Url::parse(base).context("invalid registry URL")?;
-        let loopback = url.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-        if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-            bail!("a registry is reached over https (plain http only on this machine)");
+        if !tilo_net::secure_endpoint(&url) {
+            bail!(
+                "a registry is reached over credential-free https (plain http only on this machine)"
+            );
         }
         Ok(())
     }
@@ -213,5 +208,45 @@ fn failure(url: &str, response: reqwest::blocking::Response) -> anyhow::Error {
         anyhow!("{url}: the registry answered {status}")
     } else {
         anyhow!("{url}: the registry answered {status}: {body}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegistryClient;
+
+    #[test]
+    fn validate_url_allows_local_http_and_refuses_credentials() {
+        for safe in [
+            "https://apps.tilo.so",
+            "http://127.0.0.1:8080/",
+            "http://127.1.2.3:8080/",
+            "http://localhost:8080/",
+            "http://tilo.localhost:8080/",
+            "http://[::1]:8080/",
+        ] {
+            assert!(
+                RegistryClient::validate_url(safe).is_ok(),
+                "safe registry URL was refused: {safe}"
+            );
+        }
+        for unsafe_url in [
+            "http://apps.tilo.so/",
+            "http://localhost.example.com/",
+            "https://placeholder:placeholder@apps.tilo.so/",
+            "https://placeholder@apps.tilo.so/",
+            "https://:placeholder@apps.tilo.so/",
+            "http://placeholder:placeholder@127.0.0.1:8080/",
+            "http://placeholder:placeholder@[::1]:8080/",
+            "http://localhost@apps.tilo.so/",
+            "file:///tmp/registry",
+            "https://",
+            "not a url",
+        ] {
+            assert!(
+                RegistryClient::validate_url(unsafe_url).is_err(),
+                "unsafe registry URL was accepted: {unsafe_url}"
+            );
+        }
     }
 }
