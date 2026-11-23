@@ -64,7 +64,6 @@ FIXTURE_FILES = (
 )
 PACKAGE_FILES = (
     'apps/file-explorer/tilo-app.toml', 'apps/file-explorer/surface.toml',
-    'apps/word-processor/tilo-app.toml', 'apps/word-processor/surface.toml',
     'apps/browser/tilo-app.toml', 'apps/browser/surface.toml',
     'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
     'apps/browser/chromium/tests/service_sessions.py',
@@ -82,7 +81,7 @@ PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/sdk/runtime-dylib', 'hos
             'firstboot_files': 'crates/os/firstboot-files',
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
             'launcher': 'crates/packaging/launcher',
-            'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
+            'files': 'apps/file-explorer', 'browser': 'apps/browser',
             'app_package': 'tools/tilo-app-package-cli',
             'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install',
             'installer': 'apps/imager'}
@@ -91,7 +90,7 @@ TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'im
            'home_seeds': 'tilo-firstboot-home-seeds', 'prepared_extract': 'tilo-installer-prepared-setup-extract',
            'staging_handoff': 'tilo-staging-handoff', 'handoff_copy': 'tilo-install-handoff-copy',
            'firstboot_files': 'tilo-firstboot-files',
-           'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
+           'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'browser': 'browser',
            'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
 BINDINGS = {'shell': '/usr/bin/tilo-session', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
