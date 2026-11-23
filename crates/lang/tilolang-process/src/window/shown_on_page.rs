@@ -3,9 +3,9 @@
 //! (`docs/architecture/html-renderer.md`).
 //!
 //! A page is a view like any window shown elsewhere. Its instance runs in the app's process and
-//! sends this window component patches over its patch connection ([`HostedWindow::over`]). Every
-//! widget the window composes renders itself as HTML (`Widget::html`), and what the person does
-//! on the page comes back as the widget's own semantic action, on the path a native window's
+//! sends this window component patches over its patch connection ([`HostedWindow::over`]). The
+//! page is written from the window's semantics tree ([`Page`]), and what the person does on the
+//! page comes back as the node's own semantic action, on the path a native window's
 //! accessibility and automation take. Nothing here holds the app's data: what the person changes
 //! is the app's own action, run by its instance under the identity its connection was opened as.
 
@@ -19,10 +19,12 @@ use ui::headless::FrameHarness;
 
 use super::hosted::HostedWindow;
 
-/// The size a page's view is laid out at: a page carries none of the frame's geometry and lays
-/// out at any width, so this decides only which of the window's layouts it composes, the wide
-/// one with its sidebar and page side by side.
+/// The size a page's view is laid out at until the page says its own ([`PageAction::Resize`]):
+/// the wide layout, with its sidebar and page side by side.
 pub const VIEWPORT: (u32, u32) = (1280, 800);
+
+/// The smallest and largest side, in CSS pixels, a page's size lays its view out at.
+const PAGE_SIDE: (u32, u32) = (240, 8192);
 
 /// The most frames one read of the page lays out to take up what its view owes: a view that keeps
 /// asking for frames (an animation) is not waited out.
@@ -160,17 +162,34 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<String> {
         .find_map(|node| find(node, target))
 }
 
-/// The semantic action `act` is on the view.
-fn semantic(act: PageAction) -> Action {
-    match act {
+/// The semantic action `act` is on the view; `None` for what is no node's action (the page's
+/// window resized, [`resize`]).
+fn semantic(act: PageAction) -> Option<Action> {
+    Some(match act {
         PageAction::Activate => Action::Activate,
         PageAction::Toggle => Action::ToggleCheck,
         PageAction::Focus => Action::Focus,
+        PageAction::Increment => Action::Increment,
+        PageAction::Decrement => Action::Decrement,
         PageAction::Value(value) => Action::SetValue(value),
         PageAction::Select { anchor, focus } => Action::SetSelection {
             anchor: usize::try_from(anchor).unwrap_or(usize::MAX),
             focus: usize::try_from(focus).unwrap_or(usize::MAX),
         },
+        PageAction::Resize { .. } => return None,
+    })
+}
+
+/// Lay `frame` out at its page's size, `width` by `height` CSS pixels (kept between 240 and 8192
+/// on a side), as a window lays out at the size it is given: a narrow page shows the view as a
+/// narrow window does, and what a node's bounds say is where the page shows it.
+pub fn resize(frame: &mut FrameHarness, width: u32, height: u32) {
+    let viewport = (
+        width.clamp(PAGE_SIDE.0, PAGE_SIDE.1),
+        height.clamp(PAGE_SIDE.0, PAGE_SIDE.1),
+    );
+    if let Err(error) = frame.resize(viewport) {
+        tracing::debug!(?error, "a page's view did not lay out at its size");
     }
 }
 
@@ -206,7 +225,20 @@ pub fn serve(
                 if let Some(call) = call {
                     serving_call(frame, call, invoker);
                 }
-                let changed = page.act(frame, id, target.as_deref(), &semantic(action));
+                let size = match action {
+                    PageAction::Resize { width, height } => Some((width, height)),
+                    _ => None,
+                };
+                let changed = match semantic(action) {
+                    Some(action) => page.act(frame, id, target.as_deref(), &action),
+                    None => {
+                        // The page's window took a size: the view lays itself out at it.
+                        if let Some((width, height)) = size {
+                            resize(frame, width, height);
+                        }
+                        page.changed(frame)
+                    }
+                };
                 if serving {
                     serving_call(frame, Vec::new(), None);
                 }

@@ -701,7 +701,13 @@ impl Search {
                 self.find(&text);
             }
             PageAction::Activate => self.run_row(id),
-            PageAction::Toggle | PageAction::Focus | PageAction::Select { .. } => {
+            // The search page lays out at any size and has nothing that steps.
+            PageAction::Toggle
+            | PageAction::Focus
+            | PageAction::Select { .. }
+            | PageAction::Increment
+            | PageAction::Decrement
+            | PageAction::Resize { .. } => {
                 return Vec::new();
             }
         }
