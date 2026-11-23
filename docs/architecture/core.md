@@ -792,7 +792,10 @@ workspace vault, despite their names.
   that holds it, and the server's own person has no power over a workspace
   it does not belong to.
 - **One set of resources per workspace.** Mail, calendar, vault, models,
-  connections, agents and skills belong to the workspace. Privacy between
+  connections, agents and skills belong to the workspace, and so does what
+  an agent has learned, read by the person it acts for. Every tool a model
+  sees is a published action, never a hand-written list; a turn's answer is
+  written by actions on its invocation record. Privacy between
   members is a reader rule on a record, never a private store. The keys
   enforce it, not a filter: a record with its own readers (a direct
   conversation, a private note) is its own resource, sealed under the key
