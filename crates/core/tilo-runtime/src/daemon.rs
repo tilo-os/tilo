@@ -20,7 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tilo_api::daemon::admission::ROOT;
+use tilo_api::daemon::admission::{Admitted, ROOT};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
@@ -322,6 +322,7 @@ fn serve_device(
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
         native.serve_the_person(the_persons(&session, search));
+        native.serve_keys(key_endpoint(&session, native.answers.clone()));
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
@@ -480,6 +481,20 @@ pub(crate) fn serve_for_test(
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
 type Take = Box<dyn Fn(UnixStream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
 
+/// A connection of an account signed in as another person than the device's, taken as the key
+/// of theirs it acts as, with that key's certificate.
+type KeyTake = Box<
+    dyn Fn(
+            UnixStream,
+            ConnectionSlot,
+            Seated,
+            ed25519_dalek::SigningKey,
+            tilo_user_identity::DeviceCert,
+        ) -> io::Result<()>
+        + Send
+        + Sync,
+>;
+
 /// The native endpoint over the daemon's whole life: the device's own actions from boot, and the
 /// person's endpoint once their services run. A connection on a device no certificate names yet
 /// is answered with the device's own actions at once; one on a set-up device while its person's
@@ -491,6 +506,9 @@ struct Native {
     seats: Arc<Seats>,
     /// The person's endpoint, while their services run.
     person: Mutex<Option<Arc<Take>>>,
+    /// The endpoint of the other people signed in on the computer, each as their own key, while
+    /// the person's services run.
+    keys: Mutex<Option<Arc<KeyTake>>>,
     /// Told when [`Self::person`] is set.
     started: (Mutex<()>, Condvar),
 }
@@ -509,6 +527,7 @@ impl Native {
             seats,
             started: (Mutex::new(()), Condvar::new()),
             person: Mutex::new(None),
+            keys: Mutex::new(None),
         }
     }
 
@@ -558,10 +577,17 @@ impl Native {
         self.started.1.notify_all();
     }
 
+    /// Serve the connections of the other people signed in on the computer with `take`, each
+    /// as their own key, from now on.
+    fn serve_keys(&self, take: KeyTake) {
+        *self.keys.lock_recover() = Some(Arc::new(take));
+    }
+
     /// Serve no connection the person's from now on, while their services start again: one that
-    /// comes meanwhile waits for them.
+    /// comes meanwhile waits for them, and another person's is answered the device's own actions.
     fn forget_the_person(&self) {
         self.person.lock_recover().take();
+        self.keys.lock_recover().take();
     }
 
     /// The person's endpoint, while their services run.
@@ -588,6 +614,15 @@ impl Native {
         // held while the person's services start.
         if !seated.seat.admitted.served() || seated.seat.uid == ROOT {
             return self.device_only(stream, slot, seated);
+        }
+        // Another person than the device's acts as their own key, and is never served the
+        // person's endpoint: until it runs, the device's own actions answer them.
+        if matches!(seated.seat.admitted, Admitted::Key { .. }) {
+            let take = self.keys.lock_recover().clone();
+            return match (take, self.seats.key(seated.seat)) {
+                (Some(take), Some((key, cert))) => take(stream, slot, seated, key, cert),
+                _ => self.device_only(stream, slot, seated),
+            };
         }
         match self.person() {
             Some(person) => person(stream, slot, seated),
@@ -683,6 +718,29 @@ pub(crate) fn agents_endpoint(
         frames: Frames::of_the_person(daemon),
         to_agents: None,
     }
+}
+
+/// How the native endpoint serves a connection of another person than the device's: each as a
+/// run of the key of theirs it acts as, in `session`'s workspace. Its action frames reach the
+/// device's own actions (`answers`) alone, never the person's tree.
+fn key_endpoint(session: &Arc<Daemon>, answers: crate::device::unclaimed::DeviceOnly) -> KeyTake {
+    let session = Arc::downgrade(session);
+    Box::new(move |stream, slot, seated, key, cert| {
+        let daemon = session
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        Endpoint {
+            session_factory: daemon.key_sessions(key, cert),
+            status: status_of(&daemon),
+            search: Arc::new(OnceLock::new()),
+            media: None,
+            other_devices: None,
+            agents: None,
+            frames: Frames::of_the_device(answers.seated(seated.clone())),
+            to_agents: None,
+        }
+        .take(stream, slot, Some(seated))
+    })
 }
 
 /// The sessions of the native endpoint, each admitted to `session`'s workspace when its

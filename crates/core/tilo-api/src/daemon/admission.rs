@@ -1,11 +1,16 @@
 //! Who a connection to this computer's daemon is, by the account the kernel says is at its other
 //! end. Root and the daemon's own account act as the device. Under Tilo OS's system unit, an
-//! account the sign-in said is a person's ([`Admission::signed_in`]) acts as that person, and any
-//! other account is answered only what a device answers before anyone set it up. A person's own
-//! service admits its owner and root alone.
+//! account the sign-in said is the device's person ([`Admission::signed_in`]) acts as that person.
+//! Another person signed in on the computer acts as a key of their own on this device, which
+//! their root (or their identity's issuer) certified ([`Admission::certified`]): the account is
+//! admitted as that key, and only once it holds a certificate for it. Any other account is
+//! answered only what a device answers before anyone set it up. A person's own service admits its
+//! owner and root alone.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
+
+use tilo_user_identity::DeviceCert;
 
 /// The administrator's account: the device's, and the only one that says who signed in.
 pub const ROOT: u32 = 0;
@@ -15,8 +20,16 @@ pub const ROOT: u32 = 0;
 pub enum Admitted {
     /// Root, or the daemon's own account: the device itself.
     Device,
-    /// An account signed in as the person whose root key this is.
+    /// An account signed in as the person whose root key this is: the person the device serves.
     Person([u8; 32]),
+    /// An account signed in as another person, acting as the key of theirs on this device that
+    /// their certificate names.
+    Key {
+        /// The person, by their root key.
+        person: [u8; 32],
+        /// The key the account acts as.
+        key: [u8; 32],
+    },
     /// Any other account: only what a device answers before it has a person.
     Stranger,
 }
@@ -35,7 +48,20 @@ impl Admitted {
 pub struct Admission {
     own: u32,
     system: bool,
-    seats: Mutex<HashMap<u32, [u8; 32]>>,
+    seats: Mutex<HashMap<u32, Seat>>,
+}
+
+/// Who an account signed in as.
+#[derive(Clone, Debug)]
+enum Seat {
+    /// The person the device serves.
+    Person([u8; 32]),
+    /// Another person, whose key on this device `key` is, once their certificate for it came.
+    Key {
+        person: [u8; 32],
+        key: [u8; 32],
+        cert: Option<DeviceCert>,
+    },
 }
 
 impl Admission {
@@ -64,18 +90,57 @@ impl Admission {
         if !self.system {
             return Admitted::Stranger;
         }
-        self.person_of(uid)
-            .map_or(Admitted::Stranger, Admitted::Person)
+        match self.seat(uid) {
+            Some(Seat::Person(person)) => Admitted::Person(person),
+            Some(Seat::Key {
+                person,
+                key,
+                cert: Some(_),
+            }) => Admitted::Key { person, key },
+            Some(Seat::Key { cert: None, .. }) | None => Admitted::Stranger,
+        }
     }
 
-    /// The person signed in as `uid`, when one is.
+    /// The person signed in as `uid`, when one is: the device's, or another whose key's
+    /// certificate came.
     #[must_use]
     pub fn person_of(&self, uid: u32) -> Option<[u8; 32]> {
+        match self.admit(uid) {
+            Admitted::Person(person) | Admitted::Key { person, .. } => Some(person),
+            _ => None,
+        }
+    }
+
+    /// The certificate of the key `uid` acts as, when it signed in as another person than the
+    /// device's and their certificate came.
+    #[must_use]
+    pub fn key_of(&self, uid: u32) -> Option<DeviceCert> {
+        match self.seat(uid) {
+            Some(Seat::Key { cert, .. }) => cert,
+            _ => None,
+        }
+    }
+
+    /// The key `uid` is to act as, while it waits for its person's certificate for it: the
+    /// person, and the key.
+    #[must_use]
+    pub fn awaiting(&self, uid: u32) -> Option<([u8; 32], [u8; 32])> {
+        match self.seat(uid) {
+            Some(Seat::Key {
+                person,
+                key,
+                cert: None,
+            }) => Some((person, key)),
+            _ => None,
+        }
+    }
+
+    fn seat(&self, uid: u32) -> Option<Seat> {
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&uid)
-            .copied()
+            .cloned()
     }
 
     /// Say that `uid` signed in as `person`, as asked by `by`.
@@ -87,7 +152,65 @@ impl Admission {
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(uid, person);
+            .insert(uid, Seat::Person(person));
+        Ok(())
+    }
+
+    /// Say that `uid` signed in as `person`, another person than the device's, who acts here as
+    /// the key `key`, as asked by `by`. The account is admitted once `person` certified the key
+    /// ([`Self::certified`]).
+    ///
+    /// # Errors
+    /// `by` is not root.
+    pub fn signed_in_as_key(
+        &self,
+        by: u32,
+        uid: u32,
+        person: [u8; 32],
+        key: [u8; 32],
+    ) -> Result<(), String> {
+        Self::by_root(by)?;
+        self.seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                uid,
+                Seat::Key {
+                    person,
+                    key,
+                    cert: None,
+                },
+            );
+        Ok(())
+    }
+
+    /// Take `cert` as the certificate of the key `uid` acts as: it must be valid now, name that
+    /// key, and be the person's own (signed by their root, or their identity's issuer). The
+    /// account acts as the key from now on, until it left.
+    ///
+    /// # Errors
+    /// `uid` waits for no certificate, or `cert` is not one for its key by its person.
+    pub fn certified(&self, uid: u32, cert: DeviceCert) -> Result<(), String> {
+        let mut seats = self.seats.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(Seat::Key {
+            person,
+            key,
+            cert: held,
+        }) = seats.get_mut(&uid)
+        else {
+            return Err(format!(
+                "account {uid} did not sign in as a person with a key of their own here"
+            ));
+        };
+        if cert.device_public_key != *key {
+            return Err("the certificate is for another key than the account's".to_owned());
+        }
+        if cert.user_public_key != *person {
+            return Err("the certificate is another person's than the account's".to_owned());
+        }
+        tilo_user_identity::verify_device_cert(&cert)
+            .map_err(|error| format!("the certificate does not hold: {error}"))?;
+        *held = Some(cert);
         Ok(())
     }
 
@@ -153,6 +276,10 @@ mod tests {
     fn a_persons_service_admits_them_and_root_alone() {
         let admission = Admission::new(1000, false);
         admission.signed_in(ROOT, 1001, [7; 32]).unwrap();
+        admission
+            .signed_in_as_key(ROOT, 1002, [8; 32], [9; 32])
+            .unwrap();
+        assert_eq!(admission.admit(1002), Admitted::Stranger);
         assert_eq!(admission.admit(1000), Admitted::Device);
         assert_eq!(admission.admit(ROOT), Admitted::Device);
         assert_eq!(admission.admit(1001), Admitted::Stranger);

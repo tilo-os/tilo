@@ -1261,6 +1261,34 @@ impl Daemon {
             invocations: Arc::clone(&self.invocations),
         })
     }
+
+    /// The sessions of an account signed in on this computer as another person than the
+    /// device's, each a run of `key` (certified by `cert`) in the device's workspace: its calls
+    /// act as that key, and the workspace grants it what it grants its person, never what the
+    /// device's own person holds.
+    pub(crate) fn key_sessions(
+        self: &Arc<Self>,
+        key: SigningKey,
+        cert: DeviceCert,
+    ) -> tilo_mcp::SessionFactory<RuntimeActionProvider> {
+        let daemon = Arc::downgrade(self);
+        Arc::new(move || {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            let key = tilo_api::grant_key::GrantKey::held(
+                key.clone(),
+                cert.clone(),
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(|refused| io::Error::other(refused.to_string()))?;
+            let provider = daemon.provider_for_key(&daemon.workspace()?, &key)?;
+            let caller = provider
+                .admission_caller()
+                .ok_or_else(|| io::Error::other("the key's run was not admitted"))?;
+            tilo_mcp::McpServer::admitted(provider, caller)
+        })
+    }
 }
 
 impl Daemon {
