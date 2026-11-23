@@ -62,14 +62,14 @@ async fn a_member_reads_the_devices_keeping_the_workspace() {
     )
     .expect("a member reads the workspace's copies");
     let server = hex::encode(fixture.host.device_pubkey());
-    let named: Vec<&str> = read["keeps"]
+    let named = read["keeps"]
         .as_array()
         .expect("the read names the devices keeping it")
         .iter()
         .filter_map(|keep| keep["device"].as_str())
-        .collect();
+        .any(|device| device == server);
     assert!(
-        named.contains(&server.as_str()),
+        named,
         "the server holding the workspace is named among its copies: {read}"
     );
 }
