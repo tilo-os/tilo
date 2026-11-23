@@ -127,6 +127,9 @@ class Manifest:
     origin: str = ""
     title: str = ""
     example_languages: tuple[str, ...] = ()
+    # The API reference's address: the book's own site builds it, so a second site that
+    # publishes the book (`export --at`) links it there.
+    api_url: str = ""
 
     def url(self, page: Page) -> str:
         return f"{self.base}{page.slug}/" if page.slug else self.base
@@ -197,7 +200,10 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
     languages = data.get("examples", {}).get("languages", [])
     if not all(isinstance(language, str) and language for language in languages):
         raise DocsError(f"{manifest_path}: [examples].languages must be a list of language names")
-    origin, base = ADDRESSES.get(manifest_path, (origin, base))
+    api_url = base + api.get("path", "") if api.get("path") else ""
+    if manifest_path in ADDRESSES:
+        api_url = origin + api_url if api_url else ""
+        origin, base = ADDRESSES[manifest_path]
     return Manifest(
         base=base,
         repository=data.get("repository", "").rstrip("/"),
@@ -210,6 +216,7 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
         origin=origin,
         title=data.get("title", ""),
         example_languages=tuple(languages),
+        api_url=api_url,
     )
 
 
@@ -295,7 +302,8 @@ class Linker:
                     self.routes[page.source] = book.address_from(manifest, book.url(page))
             if on_site:
                 for source in book.api_sources:
-                    self.api_routes.setdefault(source, book.address_from(manifest, book.base + book.api_path))
+                    self.api_routes.setdefault(source, book.api_url if book.api_url.startswith("https://")
+                                            else book.address_from(manifest, book.api_url))
         self.ref = f"commit/{commit}" if commit else "branch/main"
         self.anchors: dict[str, set[str]] = {}
 
@@ -513,7 +521,7 @@ def export(root: Path, out: Path, commit: str | None, manifest_path: str = MANIF
         "base": manifest.base,
         "commit": commit,
         "repository": manifest.repository,
-        "api": {"title": manifest.api_title, "url": manifest.base + manifest.api_path} if manifest.api_path else None,
+        "api": {"title": manifest.api_title, "url": manifest.api_url} if manifest.api_url else None,
         "sections": sections,
     }
     (out / "manifest.json").write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

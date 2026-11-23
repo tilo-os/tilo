@@ -321,6 +321,12 @@ class DeveloperDocsTests(unittest.TestCase):
         # The address is the export's alone: the book's own site still has it at its own.
         page = (self.export_book("docs/sh/pages.toml") / "pages/index.md").read_text()
         self.assertIn("[Guide](/docs/guide/#notes)", page)
+        # The API reference is built by the book's own site alone, so the second site links it there.
+        self.start("[The API](../../crates/sdk/tilo-app)\n")
+        out = self.export_book("docs/developers/pages.toml", "--at", "https://docs.example/developers/")
+        self.assertIn("(https://tilo.so/docs/developers/api/tilo_app/)", (out / "pages/index.md").read_text())
+        self.assertEqual(json.loads((out / "manifest.json").read_text())["api"]["url"],
+                         "https://tilo.so/docs/developers/api/tilo_app/")
         with self.assertRaises(SystemExit):
             self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml",
                           "export", "--out", str(out), "--at", "https://docs.example/sh")
