@@ -130,7 +130,7 @@ struct PolicyEntry {
 /// from each workspace's store (never under `people/<person>/`).
 #[derive(Default)]
 struct Held {
-    asks: kept_asks::KeptAsks,
+    asks: kept_asks::KeptAskStore<kept_asks::KeptAsk>,
     waiting: WaitingIndex,
     /// Grants indexed by workspace id, loaded once from the workspace store.
     grants: Mutex<Option<BTreeMap<String, Vec<PolicyEntry>>>>,
