@@ -258,6 +258,14 @@ def read_back(session: Session, app: str) -> dict:
     return value_of(session.invoke_row(action))
 
 
+def held_in(read, wanted: list[str]) -> list[str]:
+    """The words of `wanted` a read of the app's own record does not hold: what
+    the app says it keeps, read as one text, must name each of them. Words that
+    are there come back empty, so a step fails on exactly what is missing."""
+    text = read if isinstance(read, str) else json.dumps(read, ensure_ascii=False)
+    return [word for word in wanted if word not in text]
+
+
 def notes_held(read: dict) -> int | None:
     """How many notes a read of the app's own record lists, where the read says:
     the records whose kind is a note, or the collection of notes it holds under
@@ -747,6 +755,35 @@ class Walk:
             return {"invoked": invoked, "value": value_of(answer)}
         except Failed:
             return {"invoked": invoked}
+
+    def op_read(self, value) -> dict:
+        """What the app says it keeps now, read back through its own reads: a
+        step that names words (`{"has": ["Hello team"]}`) fails unless one of
+        the reads the app publishes holds every one of them, so what the person
+        made is proved from the app's own state and not only from what its
+        window draws. An app reads its parts apart — a tracker's issues beside
+        its record — so every read it offers is tried, and the one that held
+        the words is kept."""
+        asked = pick(value, self.variant) if isinstance(value, dict) else {}
+        wanted = list(asked.get("has") or [])
+        reads = [row for row in self.session.actions("")
+                 if row.get("app_id") == self.v["id"]
+                 and address(row) is not None and address(row)[1] == "read"]
+        if not reads:
+            raise Failed(f"{self.v['id']} publishes no read to ask")
+        tried: dict[str, str] = {}
+        for row in reads:
+            resource = address(row)[0]
+            try:
+                read = value_of(self.session.invoke_row(row))
+            except Failed as error:
+                tried[resource] = str(error)[:160]
+                continue
+            missing = held_in(read, wanted)
+            if not missing:
+                return {"read_holds": wanted, "read_at": resource}
+            tried[resource] = f"does not hold {missing}"
+        raise Failed(f"no read of {self.v['id']} holds {wanted}: {tried}")
 
     def op_notes(self, _value) -> dict:
         """How many notes the app holds now, read back through its own read;

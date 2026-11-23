@@ -310,6 +310,20 @@ class CountingNotes(unittest.TestCase):
         self.assertIsNone(walk.notes_held({"fields": {"title": "Notes"}}))
 
 
+class ReadingWhatAnAppHolds(unittest.TestCase):
+    def test_the_words_a_person_made_are_in_the_read(self):
+        read = {"fields": {"messages": {"items": [{"body": "Hello team"}]}}}
+        self.assertEqual(walk.held_in(read, ["Hello team"]), [])
+
+    def test_the_read_names_what_it_does_not_hold(self):
+        read = {"fields": {"messages": {"items": [{"body": "Hello team"}]}}}
+        self.assertEqual(walk.held_in(read, ["Hello team", "Find the number"]),
+                         ["Find the number"])
+
+    def test_a_read_answer_that_names_no_words_is_missing_them(self):
+        self.assertEqual(walk.held_in(None, ["Buy milk"]), ["Buy milk"])
+
+
 class AValuePerVersion(unittest.TestCase):
     def test_a_value_both_versions_share_is_itself(self):
         self.assertEqual(walk.pick("Trip", "tl"), "Trip")
