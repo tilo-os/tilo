@@ -41,6 +41,8 @@ use tilo_test_env::swtpm::Swtpm;
 use zeroize::Zeroizing;
 
 const DISK_PASSPHRASE: &str = "the installer's disk passphrase";
+/// A TCTI no TPM answers on: nothing listens on the discard port.
+const NO_TPM: &str = "swtpm:host=127.0.0.1,port=9";
 const ROOT: Peer = Peer { uid: 0 };
 const ADA: Peer = Peer { uid: 1000 };
 const BOB: Peer = Peer { uid: 1001 };
@@ -107,8 +109,7 @@ impl Machine {
     fn tcti(&self) -> String {
         match &self.tpm {
             Some(tpm) => tpm.tcti(),
-            // Nothing listens on the discard port, so every TPM call fails.
-            None => "swtpm:host=127.0.0.1,port=9".into(),
+            None => NO_TPM.into(),
         }
     }
 
@@ -622,10 +623,14 @@ fn someone_who_is_not_the_admin_gets_no_keyslot() {
 #[test]
 fn without_a_tpm_only_a_strong_password_stands_alone() {
     let m = machine!(
-        false,
+        true,
         &[("bob", "1234"), ("ada", "correct horse battery staple")]
     );
-    let daemon = m.daemon();
+    // The machine's TPM is not reached until the end.
+    let daemon = m.daemon_with(Config {
+        tcti: Some(NO_TPM.into()),
+        ..m.config()
+    });
 
     assert_eq!(verify(&daemon, BOB, "bob", "1234"), Reply::success());
     let record = m.record(BOB.uid).unwrap();
@@ -701,6 +706,26 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
         verify(&daemon, ADA, "ada", "violet ladder orbit pancake"),
         Reply::success()
     );
+
+    // Once the TPM answers, a new secret goes under it: the passphrase
+    // wrapper gives way to a TPM one, and a PIN is enough.
+    let with_tpm = m.daemon();
+    let to_pin = Request::SetSecret {
+        user: "ada".into(),
+        current: Some(secret("violet ladder orbit pancake")),
+        recovery: None,
+        new: secret("2468"),
+    };
+    assert_eq!(reply(with_tpm.handle(ADA, to_pin)), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.has(Kind::Tpm) && !record.has(Kind::Passphrase));
+    assert_eq!(record.wrappers.len(), 1);
+    assert_eq!(record.secret, Some(SecretKind::Pin));
+    assert_eq!(
+        verify(&with_tpm, ADA, "ada", "violet ladder orbit pancake").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(verify(&with_tpm, ADA, "ada", "2468"), Reply::success());
 }
 
 /// The login screen's two questions about a person, over one machine and one
@@ -1044,7 +1069,7 @@ fn the_socket_speaks_the_lines_its_clients_write_by_hand() {
         Config {
             socket: m.path("root-socket"),
             privileged_uid: me,
-            tcti: Some("swtpm:host=127.0.0.1,port=9".into()),
+            tcti: Some(NO_TPM.into()),
             ..m.config()
         },
     );

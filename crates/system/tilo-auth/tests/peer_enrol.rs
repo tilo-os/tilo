@@ -44,6 +44,7 @@ use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::require_capability;
+use tilo_test_env::swtpm::Swtpm;
 use tilo_unlock_protocol::{
     BootId, ENROL_ALPN, EnrolReply, EnrolRequest, EnrolResponse, HALF_LEN, Half, RefusalReason,
     SiblingContact, SlotId, decode_frame, encode_frame, frame_len,
@@ -749,4 +750,44 @@ fn a_volume_enrols_through_the_persons_devices_and_opens_at_boot_with_the_half_t
     assert_eq!(slots(&device), ["0"]);
     assert!(!sibling::enrolled(&runner, &device));
     assert!(luks::comforts(&runner, &device).unwrap().is_some());
+
+    // A machine with a TPM that requires one enrols with it: the material is
+    // sealed to the TPM, and the key that attests its boot goes along.
+    let swtpm = match Swtpm::start() {
+        Ok(swtpm) => swtpm,
+        Err(why) => {
+            tilo_test_env::capability_unavailable(
+                tilo_test_env::Capability::Swtpm,
+                format_args!("{why}"),
+            );
+            return;
+        }
+    };
+    let mut systemd_tpm = tilo_test_env::ScopedEnv::new();
+    systemd_tpm.set("SYSTEMD_TPM2_DEVICE", swtpm.tcti());
+    let with_tpm = Real::new().with_tcti(Some(&swtpm.tcti())).with_cwd(&work);
+    let sealed = dir.path().join("sealed");
+    std::fs::create_dir(&sealed).unwrap();
+    let (sealed, key_file) = luks_image(&sealed);
+    let required = Args {
+        device: sealed.clone(),
+        key_file: Some(key_file),
+        require_tpm: true,
+        ..args(&devices.relays)
+    };
+    let machine = Machine {
+        runner: &with_tpm,
+        has_tpm: true,
+    };
+    run(&required, machine).expect("a required TPM that is there seals it");
+    let status = enrol::status(&with_tpm, &sealed).unwrap();
+    assert_eq!(status.sealing, Sealing::Tpm2);
+    let token = luks::sibling(&with_tpm, &sealed).unwrap().unwrap();
+    let json = tpm::unseal_material(&with_tpm, token.sealing, &token.material).unwrap();
+    assert!(Material::from_json(&json).unwrap().attestation.is_some());
+    assert!(
+        tpm::unseal_material(&runner, Sealing::Cleartext, &token.material)
+            .is_ok_and(|blob| Material::from_json(&blob).is_err()),
+        "the sealed material is no cleartext"
+    );
 }
