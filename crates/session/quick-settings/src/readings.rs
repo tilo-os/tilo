@@ -256,23 +256,38 @@ fn land_sleep(state: &mut QuickSettingsState, sleep: &Sleep) {
     state.awake_holders.clone_from(&sleep.holds);
 }
 
+const SET_POWER_MODE: &str = "set-power-mode";
+
 /// The power modes this machine offers, the one in force, and any refusal from
-/// the last power change.
+/// a `set-power-mode` change the panel observed.
 fn land_power(state: &mut QuickSettingsState, power: &Power) {
     state.power_profiles = power.modes.iter().copied().map(power_profile).collect();
     if let Some(mode) = power.mode {
         state.power_profile = power_profile(mode);
     }
-    let finished = state.power_pending && power.pending.is_empty();
-    state.power_pending = !power.pending.is_empty();
-    let problem_changed = state.power_problem != power.problem;
-    if problem_changed || finished {
+    let mode_pending = power.pending.iter().any(|id| id == SET_POWER_MODE);
+    if !state.power_seen {
+        state.power_seen = true;
+        state.power_mode_pending = mode_pending;
+        return;
+    }
+    let mode_finished = state.power_mode_pending && !mode_pending;
+    state.power_mode_pending = mode_pending;
+    if mode_finished {
         if let Some(problem) = &power.problem {
             state.refusal = Some(problem.clone());
-        } else if problem_changed && state.refusal == state.power_problem {
+            state.power_problem = Some(problem.clone());
+        } else {
+            if state.power_problem.is_some() && state.refusal == state.power_problem {
+                state.refusal = None;
+            }
+            state.power_problem = None;
+        }
+    } else if power.problem.is_none() && state.power_problem.is_some() {
+        if state.refusal == state.power_problem {
             state.refusal = None;
         }
-        state.power_problem.clone_from(&power.problem);
+        state.power_problem = None;
     }
 }
 
@@ -484,6 +499,11 @@ mod tests {
             assert_eq!(state.refusal, None);
         });
 
+        let switching = Power {
+            pending: vec!["set-power-mode".into()],
+            ..initial
+        };
+        assert!(land(&readings, POWER, &published(&switching)));
         let failed = Power {
             modes: vec![
                 PowerMode::Saver,
@@ -544,6 +564,61 @@ mod tests {
         };
         assert!(land(&readings, POWER, &published(&recovered)));
         readings.read(|state| assert_eq!(state.refusal, None));
+    }
+
+    #[test]
+    fn a_late_panel_does_not_open_with_a_stale_power_problem_banner() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let stale = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Balanced),
+            problem: Some("stale failure from before the panel opened".into()),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&stale)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Balanced);
+            assert_eq!(
+                state.refusal, None,
+                "a stale power problem on the first reading must not open a banner"
+            );
+        });
+    }
+
+    #[test]
+    fn another_power_action_does_not_replace_another_resources_refusal() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let baseline = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Balanced),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&baseline)));
+        readings.update(|state| state.refusal = Some("Wi-Fi refused".into()));
+
+        let suspending = Power {
+            pending: vec!["suspend".into()],
+            ..baseline.clone()
+        };
+        assert!(land(&readings, POWER, &published(&suspending)));
+        let suspend_failed = Power {
+            problem: Some("logind refused suspend".into()),
+            ..baseline
+        };
+        assert!(land(&readings, POWER, &published(&suspend_failed)));
+        readings.read(|state| {
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("Wi-Fi refused"),
+                "a non-mode power action failure must not replace another resource's refusal"
+            );
+        });
     }
 
     #[test]

@@ -98,12 +98,15 @@ pub struct QuickSettingsState {
     /// The profiles the power daemon offers on this machine; empty until
     /// read. The power row cycles only through these.
     pub power_profiles: Vec<PowerProfile>,
-    /// The last failure reported on the `power` resource, tracked so a
-    /// dismissed refusal banner does not return on later readings until a new
-    /// power action fails or the problem changes.
+    /// The failure text this panel last raised from `power#set-power-mode`,
+    /// tracked so a dismissed refusal banner does not return until another mode
+    /// change fails, and a subsequent mode success clears only its own banner.
     pub power_problem: Option<String>,
-    /// Whether a power action was pending on the last `power` reading.
-    pub(crate) power_pending: bool,
+    /// Whether the panel has already folded its baseline `power` reading, so a
+    /// panel that starts following later does not open with a stale banner.
+    pub(crate) power_seen: bool,
+    /// Whether `power#set-power-mode` was pending on the previous `power` reading.
+    pub(crate) power_mode_pending: bool,
     /// Apps currently keeping the screen awake (an idle inhibitor held
     /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
     /// as they asked. Shown on the power row so a screen that never locks
@@ -183,7 +186,8 @@ impl Default for QuickSettingsState {
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),
             power_problem: None,
-            power_pending: false,
+            power_seen: false,
+            power_mode_pending: false,
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
