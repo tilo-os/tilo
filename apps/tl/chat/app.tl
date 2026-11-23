@@ -9,9 +9,12 @@ app so.tilo.chat "Chat" (
 use so.tilo.agent as agent
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
-/// categories each with its own, and the direct messages, in the list as people.
+/// categories each with its own, and the direct messages, in the list as people. Beside them,
+/// how kinds of work are done here: the workspace's skills, which its people write and its
+/// agents read before they start.
 type Conversations {
     channels: Collection<Category | TextChannel | VoiceChannel | Direct>
+    skills: Collection<Skill>
 }
 
 root conversations: Conversations
@@ -152,6 +155,22 @@ type Part {
     body: Text
 }
 
+/// How one kind of work is done in this workspace: what a person writes down once, and what an
+/// agent reads before it starts that work.
+type Skill (untitled: "New skill") {
+    /// What it is called, in a few words: what an agent names it by.
+    name: Text
+    /// The kind of work it is for, in a sentence or two: when it applies.
+    work: Text
+    /// How that work is done here.
+    how: Text
+    /// The form the result takes; empty when it has no fixed form.
+    form: Text = ""
+    /// The model the work is done with, as `provider/model`; empty for the person's choice for
+    /// the kind of work.
+    model: Text = ""
+}
+
 default view sidebar for Conversations
 
 default view channel for TextChannel
@@ -169,6 +188,10 @@ row view direct_summary for Direct
 row view category_summary for Category
 
 row view voice_summary for VoiceChannel
+
+default view skill for Skill
+
+row view skill_row for Skill
 
 /// Adds a text channel to the sidebar, about `topic` when it is given.
 primary action new_channel(
@@ -210,6 +233,37 @@ action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceCha
     label: "New voice channel",
 ) {
     c.channels.insert(VoiceChannel(name: name))
+}
+
+/// Starts a skill, called `name`. What it is for and how its work is done are written on its
+/// page, or by an agent told to share the guidance with the workspace.
+action new_skill(all: Conversations, name: Text = "") -> Skill (icon: .plus, label: "New skill") {
+    require name == "" or not all.skills.any(s -> s.name == name) "The workspace already has a skill called {name}"
+    all.skills.insert(Skill(name: name))
+}
+
+/// Corrects a skill: only what is given changes, and what is left out stays as it is.
+action correct_skill(
+    s: Skill,
+    name: Text = s.name,
+    work: Text = s.work,
+    how: Text = s.how,
+    form: Text = s.form,
+    model: Text = s.model,
+) (icon: .pencil, label: "Correct skill") {
+    require name == ""
+        or name == s.name
+        or not conversations.skills.any(other -> other != s and other.name == name) "The workspace already has a skill called {name}"
+    s.name = name
+    s.work = work
+    s.how = how
+    s.form = form
+    s.model = model
+}
+
+/// Forgets a skill: no later turn reads it.
+action forget_skill(s: Skill) (icon: .trash_2, label: "Forget skill") {
+    conversations.skills.remove(s)
 }
 
 /// The direct conversations an earlier version kept with one person alone (`person`), which
@@ -371,6 +425,25 @@ migration action carry_native_chat(all: Conversations) {
                 }
             }
         }
+    }
+}
+
+/// The workspace's skills the native Chat kept before this app took its id over, carried into
+/// these once: what each is called, the work it is for, how the work is done here, the form of
+/// its result and the model, under the id it had there and in the order it stood. The native
+/// app's own document is left as it is.
+migration action carry_native_skills(all: Conversations) {
+    for e in earlier(all).filter(e -> e.of == "skills") {
+        all.skills.insert(
+            Skill(
+                name: e.texts.get("name") ?? "",
+                work: e.texts.get("work") ?? "",
+                how: e.texts.get("how") ?? "",
+                form: e.texts.get("form") ?? "",
+                model: e.texts.get("model") ?? "",
+            ),
+            id: e.id,
+        )
     }
 }
 
@@ -804,6 +877,72 @@ fn unread_in(c: Category) -> List<TextChannel | Direct> {
     )
 }
 
+/// The workspace's skills: how kinds of work are done here, each as a row that opens it, with
+/// the entry that starts another at their foot.
+view skills(all: Conversations) {
+    state opened: Option<Skill> = .none
+    on show(s: Skill): set(opened, s)
+    ui.Docked {
+        foot: {
+            stack {
+                std.add_entry("New skill", new_skill(all))
+            }
+        }
+        if all.skills.is_empty() {
+            ui.EmptyState(
+                "No skills yet",
+                icon: .sparkles,
+                message: "Skills say how work is done in this workspace, and its agents read them.",
+            )
+        } else {
+            std.list(all.skills, opened) { (s, at) ->
+                ui.ListItem(item: s, presence: at) {
+                    skill_row(s)
+                }
+            }
+        }
+    }
+}
+
+/// A skill: what it is called, the work it is for, how that work is done here and the form of
+/// its result, each written in place.
+view skill(s: Skill) {
+    std.document(s) {
+        ui.TextInput(bind: s.name, title: true, placeholder: "What it is called")
+        stack(gap: .group) {
+            stack(gap: .tight) {
+                text("When it applies", role: .label)
+                ui.TextInput(
+                    bind: s.work,
+                    placeholder: "The kind of work this is for, in a sentence or two",
+                )
+            }
+            stack(gap: .tight) {
+                text("How it is done here", role: .label)
+                ui.TextInput(
+                    bind: s.how,
+                    lines: 6,
+                    placeholder: "What to do, step by step where that helps",
+                )
+            }
+            stack(gap: .tight) {
+                text("The form of the result", role: .label)
+                ui.TextInput(bind: s.form, placeholder: "Empty when it has no fixed form")
+            }
+            stack(gap: .tight) {
+                text("The model", role: .label)
+                ui.TextInput(
+                    bind: s.model,
+                    placeholder: "provider/model, empty for the person's choice",
+                )
+            }
+        }
+        std.after_body {
+            std.history(s)
+        }
+    }
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -950,6 +1089,13 @@ view sidebar(all: Conversations) {
                             }
                         }
                     }
+                    // How work is done here, which the workspace's agents read before they
+                    // start: a window of its own.
+                    ui.NavSection("Workspace") {
+                        ui.NavItem("/skills", "Workspace skills", icon: .sparkles) {
+                            on select: set(shown, "/skills").then(open(all, view: skills))
+                        }
+                    }
                 }
             }
         }
@@ -1087,6 +1233,11 @@ view category_summary(c: Category) {
         secondary: if c.channels.len() == 1 { "1 channel" } else { "{c.channels.len()} channels" },
         icon: .folder,
     )
+}
+
+/// A skill as another app's page summarizes it: what it is called, and the work it is for.
+view skill_row(s: Skill) {
+    ui.ListRow(title: meta(s).title, secondary: s.work, icon: .sparkles)
 }
 
 /// A message of a direct conversation, with what can be done to it on hover.

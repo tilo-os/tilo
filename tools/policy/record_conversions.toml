@@ -44,7 +44,7 @@ conversion = "apps/tl/chat/app.tl:carry_native_chat"
 kind = "chat.skills"
 app = "chat"
 change = "removed"
-lost = "The skills a workspace had written for the native Chat's agents. Only that app's agent turns read them; the tilolang Chat has no skills of its own, so they are not carried."
+conversion = "apps/tl/chat/app.tl:carry_native_skills"
 
 [[change]]
 kind = "tilo.moderation"

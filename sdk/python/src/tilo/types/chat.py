@@ -30,6 +30,7 @@ __all__ = [
     "Direct",
     "Attached",
     "Part",
+    "Skill",
     "Chat",
     "DeleteChannelArgs",
     "DeleteCategoryArgs",
@@ -42,6 +43,8 @@ __all__ = [
     "DecideArgs",
     "ThreadDeleteArgs",
     "DirectDeleteArgs",
+    "CorrectSkillArgs",
+    "ForgetSkillArgs",
 ]
 
 DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
@@ -102,9 +105,22 @@ DirectDeleteArgs = TypedDict("DirectDeleteArgs", {
 })
 """The arguments of `delete`."""
 
+CorrectSkillArgs = TypedDict("CorrectSkillArgs", {
+    "name": NotRequired["str | None"],
+    "work": NotRequired["str | None"],
+    "how": NotRequired["str | None"],
+    "form": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `correct_skill`."""
+
+ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
+})
+"""The arguments of `forget_skill`."""
+
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -113,6 +129,7 @@ class Conversations(Resource):
     @_5kzdptyg.setter
     def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel | VoiceChannel]]) -> None:
         self.edit("5kzdptyg", value=value)
+    n2xgh234: list[Entry[Skill]]  # skills
 
     def new_channel(self,
         *,
@@ -146,6 +163,16 @@ class Conversations(Resource):
         if name is not None:
             args["name"] = name
         return self.action("new_voice_channel", **args)
+
+    def new_skill(self,
+        *,
+        name: str | None = None,
+    ) -> Skill:
+        """Starts a skill, called `name`. What it is for and how its work is done are written on its page, or by an agent told to share the guidance with the workspace."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("new_skill", **args)
 
     def report_problem(self, *, body: str) -> Message:
         """Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one."""
@@ -216,12 +243,12 @@ class Conversations(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
+    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
 
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
 
@@ -263,13 +290,13 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     olqjezxu: str  # name
 
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     ksuxpopi: list[Entry[Message]]  # messages
@@ -360,7 +387,7 @@ class TextChannel(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -425,7 +452,7 @@ class Message(Resource):
 
 class Report(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -454,7 +481,7 @@ class Report(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     xuvfifa5: str  # name
     ijy454g6: list[Entry[Message]]  # messages
     @property
@@ -539,7 +566,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -645,7 +672,7 @@ class Direct(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -654,7 +681,7 @@ class Attached(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -666,7 +693,62 @@ class Part(Resource):
         self.edit("3hkzkqvr", value=value)
 
 
+class Skill(Resource):
+    """Skill — `tl.so.tilo.chat.Skill`."""
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
+    gfk6pm4a: str  # name
+    gnfldsvz: str  # work
+    bn3w5doj: str  # how
+    ijpa4i7d: str  # form
+    @property
+    def _3wlkwi6k(self) -> str:
+        """model (`3wlkwi6k` on the wire)."""
+        return self.fields["3wlkwi6k"]
+
+    @_3wlkwi6k.setter
+    def _3wlkwi6k(self, value: str) -> None:
+        self.edit("3wlkwi6k", value=value)
+
+    def correct_skill(self,
+        *,
+        name: str | None = None,
+        work: str | None = None,
+        how: str | None = None,
+        form: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Corrects a skill: only what is given changes, and what is left out stays as it is."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        if work is not None:
+            args["work"] = work
+        if how is not None:
+            args["how"] = how
+        if form is not None:
+            args["form"] = form
+        if model is not None:
+            args["model"] = model
+        return self.action("correct_skill", **args)
+
+    def correct_skill_many(self, items: list[CorrectSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `correct_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("correct_skill", items)
+
+    def forget_skill(self) -> None:
+        """Forgets a skill: no later turn reads it."""
+        return self.action("forget_skill")
+
+    def forget_skill_many(self, items: list[ForgetSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget_skill", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"correct_skill", "correct_skill_many", "forget_skill", "forget_skill_many"})
+
+
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@7db9c54554ab72ff"
+    __surface__ = "so.tilo.chat@2e48b4261c1efeb5"
 
