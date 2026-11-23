@@ -27,10 +27,12 @@ use smithay::wayland::tablet_manager::{
     TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
 };
 
+use settings_store::hardware::input_device_key;
+
 use super::access_keys::AccessKeys;
 use super::input_config::{
     self, ClickMethod, ConfigurableDevice, DeviceCaps, DevicePlan, InputConfig, ScrollMethod,
-    SendEvents, device_key,
+    SendEvents,
 };
 use super::tablet::{
     ButtonOutcome, EraserRoute, KeyChord, TabletConfig, apply_pressure_curve, chord_keycodes,
@@ -131,9 +133,9 @@ impl PublishedInputs {
         let mut entries: Vec<settings_store::hardware::InputDeviceSnapshot> = devices
             .iter()
             .map(|device| settings_store::hardware::InputDeviceSnapshot {
-                key: device_key(device.id_vendor(), device.id_product(), device.name()),
+                key: input_device_key(device.id_vendor(), device.id_product(), device.name()),
                 name: device.name().to_owned(),
-                kind: input_kind(device_caps(device).kind()),
+                kind: device_caps(device).kind(),
                 ..settings_store::hardware::InputDeviceSnapshot::default()
             })
             .collect();
@@ -157,27 +159,13 @@ impl PublishedInputs {
     }
 }
 
-/// A device's kind as the stored input preferences name it.
-fn input_kind(kind: input_config::DeviceKind) -> settings_store::hardware::InputDeviceKind {
-    use settings_store::hardware::InputDeviceKind;
-    match kind {
-        input_config::DeviceKind::Touchpad => InputDeviceKind::Touchpad,
-        input_config::DeviceKind::Mouse => InputDeviceKind::Mouse,
-        input_config::DeviceKind::Keyboard => InputDeviceKind::Keyboard,
-        input_config::DeviceKind::Touchscreen => InputDeviceKind::Touchscreen,
-        input_config::DeviceKind::Tablet => InputDeviceKind::Tablet,
-        input_config::DeviceKind::TabletPad => InputDeviceKind::TabletPad,
-        input_config::DeviceKind::Other => InputDeviceKind::Other,
-    }
-}
-
 /// The identity of the keyboard `event` came from, when it came from one.
 fn typed_on(event: &DeviceEvent<LibinputInputBackend>) -> Option<String> {
     let DeviceEvent::Keyboard { event } = event else {
         return None;
     };
     let device = event.device();
-    Some(device_key(
+    Some(input_device_key(
         device.id_vendor(),
         device.id_product(),
         device.name(),
@@ -340,7 +328,7 @@ impl Input {
 
     /// The chord a pad button is mapped to in its tablet's settings.
     fn pad_chord(&self, device: &Device, button: u32) -> Option<KeyChord> {
-        let key = device_key(device.id_vendor(), device.id_product(), device.name());
+        let key = input_device_key(device.id_vendor(), device.id_product(), device.name());
         // A pad is its own libinput device; its tablet's settings are found by the pad's name, else
         // by the tablet's model.
         let model = format!("{:04x}:{:04x}:", device.id_vendor(), device.id_product());
@@ -576,7 +564,7 @@ impl Input {
         state: &State,
     ) -> Vec<InputEvent> {
         let device = event.device();
-        let key = device_key(device.id_vendor(), device.id_product(), device.name());
+        let key = input_device_key(device.id_vendor(), device.id_product(), device.name());
         let config = self.config.tablets.get(&key).cloned().unwrap_or_default();
         let outputs: Vec<OutputRect> = state
             .space
