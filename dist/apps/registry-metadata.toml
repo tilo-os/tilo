@@ -117,8 +117,6 @@ description = "Generate time-based verification codes without losing your flow."
 description = "Write polished Typst documents with a native editing workspace."
 [apps.video-editor]
 description = "Arrange clips, sound, and stories in a native video editor."
-[apps.video-player]
-description = "Watch local video with simple, dependable playback."
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 [apps.windows]

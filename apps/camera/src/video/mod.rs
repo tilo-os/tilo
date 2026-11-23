@@ -2,7 +2,7 @@
 //! [`tilo_media::clip`] encodes Motion-JPEG into an AVI of its own on the
 //! desktop, and on the page hands frames to the browser's encoder and muxes
 //! the result into `WebM`, a container every browser plays. Both name their clip
-//! by what its bytes are, so the capture a person hands to Video Player is
+//! by what its bytes are, so the capture a person hands to Video is
 //! called `VID_<time>.webm` on the page and `VID_<time>.avi` on the desktop.
 
 use std::io;

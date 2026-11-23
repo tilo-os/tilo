@@ -83,12 +83,6 @@ change = "removed"
 conversion = "apps/tl/tube/app.tl:carry_native_tube"
 
 [[change]]
-kind = "video-player.recent"
-app = "video-player"
-change = "removed"
-lost = "The videos each device played lately and where each left off, kept in the person's own state. They are now the device's settings, and the per-person state the old conversion read is gone, so earlier positions are not carried."
-
-[[change]]
 kind = "mail.mailbox"
 app = "mail"
 change = "removed"

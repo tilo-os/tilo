@@ -2144,11 +2144,6 @@ package = "video-editor"
 inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 readers = ["apps/video-editor/build.rs"]
 
-[[cargo]]
-package = "video-player"
-inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
-readers = ["apps/video-player/build.rs"]
-
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"

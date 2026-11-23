@@ -17521,7 +17521,6 @@ dependencies = [
  "ush",
  "uuid",
  "video-editor",
- "video-player",
  "weather",
  "wire-frame",
  "word-processor",
@@ -25594,29 +25593,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "video-player"
-version = "0.1.0"
-dependencies = [
- "fnv",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-files",
- "tilo-history",
- "tilo-media",
- "tilo-paths",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "visibility"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -29516,7 +29492,6 @@ dependencies = [
  "version-compare",
  "version_check",
  "video-editor",
- "video-player",
  "visibility",
  "vte",
  "wacore",

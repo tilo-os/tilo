@@ -97,39 +97,6 @@ first_frame() (
   (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
 )
 
-# A media app decodes through the lazily loaded runtime.
-media() (
-  set -euo pipefail
-  set -euo pipefail
-  if [[ ! -x $target/thin-app/video-player ]]; then
-    echo "video-player is not among this run's apps; nothing to decode" | tee -a "$GITHUB_STEP_SUMMARY"
-    exit 0
-  fi
-  clip=$(find $target/thin-app/build -path '*/video-player-*/out/h264-aac.mp4' -print -quit)
-  [[ -s $clip ]] || { echo "video-player's build left no h264-aac.mp4 fixture" >&2; exit 1; }
-  libdir=$(rustc --print target-libdir)
-  driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
-  [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
-  runtime=$(mktemp -d)
-  chmod 700 "$runtime"
-  shot="$runtime/video-player.png"
-  status=0
-  XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
-    timeout 300 $target/thin-app/video-player --shots="$shot" "$clip" \
-    >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
-  if (( status != 0 )) || [[ ! -s $shot ]]; then
-    grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
-    echo "video-player did not capture a decoded frame (exit $status)" >&2
-    exit 1
-  fi
-  arrival=$(grep -Eo 'file=libgstreamer-1\.0\.so\.0 \[0\];  (needed|dynamically loaded) by [^ ]*' \
-    "$runtime/loader.log" | head -1 || true)
-  [[ -n $arrival ]] || { echo "the loader never loaded libgstreamer, yet a frame decoded" >&2; exit 1; }
-  printf 'video-player decoded %s through the runtime (%s)\n' "$(basename "$clip")" "$arrival" \
-    | tee -a "$GITHUB_STEP_SUMMARY"
-  rm -rf "$runtime"
-)
-
 # Typst Editor typesets through its engine library.
 typst() (
   set -euo pipefail
@@ -288,9 +255,9 @@ engines() (
 failed=()
 # RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
-for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame media typst spotify engines}; do
+for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame typst spotify engines}; do
   case $step in
-    tapp_size|runtime_size|loader_cost|first_frame|media|typst|spotify|engines) ;;
+    tapp_size|runtime_size|loader_cost|first_frame|typst|spotify|engines) ;;
     *) printf 'unknown release smoke step: %s\n' "$step" >&2; exit 2 ;;
   esac
   printf '==> %s\n' "$step"

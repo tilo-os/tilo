@@ -5671,7 +5671,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

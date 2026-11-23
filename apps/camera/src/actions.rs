@@ -11,7 +11,7 @@
 //! screens, mode and lens, and changing the capture preferences (settings of
 //! the person and of this device, never record state) are the
 //! [`CameraEffect`] vocabulary. Media-library management is owned by Photos
-//! or Video Player. Zoom and an open chooser are presentation-only.
+//! or Video. Zoom and an open chooser are presentation-only.
 
 use ui::framework::{EffectStatus, LiveRow};
 
@@ -234,7 +234,11 @@ pub(crate) const HANDOFF_ACTION: &str = "open";
 
 /// The capture's handoff to the app that owns its verified bytes: the app's
 /// typed launch of the content the capture published.
-fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionSpec> {
+fn capture_handoff(
+    is_video: bool,
+    content_hash: Option<&str>,
+    name: Option<&str>,
+) -> Option<ActionSpec> {
     let content_hash = content_hash?;
     let (app_id, destination) = capture_destination(is_video);
     Some(
@@ -243,18 +247,16 @@ fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionS
             format!("Open in {destination}"),
             "Open the verified portable capture in its owning app",
         )
-        .spec(HANDOFF_ACTION, content_hash),
+        .spec_named(HANDOFF_ACTION, content_hash, name),
     )
 }
 
-/// The handoff the row's type offers, from the content hash the row bound.
+/// The handoff the row's type offers, from the content hash and file name the row bound.
 pub(crate) fn handoff_spec(is_video: bool, bindings: &RowBindings) -> Option<ActionSpec> {
-    let hash = bindings
-        .arguments(HANDOFF_ACTION)?
-        .first()?
-        .get("content_hash")?
-        .as_str()?;
-    capture_handoff(is_video, Some(hash))
+    let arguments = bindings.arguments(HANDOFF_ACTION)?.first()?;
+    let hash = arguments.get("content_hash")?.as_str()?;
+    let name = arguments.get("name").and_then(|name| name.as_str());
+    capture_handoff(is_video, Some(hash), name)
 }
 
 // ===========================================================================
@@ -341,7 +343,7 @@ fn item_label(it: &CaptureItem) -> String {
 /// handoff, palette action, and automation target use the same boundary.
 pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'static str) {
     if is_video {
-        ("so.tilo.video-player", "Video Player")
+        ("so.tilo.video", "Video")
     } else {
         ("so.tilo.photos", "Photos")
     }
@@ -371,7 +373,7 @@ pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
 }
 
 /// The recent capture, offering to open its verified bytes in Photos or
-/// Video Player.
+/// Video.
 pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
     let content_hash = it
         .media_id
@@ -384,7 +386,10 @@ pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
     if let Some(hash) = content_hash {
         bindings = bindings.bind_id(
             HANDOFF_ACTION,
-            [("content_hash", serde_json::Value::String(hash.to_owned()))],
+            [
+                ("content_hash", serde_json::Value::String(hash.to_owned())),
+                ("name", serde_json::Value::String(it.id.clone())),
+            ],
         );
     }
     let id = capture_resource_id(it);
@@ -740,7 +745,7 @@ mod tests {
                     serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
                 assert!(matches!(
                     payload["app_id"].as_str(),
-                    Some("so.tilo.photos" | "so.tilo.video-player")
+                    Some("so.tilo.photos" | "so.tilo.video")
                 ));
                 assert!(
                     payload["content_hash"]
@@ -759,7 +764,7 @@ mod tests {
             assert!(ids.contains(&"camera.document-scanner"));
             assert!(
                 !ids.iter()
-                    .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
+                    .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video.app") }),
                 "handoff applications are destinations on the current capture, never Camera roots"
             );
             assert!(
@@ -769,10 +774,7 @@ mod tests {
         }
         {
             assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
-            assert_eq!(
-                capture_destination(true),
-                ("so.tilo.video-player", "Video Player")
-            );
+            assert_eq!(capture_destination(true), ("so.tilo.video", "Video"));
         }
         {
             let ctx = CameraResourceCtx {

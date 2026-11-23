@@ -59,16 +59,6 @@ text = "The document as Markdown, one block per line ending in its {#block id}; 
 reason = "How the Markdown an agent reads is shaped; a description of a tool's answer."
 
 [[allow]]
-file = "apps/video-player/src/app.rs"
-text = "Escape"
-reason = "A key's name, as the keyboard prints it."
-
-[[allow]]
-file = "apps/video-player/src/app.rs"
-text = "Ctrl+O"
-reason = "A key's name, as the keyboard prints it."
-
-[[allow]]
 file = "apps/git-client/src/app.rs"
 text = "Flush the blur pass before presenting"
 reason = "A capture label a frame-timing harness paints."

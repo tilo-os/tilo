@@ -59,30 +59,29 @@ Stage and verify without building or installing apps:
 
 ```powershell
 ./tools/windows/install-gstreamer.ps1 -Destination "$env:TEMP/Tilo media runtime"
-./tools/windows/test-gstreamer.ps1 -RuntimeDirectory "$env:TEMP/Tilo media runtime" `
-  -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
+./tools/windows/test-gstreamer.ps1 -RuntimeDirectory "$env:TEMP/Tilo media runtime"
 ```
 
 Verification launches staged tools with only Windows system directories on
 PATH, clears GStreamer/GIO environment overrides and uses a fresh registry.
 It requires all common media factories to resolve inside the stage, rejects
-blacklisted plugins, and runs raw audio/video pipelines. With the regression
-fixture it also requires both H.264 and AAC decoder branches to reach EOS.
+blacklisted plugins, and runs raw audio/video pipelines. With a regression fixture it also requires both H.264 and AAC decoder
+branches to reach EOS.
 These are headless decoder checks; audible device output and visible app
 playback require the separate app tests. The GnuTLS backend is packaged,
 but this relocation test does not claim live HTTPS playback coverage.
 
-Music and Video Player can be selected explicitly through the shared installer:
+Music can be selected explicitly through the shared installer:
 
 ```powershell
-./tools/windows/install-apps.ps1 -Apps music,video-player
+./tools/windows/install-apps.ps1 -Apps music
 ```
 
 Music builds its ordinary `music.exe` with default `audio` and `live` features.
 Its playback uses the shared GStreamer runtime; its live search/stream client
 uses Rustls and embeds QuickJS, so no external JavaScript runtime or downloader
 is installed. On Windows ARM64 the build requires libclang for QuickJS target
-bindings. Both media apps remain explicit selections rather than part of the
+bindings. Media apps remain explicit selections rather than part of the
 installer's default application set.
 
 This selection enables building and packaging; it is not a claim that every

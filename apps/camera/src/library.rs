@@ -2,7 +2,7 @@
 //!
 //! On a Tilo install captured bytes may be projected into the user's Pictures
 //! directory, while ownership and collection management remain with Photos or
-//! Video Player.
+//! Video.
 //!
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).

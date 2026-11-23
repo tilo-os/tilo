@@ -70,7 +70,6 @@ export * as themes from "./themes.ts";
 export * as totp from "./totp.ts";
 export * as typstEditor from "./typst_editor.ts";
 export * as videoEditor from "./video_editor.ts";
-export * as videoPlayer from "./video_player.ts";
 export * as weather from "./weather.ts";
 export * as windows from "./windows.ts";
 export * as wordProcessor from "./word_processor.ts";
