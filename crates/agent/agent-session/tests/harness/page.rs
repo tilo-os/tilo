@@ -341,6 +341,7 @@ impl Page {
             &mut doc,
             tree,
             &[],
+            &[],
             &std::collections::BTreeMap::new(),
         );
         doc.commit();

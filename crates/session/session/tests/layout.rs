@@ -1525,3 +1525,105 @@ fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
         .expect("what the session keeps is written");
     root.join(name).join(app_state::DOCUMENT_FILE)
 }
+
+/// The launcher that records what each start is handed as well: its pid, the tab the window is
+/// told it takes, and the item it opens on.
+fn item_launcher(
+    home: &tilo_test_env::TestHome,
+    started: &Path,
+    instances: &Path,
+    reveals: &Path,
+) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
+             printf '%s\\n' \"${{{reveal}:-}}\" >> '{reveals}'\n\
+             hold\n",
+            started = started.display(),
+            instances = instances.display(),
+            reveals = reveals.display(),
+            reveal = ui::window_link::REVEAL_ENV,
+        ),
+    )
+    .unwrap()
+}
+
+/// A window a send opened on an item (a conversation, a record) is a window, not a place of a
+/// view: after a restart its app is asked for it again, and it opens on that same item.
+#[test]
+fn a_window_a_send_opened_on_an_item_opens_there_again_after_a_restart() {
+    const ITEM: &str = "probe:conversation/7";
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let instances = home.home().join("instances");
+    let reveals = home.home().join("reveals");
+    installed_probe_package(&mut home);
+    let launcher = item_launcher(&home, &started, &instances, &reveals);
+    let state = Device::in_home(&mut home).state;
+
+    // The send opens a window of the app on the conversation, beside the window that sent it.
+    let tab = {
+        let apps = apps_at(&home, Some(launcher.path().to_owned()));
+        let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+        assert!(
+            apps.ask_window(
+                &tilo_app_launch::Launch::Package {
+                    app: PROBE.into(),
+                    open: None,
+                },
+                None,
+                false,
+                true,
+                Some(ITEM),
+            ),
+            "the shell holds the tab the conversation's window takes"
+        );
+        until(&mut session, "the app is started", |_| {
+            starts(&started) == 1
+        });
+        let tab = tabs(&session).first().map(|(tab, _)| *tab).expect("a tab");
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(11, PROBE)))
+            .expect("the window maps");
+        until(&mut session, "the window is in its tab", |session| {
+            matches!(
+                tile_of(session, tab),
+                Some(TileContent::Foreign { surface_id: 11, .. })
+            )
+        });
+        tab
+    };
+
+    // The next session asks the app for that window again, and on the item it opened.
+    let mut next = session_keeping(
+        &state,
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
+    until(&mut next, "the app is asked for its window again", |_| {
+        starts(&started) == 2
+    });
+    let told: Vec<String> = fs::read_to_string(&instances)
+        .expect("the launcher recorded its starts")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        told.last().map(String::as_str),
+        Some(tab.to_string().as_str()),
+        "the window takes the tab it was in"
+    );
+    let shown: Vec<String> = fs::read_to_string(&reveals)
+        .expect("the launcher recorded the items")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        shown.last().map(String::as_str),
+        Some(ITEM),
+        "the window opens on the item it showed"
+    );
+}

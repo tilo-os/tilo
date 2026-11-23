@@ -58,6 +58,10 @@ impl Shared {
         }
         self.activity
             .keep_shown(None, || self.handle.read(Clone::clone));
+        // What each window was opened on reaches the layout with the windows, so the session that
+        // follows opens them there.
+        let named = self.desktop.with_policy(|policy| policy.window_items());
+        self.desktops.note_items(named);
         // What this device changed of its workspaces' layouts reaches them before the session ends.
         if let Some(engine) = &self.engine {
             self.desktops.finish_writes(
@@ -94,9 +98,16 @@ impl Shared {
         }
         // What each window shows is the workspace's layout's, not this device's reading of it: a
         // window carried by its bar names it, and a window let go over here finds the place that
-        // shows it.
+        // shows it. So is the item each window was opened on: what a send landed in, which its bar
+        // and the next restart read.
         self.handle
             .set_window_resources(self.layout.borrow().window_resources());
+        let named = self.desktop.with_policy(|policy| policy.window_items());
+        self.desktops.note_items(named);
+        let items = self.desktops.window_items();
+        self.handle.set_window_items(items.clone());
+        self.desktop
+            .with_policy(|policy| policy.set_window_items(items));
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
@@ -140,8 +151,11 @@ impl Shared {
                 // workspace is one this device shows through its own instance of the app, on the
                 // same record, and its app is asked for it as a window this device left open is.
                 let under_way = |tab| self.desktop.with_policy(|policy| policy.on_its_way(tab));
-                if !restore.start(&before, &mut tree, &under_way) {
-                    restore.arrived(&before, &tree);
+                // The item each window was opened on, as the layouts just read hold it: the
+                // window a send landed in opens there again.
+                let items = self.desktops.window_items();
+                if !restore.start(&before, &mut tree, &under_way, &items) {
+                    restore.arrived(&before, &tree, &items);
                 }
             }
             self.handle.replace_tree(tree.clone());

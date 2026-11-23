@@ -234,6 +234,10 @@ struct Shared {
     /// ([`DesktopHandle::set_window_resources`]): what a window's bar carries when a person picks
     /// it up, on every device that reads the layout.
     resources: std::collections::BTreeMap<TabId, String>,
+    /// The item each window was opened on, by tab, as the workspace's layout keeps it
+    /// ([`DesktopHandle::set_window_items`]): the conversation a send landed in, the record a
+    /// search hit opened. Not the tab's view, which is what a place shows.
+    items: std::collections::BTreeMap<TabId, String>,
     /// The windows the sharing app lists for its picker, as last published
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
@@ -732,6 +736,17 @@ impl DesktopHandle {
             return false;
         }
         shared.resources = resources;
+        true
+    }
+
+    /// Give every window the item it was opened on, as the workspace's layout keeps it: the
+    /// window a send landed in, which a restart opens there again. Whether that is news.
+    pub fn set_window_items(&self, items: std::collections::BTreeMap<TabId, String>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.items == items {
+            return false;
+        }
+        shared.items = items;
         true
     }
 

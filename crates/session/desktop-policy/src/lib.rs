@@ -179,6 +179,11 @@ pub trait WindowNotes {
 /// in place once the session that keeps them runs.
 type Notes = Rc<RefCell<Option<Rc<dyn WindowNotes>>>>;
 
+/// The item each window was opened on, by tab: a conversation a send landed in, a
+/// record a search hit opened. It is not the tab's view, which is what a place
+/// shows: a window is reopened on its item, and a place is not a window.
+type Items = Rc<RefCell<BTreeMap<TabId, String>>>;
+
 /// The app each notice tab is about, by tab: the launch its Reopen asks for
 /// again. What the tile source draws in place of a window that is not
 /// coming.
@@ -203,7 +208,7 @@ type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 /// when it maps (`None` until the desktop makes it), whether it takes focus
 /// there, the one window it is held for, when that is known (a kept app's
 /// window after a restart of the desktop) rather than any next window of the
-/// app, and the item that window opens on, kept as its tab's view.
+/// app, and the item that window opens on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct HeldTab {
     tab: Option<TabId>,
@@ -260,6 +265,8 @@ struct Windows {
     carried: Carried,
     /// What each window shows, as its app reports it.
     notes: Notes,
+    /// The item each window was opened on, by tab.
+    items: Items,
 }
 
 impl TileSource for Windows {
@@ -332,10 +339,12 @@ impl TileSource for Windows {
                 tab: Some(id),
                 beside: true,
             });
-            let tab = Tab {
-                view: shows,
-                ..self.place(id, app)
-            };
+            // The item the window opens on is kept beside the tab, not in its view: a view is
+            // what a place shows, and this tab is a window's.
+            if !shows.is_empty() {
+                self.items.borrow_mut().insert(id, shows);
+            }
+            let tab = self.place(id, app);
             self.titles
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -472,6 +481,8 @@ pub struct DesktopPolicy {
     carried: Carried,
     /// What each window shows, as its app reports it.
     notes: Notes,
+    /// The item each window was opened on, by tab.
+    items: Items,
     /// The places the apps asked for, oldest first, by the app that asked:
     /// its next window lands at the one its open asked for.
     places: BTreeMap<String, Vec<Beside>>,
@@ -537,6 +548,7 @@ impl DesktopPolicy {
         let held = Held::default();
         let carried = Carried::default();
         let notes = Notes::default();
+        let items = Items::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
@@ -550,6 +562,7 @@ impl DesktopPolicy {
                 held: Rc::clone(&held),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
+                items: Rc::clone(&items),
             }),
         );
         let policy = Self {
@@ -563,6 +576,7 @@ impl DesktopPolicy {
             held,
             carried,
             notes,
+            items,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
             mapped: Vec::new(),
@@ -1149,11 +1163,30 @@ impl DesktopPolicy {
         self.handle.read(|tree| anchor_for(tree, app))
     }
 
-    /// The tab of `app` whose window shows `item` (its view): one window per item, so a second
+    /// The tab of `app` whose window shows `item`: one window per item, so a second
     /// send into a conversation raises the window it stands in.
     #[must_use]
     pub fn tab_showing(&self, app: &str, item: &str) -> Option<TabId> {
-        self.app_tab(app, |tab| tab.view == item)
+        let items = self.items.borrow();
+        self.app_tab(app, |tab| {
+            items.get(&tab.id).is_some_and(|shown| shown == item)
+        })
+    }
+
+    /// Take up the item each window was opened on, as the workspaces' layouts hold it: what
+    /// another device wrote, and what a window this session opened already knows (its own comes
+    /// first, and an item never changes).
+    pub fn set_window_items(&self, items: impl IntoIterator<Item = (TabId, String)>) {
+        let mut held = self.items.borrow_mut();
+        for (tab, item) in items {
+            held.entry(tab).or_insert(item);
+        }
+    }
+
+    /// The item each window of this shell was opened on, by tab.
+    #[must_use]
+    pub fn window_items(&self) -> BTreeMap<TabId, String> {
+        self.items.borrow().clone()
     }
 
     /// The tab of `app` the window `instance` runs in, when the shell shows it:
@@ -1210,7 +1243,11 @@ impl DesktopPolicy {
         let command = LayoutEffect::CloseTab {
             tab: beside.tab.to_string(),
         };
-        self.handle.dispatch(command).is_ok()
+        let closed = self.handle.dispatch(command).is_ok();
+        if closed {
+            self.items.borrow_mut().remove(&tab);
+        }
+        closed
     }
 
     /// Put `app`'s most recently closed tab in the shown workspace back where
@@ -1273,8 +1310,8 @@ impl DesktopPolicy {
     /// `background`. It lands right after `anchor` (the tab [`Self::anchor_for`] finds when none is
     /// named), and — `floated` — stands over the shell beside it instead: the window a send landed
     /// in, which the shell gives the strip's room to so the card it draws at stands beside the window
-    /// that sent rather than over it. The tab is born showing `shows`, the item the window opens
-    /// on (the conversation a send landed in), so every device's window of it opens there too.
+    /// that sent rather than over it. The tab is noted as opened on `shows`, the item the window
+    /// opens on (the conversation a send landed in), so every device's window of it opens there too.
     /// The session starts that window when the shell asks back for the
     /// tab ([`Self::take_launches`]). False when the desktop holds no tab of `app` to open beside.
     pub fn hold(
@@ -1382,6 +1419,7 @@ impl DesktopPolicy {
         let mut tree = self.handle.read(Clone::clone);
         if tree.close_tab(tab).is_some() {
             self.handle.replace_tree(tree);
+            self.items.borrow_mut().remove(&tab);
         }
     }
 
@@ -1660,6 +1698,7 @@ impl DesktopPolicy {
         };
         if tree.window_went(tab).is_some() {
             self.handle.replace_tree(tree);
+            self.items.borrow_mut().remove(&tab);
         }
     }
 

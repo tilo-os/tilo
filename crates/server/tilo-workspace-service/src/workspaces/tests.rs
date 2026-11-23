@@ -1702,6 +1702,7 @@ fn write_windows(
             person: Some(&person),
             mine: &mine,
             records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
+            items: tilo_desktop_model::shared_resource::device::Writer::NOTHING_ITEMED,
         },
     )
     .unwrap();

@@ -69,6 +69,7 @@ fn shared() -> SharedDesktop {
             ..Layout::default()
         },
         records: Vec::new(),
+        items: Vec::new(),
         authors: [(100, ada()), (200, bob())].into(),
         opened_by: BTreeMap::new(),
     }
@@ -92,7 +93,13 @@ fn laptop(shape: Shape) -> AutoCommit {
             shared_resource::write(&mut doc, &desktop).expect("written");
         }
         Shape::Document => {
-            desktop_doc::write_shared(&mut doc, &desktop.tree, &desktop.records, &desktop.authors);
+            desktop_doc::write_shared(
+                &mut doc,
+                &desktop.tree,
+                &desktop.records,
+                &desktop.items,
+                &desktop.authors,
+            );
         }
     }
     doc.commit();
@@ -133,6 +140,7 @@ fn writer<'a>(person: &'a str, mine: &'a dyn Fn(u64) -> bool) -> Writer<'a> {
         person: Some(person),
         mine,
         records: Writer::NOTHING_NOTED,
+        items: Writer::NOTHING_ITEMED,
     }
 }
 

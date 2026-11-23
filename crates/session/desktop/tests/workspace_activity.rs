@@ -904,6 +904,7 @@ tilo_test_env::scenario! {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 1,
                     records: device::Writer::NOTHING_NOTED,
+                    items: device::Writer::NOTHING_ITEMED,
                 },
             )
             .unwrap();

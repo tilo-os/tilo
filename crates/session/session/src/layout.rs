@@ -346,6 +346,25 @@ struct Taken {
     took: crate::engine_write::Written,
 }
 
+/// What each window of a layout write shows, and the item it was opened on: the record its app
+/// reports, by tab, and the item its launch named.
+#[derive(Default)]
+struct WindowNotes {
+    shown: BTreeMap<u64, String>,
+    items: BTreeMap<u64, String>,
+}
+
+impl WindowNotes {
+    /// What a look hands a write: the records its windows' apps reported, and the items their
+    /// launches named.
+    fn of(notes: Vec<(u64, String)>, items: Vec<(u64, String)>) -> Self {
+        Self {
+            shown: notes.into_iter().collect(),
+            items: items.into_iter().collect(),
+        }
+    }
+}
+
 /// What a look hands to the task that writes the layout: this device, and what it read of the
 /// record.
 struct Save {
@@ -363,6 +382,8 @@ struct Save {
     /// The tree revision and the record each window showed, the arranging action's included.
     own: u64,
     notes: Vec<(u64, String)>,
+    /// The item each of this device's windows was opened on, by tab.
+    items: Vec<(u64, String)>,
     sealed: Sealing,
     /// Whether a window of an app runs only on the device that opened it, as the app says
     /// ([`Layouts::hosting`]).
@@ -391,6 +412,7 @@ impl Save {
             laid_at,
             own: _,
             notes,
+            items,
             sealed,
             runs_here,
             pending,
@@ -419,7 +441,7 @@ impl Save {
         // member's, and another of their devices writing at the same instant must not number the
         // same change.
         candidate.set_actor(actor(engine, person));
-        let mut by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
+        let mut noted = WindowNotes::of(notes, items);
         let writing = Writing {
             engine,
             local,
@@ -434,7 +456,7 @@ impl Save {
             let first = pending
                 .first()
                 .map_or(&laid_out, |step| &step.changed.workspace);
-            let found = founding_change(&mut candidate, workspace_id, first, &writing, &by_tab);
+            let found = founding_change(&mut candidate, workspace_id, first, &writing, &noted);
             if let Err(error) = found {
                 candidate.rollback();
                 return Laid::Failed(error.to_string(), Some(Box::new(base)));
@@ -447,7 +469,7 @@ impl Save {
             &laid_out,
             &pending,
             &writing,
-            &mut by_tab,
+            &mut noted,
             &mut steps,
         );
         let written = match written {
@@ -525,14 +547,16 @@ fn founding_change(
     workspace_id: WorkspaceId,
     workspace: &Workspace,
     writing: &Writing<'_>,
-    by_tab: &BTreeMap<u64, String>,
+    windows: &WindowNotes,
 ) -> Result<(), automerge::AutomergeError> {
     let mine = |id: u64| peer_salt_of(id) == writing.local;
-    let shows = |id: u64| by_tab.get(&id).cloned();
+    let shows = |id: u64| windows.shown.get(&id).cloned();
+    let items = |id: u64| windows.items.get(&id).cloned();
     let writer = device::Writer {
         person: Some(writing.person),
         mine: &mine,
         records: &shows,
+        items: &items,
     };
     found(candidate, workspace_id, workspace, &writer)
 }
@@ -546,13 +570,13 @@ fn write_changes(
     laid_out: &Workspace,
     pending: &[PendingStep<LayoutStep>],
     writing: &Writing<'_>,
-    by_tab: &mut BTreeMap<u64, String>,
+    windows: &mut WindowNotes,
     steps: &mut Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
 ) -> Result<bool, automerge::AutomergeError> {
     let mut wrote = false;
     for pending in pending {
         for (tab, shown) in pending.acted.iter().flat_map(|acted| &acted.shows) {
-            by_tab.entry(*tab).or_insert_with(|| shown.clone());
+            windows.shown.entry(*tab).or_insert_with(|| shown.clone());
         }
         let acted = pending.acted.as_ref().map(|acted| acted.message.as_str());
         wrote |= write_change(
@@ -562,7 +586,7 @@ fn write_changes(
             writing,
             acted,
             &pending.changed.step,
-            by_tab,
+            windows,
             steps,
         )?;
     }
@@ -574,7 +598,7 @@ fn write_changes(
         writing,
         None,
         &step,
-        by_tab,
+        windows,
         steps,
     )?;
     Ok(wrote)
@@ -590,7 +614,7 @@ fn write_change(
     writing: &Writing<'_>,
     acted: Option<&str>,
     step: &str,
-    by_tab: &BTreeMap<u64, String>,
+    windows: &WindowNotes,
     steps: &mut Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
 ) -> Result<bool, automerge::AutomergeError> {
     let Writing {
@@ -607,11 +631,13 @@ fn write_change(
         only_here,
     );
     let mine = |id: u64| peer_salt_of(id) == local && !elsewhere.contains(&id);
-    let shows = |id: u64| by_tab.get(&id).cloned();
+    let shows = |id: u64| windows.shown.get(&id).cloned();
+    let items = |id: u64| windows.items.get(&id).cloned();
     let writer = device::Writer {
         person: Some(person),
         mine: &mine,
         records: &shows,
+        items: &items,
     };
     let was = arranged(candidate, workspace_id);
     let from = candidate.committed_heads();
@@ -708,6 +734,10 @@ pub(crate) struct Layouts {
     pending_at: Option<crate::kept::Kept>,
     /// What was last kept there: a look that keeps the same of it writes nothing.
     kept_pending: RefCell<Option<Vec<u8>>>,
+    /// The item each window of this device's workspaces was opened on, by tab, as their layouts
+    /// hold it and its own launches named it: what a window opens on again after a restart. Kept
+    /// apart from the tab's view, which is the view a place shows.
+    items: RefCell<BTreeMap<u64, String>>,
 }
 
 /// The layouts a session on `options` keeps, writing what its windows note of themselves (`notes`).
@@ -745,6 +775,23 @@ impl Layouts {
         };
         layouts.load_pending();
         layouts
+    }
+
+    /// Take up the item each window was opened on, as this session's shell knows it: what the
+    /// layout holds and what a launch of this session named. An item never changes, so what is
+    /// held first stands.
+    pub(crate) fn note_items(&self, items: impl IntoIterator<Item = (u64, String)>) {
+        let mut held = self.items.borrow_mut();
+        for (tab, item) in items {
+            held.entry(tab).or_insert(item);
+        }
+    }
+
+    /// The item each window of the workspaces' layouts was opened on, by tab: what the restore
+    /// opens a window on again.
+    #[must_use]
+    pub(crate) fn window_items(&self) -> BTreeMap<u64, String> {
+        self.items.borrow().clone()
     }
 
     /// What this device could not write of its workspaces before the session before this one
@@ -1263,6 +1310,7 @@ impl Layouts {
             self.opened_by
                 .borrow_mut()
                 .insert(workspace_id, layout.opened_by);
+            self.items.borrow_mut().extend(layout.items);
             changed |= self.fold_into(workspace_id, &doc, &layout.tree, workspace, salt, device);
             changed |= self.owed(workspace_id, workspace);
         }
@@ -1684,6 +1732,7 @@ impl Layouts {
         if changed || acted.is_some() {
             self.remember(&key, workspace, acted, person);
         }
+        let items = self.window_items_of(workspace);
         let pending = self.held(&key, |held| held.pending_steps.take());
         self.keep_pending();
         self.unwritten(workspace_id, None);
@@ -1702,12 +1751,22 @@ impl Layouts {
                 laid_at: self.held(&key, |held| held.folded.clone()),
                 own,
                 notes,
+                items,
                 sealed,
                 runs_here: self.runs_here,
                 pending,
             },
         );
         true
+    }
+
+    /// The item each window of `workspace` was opened on, by tab.
+    fn window_items_of(&self, workspace: &Workspace) -> Vec<(u64, String)> {
+        let held = self.items.borrow();
+        workspace
+            .tabs()
+            .filter_map(|tab| held.get(&tab.id).cloned().map(|item| (tab.id, item)))
+            .collect()
     }
 
     /// Keep the change this look makes of `workspace` as a step of its own, written once it can be:

@@ -305,6 +305,7 @@ mod tests {
                 ..crate::Layout::default()
             },
             records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
+            items: Vec::new(),
             authors: std::collections::BTreeMap::new(),
             opened_by: std::collections::BTreeMap::new(),
         };
@@ -407,6 +408,7 @@ mod tests {
                 ..crate::Layout::default()
             },
             records: vec![(21, String::new())],
+            items: Vec::new(),
             authors: std::collections::BTreeMap::new(),
             opened_by: std::collections::BTreeMap::new(),
         };
@@ -454,6 +456,7 @@ mod tests {
                 ..crate::Layout::default()
             },
             records: Vec::new(),
+            items: Vec::new(),
             authors: std::collections::BTreeMap::new(),
             opened_by: std::collections::BTreeMap::new(),
         };

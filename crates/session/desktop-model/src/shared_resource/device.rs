@@ -158,11 +158,17 @@ pub struct Writer<'a> {
     /// of its own windows, so the person's other devices hold which record
     /// each window is on and can continue it there.
     pub records: &'a dyn Fn(u64) -> Option<String>,
+    /// The item the window `id` was opened on: what this device's launch named,
+    /// so every device reopens that window on the same item.
+    pub items: &'a dyn Fn(u64) -> Option<String>,
 }
 
 impl Writer<'_> {
     /// No window noted as showing a record.
     pub const NOTHING_NOTED: &'static dyn Fn(u64) -> Option<String> = &|_| None;
+
+    /// No window noted as opened on an item.
+    pub const NOTHING_ITEMED: &'static dyn Fn(u64) -> Option<String> = &|_| None;
 }
 
 /// Write `workspace`, the layout of `workspace` as other devices are to see it,
@@ -184,13 +190,14 @@ pub fn write(
     writer: &Writer<'_>,
 ) -> Result<bool, automerge::AutomergeError> {
     let held = super::read(&*doc, None).and_then(|desktop| record_workspace(desktop, identity));
-    let (held_tabs, mut authors, held_documents) = match &held {
+    let (held_tabs, mut authors, held_documents, held_items) = match &held {
         Some((record, desktop)) => (
             tabs_of(record),
             desktop.authors.clone(),
             desktop.records.clone(),
+            desktop.items.clone(),
         ),
-        None => (HashMap::new(), BTreeMap::new(), Vec::new()),
+        None => (HashMap::new(), BTreeMap::new(), Vec::new(), Vec::new()),
     };
     let held_ids: HashSet<u64> = held
         .as_ref()
@@ -262,6 +269,7 @@ pub fn write(
     }
     authors.retain(|id, _| live.contains(id));
     let records = noted_records(held_documents, &live, writer.records);
+    let items = noted_records(held_items, &live, writer.items);
     let desktop = SharedDesktop {
         tree: Layout {
             active: shared.id(),
@@ -269,16 +277,17 @@ pub fn write(
             ..Layout::default()
         },
         records,
+        items,
         authors,
         opened_by: std::collections::BTreeMap::new(),
     };
     super::write(doc, &desktop)
 }
 
-/// The record each window the record `live` holds shows: what the record held
-/// of it, and what this device notes of its own windows now
-/// (`notes`). A window whose app reports what it shows is written as it says;
-/// one that reports nothing keeps what the record held.
+/// What the record `live` holds for each window — the record it shows, or the item it was
+/// opened on — kept, and what this device notes of its own windows now (`notes`). A window whose
+/// app reports what it shows is written as it says; one that reports nothing keeps what the record
+/// held.
 fn noted_records(
     held: Vec<(u64, String)>,
     live: &HashSet<u64>,
@@ -324,6 +333,7 @@ pub fn withdraw(
     let live: HashSet<u64> = desktop.tree.workspaces.iter().flat_map(ids_of).collect();
     desktop.authors.retain(|id, _| live.contains(id));
     desktop.records.retain(|(tab, _)| live.contains(tab));
+    desktop.items.retain(|(tab, _)| live.contains(tab));
     super::write(doc, &desktop)
 }
 

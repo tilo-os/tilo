@@ -51,6 +51,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
             .iter()
             .map(|(id, _, _)| (*id, format!("record-{id}")))
             .collect(),
+        items: Vec::new(),
         opened_by: std::collections::BTreeMap::new(),
     }
 }

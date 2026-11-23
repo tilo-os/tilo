@@ -65,6 +65,7 @@ mod workspace_activity {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 7,
                     records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
+                    items: tilo_desktop_model::shared_resource::device::Writer::NOTHING_ITEMED,
                 },
             )
             .unwrap();

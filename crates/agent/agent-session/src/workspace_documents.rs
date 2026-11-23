@@ -629,6 +629,7 @@ mod tests {
                     (id.saturating_add(100), record)
                 })
                 .collect(),
+            items: Vec::new(),
             authors: std::collections::BTreeMap::new(),
             opened_by: std::collections::BTreeMap::new(),
         };

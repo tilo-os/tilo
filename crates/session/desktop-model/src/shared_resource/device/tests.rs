@@ -77,6 +77,7 @@ impl Device {
             person: Some(PERSON),
             mine: &mine,
             records: &records,
+            items: Writer::NOTHING_ITEMED,
         };
         let published = self.published();
         let changed = write(&mut self.doc, self.workspace.id(), &published, &writer).unwrap();

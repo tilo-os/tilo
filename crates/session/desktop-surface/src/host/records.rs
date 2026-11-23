@@ -151,6 +151,7 @@ mod tests {
                 .iter()
                 .map(|(id, _, record)| (*id, (*record).to_owned()))
                 .collect(),
+            items: Vec::new(),
             authors: windows
                 .iter()
                 .map(|(id, _, _)| (*id, "ada".to_owned()))
