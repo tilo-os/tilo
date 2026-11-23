@@ -22,10 +22,6 @@ use super::{
 };
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
-/// A workspace's Chat as a test posts in it and reads it.
-#[cfg(feature = "agents")]
-pub mod chat;
-
 /// What a test that stands in for the mail servers of the accounts people keep here is made
 /// of ([`Workspaces::carry_mail_through`]): the session's trait with what its calls carry, a
 /// message as an inbox holds one, and a message as a send begins one.
