@@ -67,6 +67,10 @@ pub mod xlsx;
 #[cfg(feature = "all")]
 mod bulk_equivalence;
 
+#[cfg(test)]
+#[cfg(feature = "all")]
+mod import_rules;
+
 #[cfg(feature = "docx")]
 pub use docx::DocxCodec;
 pub use format::{CodecError, FormatProvider};
