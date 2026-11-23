@@ -538,6 +538,14 @@ class PickingWhatAnActionOffers(unittest.TestCase):
             {"name": "note", "schema": {"type": "string"}}]}}
         self.assertEqual(walk.choices_of(row), {"destination": "a1", "mode": "copy"})
 
+    def test_a_parameter_whose_choices_the_action_names_is_read_by_them(self):
+        # The catalogue carries what an action offers as the parameter's `choices` (a nearby
+        # device's handle, each with the words it reads by), not only in its schema.
+        row = {"action": {"params": [
+            {"name": "target", "choices": ["0a1b", "0c2d"],
+             "schema": {"type": "string"}}]}}
+        self.assertEqual(walk.choices_of(row), {"target": "0a1b"})
+
 
 class AValuePerVersion(unittest.TestCase):
     def test_a_value_both_versions_share_is_itself(self):

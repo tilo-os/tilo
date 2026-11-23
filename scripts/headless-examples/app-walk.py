@@ -51,6 +51,7 @@ import contextlib
 import functools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -640,14 +641,17 @@ def at_path(value, path: str):
 
 
 def choices_of(row: dict) -> dict:
-    """The first answer a catalogue row's action offers for each parameter that offers some: its
-    schema's `enum`, or the `const` of its first `oneOf`. What a person picks from a list, the
-    walk picks the first of."""
+    """The first answer a catalogue row's action offers for each parameter that offers some: the
+    values its `choices` name (a device's handle, a folder to save to), else its schema's `enum`,
+    or the `const` of its first `oneOf`. What a person picks from a list, the walk picks the first
+    of."""
     found = {}
     for param in (row.get("action") or {}).get("params") or []:
         schema = param.get("schema") or {}
-        offered = schema.get("enum") or [o.get("const") for o in schema.get("oneOf") or []
-                                         if isinstance(o, dict) and "const" in o]
+        offered = (param.get("choices")
+                   or schema.get("enum")
+                   or [o.get("const") for o in schema.get("oneOf") or []
+                       if isinstance(o, dict) and "const" in o])
         if offered:
             found[param["name"]] = offered[0]
     return found
@@ -1762,9 +1766,18 @@ class Walk:
         row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
                           lambda: self.published_row(value), float(value.get("within", 30)))
         resource = address(row)[0]
+        offered = choices_of(row)
+        args = pick(value.get("args"), self.variant) if "args" in value else None
+        for name in re.findall(r"\{choice:([^}]+)\}", json.dumps(args)):
+            if f"choice:{name}" not in offered:
+                takes = [(p.get("name"), p.get("choices"))
+                         for p in (row.get("action") or {}).get("params") or []]
+                raise Failed(
+                    f"{resource}#{value['action']} offers no choice for {name!r}: it takes "
+                    f"{takes}")
         kept = {**self.kept, "resource": resource, "id": resource.split(":", 1)[-1],
-                **{f"choice:{name}": choice for name, choice in choices_of(row).items()}}
-        args = filled(pick(value.get("args"), self.variant), kept) if "args" in value else None
+                **{f"choice:{name}": choice for name, choice in offered.items()}}
+        args = filled(args, kept) if args is not None else None
         answer = self.session.invoke_row(row, args)
         if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
             raise Failed(f"{resource}#{value['action']} answered {json.dumps(answer)[:500]}")
