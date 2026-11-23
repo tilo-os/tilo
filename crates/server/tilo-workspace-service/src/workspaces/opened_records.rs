@@ -294,6 +294,21 @@ impl Workspaces {
         let Some(envelope) = crate::peer::records::delta_of(workspace, author, message) else {
             return;
         };
+        // A record every device is replayed goes to every session of the workspace, as a link
+        // to the session's device hands it: one it never opened is a record it holds all the
+        // same, until it reads it. A record sent when opened, or a part of one, goes to the
+        // sessions that opened it.
+        if matches!(
+            neighbour_wire::document_sync(document_id),
+            neighbour_wire::DocumentSync::Eager
+        ) {
+            self.inner.opened_records.deliver_to_all(
+                workspace,
+                |device| device != author && link.reads_of(device)(message),
+                &envelope,
+            );
+            return;
+        }
         let mut channels =
             BTreeSet::from([neighbour_wire::app_document_group(app_id, document_id)]);
         if let neighbour_wire::DocumentSync::Part { base, .. } =
@@ -310,5 +325,46 @@ impl Workspaces {
             |device| link.reads_of(device)(message),
             &envelope,
         );
+    }
+
+    /// `workspace`'s records a joining device is replayed, as the sessions that read it over a
+    /// session take them: every record that is not sent when opened, each frame the store keeps
+    /// of it, as the frames a link replays. A session that opened none of them holds them all
+    /// the same, as a device over its link does; one sent when opened waits to be asked for.
+    pub(crate) async fn eager_records(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+    ) -> Vec<Envelope> {
+        let Some(link) = self.inner.direct.link(workspace) else {
+            return Vec::new();
+        };
+        let records = self.inner.records.clone();
+        let Ok(Ok(bodies)) = tokio::task::spawn_blocking(move || records.retained(workspace)).await
+        else {
+            return Vec::new();
+        };
+        let reads = link.reads_of(device);
+        let mut envelopes = Vec::new();
+        for body in bodies {
+            let Ok(message) = neighbour_wire::NeighbourMsg::decode(&body.body) else {
+                continue;
+            };
+            let neighbour_wire::NeighbourMsg::AppDocument { document_id, .. } = &message else {
+                continue;
+            };
+            if !matches!(
+                neighbour_wire::document_sync(document_id),
+                neighbour_wire::DocumentSync::Eager
+            ) || !reads(&message)
+            {
+                continue;
+            }
+            if let Some(envelope) = crate::peer::records::delta_of(workspace, body.author, &message)
+            {
+                envelopes.push(envelope);
+            }
+        }
+        envelopes
     }
 }
