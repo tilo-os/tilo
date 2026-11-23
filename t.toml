@@ -641,7 +641,7 @@ default = false
 # here, where the module is in place. `workspace-unify` comes beside the
 # package so its features resolve as the test family's build gives them.
 # The server's test is handed a package the image's pack path built
-# (tools/ci/pack-calculator-tapp.sh), so what it applies an action from is a package
+# (tools/ci/pack-tasks-tapp.sh), so what it applies an action from is a package
 # an image would install, not one the test staged. Both packages' commands name
 # workspace-unify beside them so their units are the `test` and `test-x86_64`
 # families' units and the compiler cache serves them: a narrowed `-p` selection
@@ -649,7 +649,7 @@ default = false
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-calculator-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.calculator.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\ncargo test --locked -p tilo-agent-session -p workspace-unify --test it an_agent_applies_a_packaged -- --ignored\n"
+run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-tasks-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.tasks.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\ncargo test --locked -p tilo-agent-session -p workspace-unify --test it an_agent_applies_a_packaged -- --ignored\n"
 needs = ["app-models"]
 
 [[check]]

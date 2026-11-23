@@ -26,7 +26,7 @@ use tilo_resource::Resource as _;
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use super::packaged_model_tests::{
-    CALCULATOR, KIND, NOW_MS, add_function, model_module, models_dir, package_on,
+    NOW_MS, TASKS, TRACKER, create_area, model_module, models_dir, package_on,
 };
 
 /// The release the registry's runtime bundle is built for.
@@ -316,7 +316,7 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     assert_ne!(hash, ours.hash());
     let missing = Runtime::find(&hash).expect_err("the server lacks the other release's runtime");
     assert!(missing.to_string().contains(&hash), "{missing}");
-    let module = relinked(&model_module("calculator"), &hash);
+    let module = relinked(&model_module("tasks"), &hash);
 
     // The registry offers that release's runtime bundle as a thin package,
     // its files as payload blobs, signed by a runtime publisher the server trusts.
@@ -389,10 +389,10 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     let server = test_host(&root.join("server-state"), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Another release").await.unwrap();
-    let package = package_on(CALCULATOR, Some(&module), Some(&provides));
+    let package = package_on(TASKS, Some(&module), Some(&provides));
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, CALCULATOR, KIND, "", &package)
+            .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
             .await
             .unwrap(),
         "the server makes the app's resource with the runtime it fetched"
@@ -423,12 +423,12 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
                     &workspace,
                     &cert,
                     PackagedAction {
-                        app: CALCULATOR,
-                        kind: KIND,
+                        app: TASKS,
+                        kind: TRACKER,
                         document: "",
                         package: &package,
-                        action: "add-function",
-                        arguments: add_function("x^2"),
+                        action: "create-area",
+                        arguments: create_area("Ship it"),
                         member: member.clone(),
                         acting: tilo_actions::Acting::member(member),
                         now_ms: NOW_MS,
@@ -443,17 +443,17 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
         "an action of a runtime fetched before asks the registry nothing"
     );
     let after = workspaces
-        .resource_document(&created.workspace, CALCULATOR, "")
+        .resource_document(&created.workspace, TASKS, "")
         .await
         .unwrap()
         .expect("the document exists");
-    let calculator =
-        calculator_model::Calculator::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
+    let tracker =
+        tasks_model::Tracker::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
     assert!(
-        calculator
-            .funcs
+        tracker
+            .areas
             .iter()
-            .any(|(_, function)| function.expr == "x^2"),
+            .any(|(_, area)| area.name.as_str() == "Ship it"),
         "the app's code, linked after the fetched runtime, applied the action"
     );
 
@@ -461,7 +461,7 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     // refused, naming the runtime it wants and the one the bundle holds.
     let wanted = "0".repeat(64);
     let refused = apply(package_on(
-        CALCULATOR,
+        TASKS,
         Some(&relinked(&module, &wanted)),
         Some(&provides),
     ))
