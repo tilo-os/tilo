@@ -31,6 +31,13 @@ impl TextInput {
     /// of what it sent).
     pub(super) fn report_change(&mut self, physical_text: bool) {
         let before = std::mem::replace(&mut self.last_notified_text, self.text.clone());
+        // The first change of an empty field: what makes the item a list's entry names. It
+        // carries the text the field holds now, so the item is made with what was typed.
+        if before.is_empty() && !self.text.is_empty() {
+            let held = self.text.clone();
+            self.begin_event
+                .fire(Some(crate::component::Value::Text(held)));
+        }
         if let Some(action) = &mut self.action {
             let after = self.text.clone();
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {

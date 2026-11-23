@@ -559,3 +559,45 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
         "what the reader writes stands in the page"
     );
 }
+
+/// A row a host holds open below the fold is scrolled into view, however long the list: a task
+/// a search found or an agent opened shows its page inside the window, rather than growing it
+/// past the window's foot where what a person types into it goes nowhere.
+#[test]
+fn a_row_held_open_below_the_fold_is_scrolled_into_view_at_ten_thousand_rows() {
+    let mut list = VirtualList::with_selection_delegate(
+        Opens {
+            rows: (0..10_000_u64).collect(),
+        },
+        20.0,
+        |_, _, key, build| {
+            let height = if build.expanded { 120.0 } else { 20.0 };
+            Box::new(ProbeRow::new(
+                format!("row {key}"),
+                height,
+                false,
+                Rc::new(Cell::new(0)),
+            )) as Element
+        },
+    )
+    .with_viewport_height(200.0);
+    list.set_key_presenting(|item: &str| item.parse().ok());
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        !list.visible_range().contains(&9_998),
+        "the row starts far below the fold"
+    );
+
+    list.hold_open(Some("9998"));
+    let _ = lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.open_row(),
+        Some(&9_998),
+        "the row opens where it stands"
+    );
+    assert!(
+        list.visible_range().contains(&9_998),
+        "and the window brings it up: {:?}",
+        list.visible_range()
+    );
+}

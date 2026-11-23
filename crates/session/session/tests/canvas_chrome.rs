@@ -83,7 +83,7 @@ fn place_showing(session: &Session, needle: &str) -> Option<(String, i64, i64, i
         .find(|(record, ..)| record.contains(needle))
 }
 
-/// The published root of the seeded app `app` (`so.tilo.lang.tasks`): what an agent opens.
+/// The published root of the seeded app `app` (`so.tilo.tasks`): what an agent opens.
 fn root_of(session: &Session, app: &str) -> String {
     let prefix = format!("tl:{app}:root-");
     session
@@ -146,10 +146,10 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     );
 
     // An agent opens Tasks beside the notes, as a turn's step runs the layout's `open`.
-    let resource = root_of(&session, "so.tilo.lang.tasks");
+    let resource = root_of(&session, "so.tilo.tasks");
     open_beside(&mut session, &resource, &conversation.0);
     let tasks = wait_for(&mut session, "tasks beside the conversation", |session| {
-        place_showing(session, "so.tilo.lang.tasks")
+        place_showing(session, "so.tilo.tasks")
     });
     assert_eq!(
         (tasks.3, tasks.4),
@@ -238,10 +238,10 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let conversation = wait_for(&mut session, "the notes on the canvas", |session| {
         place_showing(session, "so.tilo.notes")
     });
-    let resource = root_of(&session, "so.tilo.lang.tasks");
+    let resource = root_of(&session, "so.tilo.tasks");
     open_beside(&mut session, &resource, &conversation.0);
     wait_for(&mut session, "tasks beside the conversation", |session| {
-        place_showing(session, "so.tilo.lang.tasks")
+        place_showing(session, "so.tilo.tasks")
     });
     // The inbox is still drawn at the width it was: the camera panned to what arrived, it did not
     // zoom the person's reading into a narrow column.

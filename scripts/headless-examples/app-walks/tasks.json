@@ -8,7 +8,7 @@
     "native": "tasks"
   },
   "tl": {
-    "id": "so.tilo.lang.tasks",
+    "id": "so.tilo.tasks",
     "package": "tasks"
   },
   "steps": [
@@ -148,7 +148,7 @@
           },
           {
             "holds": [
-              "\"done\": true"
+              "\"status\": \"done\""
             ]
           },
           {
@@ -164,6 +164,14 @@
           },
           {
             "must_not": [
+              "Buy milk"
+            ]
+          },
+          {
+            "select_row": "Done"
+          },
+          {
+            "must": [
               "Buy milk"
             ]
           }
@@ -224,34 +232,26 @@
             "must": {
               "see": [
                 {
-                  "menuitem": "Send to\u2026"
+                  "menuitem": "Open as page"
                 }
               ],
               "within": 15
             }
           },
           {
-            "must_not": [
-              "Tomorrow",
-              "High"
-            ]
-          },
-          {
-            "key": "Escape"
-          },
-          {
-            "press": "Call the landlord"
-          },
-          {
             "must": {
               "see": [
-                "More actions"
+                {
+                  "menuitem": "Plan"
+                }
               ],
-              "within": 15
+              "within": 10
             }
           },
           {
-            "press": "More actions"
+            "press": {
+              "menuitem": "Plan"
+            }
           },
           {
             "must": {
@@ -352,18 +352,22 @@
         ],
         "tl": [
           {
-            "press": "Call the landlord"
+            "right_click": "Call the landlord"
           },
           {
             "must": {
               "see": [
-                "More actions"
+                {
+                  "menuitem": "Priority"
+                }
               ],
               "within": 15
             }
           },
           {
-            "press": "More actions"
+            "press": {
+              "menuitem": "Priority"
+            }
           },
           {
             "must": {
@@ -575,10 +579,25 @@
             "must": {
               "see": [
                 {
-                  "menuitem": "More"
+                  "menuitem": "Move"
                 }
               ],
               "within": 15
+            }
+          },
+          {
+            "press": {
+              "menuitem": "Move"
+            }
+          },
+          {
+            "must": {
+              "see": [
+                {
+                  "menuitem": "Outdent"
+                }
+              ],
+              "within": 10
             }
           },
           {
@@ -667,6 +686,21 @@
                 }
               ],
               "within": 15
+            }
+          },
+          {
+            "press": {
+              "menuitem": "More"
+            }
+          },
+          {
+            "must": {
+              "see": [
+                {
+                  "menuitem": "Delete"
+                }
+              ],
+              "within": 10
             }
           },
           {

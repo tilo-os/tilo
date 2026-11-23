@@ -3,6 +3,8 @@
 
 d-so-tilo-tube = YouTube
 
+d-so-tilo-tube-keywords = youtube, video, videos, streaming, watch, channel, channels, subscriptions, creators, trending, filme, videos ansehen, kanäle, kanaele, kanal, schauen, mediathek, anschauen, abos, videoportal
+
 d-m5wewovo = Channel
     .doc = A channel someone publishes videos on.
     .noun = { $count ->

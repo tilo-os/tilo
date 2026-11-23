@@ -23,7 +23,7 @@ use crate::common::people::{Device, Person, Site, at, join_together};
 use tilo_actions::remote::RemoteActionTarget;
 
 /// The app whose code the agent's call runs.
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 /// The workspace's `start` of [`APP`], as the host names it.
 fn start_action(workspace: &str) -> RemoteActionTarget {
     at(

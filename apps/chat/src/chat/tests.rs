@@ -1629,14 +1629,14 @@ tilo_test_env::scenario! {
         // spells, and the catalogue names its kind. It attaches as any shared resource does, and it
         // reads back from the resource unchanged — the address the drag carried, never a second form
         // invented for it.
-        const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+        const ROOT: &str = "tl:so.tilo.tasks:root-fjqi4yze";
         let mut ada = Talk::new();
         let attached = tilo_reference::Attached::resource(
             tilo_reference::ResourceAt {
-                app: "so.tilo.lang.tasks".into(),
+                app: "so.tilo.tasks".into(),
                 record: None,
                 reference: tilo_reference::ResourceRef::whole(
-                    "tl.so.tilo.lang.tasks.Tasks",
+                    "tl.so.tilo.tasks.Tasks",
                     ROOT,
                     "Tasks",
                 ),

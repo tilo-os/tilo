@@ -485,6 +485,12 @@ pub struct TextInput {
     /// Escape let go of what was being typed ([`Self::set_cancel_event`]): the field clears, and
     /// what holds it is told, so a caret on a canvas goes away with it.
     cancel_event: crate::component::Event,
+    /// The field's text went from empty to non-empty ([`Self::set_begin_event`]): the first
+    /// change, which makes the item a list entry names. Carries the text it now holds.
+    begin_event: crate::component::Event,
+    /// The field lost the keyboard ([`Self::set_blur_event`]): a list's entry that was left
+    /// empty is taken away by what listens.
+    blur_event: crate::component::Event,
     submit_action: Option<ActionEmitter<String>>,
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
     /// The words a submit published and its own handler has not answered yet: an entry clears
@@ -795,6 +801,8 @@ impl TextInput {
             on_submit: None,
             selection_event: None,
             cancel_event: crate::component::Event::None,
+            begin_event: crate::component::Event::None,
+            blur_event: crate::component::Event::None,
             submit_action: None,
             submit_view: None,
             submitted: None,
@@ -5683,6 +5691,9 @@ impl Widget for TextInput {
             let entry_commits = self.entry && !self.text.trim().is_empty();
             if left && (entry_commits || self.leaving_commits) {
                 self.fire_submit();
+            }
+            if left {
+                self.blur_event.fire(None);
             }
         }
     }

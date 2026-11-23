@@ -28,7 +28,7 @@ const TASKS: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const APP: &str = "so.tilo.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 
 /// A view of another app's package that shows a note by the notes app's own row view.
 const CARD: &str = r#"app test.card "Card"
@@ -264,7 +264,11 @@ tilo_test_env::scenario! {
 /// with no window of the app open, and the clock its app and its triggers read.
 fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
+    let (ada, _) = Replica::new(
+        "ada",
+        Workspace::new(),
+        &[crate::fixtures::AGENT, DISCUSSION, TASKS],
+    );
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()

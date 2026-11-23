@@ -20,7 +20,7 @@ const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const DISCUSSION_APP: &str = "so.tilo.lang.discussion";
 const NOTES_APP: &str = "so.tilo.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 
 fn action(r: &Replica, app: &str, name: &str) -> String {
     r.host
@@ -180,6 +180,7 @@ fn workspace() -> Replica {
         "ada",
         Workspace::new(),
         &[
+            crate::fixtures::AGENT,
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
             (TASKS, TASKS_IDS),

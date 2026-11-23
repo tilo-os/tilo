@@ -31,7 +31,7 @@ use crate::common::PERSON;
 
 /// The app whose window each test opens: a tilolang app, whose windows hold none of its data, so
 /// each of them is an instance the session's host runs and a tab of the shell's.
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 /// The record one test opens a window on.
 const RECORD: &str = "uuid:7a110d00-0000-4000-8000-000000000009";
 

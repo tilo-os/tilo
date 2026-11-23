@@ -5,8 +5,8 @@ use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 use crate::tasks::{
-    APP, PACKAGES, call, count, create, go_to, home_list_titles, home_row_of, places, read,
-    shown_count, target, task, workspace,
+    APP, PACKAGES, call, count, create, go_to, home_list_titles, home_row_of, places, shown_count,
+    target, task, workspace,
 };
 
 /// Ada's week and Ben's copy of it: a task each of them holds with no day of its own, a bill due
@@ -182,7 +182,7 @@ fn a_checked_task_keeps_its_row_but_not_its_count() {
     let (_, key, _) = home_row_of(&mut view, &of);
     view.fire_with(&key, "check", None).unwrap();
     ada.commit();
-    assert_eq!(read(&ada, &bill, "done"), Value::Bool(true), "it is done");
+    assert!(crate::tasks::done(&ada, &bill), "it is done");
 
     // Its row stays where it stood, struck through, and says it is done: the day is two tasks
     // of work, as the title says and as the heading over the rows counts.

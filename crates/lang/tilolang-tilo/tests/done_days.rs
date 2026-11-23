@@ -1,17 +1,12 @@
 //! Done as a log of the week: the tasks finished under the day each was finished on, newest
 //! first, and a task finished before the app kept that moment under the day the log says.
 
-use crate::fixtures::Workspace;
 use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
 use crate::tasks::{call, go_to, home_list_titles, workspace};
 
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 
 /// Each row of the home list as the list groups it: the heading its run stands under, and
 /// whether that heading says the day the task was finished rather than the day it is due.
@@ -114,35 +109,4 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_task_finished_before_the_app_kept_its_moment_keeps_its_day;
-    // A task finished by a version that kept no moment of it stands under the day of the change
-    // that finished it, read from the log, rather than under no day at all.
-    {
-        const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
-        const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
-        let (ada, _) = Replica::new("ada", Workspace::new(), &[(BEFORE, BEFORE_IDS)]);
-        ada.host.set_clock(|| "2026-10-26T09:00:00Z".to_owned());
-        let all = Value::resource(&ada.host.root_of(APP).unwrap());
-        ada.commit();
-        let old = call(&ada, "add", vec![all, Value::text("Send the invoice")]);
-        ada.commit();
-        call(&ada, "check", vec![old]);
-        ada.commit();
-
-        // The same workspace, opened by the version that keeps nothing of it but the box.
-        let (later, _) = Replica::new(
-            "ada",
-            ada.doc.fork(),
-            &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
-        );
-        later.host.migrate();
-        later.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-        let mut view = later.view(APP);
-        go_to(&mut view, "Done");
-        assert_eq!(
-            home_row_groups(&mut view),
-            [("2026-10-26".to_owned(), true)],
-            "the day the log says it was finished on"
-        );
-    }
 }

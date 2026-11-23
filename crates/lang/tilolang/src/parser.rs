@@ -2695,11 +2695,20 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&Tok::Colon)?;
                 let action = self.expr()?;
+                // `binds .title`: the field of the record the began item is edited at.
+                let binds = if self.is(&Tok::Ident("binds".to_owned())) {
+                    self.bump();
+                    self.eat(&Tok::Dot);
+                    Some(self.ident("the field the made record is edited at")?)
+                } else {
+                    None
+                };
                 UiKind::On {
                     event,
                     param,
                     at,
                     action: Box::new(action),
+                    binds,
                 }
             }
             Tok::Ident(_)

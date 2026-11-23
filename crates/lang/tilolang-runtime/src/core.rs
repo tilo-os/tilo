@@ -48,10 +48,10 @@ use Imp::{
     StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
     StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
     TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-    UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-    UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
-    WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText,
-    Withdraw, Word, WorkspaceMembers,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode, UiOn,
+    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+    Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+    WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -552,9 +552,9 @@ impl Core {
                 self.clipboard_import(imp, a)
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
-            | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
-            | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
+            | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt
+            | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
             | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd

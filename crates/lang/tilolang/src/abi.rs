@@ -230,6 +230,7 @@ imports! {
     UiPropPic = "ui_prop_picture" ([H, H, H] -> []);
     UiChild = "ui_child" ([H, H] -> []);
     UiBind = "ui_bind" ([H, H, H] -> []);
+    UiBindBegin = "ui_bind_begin" ([H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
     UiBindState = "ui_bind_state" ([H, H] -> []);

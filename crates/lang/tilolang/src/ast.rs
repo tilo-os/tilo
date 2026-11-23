@@ -791,6 +791,9 @@ pub enum UiKind {
         /// The handler, boxed as an expression's own operands are: a statement copies 520 bytes
         /// around otherwise.
         action: Box<Expr>,
+        /// `binds .title`: the field of the record a `begin` handler's action makes that the
+        /// field edits from then on. The handler is refused without it.
+        binds: Option<Ident>,
     },
 }
 

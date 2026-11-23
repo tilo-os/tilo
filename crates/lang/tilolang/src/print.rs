@@ -1362,6 +1362,7 @@ impl Printer<'_> {
                 param,
                 at,
                 action,
+                binds,
             } => {
                 let named = |p: &crate::ast::EventParam| match &p.ty {
                     Some(ty) => format!("{}: {}", p.name.name, print_type(ty)),
@@ -1372,10 +1373,14 @@ impl Printer<'_> {
                     (Some(p), None) => format!("({})", named(p)),
                     _ => String::new(),
                 };
+                let binds = binds
+                    .as_ref()
+                    .map(|field| format!(" binds .{}", field.name))
+                    .unwrap_or_default();
                 let head = format!("on {}{carried}: ", event.name);
                 let col = self.level * 4 + head.len();
                 let a = self.ex_at(action, col);
-                self.line(&format!("{head}{a}"));
+                self.line(&format!("{head}{a}{binds}"));
             }
             UiKind::Call(c) => self.ui_call(c),
         }

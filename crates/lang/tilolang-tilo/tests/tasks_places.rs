@@ -40,9 +40,26 @@ tilo_test_env::scenario! {
         let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
         assert_eq!(
             labels,
-            ["Inbox", "Today", "Upcoming", "Done", "Groceries"],
+            [
+                "All issues",
+                "Inbox",
+                "Today",
+                "Upcoming",
+                "Todos",
+                "Nobody yet",
+                "Agent work",
+                "Waiting",
+                "Done",
+                "Groceries"
+            ],
             "the sidebar is the window's own places in the order it lists them, then the root's \
          projects: a priority is searched, never offered as a place: {labels:?}"
+        );
+        assert_eq!(
+            count(&view, "All issues"),
+            Some(2),
+            "every issue counts, the one done with as well: {:?}",
+            places(&view)
         );
         assert_eq!(
             count(&view, "Inbox"),
@@ -60,6 +77,18 @@ tilo_test_env::scenario! {
             count(&view, "Upcoming"),
             None,
             "what is due later counts nothing: {:?}",
+            places(&view)
+        );
+        assert_eq!(
+            count(&view, "Todos"),
+            Some(1),
+            "the planned work counts what stands in it: {:?}",
+            places(&view)
+        );
+        assert_eq!(
+            count(&view, "Nobody yet"),
+            Some(1),
+            "and so does what nobody holds: {:?}",
             places(&view)
         );
         assert_eq!(
@@ -325,17 +354,28 @@ tilo_test_env::scenario! {
         let all = places(&view);
         assert_eq!(
             all.iter()
-                .take(5)
+                .take(9)
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
-            ["Inbox", "Today", "Upcoming", "Done", "Assigned to me"],
-            "the place of what the person looking holds comes after the type's own, so the one a \
-         window opens on does not move: {all:?}"
+            [
+                "All issues",
+                "Inbox",
+                "Today",
+                "Upcoming",
+                "Todos",
+                "Nobody yet",
+                "Agent work",
+                "Waiting",
+                "Done"
+            ],
+            "the type's own places stand as they did, so the one a window opens on does not \
+         move: {all:?}"
         );
         assert_eq!(
-            all.get(4),
+            all.last(),
             Some(&("Assigned to me".to_owned(), Some(1))),
-            "and counts the one open task the person looking holds: {all:?}"
+            "the place of what the person looking holds comes after them, and counts the one open \
+         task the person looking holds: {all:?}"
         );
         // The workspace narrows to the person looking alone: the place goes.
         ada.host

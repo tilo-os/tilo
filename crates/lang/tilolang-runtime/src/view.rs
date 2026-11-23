@@ -59,6 +59,11 @@ impl Binding {
     }
 }
 
+/// The field of the record a `begin` handler makes, by the name the source gave it
+/// (`binds .title`): a prop of the control while the view builds it, taken out before the window
+/// is sent the tree.
+pub const BEGIN_BIND: &str = "tilo:begin-bind";
+
 /// A node of a rendered view. Events hold retained action references.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiNode {

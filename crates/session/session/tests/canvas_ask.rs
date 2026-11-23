@@ -512,7 +512,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                 .key
             }
             PlaceOrigin::AppWindow => {
-                for app in ["so.tilo.lang.tasks", "so.tilo.notes"] {
+                for app in ["so.tilo.tasks", "so.tilo.notes"] {
                     session
                         .invoke(
                             tilo_desktop::verbs::CHROME_RESOURCE,

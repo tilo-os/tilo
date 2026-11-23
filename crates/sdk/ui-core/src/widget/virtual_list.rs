@@ -647,7 +647,7 @@ impl VirtualRows {
 
     /// Scroll `key`'s row into view, leaving the keyboard where it is; whether the model
     /// holds the row.
-    fn scroll_to_key(&mut self, key: &ListKey) -> bool {
+    pub(super) fn scroll_to_key(&mut self, key: &ListKey) -> bool {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };

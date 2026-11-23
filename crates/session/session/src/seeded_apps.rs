@@ -38,7 +38,7 @@ pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev
 /// record, as a package an app uses that is not installed keeps its records in it.
 pub const APPS: [&str; 5] = [
     "so.tilo.notes",
-    "so.tilo.lang.tasks",
+    "so.tilo.tasks",
     "so.tilo.lang.chat",
     "so.tilo.mail",
     "so.tilo.tube",

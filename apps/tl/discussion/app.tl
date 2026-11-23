@@ -1,5 +1,25 @@
 app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .office)
 
+/// Where it was first written, when it was moved here from another tracker or service: the
+/// person there, the service, where it reads there and its reference, so a task or a thread
+/// imported from elsewhere says where it came from.
+type Origin {
+    /// Who wrote it there, as they were named.
+    author: Text
+    /// The name they were known by there, when it differs.
+    handle: Option<Text> = .none
+    /// The service it came from.
+    source: Text
+    /// Where it reads there.
+    url: Option<Text> = .none
+    /// Its reference there, such as its number.
+    reference: Option<Text> = .none
+    /// When it was first written there.
+    created: Option<Time> = .none
+    /// When it last changed there.
+    updated: Option<Time> = .none
+}
+
 /// What someone said about one resource: a task, a note, a mail, a day. A comment is made from
 /// the resource it is about (`created(c)?.from`), which puts it in that resource's thread; and
 /// because it is made from it, it is a change to it for whoever made or read that resource, so
@@ -11,6 +31,16 @@ app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .offi
 /// (`said_about`).
 type Comment {
     text: RichText
+    /// Whether an agent wrote it: its author is the agent, and a reader says so.
+    by_agent: Bool = false
+    /// Where it was first written, when it was moved here from another tracker.
+    origin: Option<Origin> = .none
+    /// The step of an agent's run that wrote it: the action it called, or what it did.
+    step: Text = ""
+    /// The resource the step looked up, when it read one.
+    lookup: Text = ""
+    /// Whether a later session's words folded it into the resource's note.
+    incorporated: Bool = false
 }
 
 /// Every comment of the workspace, in the order they were made.
@@ -29,13 +59,25 @@ row view remark for Comment
 /// Says something about the resource the comment is made from: the thread under a task, a note
 /// or a mail says it with `.made_from(r)`, so the comment records what it is about. An agent
 /// says something the same way, its comment its own as any person's is.
-action comment(all: Comments, text: RichText) -> Comment (
-    icon: .message_square,
-    label: "Comment",
-    did: "commented",
-) {
+action comment(
+    all: Comments,
+    text: RichText,
+    origin: Option<Origin> = .none,
+    step: Text = "",
+    lookup: Text = "",
+    incorporated: Bool = false,
+) -> Comment (icon: .message_square, label: "Comment", did: "commented") {
     require not text.is_empty() "Write a comment first"
-    all.items.insert(Comment(text: text))
+    all.items.insert(
+        Comment(
+            text: text,
+            by_agent: invoker.kind() == .agent,
+            origin: origin,
+            step: step,
+            lookup: lookup,
+            incorporated: incorporated,
+        ),
+    )
 }
 
 /// Changes what a comment says. Only its author may.

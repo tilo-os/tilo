@@ -90,7 +90,7 @@ const NOTES: &str = "so.tilo.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 /// The conversations the workspace has.
 const CHAT: &str = "so.tilo.lang.chat";
 /// The day at a glance, over Tasks', Notes' and Chat's own places.
@@ -2239,7 +2239,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         .harness()
         .resources()
         .into_iter()
-        .filter(|resource| resource.id.0.starts_with("tl:so.tilo.lang.tasks:"))
+        .filter(|resource| resource.id.0.starts_with("tl:so.tilo.tasks:"))
         .flat_map(|resource| resource.actions)
         .map(|action| (action.label.clone(), action.state.shortcut.clone()))
         .collect();
@@ -2254,7 +2254,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         let resources = session.window.harness().resources();
         let (resource, action) = resources
             .iter()
-            .filter(|resource| resource.id.0.starts_with("tl:so.tilo.lang.tasks:"))
+            .filter(|resource| resource.id.0.starts_with("tl:so.tilo.tasks:"))
             .find_map(|resource| {
                 resource
                     .actions

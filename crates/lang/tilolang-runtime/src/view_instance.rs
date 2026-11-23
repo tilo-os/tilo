@@ -26,7 +26,7 @@ use crate::render::ViewTarget;
 use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
-use crate::view::{BindTarget, Patch, UiNode};
+use crate::view::{BindTarget, Binding, Patch, UiNode};
 use crate::view_state::StateKey;
 
 /// Something a view asks of the host that the runtime does not do itself.
@@ -80,6 +80,9 @@ pub struct ViewInstance {
     subs: Vec<SubId>,
     subscribed: HashSet<DocId>,
     events: RefCell<Vec<ViewEvent>>,
+    /// The bindings a field was given by what it began: the `begin` handler's action made a
+    /// record, and from then on the field edits that record's name. Keyed by the control's key.
+    begun: RefCell<std::collections::BTreeMap<String, Binding>>,
 }
 
 /// The window a view over `args` runs in when the host names none: the window of its first
@@ -109,6 +112,7 @@ impl ViewInstance {
             subs: Vec::new(),
             subscribed: HashSet::new(),
             events: RefCell::new(Vec::new()),
+            begun: RefCell::default(),
         };
         me.subscribe_new();
         Ok(me)
@@ -426,7 +430,67 @@ impl ViewInstance {
                 }
             }
         }
-        self.run_in(&aref, gesture)
+        let outcome = self.run_in(&aref, gesture)?;
+        match event {
+            // The first change made the item; the field edits that item's name from now on.
+            "begin" => {
+                if let InvokeOutcome::Done(Value::Ref(made)) = &outcome {
+                    self.began(key, &made.target);
+                }
+            }
+            // Leaving the field ends what it began: an empty one is taken away by the view's own
+            // `blur`, and a finished one keeps the record it made.
+            "blur" | "submit" => {
+                self.begun.borrow_mut().remove(key);
+            }
+            _ => {}
+        }
+        Ok(outcome)
+    }
+
+    /// The binding of the control `key` given by its `begin`: the record the action made, and the
+    /// field of it the type names records by.
+    pub fn begun_binding(&self, key: &str) -> Option<Binding> {
+        self.begun.borrow().get(key).cloned()
+    }
+
+    /// Every begun binding, by its control.
+    pub fn begun(&self) -> std::cell::Ref<'_, std::collections::BTreeMap<String, Binding>> {
+        self.begun.borrow()
+    }
+
+    /// Bind the control `key` to the field `binds` named of the record `target`, for the rest of
+    /// what is typed.
+    fn began(&self, key: &str, target: &ResourceRef) {
+        let Some(field) =
+            self.live
+                .find(key)
+                .and_then(|node| match node.props.get(crate::view::BEGIN_BIND) {
+                    Some(Value::Text(field)) => Some(field.clone()),
+                    _ => None,
+                })
+        else {
+            return;
+        };
+        let Ok((_, info)) = self.core.type_of_ref(&target.ty) else {
+            return;
+        };
+        let Some(held) = info.field_by_id_or_name(&field) else {
+            return;
+        };
+        let Some(author) = first_binding(self.tree()).map(|binding| binding.author.clone()) else {
+            return;
+        };
+        self.begun.borrow_mut().insert(
+            key.to_owned(),
+            Binding {
+                target: BindTarget::Field {
+                    target: target.clone(),
+                    field: held.id.clone(),
+                },
+                author,
+            },
+        );
     }
 
     /// The action the event `event` of the node `key` applies, with its arguments read now,
@@ -1105,6 +1169,7 @@ impl ViewInstance {
         let binding = node
             .binding
             .clone()
+            .or_else(|| self.begun_binding(key))
             .ok_or_else(|| RuntimeError::NotFound(format!("a binding on `{key}`")))?;
         let view_module = binding.author;
         let (target, field_id) = match binding.target {
@@ -1431,4 +1496,13 @@ view board(b: Board) {
     }
 }
 "#;
+}
+
+/// The first binding in `tree`, if a control of it has one: the module the view's own fields are
+/// written by, which a field a `begin` made edits by too.
+fn first_binding(tree: &UiNode) -> Option<&Binding> {
+    if let Some(binding) = &tree.binding {
+        return Some(binding);
+    }
+    tree.children.iter().find_map(first_binding)
 }

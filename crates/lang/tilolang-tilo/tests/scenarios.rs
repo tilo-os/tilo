@@ -36,7 +36,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
         (
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
             vec![app!("discussion"), app_and_scenarios!("tasks")],
         ),
         ("so.tilo.notes", vec![app!("discussion"), app!("notes")]),
@@ -105,7 +105,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 fn a_scenarios_named_person_is_a_member_of_the_workspace() {
     let packages = vec![app!("discussion"), app_and_scenarios!("tasks")];
     let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
-    replica.host.root_of("so.tilo.lang.tasks").unwrap();
+    replica.host.root_of("so.tilo.tasks").unwrap();
     replica.commit();
     let scenario = loaded
         .last()

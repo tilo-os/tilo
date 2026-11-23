@@ -2272,7 +2272,7 @@ fn reminder_of(hosted: &Hosted, task: &Value) -> String {
     }
 }
 
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 
 /// A window a German person reads names another app's change by that app's own name: the names of
 /// the apps installed here arrive on the instance's connection with the workspace's people's

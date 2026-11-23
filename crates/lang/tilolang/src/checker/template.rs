@@ -1500,6 +1500,7 @@ fn events_of(c: &UiCall, view: &ast::ViewDecl) -> Vec<ast::Arg> {
                 param,
                 at,
                 action,
+                binds: _,
             } => {
                 // `on pick(p): choose(p)` answers a function parameter (`on_pick: (Person) -> Action`)
                 // with the lambda `p -> choose(p)`.

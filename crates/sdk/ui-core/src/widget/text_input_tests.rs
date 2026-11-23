@@ -349,3 +349,45 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// A field tells its listener the first change of an empty field, with the text it holds now: what
+/// makes the item a list's entry names, from the first keystroke.
+#[test]
+fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
+    use crate::component::{Event, Fired, Intent};
+    use winit::event::Ime;
+    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let mut ti = TextInput::local().with_entry(true);
+    ti.set_begin_event(Event::View(Intent::new(&queue, "step-entry", "begin")));
+    let mut doc = AutoCommit::new();
+    Widget::set_focus(&mut ti, true);
+    Dispatch::new()
+        .doc(&mut doc)
+        .send(&mut ti, &WindowEvent::Ime(Ime::Commit("C".into())));
+    let fired = queue.take();
+    assert_eq!(fired.len(), 1, "the first change is told: {fired:?}");
+    assert_eq!(fired[0].key, "step-entry");
+    assert_eq!(fired[0].event, "begin");
+    assert_eq!(fired[0].value, Some(crate::component::testing::text("C")));
+    // A further character is no first change: the item already exists.
+    Dispatch::new()
+        .doc(&mut doc)
+        .send(&mut ti, &WindowEvent::Ime(Ime::Commit("all".into())));
+    assert!(queue.take().is_empty(), "the first change is told once");
+}
+
+/// A field tells its listener when it loses the keyboard: an entry left empty is taken away, so no
+/// empty item is left behind.
+#[test]
+fn a_field_left_told_goes_so_an_empty_entry_is_taken_away() {
+    use crate::component::{Event, Fired, Intent};
+    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let mut ti = TextInput::local().with_entry(true);
+    ti.set_blur_event(Event::View(Intent::new(&queue, "step-entry", "blur")));
+    Widget::set_focus(&mut ti, true);
+    assert!(queue.take().is_empty(), "taking the keyboard tells nothing");
+    Widget::set_focus(&mut ti, false);
+    let fired = queue.take();
+    assert_eq!(fired.len(), 1, "leaving is told: {fired:?}");
+    assert_eq!(fired[0].event, "blur");
+}
