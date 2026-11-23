@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, pairDevice, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
 import {forgetSiteServers, nameSiteServer, STALE_SITE_SERVER, staleSiteServer} from './site-host.mjs';
@@ -1447,4 +1447,29 @@ test('the feed of changes leaves the page\'s ask as names with nothing a change 
   held.release();
   assert.equal(await held.woke, false);
   assert.equal(over, true);
+});
+
+test('a paired device entering a workspace derives the person key from its certificate bytes', async () => {
+  const runtime = fakeRuntime();
+  const keyBytes = [0x00, 0x0f, 0xab, ...Array(29).fill(0xcd)];
+  const expectedKey = `000fab${'cd'.repeat(29)}`;
+  runtime.certifyDevice = async () => JSON.stringify({
+    cert: {user_public_key: keyBytes, device_public_key: Array(32).fill(0xdd)},
+    hostCert: {device_public_key: Array(32).fill(0x11)},
+  });
+  const peer = await pairDevice({
+    origin: 'https://host.example:8443',
+    userPublicKey: expectedKey,
+    entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`,
+    runtime,
+    deviceKey,
+    store: memoryStore(),
+    storage: null,
+    voice: false,
+    live: false,
+    fetch: async () => { throw new Error('no network in tests'); },
+  });
+  opened.add(peer);
+  assert.equal(peer.userPublicKey, expectedKey);
+  assert.equal(runtime.peer.workspace, WORKSPACE);
 });

@@ -759,6 +759,9 @@ test('a workspace whose origin says its owner deleted it is settled as deleted, 
 
 test('a host\'s certificate names its device key as the list keeps it', () => {
   assert.equal(hostDeviceOf({device_public_key: Array(32).fill(0xcd)}), 'cd'.repeat(32));
+  assert.equal(hostDeviceOf({device_public_key: 'cd'.repeat(32)}), 'cd'.repeat(32));
+  assert.equal(hostDeviceOf({device_public_key: ['15', ...Array(31).fill(0)]}), `0f${'00'.repeat(31)}`);
+  assert.equal(hostDeviceOf({device_public_key: [undefined, ...Array(31).fill(0)]}), null);
   assert.equal(hostDeviceOf({device_public_key: 'not hex'}), null);
   assert.equal(hostDeviceOf(undefined), null);
 });

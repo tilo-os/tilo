@@ -12,10 +12,10 @@
  * the signalling web/voice.mjs follows, and lists and governs the workspace's
  * calls for the desktop.
  */
+import {hex} from './hex.mjs';
 import {createVoiceCall} from './voice.mjs';
 
 const CALLS_TIMEOUT_MS = 10_000;
-const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
 /**
  * `peer()` is the current `WasmPeer` (it changes when the page certifies

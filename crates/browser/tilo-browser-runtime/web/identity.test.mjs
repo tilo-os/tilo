@@ -4,6 +4,7 @@
 // (`Root`), proven in a browser by the peer's page driver.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {hex as sharedHex} from './hex.mjs';
 import {
   answerSignIn, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
   nodeInstallInfo, publishProfile, signInsWaiting, unhex,
@@ -56,6 +57,7 @@ test('a display name is fitted to what a profile keeps: trimmed, no control char
 });
 
 test('hex reads and writes bytes, and refuses anything else', () => {
+  assert.equal(hex, sharedHex);
   assert.equal(hex(Uint8Array.from([0, 15, 255])), '000fff');
   assert.deepEqual([...unhex('00ff10')], [0, 255, 16]);
   assert.deepEqual([...unhex('')], []);

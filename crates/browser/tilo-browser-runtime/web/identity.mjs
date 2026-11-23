@@ -12,6 +12,7 @@
  * take an `identity` default to it.
  */
 
+import {hex} from './hex.mjs';
 import {isInvitedServer} from './site-host.mjs';
 
 /** The one store the page keeps its person in: `device-key.mjs`, which holds
@@ -33,7 +34,7 @@ export class IdentityError extends Error {
   }
 }
 
-export const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+export {hex};
 export const unhex = text => {
   if (typeof text !== 'string' || !/^([0-9a-f]{2})*$/i.test(text)) throw new IdentityError('malformed', 'expected hex');
   return Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));

@@ -19,6 +19,8 @@
  * and wait; a refusal is said in plain words (`pairingFailure`).
  */
 
+import {hex} from './hex.mjs';
+
 /** How long a pairing link works. */
 export const INVITE_TTL_MS = 10 * 60 * 1000;
 /** Said on the new device when its link was answered before: a link works once. */
@@ -161,8 +163,6 @@ export const PAIRING_SIGNING_IN = 'Signing you in…';
  * so no page asks about it by itself, and a new link opened in the tab is
  * what gets it approved. */
 export const pairingStatus = code => `Pairing code ${code}. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve ${code} where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.`;
-
-const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
 /** A new invite id: 16 random bytes as 32 hex characters. */
 export function newInvite(random = bytes => globalThis.crypto.getRandomValues(bytes)) {

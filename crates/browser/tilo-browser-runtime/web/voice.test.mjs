@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, hexOfBytes, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -414,5 +414,37 @@ test('peer.voice takes the page\'s live sessions through the wasm peer and lists
   assert.deepEqual(restarts, [['the-workspace', BOB, 'camera']]);
   voice.call.leave();
   assert.equal(voice.call.state.phase, 'idle');
+  voice.dispose();
+});
+
+test('peer.voice encodes call operation request ids and frame bytes as lowercase hex', async () => {
+  assert.equal(hexOfBytes(Uint8Array.from([0, 15, 255])), '000fff');
+  const calls = [];
+  const wasm = {
+    voiceJoin: () => {},
+    voiceLeave: () => {},
+    voiceCalls: () => {},
+    voiceCall: (workspace, operation, request) => calls.push({workspace, operation: JSON.parse(operation), request}),
+    voiceShow: () => {},
+    callAudio: () => {},
+    callPictures: () => {},
+    callShowing: () => {},
+    callPictureRestart: () => {},
+  };
+  const voice = createPeerVoice({
+    peer: () => wasm,
+    workspace: 'the-workspace',
+    device: HOST,
+    random: bytes => { bytes.set([0, 1, 15, 16, 255, ...Array(11).fill(0xab)]); return bytes; },
+  });
+  const opened = voice.open({app: 'so.tilo.chat', record: 'r', channel: 'general'});
+  const expectedRequest = `00010f10ff${'ab'.repeat(11)}`;
+  assert.deepEqual(calls, [{
+    workspace: 'the-workspace',
+    operation: {kind: 'open', app: 'so.tilo.chat', record: 'r', channel: 'general'},
+    request: expectedRequest,
+  }]);
+  voice.pump(JSON.stringify([{workspace: 'the-workspace', kind: 'callResult', request: expectedRequest, call: {call: CALL, epoch: 1}}]));
+  assert.deepEqual(await opened, {call: CALL, epoch: 1});
   voice.dispose();
 });
