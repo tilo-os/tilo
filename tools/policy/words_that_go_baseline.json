@@ -2663,7 +2663,7 @@
   ],
   "lines": 0
  },
- "channel ops, broker (two), publication, CommittedView, committed_surface": {
+ "channel ops, broker, publication, CommittedView, committed_surface": {
   "names": [
    "AppActionBroker",
    "AppBrokerState",

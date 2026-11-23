@@ -574,8 +574,10 @@ and screen share only, never documents, and stays as it is.
 - **One resource index**: `resource-store`, with a persistent backend taken
   from the tilolang redb pager. Every host of resources (the workspace
   service, tilolang, the toolkit) reads it.
-- **One broker**: `broker-core` with `collaboration` as its client. The
-  workspace service's broker keeps only what is its own.
+- **One dispatch**: the daemon's, which admits a call, hands it to whatever
+  runs it (an app's process, a system service, another device) and returns
+  its progress and result. `broker-core` and `collab_app_broker` fold into
+  it, and the word "broker" goes with them.
 - **Files are resources.** The tree syncs as ordinary records through
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. Presentations (FUSE,
@@ -893,7 +895,7 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
 ### What survives
 
 - **One registry and one dispatch**: the `tilo-actions` published tree and
-  `ActionProvider`, with the workspace service's broker as the dispatcher
+  `ActionProvider`, with the daemon's one dispatch running every call
   and the caller certified. Every action has a typed input, a typed result,
   and the view that shows it.
 - **One wire**: `RemoteActionFrame` v2, framed the same way on iroh
@@ -911,7 +913,7 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   `tilo.invocations` record: id, status, who called it, target, changes and
   output, with `get`, `cancel`, `undo` and `output` on it. Every projection
   and view reads that record, and the toolkit checks its revision.
-  The broker's pending entry is that record; nothing else keeps a list of
+  The dispatch's entry for a call is that record; nothing else keeps a list of
   calls in flight. The admission journal (guarded digests, prepared outside
   effects, idempotency and crash recovery) is the running device's own log
   in a device-only part of the one store, under the same id. It never syncs
@@ -975,7 +977,7 @@ any of them is added.
 | document (as the unit), `workspace_documents`, document host | the storage format named as the thing | a resource |
 | record, item, `ItemId`, item node | second and third words for a resource and its parts | a resource, inside its parent |
 | kind, `KindSet` | the type of a resource under another name | resource type |
-| channel ops, broker (two), publication, `CommittedView`, `committed_surface` | the plumbing between an app and the engine, each with its own names | a call, and a change |
+| channel ops, broker, publication, `CommittedView`, `committed_surface` | the plumbing between an app and the engine, each with its own names | a call, and a change |
 | surface, `surface.toml` | the published actions under a second name | the workspace's published tree |
 | instance, windowless, showing action, packaged model, native model, `model.wasm` | an app as a running thing, with ways to start it | an app is a package; the system runs its code when called |
 | `DynResource`, `DynAction` | a bridge between two app models | one app model |
@@ -1004,7 +1006,7 @@ same in the browser, the CLI, Tilo OS, a phone and a server:
 - one resource, action and view model, used by Rust apps, tilolang apps, the
   shell, agents and automations, with one way to call an action;
 - one store and one sync engine on every device;
-- one daemon per device, with one endpoint, one broker and one admission;
+- one daemon per device, with one endpoint, one dispatch and one admission;
   a server is that daemon keeping more;
 - one UI path: one component library, one app framework, one settings, one
   history and one command palette, with the shell a tilolang app.
@@ -1018,7 +1020,7 @@ once its duplicates are gone:
 | Layer | Today | After | Where the difference goes |
 |---|---|---|---|
 | Foundation | ~230k | ~150k | settings, accounts and app state become resources (−25k); one identity store (−6k); the per-person store (−5k) |
-| Device daemon | ~520k | ~250k | `tilo-server` becomes the daemon (−16k); one broker and admission (−30k); app features out of the host (−20k); generic actions instead of typed vocabularies (−15k); the agent session's own Rust app host (−20k) |
+| Device daemon | ~520k | ~250k | `tilo-server` becomes the daemon (−16k); one dispatch and admission (−30k); app features out of the host (−20k); generic actions instead of typed vocabularies (−15k); the agent session's own Rust app host (−20k) |
 | Programs | ~300k | ~200k | one copy of each program feature |
 | Views and UI toolkit | ~580k | ~350k | shell widgets out (−50k); the `tilo-app` framework (−42k); the second action path and `HtmlCx` (−22k); headless as a backend, not a copy (−10k) |
 | Desktop | ~385k | ~200k | the Rust shell (−95k); the session as a daemon client (−50k); one settings, history and palette (−10k) |
