@@ -192,7 +192,11 @@ impl Copy {
         if !self.documents.holds(&self.name, FILES_APP, &document) {
             return match self.documents.read(&self.name, FILES_APP, &document, None) {
                 Ok(DocumentRead::Absent) => Some(DocumentAnswer::Sent { frames: 0 }),
-                Ok(DocumentRead::Pending) | Err(_) => None,
+                Ok(DocumentRead::Pending) => None,
+                Err(error) => {
+                    tracing::warn!(workspace = %self.name, %document, %error, "a record of the tree does not read, so the folder waits for it");
+                    None
+                }
                 Ok(_) => Some(DocumentAnswer::Sent { frames: 1 }),
             };
         }
