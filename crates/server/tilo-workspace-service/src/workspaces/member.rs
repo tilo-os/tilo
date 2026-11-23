@@ -36,9 +36,10 @@ use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::owner::session::hosted_by;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::DeviceCert;
 
-use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
+use super::{GovernedWorkspace, Held, Workspaces, appended, peer_parts};
 use crate::workspace_documents::HostCommit;
 
 /// The member copies a device holds: the links of the workspaces it joined,
@@ -1722,7 +1723,7 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
-        let keying = self.take_part_in_keys(&name);
+        let keying = self.take_part_in_keys(&name, Held::MemberCopy);
         let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
@@ -1746,6 +1747,18 @@ impl Workspaces {
                         }
                         up.send_replace(false);
                     }
+                    Err(refusal @ Refusal::Revoked(_)) => {
+                        tracing::debug!(%name, ?refusal, "a member copy's device says the key is revoked");
+                        // The serving device says the person's root revoked this device's
+                        // key, with the entry the root signed: kept as an announced
+                        // revocation, the path a workspace's own announcement takes.
+                        if let Refusal::Revoked(entry) = refusal
+                            && let Some(workspaces) = workspaces.upgrade()
+                            && let Err(error) = workspaces.take_revocations(vec![entry]).await
+                        {
+                            tracing::warn!(%name, %error, "a device's refusal did not say a revocation");
+                        }
+                    }
                     Err(error) => {
                         tracing::debug!(%name, %error, "a member copy's device is unavailable");
                     }
@@ -1767,49 +1780,35 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Have this device take part in the group of the member copy `workspace`, as the copy is
-    /// synced: its key service asks the group's key holders to admit it, and keeps asking until
-    /// one does. The group admits only a device that asks, and reading a sealed record never asks
-    /// (it waits for keys the device is due, [`crate::documents::Sealing::Due`]): a device that
-    /// joined a workspace and only reads what was written there before it arrived would
-    /// otherwise hold every sealed record unopened, however long it waited.
+    /// Have this device take part in the group of `workspace`, as the copy is held: its key
+    /// service asks the group's key holders to admit it, and keeps asking until one does. The
+    /// group admits only a device that asks, and reading a sealed record never asks (it waits
+    /// for keys the device is due, [`crate::documents::Sealing::Due`]): a device that joined a
+    /// workspace and only reads what was written there before it arrived would otherwise hold
+    /// every sealed record unopened, however long it waited.
     ///
-    /// When the device comes to hold the group's keys, the copy takes in once what it kept but
-    /// could not open before ([`Self::take_in_what_keys_open`]). Answers the task that waits for
-    /// them, `None` when the device has no key service.
-    fn take_part_in_keys(&self, workspace: &str) -> Option<tokio::task::AbortHandle> {
+    /// When the device comes to hold the group's keys, the member copy takes in once what it
+    /// kept but could not open before ([`Self::take_in_what_keys_open`]), and a governed copy —
+    /// one another host handed over — replays what this host retains ([`Self::replay`]). Answers
+    /// the task that waits for them, `None` when the device has no key service.
+    pub(super) fn take_part_in_keys(
+        &self,
+        workspace: &str,
+        held: Held,
+    ) -> Option<tokio::task::AbortHandle> {
         let keys = self.device_keys()?;
         let workspace = workspace.to_owned();
         let workspaces = self.downgrade();
         let task = tokio::spawn(async move {
-            // The first ask starts the device's part in the group; the key service keeps asking
-            // on its own after the wait, so a wait that ends first leaves nothing undone.
-            if let Some(Err(error)) = keys
-                .group_keys(&workspace, collab_types::EVERY_MEMBER, true)
-                .await
-            {
-                tracing::debug!(%workspace, %error, "a member copy's group has not admitted this device yet");
+            if !super::sealed_documents::wait_for_group_keys(&keys, &workspace).await {
+                return;
             }
-            // Where the keys stood when last looked at: a change after that look ends the wait
-            // at once, so keys that arrive between a look and the wait are not missed.
-            let mut seen = 0;
-            loop {
-                match keys
-                    .group_keys(&workspace, collab_types::EVERY_MEMBER, false)
-                    .await
-                {
-                    Some(Ok(_)) => break,
-                    // The device takes part in no group of the workspace: nothing is sealed.
-                    None => return,
-                    Some(Err(_)) => {}
-                }
-                let Some(next) = keys.keys_changed(&workspace, seen).await else {
-                    return;
-                };
-                seen = next;
-            }
-            if let Some(workspaces) = workspaces.upgrade() {
-                workspaces.take_in_what_keys_open(&workspace).await;
+            let Some(workspaces) = workspaces.upgrade() else {
+                return;
+            };
+            match held {
+                Held::MemberCopy => workspaces.take_in_what_keys_open(&workspace).await,
+                Held::Governs => workspaces.replay(&workspace).await,
             }
         });
         Some(task.abort_handle())

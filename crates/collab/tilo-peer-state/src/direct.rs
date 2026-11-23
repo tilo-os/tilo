@@ -1375,7 +1375,7 @@ impl DirectSync {
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
         if !dialing && let Err(reason) = self.admits(remote, false) {
-            return Err(refuse(connection, &Refusal::NotAMember(reason)));
+            return Err(refuse(connection, &self.refusal_to(remote, reason)));
         }
         if !dialing {
             // Subscribed by the caller already: the dialling device publishes
@@ -1788,7 +1788,7 @@ impl DirectSync {
     ) -> Result<(), String> {
         let remote = self.device_at(*connection.remote_id().as_bytes());
         if let Err(reason) = self.admits(remote, true) {
-            return Err(refuse(connection, &Refusal::NotAMember(reason)));
+            return Err(refuse(connection, &self.refusal_to(remote, reason)));
         }
         write_link(&mut control.send, &LinkFrame::Ready).await?;
         self.answer_asks(&mut control, remote, None).await
@@ -1847,6 +1847,36 @@ impl DirectSync {
             return Err("the device's certificate expired".into());
         }
         Ok(())
+    }
+
+    /// Why this device turned `device` away, `reason` being what
+    /// [`Self::admits`] said: a device that was retired is told so with the
+    /// root-signed entry that says it, which it keeps as an announced
+    /// revocation, so a server that was away learns to let go rather than only
+    /// that it is not admitted. A device lost, stolen or compromised is told
+    /// only that it was removed: the entry says why, and the reason is the
+    /// person's.
+    fn refusal_to(&self, device: [u8; 32], reason: String) -> Refusal {
+        self.revocation_of(device)
+            .map_or_else(|| Refusal::NotAMember(reason), Refusal::Revoked)
+    }
+
+    /// The root-signed entry that retires `device`, as the replica carries it:
+    /// the entry `device`'s roster certificate's root signed with
+    /// [`RevocationReason::Retired`] ([`Self::admits`]). `None` when the replica
+    /// carries none for it, or carries one for another reason
+    /// ([`Self::refusal_to`]).
+    fn revocation_of(&self, device: [u8; 32]) -> Option<tilo_user_identity::RevocationEntry> {
+        let replica = self.0.replica.lock();
+        let certificate = replica
+            .certificates()
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == device)?;
+        replica.revocations().into_iter().find(|entry| {
+            (entry.user_public_key, entry.revoked_device_public_key)
+                == (certificate.user_public_key, device)
+                && entry.reason == tilo_user_identity::RevocationReason::Retired
+        })
     }
 
     /// Whether `device` may send `workspace`'s frames to this device: a
@@ -3038,6 +3068,43 @@ mod tests {
             sync.admits(member.device_public_key, false),
             Err("the device is revoked".to_owned())
         );
+    }
+
+    /// A device whose key its person's root retired is told so with the entry
+    /// the root signed, which it keeps as an announced revocation and so lets a
+    /// server that was away retire itself. A key lost, stolen or compromised is
+    /// told only that it is not a member: the entry names why, and the reason
+    /// is the person's.
+    #[test]
+    fn a_retired_device_is_told_the_entry_that_retired_it() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let roster = [device(&root, 2), device(&root, 3)];
+        let member = roster[1].1.clone();
+        for (reason, told) in [
+            (RevocationReason::Retired, true),
+            (RevocationReason::Lost, false),
+            (RevocationReason::Stolen, false),
+            (RevocationReason::Compromised, false),
+        ] {
+            let mut entry = revocation(&root, member.device_public_key);
+            entry.reason = reason;
+            entry.signature = [0; 64];
+            sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut theirs = RevocationList::new();
+            theirs.insert(entry.clone()).unwrap();
+            let sync = link(&roster, theirs, Vec::new());
+            let Err(said) = sync.admits(member.device_public_key, false) else {
+                panic!("a revoked device is refused");
+            };
+            assert_eq!(said, "the device is revoked");
+            match (told, sync.refusal_to(member.device_public_key, said)) {
+                (true, Refusal::Revoked(entry)) => {
+                    assert_eq!(entry.reason, RevocationReason::Retired);
+                }
+                (false, Refusal::NotAMember(said)) => assert_eq!(said, "the device is revoked"),
+                (_, other) => panic!("{reason:?} is told {other:?}"),
+            }
+        }
     }
 
     /// A write the other device sent live while this one still reads the

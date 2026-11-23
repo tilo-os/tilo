@@ -40,13 +40,14 @@ use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
 use tilo_peer_state::{CopyRole, StatePeer, TransportOrigin};
+use tilo_server_protocol::refusal::Refusal;
 use tilo_server_protocol::{Whose, WorkSetting, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
 use super::links::{Link, Links};
-use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
+use super::{GovernedWorkspace, Held, Workspaces, appended, peer_parts};
 
 /// What a holder hands the device it asks to hold one of its workspaces.
 #[derive(Clone, Debug)]
@@ -396,6 +397,11 @@ impl Workspaces {
         };
         let mut governed = state.lock().await;
         self.settle(&mut governed).await?;
+        // A copy another host hands over starts here without the workspace's group keys: the
+        // holder that founded it elsewhere holds them. This device takes part in the group the
+        // way a member copy does, asking its key holders to admit it; once they are here, the
+        // sealed records it took in before open, and what this host retains is replayed.
+        let _keying = self.take_part_in_keys(&workspace, Held::Governs);
         tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
         self.transport_hint_as(&governed, request.role)
             .map_err(|error| error.to_string())
@@ -520,7 +526,15 @@ impl Workspaces {
             let endpoint = host.endpoint.clone();
             let addr = holder.endpoint_addr.clone();
             let name = governed.workspace().to_owned();
-            let dialing = tokio::spawn(dial_holder(link, endpoint, addr, dialled, links, name));
+            let dialing = tokio::spawn(dial_holder(
+                link,
+                endpoint,
+                addr,
+                dialled,
+                links,
+                name,
+                Arc::downgrade(&self.inner),
+            ));
             governed
                 .holders
                 .sessions
@@ -539,6 +553,7 @@ async fn dial_holder(
     device: [u8; 32],
     links: Links,
     name: String,
+    workspaces: Weak<super::WorkspacesInner>,
 ) {
     const FIRST: std::time::Duration = std::time::Duration::from_secs(1);
     const MOST: std::time::Duration = std::time::Duration::from_secs(60);
@@ -582,6 +597,16 @@ async fn dial_holder(
             }
             Err(refusal) => {
                 tracing::debug!(%name, ?refusal, "a holder is unreachable");
+                // A key its person's root revoked is told typed, with the entry the root
+                // signed: this device keeps it as an announced revocation, the path a
+                // workspace's own announcement takes, so every workspace here refuses the
+                // key and a retired server lets go of what it holds.
+                if let Refusal::Revoked(entry) = refusal
+                    && let Some(inner) = workspaces.upgrade()
+                    && let Err(error) = (Workspaces { inner }).take_revocations(vec![entry]).await
+                {
+                    tracing::warn!(%name, %error, "a holder's refusal did not say a revocation");
+                }
                 links.set(
                     device,
                     Link::Unreachable {

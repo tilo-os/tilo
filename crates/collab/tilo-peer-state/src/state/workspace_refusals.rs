@@ -84,7 +84,9 @@ impl ChangeRefused {
             Refusal::NotGranted(_) | Refusal::NotAllowed(_) | Refusal::WorkspaceDeleted => {
                 RefusalReason::Forbidden
             }
-            Refusal::NotAMember(_) | Refusal::NotAdmitted => RefusalReason::NotCertified,
+            Refusal::NotAMember(_) | Refusal::Revoked(_) | Refusal::NotAdmitted => {
+                RefusalReason::NotCertified
+            }
             Refusal::NotReady | Refusal::Offline => RefusalReason::MissingDependency,
             Refusal::Full => RefusalReason::Full,
             Refusal::Invalid(_) => RefusalReason::Malformed,
