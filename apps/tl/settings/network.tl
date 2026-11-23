@@ -20,6 +20,8 @@ view network_pane() {
         vpn_pane(page, chosen)
     } else if page == "vpn-add" {
         vpn_add_page(page, chosen)
+    } else if page == "vpn-devices" {
+        vpn_devices_page(page)
     } else if page == "vpn-paste" {
         vpn_paste_page(chosen, page)
     } else if page == "vpn-profile" {

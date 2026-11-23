@@ -39,6 +39,13 @@ view vpn_pane(page: State<Text>, chosen: State<Text>) {
         ui.Button("Add a VPN", icon: .plus) {
             on press: set(page, "vpn-add")
         }
+        ui.ListRow(
+            "Your devices",
+            secondary: "Route through them, or let them route through this one",
+            icon: .monitor_smartphone,
+        ) {
+            on activate: set(page, "vpn-devices")
+        }
         if let problem = vpn.problem {
             ui.StatusLine(problem, status: .error)
         }
@@ -347,6 +354,77 @@ fn vpn_words() -> Text {
             "Through {p.name}"
         } else {
             "Off"
+        }
+    }
+}
+
+/// This device as one of the person's own VPNs: whether their other devices route through it,
+/// which of their devices it routes through, and whether traffic is held while that is down.
+view vpn_devices_page(page: State<Text>) {
+    state other: Text = ""
+    state profile: Text = ""
+    let dv = settings.device_vpn
+    ui.Section("Your devices") {
+        ui.ListRow("Back", icon: .chevron_left) {
+            on activate: set(page, "vpn")
+        }
+        setting(
+            "Route their traffic through this device",
+            "The person's other devices come out at this one",
+            ui.Toggle(bind: dv.exit),
+        )
+        ui.Text("Route through another of your devices", role: .caption, secondary: true)
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(bind: other, placeholder: "The device's id, as Devices lists it", fill)
+            ui.Button("Through it", role: .primary, size: .small) {
+                on press: settings.route_through(
+                    settings.device_vpn,
+                    device: other,
+                    on: true,
+                )
+            }
+            ui.Button("Straight out", size: .small) {
+                on press: settings.route_through(
+                    settings.device_vpn,
+                    device: other,
+                    on: false,
+                )
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Hold traffic while it is down", size: .small) {
+                on press: settings.set_kill_switch(settings.device_vpn, on: true)
+            }
+            ui.Button("Let it out directly", size: .small) {
+                on press: settings.set_kill_switch(settings.device_vpn, on: false)
+            }
+        }
+    }
+    ui.Section("While a profile is down") {
+        ui.Text(
+            "A profile set to connect holds the traffic it should carry until it connects.",
+            role: .caption,
+            secondary: true,
+        )
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(bind: profile, placeholder: "The profile's id, as the list shows", fill)
+            ui.Button("Hold its traffic", size: .small) {
+                on press: settings.set_profile_kill_switch(
+                    settings.device_vpn,
+                    profile: profile,
+                    on: true,
+                )
+            }
+            ui.Button("Let it out", size: .small) {
+                on press: settings.set_profile_kill_switch(
+                    settings.device_vpn,
+                    profile: profile,
+                    on: false,
+                )
+            }
+            ui.Button("Lift the block", size: .small) {
+                on press: settings.release_profile(settings.device_vpn, profile: profile)
+            }
         }
     }
 }

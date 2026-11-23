@@ -32,6 +32,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("bluetooth", "Bluetooth", icon: .bluetooth) {
                         on select: set(pane, "bluetooth")
                     }
+                    ui.NavItem("usage", "Data usage", icon: .bar_chart) {
+                        on select: set(pane, "usage")
+                    }
                 }
                 ui.NavSection("Devices") {
                     ui.NavItem("displays", "Displays", icon: .monitor) {
@@ -110,6 +113,8 @@ view settings_window(s: Settings) {
                         network_pane()
                     } else if pane == "bluetooth" {
                         bluetooth_pane()
+                    } else if pane == "usage" {
+                        data_usage_pane()
                     } else if pane == "displays" {
                         displays_pane()
                     } else if pane == "sound" {
@@ -162,6 +167,8 @@ fn pane_title(pane: Text) -> Text {
         "Network"
     } else if pane == "bluetooth" {
         "Bluetooth"
+    } else if pane == "usage" {
+        "Data usage"
     } else if pane == "displays" {
         "Displays"
     } else if pane == "sound" {
@@ -330,6 +337,8 @@ view appearance_pane() {
 /// What this device says and shows when something happens: the banners, the sounds, and the
 /// hour the person wants quiet.
 view notifications_pane() {
+    state app: Text = ""
+    state duration: Text = "For 8 hours"
     let n = settings.notifications
     ui.Section("Do not disturb") {
         setting(
@@ -366,6 +375,66 @@ view notifications_pane() {
             "A sound with what happens, in the system's own set",
             ui.Toggle(bind: n.play_sounds),
         )
+    }
+    ui.Section("Apps") {
+        if n.per_app.keys().is_empty() {
+            ui.Text(
+                "An app follows the rules above until one is given its own.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for app_id in n.per_app.keys() {
+            if let rule = n.per_app.get(app_id) {
+                ui.ListRow(app_id, secondary: rule_words(rule), icon: .layout_grid) {
+                    trailing: {
+                        row(gap: .tight, align: .center, wrap: true) {
+                            ui.Button("Mute for 8 hours", size: .small) {
+                                on press: settings.mute_app(
+                                    settings.notifications,
+                                    app: app_id,
+                                    duration: "For 8 hours",
+                                )
+                            }
+                            ui.Button("Unmute", size: .small) {
+                                on press: settings.mute_app(
+                                    settings.notifications,
+                                    app: app_id,
+                                    duration: "Not muted",
+                                )
+                            }
+                        }
+                    }
+                }
+                if rule.banners == .some(false) {
+                    ui.Text("Banners off", role: .caption, secondary: true)
+                }
+                if rule.sounds == .some(false) {
+                    ui.Text("Sounds off", role: .caption, secondary: true)
+                }
+                if rule.previews == .some(false) {
+                    ui.Text("Previews off", role: .caption, secondary: true)
+                }
+                if rule.lock_screen == .some(false) {
+                    ui.Text("Nothing on the lock screen", role: .caption, secondary: true)
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(bind: app, placeholder: "An app's id, such as so.tilo.notes", fill)
+            ui.Dropdown(
+                bind: duration,
+                options: ["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
+                caption: "For how long",
+            )
+            ui.Button("Mute it", role: .primary, size: .small) {
+                on press: settings.mute_app(
+                    settings.notifications,
+                    app: app,
+                    duration: duration,
+                )
+            }
+        }
     }
     ui.Section("Quiet hours") {
         let focus = n.focus
@@ -441,6 +510,7 @@ view displays_pane() {
 
 /// Where sound comes out and goes in, and how it is shaped.
 view sound_pane() {
+    state listening: Bool = false
     let sound = device.sound
     let audio = settings.audio
     ui.Section("Output") {
@@ -501,6 +571,29 @@ view sound_pane() {
             ) {
                 on activate: device.select_input(device.sound, node: input.node)
             }
+        }
+    }
+    ui.Section("Meters") {
+        if let input = sound.inputs.find(x -> x.chosen) {
+            ui.LevelMeter(
+                source: input.node,
+                output: false,
+                running: listening,
+                label: "Microphone level",
+            )
+            ui.Button(if listening { "Stop listening" } else { "Listen to the microphone" }, toggled: listening) {
+                on press: set(listening, not listening)
+            }
+        } else {
+            ui.Text("No microphone is chosen above.", role: .caption, secondary: true)
+        }
+        if let output = sound.outputs.find(x -> x.chosen) {
+            ui.LevelMeter(
+                source: output.node,
+                output: true,
+                running: listening,
+                label: "Output level",
+            )
         }
     }
     ui.Section("Balance and shape") {
@@ -702,5 +795,14 @@ fn battery_words(state: device.BatteryState) -> Text {
         "About to drain"
     } else {
         "Plugged in"
+    }
+}
+
+/// What an app's own notification rule says of itself, in a word or two.
+fn rule_words(rule: settings.AppNotificationRule) -> Text {
+    if rule.muted_until != .none {
+        "Muted for now"
+    } else {
+        "Its own rules"
     }
 }

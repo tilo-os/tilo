@@ -46,6 +46,13 @@ view printers_pane() {
                         }
                     }
                 }
+                for supply in queue.supplies {
+                    if let level = supply.level {
+                        ui.ListRow(supply.name, secondary: "{level}% left", icon: .droplet)
+                    } else {
+                        ui.ListRow(supply.name, secondary: "Its level is not reported", icon: .droplet)
+                    }
+                }
             }
             ui.Button("Look for printers", icon: .search) {
                 on press: device.find(device.printers)

@@ -164,6 +164,12 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
     ("night_light", "NightLight", "settings:settings.night-light"),
     ("audio", "Audio", "settings:settings.audio"),
     (
+        "network_usage",
+        "NetworkUsage",
+        "settings:settings.network-usage",
+    ),
+    ("device_vpn", "DeviceVpn", "settings:settings.device-vpn"),
+    (
         "audio_device",
         "AudioDevice",
         "settings:settings.audio-device",
