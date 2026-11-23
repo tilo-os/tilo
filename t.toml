@@ -3365,7 +3365,7 @@ name = "package/arch"
 # Installs the container engine from Fedora's mirrors and builds in an Arch image pulled from
 # Docker Hub, which then installs from Arch's mirrors: no fixed host list covers them.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\n# The Arch userspace of dist/ci/package-targets.txt: dist/arch/build-arch.sh builds with makepkg and\n# dist/arch/test-package.sh installs and verifies the package there (dist/ci/run-package-job.sh).\nbash dist/ci/package-job.sh amd64 arch\nout=dist/ci-output/arch-amd64\n(cd \"$out\" && sha256sum ./*.pkg.tar.zst > SHA256SUMS)\nls -l \"$out\"\n"
+run = "set -euo pipefail\n# The Arch userspace of dist/ci/package-targets.txt: dist/arch/build-arch.sh builds with makepkg and\n# dist/arch/test-package.sh installs and verifies the package there (dist/ci/run-package-job.sh).\n# The job's micro-VM has 8 GiB: six fat-LTO rustc processes in one userspace did not fit.\nexport TILO_CARGO_JOBS=4\nbash dist/ci/package-job.sh amd64 arch\nout=dist/ci-output/arch-amd64\n(cd \"$out\" && sha256sum ./*.pkg.tar.zst > SHA256SUMS)\nls -l \"$out\"\n"
 isolation = "vm"
 requires = ["arch=x86_64"]
 git = true
@@ -3379,7 +3379,7 @@ name = "package/nix"
 # Installs the container engine from Fedora's mirrors and builds in a Nix image pulled from Docker
 # Hub, which then fetches the flake's inputs and Cargo's crates: no fixed host list covers them.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\n# The Nix userspace of dist/ci/package-targets.txt: nix build of the flake package, the\n# installed-result verification, the NixOS module evaluation, and the store closure as a portable\n# archive (dist/ci/run-package-job.sh).\nbash dist/ci/package-job.sh amd64 nix\nout=dist/ci-output/nix-amd64\n(cd \"$out\" && sha256sum ./*.nar.gz > SHA256SUMS)\nls -l \"$out\"\n"
+run = "set -euo pipefail\n# The Nix userspace of dist/ci/package-targets.txt: nix build of the flake package, the\n# installed-result verification, the NixOS module evaluation, and the store closure as a portable\n# archive (dist/ci/run-package-job.sh).\n# The job's micro-VM has 8 GiB: six fat-LTO rustc processes in one userspace did not fit.\nexport TILO_CARGO_JOBS=4\nbash dist/ci/package-job.sh amd64 nix\nout=dist/ci-output/nix-amd64\n(cd \"$out\" && sha256sum ./*.nar.gz > SHA256SUMS)\nls -l \"$out\"\n"
 isolation = "vm"
 requires = ["arch=x86_64"]
 git = true
