@@ -700,6 +700,7 @@ tilo_test_env::scenario! {
             last_ms: None,
             sessions: Vec::new(),
             browser_pages: true,
+            stopped: false,
         });
         let model = AccessModel::shown(sample);
         let agents = model.agents();
@@ -1304,6 +1305,35 @@ tilo_test_env::scenario! {
                 "{session}"
             );
         }
+    }
+
+    phase a_stopped_agent_is_offered_to_go_on_and_no_stop;
+    {
+        let host = a_full_list(now());
+        host.served.lock().unwrap().as_mut().unwrap()["grants"][0]["stopped"] =
+            serde_json::json!(true);
+        let mut app = window_on(&host);
+        tilo_test_env::wait_until("the stopped agent's row", || {
+            app.settle();
+            published_row(&mut app, &agent_row_id())
+                .is_some_and(|row| row.actions.iter().any(|spec| spec.id == "let-agent-go-on"))
+        });
+        press(&mut app, &format!("settings.access.agent.{LAPTOP_AGENT}"));
+        let row = published_row(&mut app, &agent_row_id()).expect("the agent's row");
+        assert!(
+            verbs(&row).contains(&"let-agent-go-on") && !verbs(&row).contains(&"stop-session"),
+            "{:?}",
+            verbs(&row)
+        );
+        press(
+            &mut app,
+            &format!("settings.access.agent.{LAPTOP_AGENT}.go-on"),
+        );
+        assert_eq!(
+            asked_at_last(&mut app, &host, &mcp_server::target(mcp_server::GO_ON)),
+            [object(serde_json::json!({"grant": LAPTOP_AGENT, "session": "Claude Code"}))]
+        );
+        assert!(host.asked_at(&mcp_server::target(mcp_server::STOP)).is_empty());
     }
 
     phase removing_another_computer_takes_it_back_as_retired_once_confirmed;

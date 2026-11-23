@@ -28,6 +28,9 @@ pub const PREFIX: &str = "agent-answer:";
 /// Where an answer applies, below the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AnswerScope {
+    /// Every action in the workspace, whatever app or resource: what a stop is
+    /// ([`stop_grant`]).
+    Workspace,
     /// Every action of an application.
     App { app: String },
     /// Every action on one kind of resource of an application.
@@ -97,6 +100,7 @@ impl AnswerScope {
     pub fn node(&self, workspace: &str) -> TreePath {
         let workspace = TreePath::workspace(workspace);
         match self {
+            Self::Workspace => workspace,
             Self::App { app } => workspace.app(app),
             Self::Kind { app, kind } => workspace.app(app).kind(kind),
             Self::Action { app, kind, action } => {
@@ -121,6 +125,7 @@ impl AnswerScope {
     pub fn of_node(node: &TreePath) -> Option<Self> {
         use crate::Segment;
         match node.segments() {
+            [Segment::Name(Level::Workspace, _)] => Some(Self::Workspace),
             [
                 Segment::Name(Level::Workspace, _),
                 Segment::Name(Level::App, app),
@@ -154,6 +159,7 @@ impl AnswerScope {
     #[must_use]
     pub fn key(&self) -> String {
         match self {
+            Self::Workspace => "workspace".to_owned(),
             Self::App { app } => format!("app:{app}"),
             Self::Kind { app, kind } => format!("kind:{app}:{kind}"),
             Self::Action { app, kind, action } => format!("action:{app}:{kind}:{action}"),
@@ -188,6 +194,7 @@ impl AnswerScope {
             parts.next(),
             parts.next(),
         ) {
+            ("workspace", None, None, None, None) => Some(Self::Workspace),
             ("app", Some(app), None, None, None) if !app.is_empty() => Some(Self::app(app)),
             ("kind", Some(app), Some(kind), None, None) if !app.is_empty() && !kind.is_empty() => {
                 Some(Self::kind(app, kind))
@@ -205,6 +212,29 @@ impl AnswerScope {
 #[must_use]
 pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
+}
+
+/// The id of the answer that stops `agent` in a workspace ([`stop_grant`]).
+#[must_use]
+pub fn stop_grant_id(agent: &str) -> GrantId {
+    GrantId(format!("{PREFIX}{agent}:workspace:all"))
+}
+
+/// The answer that stops `agent` in `workspace` until its person lets it go on:
+/// every kind denied on the whole workspace, given by `granted_by`. No more
+/// specific grant of the agent lifts it
+/// ([`crate::WorkspacePolicy::party_of`]), so a stop holds whatever the agent's
+/// certificate or its person's earlier answers allow.
+#[must_use]
+pub fn stop_grant(workspace: &str, agent: &str, granted_by: Grantee) -> Grant {
+    Grant::new(
+        stop_grant_id(agent).0,
+        Grantee::agent(agent),
+        AnswerScope::Workspace.node(workspace),
+        KindSet::ALL,
+        Answer::Deny,
+        granted_by,
+    )
 }
 
 /// Whether `grant` is an answer: given to an agent or an app, or for one
@@ -312,6 +342,8 @@ pub fn may_give(scope: Option<&AnswerScope>, kind: ActionKind, answer: Answer) -
             AnswerScope::App { app } | AnswerScope::Kind { app, .. } => {
                 [ACCOUNT_APP, WORKSPACE_APP].contains(&app.as_str())
             }
+            // A allow covering the whole workspace is never one the person looked at.
+            AnswerScope::Workspace => false,
         })
 }
 

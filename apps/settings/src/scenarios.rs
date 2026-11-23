@@ -477,6 +477,7 @@ pub(crate) fn access_fixture(
                     last_ms: Some(NOW - DAY),
                     sessions: Vec::new(),
                     browser_pages: false,
+                    stopped: false,
                 },
                 Grant {
                     id: "cc".repeat(32),
@@ -489,6 +490,7 @@ pub(crate) fn access_fixture(
                         started_ms: NOW - 2 * MINUTE,
                     }],
                     browser_pages: false,
+                    stopped: false,
                 },
             ],
             workspaces: Vec::new(),

@@ -155,6 +155,10 @@
     "to": "tilo.invocations workspace.invocations#resolve",
     "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
+  "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
+    "to": "tilo.mcp-server mcp.server#stop",
+    "test": "crates/core/tilo-runtime/tests/agent_presence.rs:359"
+  },
   "so.tilo.settings settings.mcp-server#set-act-without-asking": {
     "to": "tilo.invocations workspace.invocations#resolve",
     "test": "crates/core/actions/tests/asked_resolve.rs:362"

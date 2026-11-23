@@ -497,6 +497,36 @@ impl Workspaces {
         true
     }
 
+    /// Whether an agent session called `name` is served here in `workspace`.
+    pub fn knows_agent_session(&self, workspace: &str, name: &str) -> bool {
+        self.inner
+            .agent_sessions
+            .0
+            .lock_recover()
+            .values()
+            .any(|session| session.workspace == workspace && session.name == name)
+    }
+
+    /// The person lets the agent session called `name` go on in `workspace`: its calls are
+    /// answered again. Whether a session that name was here.
+    pub fn let_agent_go_on(&self, workspace: &str, name: &str) -> bool {
+        {
+            let mut sessions = self.inner.agent_sessions.0.lock_recover();
+            let Some(session) = sessions
+                .values_mut()
+                .find(|session| session.workspace == workspace && session.name == name)
+            else {
+                return false;
+            };
+            if !session.stopped {
+                return true;
+            }
+            session.stopped = false;
+        }
+        presence_changed();
+        true
+    }
+
     /// Whether the person stopped the session of the run `execution`, so its calls end nothing.
     pub fn agent_stopped(&self, execution: &str) -> bool {
         self.inner

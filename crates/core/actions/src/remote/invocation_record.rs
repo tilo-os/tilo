@@ -482,6 +482,38 @@ impl Invocations {
                 .is_some_and(|origin| may_write_origin(caller, origin))
     }
 
+    /// Stop every call still running in `workspace` that the agent `agent` made, as `caller`
+    /// (the person the agent works for) asks: each at the provider it runs at, through
+    /// [`Self::cancel`], and only those `caller` may manage.
+    #[must_use]
+    pub fn stop_agent(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        agent: &str,
+        may_write_origin: &OriginWrites<'_>,
+    ) -> Vec<Pending<Result<(), ActionCallError>>> {
+        let ids: Vec<InvocationId> = {
+            let kept = self.kept();
+            kept.order
+                .iter()
+                .filter_map(|id| {
+                    let recorded = kept.by_id.get(id)?;
+                    if recorded.workspace.as_deref() != Some(workspace)
+                        || recorded.ended_ms.is_some()
+                        || recorded.caller.acting().agent_id() != Some(agent)
+                    {
+                        return None;
+                    }
+                    Some(*id)
+                })
+                .collect()
+        };
+        ids.into_iter()
+            .filter_map(|id| self.cancel(caller, &id, may_write_origin))
+            .collect()
+    }
+
     /// Stop `id` at the provider it runs at, for a caller that may manage it. `None` when the
     /// device was asked for no such invocation.
     #[must_use]

@@ -82,6 +82,7 @@ console-grant-running = { $count ->
 console-grant-last-active = Zuletzt aktiv { $when }
 console-grant-granted = Hereingelassen { $when }
 console-grant-revoke = Entziehen
+console-grant-go-on = Weiterlaufen lassen
 
 console-usage-empty = Noch keine Linux-Rechenzeit
 console-usage-empty-message = Ein Agent, der Linux braucht, führt es auf einem eigenen Rechner aus, und diese Zeit wird gezählt.

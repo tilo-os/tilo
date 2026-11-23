@@ -160,6 +160,7 @@ pub fn agent_access_rows(
                 | AnswerScope::Kind { app, .. }
                 | AnswerScope::Action { app, .. }
                 | AnswerScope::Resource { app, .. } => Some(app),
+                AnswerScope::Workspace => None,
             }),
     );
     ids.compact_sort();

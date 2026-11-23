@@ -110,6 +110,11 @@ fn the_server() -> mcp_server::Server {
 
 /// Console with its reads answered: the run, and the MCP server that let it in.
 fn opened() -> TestApp<App> {
+    opened_on(the_server())
+}
+
+/// [`opened`] on `server`, the MCP server as the person's card reads it.
+fn opened_on(server: mcp_server::Server) -> TestApp<App> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
@@ -126,7 +131,7 @@ fn opened() -> TestApp<App> {
         })
         .unwrap(),
     );
-    answer(&mut app, &read, serde_json::to_value(the_server()).unwrap());
+    answer(&mut app, &read, serde_json::to_value(server).unwrap());
     app
 }
 
@@ -195,15 +200,35 @@ fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_session() {
 }
 
 #[test]
+fn a_stopped_agent_offers_the_way_on() {
+    let mut server = the_server();
+    server.grants[0].stopped = true;
+    let mut app = opened_on(server);
+    app.harness()
+        .click_named("console-agent-go-on")
+        .expect("the way on is offered");
+    let requests = asked(&mut app);
+    let go_on = find(&requests, &mcp_server::target(mcp_server::GO_ON));
+    assert_eq!(
+        argument(&go_on),
+        json!({"grant": "g1", "session": "Claude Code"}),
+        "its calls are answered again"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.target == mcp_server::target(mcp_server::STOP)),
+        "a stopped agent is not stopped again"
+    );
+}
+
+#[test]
 fn revoking_an_agent_takes_back_its_grant() {
     let mut app = opened();
     app.call_on(AGENT, "revoke-agent", json!({}))
         .expect("revoke the agent");
     let requests = asked(&mut app);
-    let revoke = find(
-        &requests,
-        &device_tickets::target(device_tickets::REVOKE),
-    );
+    let revoke = find(&requests, &device_tickets::target(device_tickets::REVOKE));
     assert_eq!(
         argument(&revoke),
         json!({"device": "g1", "reason": "retired"}),

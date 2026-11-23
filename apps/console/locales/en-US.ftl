@@ -82,6 +82,7 @@ console-grant-running = { $count ->
 console-grant-last-active = Last active { $when }
 console-grant-granted = Let in { $when }
 console-grant-revoke = Revoke
+console-grant-go-on = Let it go on
 
 console-usage-empty = No Linux machine time yet
 console-usage-empty-message = An agent that needs Linux runs it on a machine of its own, and that time is counted.

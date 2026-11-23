@@ -14,9 +14,9 @@
 //! Code #2") as History names it. Whoever serves the server serves
 //! [`PROVIDER`]; a provider without one leaves the reads unanswered, and a view
 //! that follows them says so. A grant's key is one of the person's keys, taken
-//! back as every one is ([`super::device_tickets::REVOKE`]); stopping a session
-//! ([`STOP`]) ends that one connection and keeps the grant, so the agent can
-//! come back.
+//! back as every one is ([`super::device_tickets::REVOKE`]). Stopping an agent
+//! ([`STOP`]) refuses its every call and cancels what it is running, while its
+//! grant and its sessions stay, until the person lets it go on ([`GO_ON`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +30,11 @@ pub const RESOURCE: &str = "mcp.server";
 
 /// Live: the server and what it let in; answers [`Server`].
 pub const SERVER: &str = "server";
-/// End one agent session now, keeping its grant ([`AgentSessionRef`]).
+/// Stop an agent now ([`AgentSessionRef`]): its running calls are cancelled and every next
+/// one is refused, in every workspace it works in, until [`GO_ON`].
 pub const STOP: &str = "stop";
+/// Let an agent its person stopped go on ([`AgentSessionRef`]): its calls are answered again.
+pub const GO_ON: &str = "go-on";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -105,6 +108,10 @@ pub struct Grant {
     /// opens, fills, selects and clicks runs on the person's word, while
     /// submitting a page still asks them.
     pub browser_pages: bool,
+    /// The person stopped the agent ([`STOP`]): its every call is refused until
+    /// they let it go on ([`GO_ON`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
 
 impl Grant {
@@ -163,7 +170,8 @@ impl Server {
     }
 }
 
-/// Which agent session [`STOP`] ends: the grant it came in by, and its name.
+/// Which agent [`STOP`] stops and [`GO_ON`] lets go on: the grant it came in by, and the name
+/// its sessions run under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentSessionRef {

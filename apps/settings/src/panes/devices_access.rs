@@ -52,7 +52,8 @@ pub enum DevicesAccessEffect {
         #[param("retired, lost, stolen or compromised", choices = REVOKE_REASONS)]
         reason: String,
     },
-    /// End an agent's open session, keeping its grant so it can come back.
+    /// Stop an agent: what it is running is cancelled and everything it asks next is refused,
+    /// keeping its grant, until it is let go on.
     #[effect(kind = "outside")]
     #[effect(job, row)]
     StopSession {
@@ -60,6 +61,15 @@ pub enum DevicesAccessEffect {
         grant: String,
         #[param("The session's name, as History names it")]
         session: String,
+    },
+    /// Let an agent its person stopped go on: what it asks is answered again.
+    #[effect(kind = "outside")]
+    #[effect(job, row)]
+    LetAgentGoOn {
+        #[param("The grant's id, as the MCP server lists it")]
+        grant: String,
+        #[param("The name the agent runs under, as the MCP server lists it")]
+        agent: String,
     },
     /// Name a device of the person's: what their device lists read it by from
     /// then on. Two computers set up the same way enroll under one name, so
@@ -111,10 +121,7 @@ pub(crate) fn answer(
 impl DevicesAccessEffect {
     /// Whether it ends something's access for good.
     const fn takes_back(&self) -> bool {
-        matches!(
-            self,
-            Self::RevokeDevice { .. } | Self::RevokeBrowser { .. }
-        )
+        matches!(self, Self::RevokeDevice { .. } | Self::RevokeBrowser { .. })
     }
 }
 
@@ -503,6 +510,17 @@ impl AccessModel {
                     mcp_server::argument(&mcp_server::AgentSessionRef {
                         grant: grant.clone(),
                         session: session.clone(),
+                    }),
+                    None,
+                )
+            }
+            DevicesAccessEffect::LetAgentGoOn { grant, agent } => {
+                self.grant(grant)?;
+                remote.invoke(
+                    mcp_server::target(mcp_server::GO_ON),
+                    mcp_server::argument(&mcp_server::AgentSessionRef {
+                        grant: grant.clone(),
+                        session: agent.clone(),
                     }),
                     None,
                 )
@@ -1278,10 +1296,19 @@ fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     // it here, where two of them enrolled under one name.
     bindings = bindings.bind(
         DevicesAccessEffect::RENAME_DEVICE,
-        [("device", id.clone().into()), ("name", draft.to_owned().into())],
+        [
+            ("device", id.clone().into()),
+            ("name", draft.to_owned().into()),
+        ],
     );
-    if let Some(grant) = agent.grant.filter(|grant| !grant.sessions.is_empty()) {
-        bindings = bindings.spec(stop_session(&id, &grant.sessions));
+    match agent.grant {
+        Some(grant) if grant.stopped => {
+            bindings = bindings.spec(SettingsEffect::from(go_on(&id, grant)).bound());
+        }
+        Some(grant) if !grant.sessions.is_empty() => {
+            bindings = bindings.spec(stop_session(&id, &grant.sessions));
+        }
+        _ => {}
     }
     LiveRow::typed_with::<AgentGrant>(
         format!("settings.agent-grant:{id}"),
@@ -1290,7 +1317,15 @@ fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     )
 }
 
-/// Ending one of an agent's open sessions, as its row offers it: once, bound
+/// Letting the stopped agent `grant` lists, under the id `id`, go on.
+fn go_on(id: &str, grant: &Grant) -> DevicesAccessEffect {
+    DevicesAccessEffect::LetAgentGoOn {
+        grant: id.to_owned(),
+        agent: grant.agent.clone(),
+    }
+}
+
+/// Stopping an agent through one of its open sessions, as its row offers it: once, bound
 /// to the grant, asking which. The sessions open now are the parameter's
 /// choices, by the names History gives them.
 fn stop_session(grant: &str, open: &[mcp_server::AgentSession]) -> ui::tilo_actions::ActionSpec {
@@ -1335,7 +1370,26 @@ fn agent_item(
         } else {
             "settings-access-browser-pages-off"
         })));
-        for session in &grant.sessions {
+        if grant.stopped {
+            extra.push(caption(&t("settings-access-agent-stopped")));
+            let resume = crate::on_row::bind_invocation(
+                &dispatcher,
+                &live,
+                Button::new(
+                    &format!("settings.access.{id}.go-on"),
+                    &t("settings-access-let-go-on"),
+                ),
+                go_on(&key, grant),
+            );
+            extra.push(Box::new(
+                Row::new()
+                    .push(Box::new(resume))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
+        // A stopped agent is stopped already: what is offered is letting it go on.
+        let open: &[mcp_server::AgentSession] = if grant.stopped { &[] } else { &grant.sessions };
+        for session in open {
             let stop = crate::on_row::bind_invocation(
                 &dispatcher,
                 &live,

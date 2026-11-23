@@ -296,3 +296,151 @@ fn a_quiet_agent_stays_while_its_session_lasts() {
         }
     });
 }
+
+/// The request that stops the agent this device serves, or lets it go on, as the person asks of
+/// the MCP server from their card.
+fn stop(action: &str) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::mcp_server;
+    tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: mcp_server::target(action),
+        argument: mcp_server::argument(&mcp_server::AgentSessionRef {
+            grant: String::new(),
+            session: "Claude Code".into(),
+        }),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The workspace's invocations, as the person reads them.
+async fn invocation_page(
+    host: &host::Host,
+) -> tilo_actions::remote::workspace_invocations::Invocations {
+    use tilo_actions::remote::{ReceiptStatus, workspace_invocations};
+    let target = workspace_invocations::target();
+    let request = tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target,
+        argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let receipt = tilo_test_env::within(
+        "the workspace to list its invocations",
+        host.dispatch().invoke(&host.caller(), request),
+    )
+    .await
+    .expect("the dispatch answers")
+    .expect("the person reads the invocations");
+    match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value(output.value.expect("the listing says what it lists"))
+                .expect("the page reads as one")
+        }
+        other => panic!("a listing is answered whole, not {other:?}"),
+    }
+}
+
+/// The person stops their agent while it runs: what it was running is cancelled and writes
+/// nothing more, its next call is refused, and letting it go on answers it again. The stop is
+/// the person's own ask of the MCP server, as their Settings page and their console make it.
+#[test]
+fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
+    use tilo_actions::remote::mcp_server;
+    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+
+    host::run(|host| async move {
+        let agent = std::sync::Arc::new(host.agent());
+        let (_, failed) = ls(&agent, None).await;
+        assert!(!failed, "the agent lists the workspace");
+        let running = {
+            let agent = std::sync::Arc::clone(&agent);
+            tokio::spawn(async move { watch(&agent, json!({"wait_ms": 60_000})).await })
+        };
+        let started = Instant::now();
+        loop {
+            let listed = invocation_page(&host).await;
+            if listed
+                .items
+                .iter()
+                .any(|item| item.status == InvocationStatus::Running)
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < COMES_BACK_WITHIN,
+                "the agent's call is running: {listed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let stopped = host
+            .dispatch()
+            .invoke(&host.caller(), stop(mcp_server::STOP))
+            .await
+            .expect("the dispatch answers")
+            .expect("the person stops their agent");
+        assert!(
+            matches!(
+                stopped.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{stopped:?}"
+        );
+        let (said, failed) = tilo_test_env::within("the running call to end", running)
+            .await
+            .expect("the call ends")
+            .expect("the tool answers");
+        assert!(
+            failed || said.to_lowercase().contains("cancel"),
+            "the running call ended cancelled: {said}"
+        );
+        // The record of what it ran is settled, and nothing of it changes afterwards.
+        let settled = invocation_page(&host).await;
+        let ran = settled
+            .items
+            .iter()
+            .find(|item| item.status != InvocationStatus::Running)
+            .expect("the cancelled call is recorded");
+        let after = invocation_page(&host).await;
+        let same = after
+            .items
+            .iter()
+            .find(|item| item.id == ran.id)
+            .expect("the record stays");
+        assert_eq!(
+            (same.status, same.changes, same.ended_ms),
+            (ran.status, ran.changes, ran.ended_ms),
+            "a cancelled call writes nothing more"
+        );
+        // Its next call is refused, and reaches nothing.
+        let (_, refused) = ls(&agent, None).await;
+        assert!(refused, "a stopped agent is refused every call");
+        // The person lets it go on: its next call is answered.
+        let resumed = host
+            .dispatch()
+            .invoke(&host.caller(), stop(mcp_server::GO_ON))
+            .await
+            .expect("the dispatch answers")
+            .expect("the person lets their agent go on");
+        assert!(
+            matches!(
+                resumed.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{resumed:?}"
+        );
+        let (_, refused) = ls(&agent, None).await;
+        assert!(!refused, "a let-go-on agent acts again");
+    });
+}

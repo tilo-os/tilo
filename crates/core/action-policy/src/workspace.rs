@@ -711,14 +711,37 @@ impl WorkspacePolicy {
     /// The workspace's grants naming a delegation grantee (an agent, a bot),
     /// for bounding a person's authority. An answer a person gave one agent
     /// session is not among them: it decides that session alone
-    /// ([`crate::is_session_answer`]).
+    /// ([`crate::is_session_answer`]). An agent its person stopped
+    /// ([`crate::agent_answers::stop_grant`]) is refused everything, as a
+    /// banned person is: no more specific grant lifts the stop, not the
+    /// rights its certificate carries nor an answer its person gave it before.
     #[must_use]
     pub fn party_of(&self, grantee: Grantee) -> Party<'_> {
-        Party::new(vec![grantee], &[]).with_grants(
-            self.grants
-                .iter()
-                .filter(|grant| !crate::is_session_answer(grant)),
-        )
+        let stop = grantee.agent_id().map(crate::agent_answers::stop_grant_id);
+        let held_off: Vec<&Grant> = self
+            .grants
+            .iter()
+            .filter(|grant| stop.as_ref() == Some(&grant.id) && grant.grantee == grantee)
+            .collect();
+        Party::new(vec![grantee], &[])
+            .with_grants(
+                self.grants
+                    .iter()
+                    .filter(|grant| !crate::is_session_answer(grant)),
+            )
+            .held_off_by(held_off)
+    }
+
+    /// Whether the agent `agent`'s person stopped it here
+    /// ([`crate::agent_answers::stop_grant`]) and has not let it go on: it is
+    /// refused every action in the workspace.
+    #[must_use]
+    pub fn stops(&self, agent: &str, cx: &Context<'_>) -> bool {
+        let id = crate::agent_answers::stop_grant_id(agent);
+        let grantee = Grantee::agent(agent);
+        self.grants
+            .iter()
+            .any(|grant| grant.id == id && grant.grantee == grantee && grant.is_live(cx))
     }
 
     /// The grants naming `grantee`.
@@ -975,6 +998,15 @@ impl WorkspacePolicy {
         if is_leaving(actor_person, change) {
             return Ok(Vec::new());
         }
+        // A person may always write what their own agent may do, and what it
+        // may not, in a workspace they take part in: their say over their own
+        // agent needs no governance there, so a stop
+        // ([`crate::agent_answers::stop_grant`]) works in a workspace they do
+        // not administer.
+        if self.answers_for_own_agent(actor_person, change) {
+            self.check_not_held_off(actor, cx)?;
+            return Ok(Vec::new());
+        }
         if let Some(own) = self.manages_own_agent(actor_person, change) {
             self.check_not_held_off(actor, cx)?;
             if self.restricted_until(own, cx).is_some() {
@@ -1012,6 +1044,31 @@ impl WorkspacePolicy {
                 .map(|member| member.for_person.as_str()),
             Some(crate::MemberId::Bot(_)) => None,
         }
+    }
+
+    /// Whether `change` is an answer `actor_person` writes about an agent acting
+    /// for them: their own say about their agent, which needs no governance
+    /// grant in the workspace.
+    fn answers_for_own_agent(&self, actor_person: &str, change: &Change) -> bool {
+        let grant = match change {
+            Change::Grant(grant) => grant,
+            Change::Revoke(id) => {
+                let Some(held) = self.grants.iter().find(|held| &held.id == id) else {
+                    return false;
+                };
+                held
+            }
+            _ => return false,
+        };
+        let Some(agent) = grant.grantee.agent_id() else {
+            return false;
+        };
+        grant.granted_by.person_id() == Some(actor_person)
+            && crate::agent_answers::is_answer(grant)
+            && self
+                .agents
+                .get(agent)
+                .is_some_and(|member| member.for_person == actor_person)
     }
 
     /// The person `change` adds or removes an agent of, when it is the one the

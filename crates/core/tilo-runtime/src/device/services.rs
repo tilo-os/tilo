@@ -2948,6 +2948,117 @@ impl RuntimeActionProvider {
         })
     }
 
+    /// Stop the agent session `request` names on this device, or let a stopped one go on, as
+    /// the person asks of the MCP server: their own ask, never an agent's. `None` when the
+    /// request is not such a stop, or names no session this device serves.
+    fn stop_or_go_on(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        use tilo_actions::remote::mcp_server;
+        let target = &request.target;
+        let action = target.address.action.as_str();
+        if target.provider != mcp_server::PROVIDER
+            || ![mcp_server::STOP, mcp_server::GO_ON].contains(&action)
+            || !caller.acting().is_person()
+        {
+            return None;
+        }
+        let named: mcp_server::AgentSessionRef = match &request.argument {
+            InvokeArgument::Json(argument) => {
+                match serde_json::from_value(Value::Object(argument.clone())) {
+                    Ok(named) => named,
+                    Err(error) => {
+                        return Some(Pending::ready(Err(ActionCallError::invalid_request(
+                            error.to_string(),
+                        ))));
+                    }
+                }
+            }
+            _ => {
+                return Some(Pending::ready(Err(ActionCallError::invalid_request(
+                    "a stop names its grant and session",
+                ))));
+            }
+        };
+        let copies = self.workspaces.copies();
+        if !copies.knows_agent_session(&self.workspace, &named.session) {
+            return None;
+        }
+        let stopping = action == mcp_server::STOP;
+        let (session, workspace) = (named.session, self.workspace.clone());
+        let operator = self.workspaces.operator();
+        let agent = device_agent_id(&operator, MCP_CLIENT);
+        // The person's own act, as the caller that made the agent's calls works for them.
+        let person = Caller::local_person(hex::encode(operator)).in_workspace(&workspace);
+        // Every workspace the agent works in: the one its session is in, and each whose member
+        // list names it. The answer syncs with the workspace, so a host running the agent
+        // elsewhere refuses its next call.
+        let targets: Vec<String> = self
+            .workspaces
+            .workspaces()
+            .into_iter()
+            .filter(|held| {
+                held.id().to_string() == workspace
+                    || self.workspaces.policy_of(held.id())()
+                        .is_some_and(|policy| policy.agents.contains_key(&agent))
+            })
+            .map(|held| held.id().to_string())
+            .collect();
+        let workspaces = Arc::clone(&self.workspaces);
+        let invocations = Arc::clone(&self.invocations);
+        let broker = self.broker.clone();
+        let receipt = InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value: Some(Value::Null),
+                    resources: Vec::new(),
+                },
+            },
+        };
+        let (complete, answered) = tilo_actions::remote::pending();
+        let stop = async move {
+            let copies = workspaces.copies();
+            let mut answer = Ok(receipt);
+            for target in &targets {
+                let written = if stopping {
+                    copies.answer_stop(target, &agent).await
+                } else {
+                    copies.answer_go_on(target, &agent).await
+                };
+                if let Err(reason) = written {
+                    answer = Err(ActionCallError::Refused { reason });
+                    break;
+                }
+                if stopping {
+                    // As the dispatch itself cancels a call, the person's own ask.
+                    let origin_writes = |caller: &Caller, origin: &Origin| {
+                        broker.state().may_write_origin(caller, target, origin)
+                    };
+                    for cancelled in invocations.stop_agent(&person, target, &agent, &origin_writes)
+                    {
+                        let _ = cancelled.await;
+                    }
+                }
+            }
+            if answer.is_ok() {
+                if stopping {
+                    copies.stop_agent(&workspace, &session);
+                } else {
+                    copies.let_agent_go_on(&workspace, &session);
+                }
+            }
+            complete.complete(answer);
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(stop)),
+            Err(_) => super::workspaces::block_on_owned(stop),
+        }
+        Some(answered)
+    }
+
     /// `answer`, with the daemon's own `tilo.device` provider listed beside the workspace's apps,
     /// and its page answered whole when the query names it.
     fn with_devices(
@@ -3153,31 +3264,231 @@ fn asking(
     })
 }
 
-/// The answer to the person stopping the agent session `request` names in `workspace`, when
-/// this device serves it: `None` for a session it does not serve, whose stop is somebody
-/// else's to answer.
-fn stop_session(
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    workspace: &str,
-    request: &InvokeRequest,
-) -> Option<InvocationReceipt> {
-    let tilo_actions::remote::InvokeArgument::Json(argument) = &request.argument else {
-        return None;
-    };
-    let stop: tilo_actions::remote::mcp_server::AgentSessionRef =
-        serde_json::from_value(serde_json::Value::Object(argument.clone())).ok()?;
-    if !workspaces.stop_agent(workspace, &stop.session) {
-        return None;
+/// The record reader of a device's dispatch. The workspace's invocations
+/// ([`tilo_actions::remote::workspace_invocations::PROVIDER`]) are a resource the dispatch
+/// publishes itself: read whole (an empty record) or one by its id, as the caller's grants let
+/// them read each call, and followed by watching for the next one recorded or the next change
+/// of one still going. Every other record is the broker's to read.
+struct DispatchReads {
+    broker: AppActionBroker,
+    workspace: String,
+    workspaces: Arc<ServiceWorkspaces>,
+    session: Option<Arc<AdmittedRuntimeSession>>,
+    invocations: Arc<Invocations>,
+    records: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
+}
+
+impl DispatchReads {
+    fn publishes(address: &tilo_actions::remote::ResourceAddress) -> bool {
+        address.app == tilo_actions::remote::workspace_invocations::PROVIDER
     }
-    Some(InvocationReceipt {
-        invocation: request.invocation,
-        status: tilo_actions::remote::ReceiptStatus::Completed {
-            output: tilo_actions::ActionOutput {
-                value: Some(serde_json::Value::Null),
-                resources: Vec::new(),
+
+    fn records(&self) -> Result<&Arc<dyn tilo_actions::remote::ResourceReads>, ActionCallError> {
+        self.records
+            .as_ref()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+            })
+    }
+
+    /// Whether `caller` reads `workspace`'s invocations here: this dispatch's workspace, as the
+    /// session it admitted.
+    fn admit(&self, caller: &Caller, workspace: &str) -> Result<(), ActionCallError> {
+        if workspace != self.workspace {
+            return Err(ActionCallError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            });
+        }
+        if let Some(session) = &self.session {
+            session.check(caller, &self.workspaces)?;
+        }
+        Ok(())
+    }
+
+    /// Every invocation of the workspace `caller` may read, newest first.
+    fn listed(
+        &self,
+        caller: &Caller,
+        invocation: Option<String>,
+    ) -> Result<Vec<tilo_actions::remote::workspace_invocations::Invocation>, ActionCallError> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self.broker.state().invocation_listing(
+                &self.workspace,
+                caller,
+                &WorkspaceInvocationsQuery {
+                    limit: tilo_actions::remote::workspace_invocations::MOST,
+                    cursor: cursor.take(),
+                    invocation: invocation.clone(),
+                    ..WorkspaceInvocationsQuery::default()
+                },
+            )?;
+            items.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        if let Some(store) = self.workspaces.copies().asked_store() {
+            with_questions(
+                &mut items,
+                store.waiting_in(&self.workspace),
+                invocation.as_deref(),
+            );
+        }
+        Ok(items)
+    }
+}
+
+/// `items`, a reading of a workspace's invocations, with what each call that waits in
+/// `waiting` asks its person, and each such call the device keeps no record of (it waited across
+/// a restart, or another dispatch here keeps it) listed beside them: only `only`, when the
+/// reading names one.
+pub(super) fn with_questions(
+    items: &mut Vec<tilo_actions::remote::workspace_invocations::Invocation>,
+    waiting: Vec<tilo_actions::remote::asked::Waiting>,
+    only: Option<&str>,
+) {
+    use tilo_actions::remote::asked::AskedBy;
+    use tilo_actions::remote::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
+    for question in waiting {
+        let id = question.invocation.0.to_string();
+        if only.is_some_and(|only| only != id) {
+            continue;
+        }
+        if let Some(item) = items
+            .iter_mut()
+            .find(|item| item.id.as_deref() == Some(id.as_str()))
+        {
+            item.status = InvocationStatus::Waiting;
+            item.person = Some(question.person);
+            item.asked = Some(Box::new(question.asked));
+            continue;
+        }
+        let by = match &question.asked.facts.by {
+            AskedBy::Agent(agent) => InvocationBy {
+                name: agent.name.clone(),
+                kind: "agent".to_owned(),
+                id: Some(agent.id.clone()),
             },
-        },
-    })
+            AskedBy::App { app, title, .. } => InvocationBy {
+                name: title.clone(),
+                kind: "app".to_owned(),
+                id: Some(app.clone()),
+            },
+            AskedBy::Device(device) => InvocationBy {
+                name: device.name.clone(),
+                kind: "device".to_owned(),
+                id: Some(device.id.clone()),
+            },
+            AskedBy::Program { name, app_id } => InvocationBy {
+                name: name.clone(),
+                kind: "program".to_owned(),
+                id: app_id.clone(),
+            },
+        };
+        let row = Invocation {
+            id: Some(id.clone()),
+            calls: vec![id],
+            by,
+            status: InvocationStatus::Waiting,
+            started_ms: i64::try_from(question.asked.asked_at_ms).unwrap_or(i64::MAX),
+            action: Some(question.asked.action.clone()),
+            remembered: true,
+            person: Some(question.person),
+            asked: Some(Box::new(question.asked)),
+            ..Invocation::default()
+        };
+        // Newest first, as the reading is.
+        let at = items
+            .iter()
+            .position(|item| item.started_ms <= row.started_ms)
+            .unwrap_or(items.len());
+        items.insert(at, row);
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for DispatchReads {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        use tilo_actions::remote::ResourceCopy;
+        if !Self::publishes(address) {
+            return self.records()?.read(caller, address);
+        }
+        self.admit(caller, &address.workspace)?;
+        if address.record.is_empty() {
+            let items = self.listed(caller, None)?;
+            let total = items.len();
+            let waiting = items
+                .iter()
+                .filter(|invocation| {
+                    invocation.status
+                        == tilo_actions::remote::workspace_invocations::InvocationStatus::Waiting
+                })
+                .count();
+            return Ok(ResourceCopy::reading(
+                serde_json::json!({ "items": items, "total": total, "waiting": waiting }),
+                None,
+            ));
+        }
+        let mut one = self.listed(caller, Some(address.record.clone()))?;
+        Ok(match one.pop() {
+            Some(invocation) => ResourceCopy::reading(
+                serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?,
+                None,
+            ),
+            None => ResourceCopy::Absent,
+        })
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        if read.app != tilo_actions::remote::workspace_invocations::PROVIDER
+            && let Some(records) = &self.records
+        {
+            return Arc::clone(records).answer_read(caller, correlation, read);
+        }
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        if !Self::publishes(address) {
+            return self.records()?.watch(caller, address, wake);
+        }
+        self.admit(caller, &address.workspace)?;
+        self.invocations.watch(&self.workspace, wake);
+        Ok(())
+    }
+
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        if Self::publishes(address) {
+            return Err(ActionCallError::Unavailable {
+                reason: "a workspace's invocations are read whole or one by one, not from a store"
+                    .into(),
+            });
+        }
+        self.records()?.store_read(caller, address, read)
+    }
 }
 
 impl ActionProvider for RuntimeActionProvider {
@@ -3358,14 +3669,11 @@ impl ActionProvider for RuntimeActionProvider {
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        // The person stops one of the agent sessions this device serves, as their card asks:
-        // the session leaves who is here and answers no more.
-        if request.target
-            == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
-            && self.is_the_person(caller)
-            && let Some(receipt) = stop_session(self.workspaces.copies(), &self.workspace, &request)
-        {
-            return Pending::ready(Ok(receipt));
+        // The person stops one of the agents this device serves, or lets a stopped one go on,
+        // as their card asks: a Deny in every workspace the agent works in, and what it is
+        // running here cancelled.
+        if let Some(answered) = self.stop_or_go_on(caller, &request) {
+            return answered;
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)

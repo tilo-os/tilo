@@ -19,8 +19,8 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::{AgentScope, DeviceCert};
 
-use tilo_action_policy::Role;
 use tilo_action_policy::roles::governance;
+use tilo_action_policy::{Grantee, Role};
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
@@ -920,6 +920,50 @@ impl Workspaces {
                     .remove_governed_grants(&ids, &key, system_time(now))
             },
             now,
+        )
+        .await
+    }
+
+    /// Stop the agent `agent` in `workspace`, as the person this host acts for:
+    /// an answer denying it everything there
+    /// ([`tilo_action_policy::agent_answers::stop_grant`]), which its certificate
+    /// and its earlier answers cannot lift, until [`Self::let_agent_go_on`].
+    ///
+    /// # Errors
+    ///
+    /// Why the workspace did not take the answer, or does not hold this device
+    /// as a member.
+    pub async fn answer_stop(&self, workspace: &str, agent: &str) -> Result<(), String> {
+        let person = Grantee::person(hex::encode(self.inner.host.cert.user_public_key));
+        let stop = tilo_action_policy::agent_answers::stop_grant(workspace, agent, person);
+        self.commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(stop),
+            },
+            None,
+        )
+        .await
+    }
+
+    /// Let the agent `agent` its person stopped go on in `workspace`: the
+    /// answer [`Self::stop_agent`] wrote is taken back. A workspace holding no
+    /// such answer is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Why the workspace did not take the revocation, or does not hold this
+    /// device as a member.
+    pub async fn answer_go_on(&self, workspace: &str, agent: &str) -> Result<(), String> {
+        let revoke = tilo_action_policy::Change::Revoke(
+            tilo_action_policy::agent_answers::stop_grant_id(agent),
+        );
+        self.commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: revoke,
+            },
+            None,
         )
         .await
     }

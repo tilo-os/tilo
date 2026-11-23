@@ -171,13 +171,31 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
                 .role(ButtonRole::Destructive)
                 .on_open(move || records.revoke_key(&id))
         };
+        // A stopped agent is offered the way on: its calls are refused until the person lets
+        // it go on.
+        let trailing: Element = if grant.stopped {
+            let (records, id, agent) = (records.clone(), grant.id.clone(), grant.agent.clone());
+            Box::new(
+                Button::new("console-agent-go-on", "console-grant-go-on").on_open(move || {
+                    records.server(
+                        mcp_server::GO_ON,
+                        &mcp_server::AgentSessionRef {
+                            grant: id.clone(),
+                            session: agent.clone(),
+                        },
+                    );
+                }),
+            )
+        } else {
+            Box::new(revoke)
+        };
         parts.push(Box::new(Section::titled(
             tr("console-agent-access"),
             vec![Box::new(
                 ListRow::new("console-agent-access-row", crate::connect::access(grant))
                     .icon(Icon::Link)
                     .secondary_lines(2)
-                    .trailing(Box::new(revoke)),
+                    .trailing(trailing),
             )],
         )));
     }

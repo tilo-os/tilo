@@ -227,7 +227,9 @@ pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) 
                 ("app", app_display_name(apps, &app).into()),
             ],
         ),
-        None => grant_set_sentence(std::slice::from_ref(grant), apps),
+        Some(AnswerScope::Workspace) | None => {
+            grant_set_sentence(std::slice::from_ref(grant), apps)
+        }
     }
 }
 
