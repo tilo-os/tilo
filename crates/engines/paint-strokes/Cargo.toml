@@ -1,0 +1,20 @@
+[package]
+name = "tilo-paint-strokes"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Brush presets and stroke geometry worked out from points alone: the outline a line of ink fills, the dabs a soft brush stamps, smoothing and simplification. No UI and no artwork model."
+
+[dependencies]
+# Geometry: the outline of a stroke is a BezPath, its bounds and areas curves.
+vello.workspace = true
+# Dabs are laid along the same evenly spaced samples the wet-media simulation reads.
+tilo-wet-media = { path = "../wet-media" }
+
+[dev-dependencies]
+# Scenarios build their fixtures and report which phase failed.
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

@@ -110,7 +110,7 @@ pub fn picker(
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     let labels = presets
         .iter()
-        .map(|preset| crate::locales::CATALOG.t(&preset.label()))
+        .map(|preset| crate::locales::CATALOG.t(&crate::brushes::label(*preset)))
         .collect();
     // The sheet's colour names each swatch's ring; the painter draws it.
     let paper = 0x00f4_efe3; // document colour: the sample sheet's paper

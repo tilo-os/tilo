@@ -308,6 +308,7 @@ members = [
 
     # Media
     "crates/engines/canvas-engine",
+    "crates/engines/paint-strokes",
     "crates/engines/ocr",
     "crates/engines/segment",
     "crates/engines/thumbnail",

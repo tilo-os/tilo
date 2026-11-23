@@ -386,7 +386,7 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     } else {
         let preset = tools.preset.clone();
         Box::new(
-            Text::dynamic(move || crate::locales::CATALOG.t(&preset.with(|preset| preset.label())))
+            Text::dynamic(move || crate::locales::CATALOG.t(&preset.with(|preset| crate::brushes::label(*preset))))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         )
@@ -1101,7 +1101,7 @@ fn stroke_brush(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark, plain: bool) 
         return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
     let mut rows: Vec<Element> = Vec::new();
-    let preset = Preset::of(&mark.style);
+    let preset = crate::brushes::preset_of(&mark.style);
     if plain && !preset.erases() {
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();
@@ -1134,7 +1134,7 @@ fn stroke_brush(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark, plain: bool) 
         Box::new(width),
     ));
     if plain {
-        let dynamics = crate::brushes::Dynamics::of_mark(mark);
+        let dynamics = crate::brushes::dynamics_of(mark);
         let mut tuned = vec![
             ("flow", dynamics.flow),
             ("smoothing", dynamics.smoothing),

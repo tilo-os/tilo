@@ -17790,6 +17790,7 @@ dependencies = [
  "serde_json",
  "tilo-content",
  "tilo-files",
+ "tilo-paint-strokes",
  "tilo-resource",
  "tilo-subject",
  "tilo-test-env",
@@ -20332,6 +20333,15 @@ dependencies = [
  "serde_json",
  "usvg",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-paint-strokes"
+version = "0.1.0"
+dependencies = [
+ "tilo-test-env",
+ "tilo-vello",
+ "tilo-wet-media",
 ]
 
 [[package]]

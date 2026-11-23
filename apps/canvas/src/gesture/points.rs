@@ -30,7 +30,7 @@ impl Editable {
             Shape::Stroke { points, size, .. } => Some(Self::Stroke(StrokeEdit::new(
                 points.clone(),
                 *size,
-                crate::brushes::Dynamics::of_mark(mark).smoothing,
+                crate::brushes::dynamics_of(mark).smoothing,
             ))),
             shape => Outline::of_shape(shape).map(Self::Outline),
         }

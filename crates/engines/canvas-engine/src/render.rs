@@ -561,8 +561,8 @@ impl Renderer {
             if crate::brushes::stroke_of(mark).is_none() {
                 continue;
             }
-            let preset = crate::brushes::Preset::of(&mark.style);
-            if !plain || !preset.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
+            let preset = crate::brushes::preset_of(&mark.style);
+            if !plain || !preset.dabbed(&crate::brushes::dynamics_of(mark)) {
                 continue;
             }
             let palette = media::palette_for(art, &mark.layer);
@@ -1371,8 +1371,8 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size, .. } if crate::brushes::Preset::of(style).erases() => {
-            let dynamics = crate::brushes::Dynamics::of_mark(mark);
+        Shape::Stroke { points, size, .. } if crate::brushes::preset_of(style).erases() => {
+            let dynamics = crate::brushes::dynamics_of(mark);
             painted.push(Painted::new(
                 &mark.id,
                 WetMark::Erase(tilo_wet_media::Erase {
@@ -1573,7 +1573,7 @@ pub fn mix(blend: &str) -> Option<Mix> {
 pub fn silhouette(mark: &Mark) -> BezPath {
     match &mark.shape {
         Shape::Stroke { .. }
-            if crate::brushes::Preset::of(&mark.style) == crate::brushes::Preset::Round =>
+            if crate::brushes::preset_of(&mark.style) == crate::brushes::Preset::Round =>
         {
             ink_strokes(mark)
         }
@@ -1587,7 +1587,7 @@ pub fn silhouette(mark: &Mark) -> BezPath {
 /// A stroke drawn by the round ink brush: its own line, or every twig or
 /// dab it grows into, each after the stroke's smoothing.
 fn ink_strokes(mark: &Mark) -> BezPath {
-    let smoothing = crate::brushes::Dynamics::of_mark(mark).smoothing;
+    let smoothing = crate::brushes::dynamics_of(mark).smoothing;
     let mut path = BezPath::new();
     for (points, size) in crate::brushes::pieces(mark) {
         // Laid as every brush lays its path, so its corners stay sharp.
@@ -1628,7 +1628,7 @@ fn draw_mark(
     cx: &mut MarkCx<'_>,
 ) {
     let transform = cx.transform;
-    let preset = crate::brushes::Preset::of(&mark.style);
+    let preset = crate::brushes::preset_of(&mark.style);
     if matches!(mark.shape, Shape::Stroke { .. }) && preset.erases() {
         draw_eraser(art, mark, scene, cx);
         return;
@@ -1700,7 +1700,7 @@ fn draw_mark(
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
     }
     let dabbed = matches!(mark.shape, Shape::Stroke { .. })
-        && preset.dabbed(&crate::brushes::Dynamics::of_mark(mark));
+        && preset.dabbed(&crate::brushes::dynamics_of(mark));
     match style.feather {
         _ if picture => {
             draw_picture(mark, cx.layer_adjust, scene, transform, cx.pictures);
@@ -1745,7 +1745,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     for outline in &cuts {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
-    if crate::brushes::Preset::of(&mark.style).dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
+    if crate::brushes::preset_of(&mark.style).dabbed(&crate::brushes::dynamics_of(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
     } else {
         scene.fill(
@@ -1798,7 +1798,7 @@ fn draw_dabbed(
         return;
     }
     let style = &mark.style;
-    let eraser = crate::brushes::Preset::of(style).erases();
+    let eraser = crate::brushes::preset_of(style).erases();
     let ink = if eraser {
         ERASED
     } else {
@@ -1922,8 +1922,8 @@ fn opaque(mark: &Mark, palette: &[Pigment]) -> bool {
     let laid_solid = match &mark.shape {
         Shape::Stroke { .. } => {
             crate::brushes::ink_alpha(style) >= 1.0
-                && !crate::brushes::Preset::of(style)
-                    .dabbed(&crate::brushes::Dynamics::of_mark(mark))
+                && !crate::brushes::preset_of(style)
+                    .dabbed(&crate::brushes::dynamics_of(mark))
         }
         _ => true,
     };
@@ -2512,7 +2512,7 @@ fn draw_vector_path(
     };
     match &mark.shape {
         Shape::Stroke { .. } => {
-            let preset = crate::brushes::Preset::of(style);
+            let preset = crate::brushes::preset_of(style);
             if preset.erases() {
                 return;
             }

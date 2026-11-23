@@ -1574,7 +1574,7 @@ impl Mark {
     /// none of its own to pick.
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
-            && crate::brushes::Preset::of(&self.style).erases()
+            && crate::brushes::preset_of(&self.style).erases()
     }
 
     /// The area the mark is kept inside, in artwork units, if it has one.

@@ -1174,7 +1174,7 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), Refusal> {
             "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
         ));
     }
-    if crate::brushes::Preset::of(&mark.style).pixel() {
+    if crate::brushes::preset_of(&mark.style).pixel() {
         let bounds = mark.bounds();
         if bounds.width().max(bounds.height()) > 16384.0 {
             return Err(refuse(
