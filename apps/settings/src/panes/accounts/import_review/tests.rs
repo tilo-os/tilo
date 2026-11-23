@@ -69,12 +69,21 @@ tilo_test_env::scenario! {
             root.vault().get(&id).unwrap().password,
             "fixture-orphan-secret"
         );
-        let before = std::fs::read(root.path().unwrap().join("accounts/store.json")).unwrap();
-        assert!(!String::from_utf8_lossy(&before).contains("fixture-orphan-secret"));
-        review.commit(&root, review.revision).unwrap();
-        assert_eq!(
-            std::fs::read(root.path().unwrap().join("accounts/store.json")).unwrap(),
+        let before = root.store();
+        assert!(
             before
+                .all()
+                .iter()
+                .all(|account| !account.config.to_string().contains("fixture-orphan-secret")),
+            "the workspace's accounts hold metadata, never a secret"
+        );
+        let revision = root.revision();
+        review.commit(&root, review.revision).unwrap();
+        assert_eq!(root.store(), before);
+        assert_eq!(
+            root.revision(),
+            revision,
+            "a review with nothing new writes nothing"
         );
     }
 

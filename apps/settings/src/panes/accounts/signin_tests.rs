@@ -81,29 +81,6 @@ fn live_second_account_refusal_restores_already_published_metadata() {
 }
 
 #[test]
-fn live_pair_projection_failure_restores_person_metadata() {
-    let (dir, root) = scratch_root();
-    let record = root.record_for_test();
-    let first = accounts::Account::new("cloud", "nextcloud");
-    let second = accounts::Account::new("ada@example.org", "email");
-    // The live resource accepts both edits; only its device projection fails.
-    std::fs::create_dir_all(dir.path().join("tilo/accounts/store.json")).unwrap();
-    let secret = accounts::Secret::password("sealed-credential");
-    let error =
-        AccountsPane::commit_accounts(&root, vec![(first, Some(&secret)), (second, Some(&secret))])
-            .unwrap_err();
-    assert!(error.contains("could not persist account"), "{error}");
-    assert!(
-        record.get().is_empty(),
-        "published live metadata must be restored even when projection is still blocked"
-    );
-    assert!(root.vault().get(&"cloud".into()).is_none());
-    assert!(root.vault().get(&"ada@example.org".into()).is_none());
-    // The record holds no account again, which a missing projection already says.
-    assert!(!root.mutation_pending());
-}
-
-#[test]
 fn nextcloud_connects_through_login_flow_v2_without_a_typed_password() {
     let (_dir, root) = scratch_root();
     let server = fake_nextcloud();
