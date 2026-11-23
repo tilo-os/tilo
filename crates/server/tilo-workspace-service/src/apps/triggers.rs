@@ -6,7 +6,7 @@
 //! into events of the one dispatcher every automation fires through
 //! ([`tilo_automation::dispatch`]): a schedule's fire time, a change to a record, an app's event.
 //! A shared folder changing and a workspace joined it watches here too. Each firing is a turn of
-//! work ([`Turn::Firing`]), and [`takes_turn`] decides which of the person's devices starts it:
+//! work ([`Turn::Once`]), and [`takes_turn`] decides which of the person's devices starts it:
 //! the one that saved the shortcut when it is up, otherwise an always-on server, otherwise any
 //! other. Nothing about a firing is kept in a device's own files: a schedule's progress is kept in
 //! the workspace ([`tilo_peer_state::trigger_mark`]), and a firing that started is kept done
@@ -31,7 +31,7 @@ use tilo_automation::dispatch::{
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 use tilo_automation::{AutomationInvocationId, Shortcut, TriggerSpec};
 
-use crate::work::{NotTaken, Order, Turn, keep_done, takes_turn_in};
+use crate::work::{Actor, NotTaken, Order, Turn, keep_done, takes_turn_in};
 use crate::workspaces::Workspaces;
 use folders::{FolderChange, FolderWatch};
 
@@ -170,12 +170,12 @@ impl Firing {
     /// The turn of work this firing is, started on `starter` at `came_up_ms`.
     #[must_use]
     pub fn turn(&self, starter: [u8; 32], came_up_ms: i64) -> Turn {
-        Turn::Firing {
-            firing: format!("{}/{}", self.shortcut, self.invocation.0),
-            saver: self.saver.clone(),
-            starter,
-            came_up_ms,
-        }
+        Turn::once(
+            format!("shortcuts.shortcut:{}#run", self.shortcut),
+            serde_json::json!({ "invocation": self.invocation.0.to_string() }),
+        )
+        .acting_as(Actor::Person(self.saver.clone()))
+        .started(starter, came_up_ms)
     }
 }
 
@@ -693,7 +693,11 @@ impl Runner {
     /// Start `firing`, this device's turn, once: a schedule's progress or the firing kept done in
     /// the workspace says it started, for every device.
     async fn started(&self, firing: &Firing, turn: &Turn) {
-        let Turn::Firing { came_up_ms, .. } = turn else {
+        let Turn::Once {
+            came_up_ms: Some(came_up_ms),
+            ..
+        } = turn
+        else {
             return;
         };
         if let Some(answer) = &firing.answers {

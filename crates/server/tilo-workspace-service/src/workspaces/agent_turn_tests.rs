@@ -1,4 +1,4 @@
-//! Which device takes an agent's turn ([`takes_turn`] for [`Turn::Agent`]).
+//! Which device takes an agent's turn ([`takes_turn`] for a [`Turn::Once`] acting as an agent).
 #![allow(
     clippy::large_futures,
     clippy::significant_drop_tightening,
@@ -16,7 +16,7 @@ use super::super::Workspaces;
 use super::super::fixtures::{TestHost, device_cert, test_host};
 use super::super::work_tests::offer_compute;
 use super::tests::{member_service, shared_with};
-use crate::work::{AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
+use crate::work::{Actor, AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
 
 const CHAT: &str = "so.tilo.chat";
 
@@ -43,14 +43,20 @@ fn persons_root() -> SigningKey {
 /// What somebody asked in Chat's `part` of the agent acting for `person`'s person, and the lease
 /// it is claimed under.
 fn turn_in(person: &DeviceCert, part: &str) -> (Turn, String) {
-    let lease = format!("turn/scout/{part}");
-    let turn = Turn::Agent {
+    let turn = Turn::once(
+        "agents.agent:scout#answer",
+        serde_json::json!({ "place": part }),
+    )
+    .acting_as(Actor::Agent {
         agent: "scout".to_owned(),
-        place: part.to_owned(),
         acts_for: person.user_public_key,
-        app: CHAT.to_owned(),
-        record: part.to_owned(),
-    };
+    })
+    .about(CHAT, part);
+    let lease = turn.lease();
+    assert!(
+        lease.starts_with("once/agents.agent:scout#answer/"),
+        "{lease}"
+    );
     (turn, lease)
 }
 

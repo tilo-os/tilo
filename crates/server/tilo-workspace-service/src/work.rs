@@ -28,10 +28,10 @@
 //! twice is kept done when it ran ([`keep_done`]), and no device takes a turn
 //! kept done again.
 //!
-//! An agent's turn is a turn too ([`Turn::Agent`]), claimed under the agent
-//! and the place it was started in: every device that runs an agent engine
-//! and reads what started it calls [`takes_turn`] before it answers, and the
-//! one whose claim wins writes the answer.
+//! An agent's turn and an automation's firing are actions that run once too
+//! ([`Turn::Once`] acting as an [`Actor`]): every device that reads what
+//! started one calls [`takes_turn`] before it acts, and the one whose claim
+//! wins acts.
 //!
 //! Whether a device may take a turn is decided in one place
 //! ([`eligibility`]). For an offloaded action's work: the person's entry for
@@ -45,9 +45,9 @@
 //! person it acts for (a server of theirs only where its entry offers compute and
 //! is not retired). Who started the turn does not decide where it runs: any
 //! member may start any agent's turn. For an automation's firing: this device
-//! acts for the person who saved the automation. For an action that runs
-//! once: the workspace lets this device open the record the action acts on
-//! and run the action on it. No caller checks any of this itself.
+//! acts for the person who saved the automation. For any other action that
+//! runs once: the workspace lets this device open the record the action acts
+//! on and run the action on it. No caller checks any of this itself.
 //!
 //! A run that needs Linux (a workspace's shell command, its terminal, its
 //! machine, its Browser) is asked the same way ([`Turn::Linux`], on
@@ -194,34 +194,6 @@ pub enum Turn {
         /// What runs.
         run: Box<InvokeRequest>,
     },
-    /// A turn of an agent's, in the place something started it.
-    Agent {
-        /// The agent that answers.
-        agent: String,
-        /// Where the turn was started: the conversation, or the task, it
-        /// answers in. One device answers there at a time.
-        place: String,
-        /// The person the agent acts for, by their root key.
-        acts_for: [u8; 32],
-        /// The app keeping the record the turn is about.
-        app: String,
-        /// That record.
-        record: String,
-    },
-    /// One firing of a saved automation's trigger: starting its run once,
-    /// for the person who saved it.
-    Firing {
-        /// Which firing it is, the same on every device that saw it: the
-        /// automation, the trigger and the fire time or change that fired it.
-        firing: String,
-        /// The person who saved the automation, by their person id.
-        saver: String,
-        /// The device it starts on: the one that saved the automation.
-        starter: [u8; 32],
-        /// When it came up, ms since the epoch: the fire time, or when the
-        /// change that fired it was seen.
-        came_up_ms: i64,
-    },
     /// An action that runs once in the workspace, whichever device runs it:
     /// the same action on the same inputs is the same turn on every device.
     Once {
@@ -229,6 +201,32 @@ pub enum Turn {
         address: String,
         /// What it is invoked with.
         inputs: serde_json::Value,
+        /// Who it acts as; `None` for an action the device runs under its own
+        /// grants, which it may take where it opens the resource and may run
+        /// the action.
+        actor: Option<Actor>,
+        /// The app and record it is about: only a device that opens it takes it.
+        about: Option<(String, String)>,
+        /// The device it started on, which takes it at once; `None` where
+        /// every device that asks for it is its starter.
+        starter: Option<[u8; 32]>,
+        /// When it came up, ms since the epoch: the fire time, or when the
+        /// change that started it was seen.
+        came_up_ms: Option<i64>,
+    },
+}
+
+/// Who a turn that runs once acts as: a device takes it only where it can act as them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Actor {
+    /// A person, by their person id: a saved automation runs as the person who saved it.
+    Person(String),
+    /// An agent acting for the person whose root is `acts_for`.
+    Agent {
+        /// The agent, by its id.
+        agent: String,
+        /// The person it acts for, by their root key.
+        acts_for: [u8; 32],
     },
 }
 
@@ -239,23 +237,70 @@ impl Turn {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
-            Self::Agent { agent, place, .. } => format!("turn/{agent}/{place}"),
-            Self::Firing { firing, .. } => format!("firing/{firing}"),
-            Self::Once { address, inputs } => {
+            Self::Once {
+                address, inputs, ..
+            } => {
                 let inputs = serde_json::to_vec(&canonical(inputs)).unwrap_or_default();
                 format!("once/{address}/{}", blake3::hash(&inputs).to_hex())
             }
         }
     }
 
-    /// The device the turn started on; `None` for an agent's turn or an action
-    /// that runs once, which every device that may take it starts.
+    /// The turn that runs `address` once over `inputs`: its name is the address and a hash of
+    /// the inputs' canonical form, the same on every device that saw what started it.
+    #[must_use]
+    pub fn once(address: impl Into<String>, inputs: serde_json::Value) -> Self {
+        Self::Once {
+            address: address.into(),
+            inputs,
+            actor: None,
+            about: None,
+            starter: None,
+            came_up_ms: None,
+        }
+    }
+
+    /// This turn, acting as `who`: only a device that can act as them takes it.
+    #[must_use]
+    pub fn acting_as(mut self, who: Actor) -> Self {
+        if let Self::Once { actor, .. } = &mut self {
+            *actor = Some(who);
+        }
+        self
+    }
+
+    /// This turn, about the record `record` of `app`: only a device that opens it takes it.
+    #[must_use]
+    pub fn about(mut self, app: impl Into<String>, record: impl Into<String>) -> Self {
+        if let Self::Once { about, .. } = &mut self {
+            *about = Some((app.into(), record.into()));
+        }
+        self
+    }
+
+    /// This turn, started on `device` at `at_ms`: that device takes it at once, and the others
+    /// in their order after it.
+    #[must_use]
+    pub fn started(mut self, device: [u8; 32], at_ms: i64) -> Self {
+        if let Self::Once {
+            starter,
+            came_up_ms,
+            ..
+        } = &mut self
+        {
+            *starter = Some(device);
+            *came_up_ms = Some(at_ms);
+        }
+        self
+    }
+
+    /// The device the turn started on; `None` for an action that runs once
+    /// that every device that may take it starts.
     #[must_use]
     pub const fn starter(&self) -> Option<[u8; 32]> {
         match self {
             Self::Invocation { requester, .. } | Self::Linux { requester, .. } => Some(*requester),
-            Self::Firing { starter, .. } => Some(*starter),
-            Self::Agent { .. } | Self::Once { .. } => None,
+            Self::Once { starter, .. } => *starter,
         }
     }
 
@@ -269,11 +314,8 @@ impl Turn {
     /// this device now.
     const fn came_up_ms(&self) -> Option<i64> {
         match self {
-            Self::Invocation { .. }
-            | Self::Linux { .. }
-            | Self::Agent { .. }
-            | Self::Once { .. } => None,
-            Self::Firing { came_up_ms, .. } => Some(*came_up_ms),
+            Self::Invocation { .. } | Self::Linux { .. } => None,
+            Self::Once { came_up_ms, .. } => *came_up_ms,
         }
     }
 }
@@ -308,8 +350,8 @@ pub enum Ineligible {
     CannotRunAgent,
     /// This device runs no agent engine.
     RunsNoAgents,
-    /// This device does not act for the person who saved the automation.
-    NotTheSaver,
+    /// This device does not act for the person the turn acts as.
+    CannotActAs,
 }
 
 impl fmt::Display for Ineligible {
@@ -327,7 +369,7 @@ impl fmt::Display for Ineligible {
             Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
             Self::CannotRunAgent => "this device cannot run the agent",
             Self::RunsNoAgents => "this device runs no agents",
-            Self::NotTheSaver => "this device does not act for the person who saved it",
+            Self::CannotActAs => "this device does not act for the person the turn acts as",
         })
     }
 }
@@ -620,50 +662,54 @@ async fn eligibility(
                 None => Err(Ineligible::NoRoomForLinux),
             }
         }
-        Turn::Agent {
-            agent,
-            acts_for,
-            app,
-            record,
+        Turn::Once {
+            address,
+            actor,
+            about,
             ..
         } => {
-            if !workspaces
-                .opens_record(device, workspace, app, record)
-                .await
+            if let Some((app, record)) = about
+                && !workspaces
+                    .opens_record(device, workspace, app, record)
+                    .await
             {
                 return Err(Ineligible::CannotOpen);
             }
-            let Some(keys) = workspaces.agent_keys() else {
-                return Err(Ineligible::RunsNoAgents);
-            };
-            if keys.holds(workspace, agent, acts_for).await {
-                return Ok(());
+            match actor {
+                Some(Actor::Person(person)) => {
+                    let serving = hex::encode(workspaces.serving_certificate().user_public_key);
+                    if *person != serving {
+                        return Err(Ineligible::CannotActAs);
+                    }
+                    Ok(())
+                }
+                Some(Actor::Agent { agent, acts_for }) => {
+                    let Some(keys) = workspaces.agent_keys() else {
+                        return Err(Ineligible::RunsNoAgents);
+                    };
+                    if keys.holds(workspace, agent, acts_for).await {
+                        return Ok(());
+                    }
+                    device_of(workspaces, acts_for).await
+                }
+                None => {
+                    let (app, resource, action) =
+                        once_parts(address).ok_or(Ineligible::CannotOpen)?;
+                    if !workspaces
+                        .opens_record(device, workspace, app, resource)
+                        .await
+                    {
+                        return Err(Ineligible::CannotOpen);
+                    }
+                    if !workspaces
+                        .permits_action(device, workspace, (app, resource, action))
+                        .await
+                    {
+                        return Err(Ineligible::NotPermitted);
+                    }
+                    Ok(())
+                }
             }
-            device_of(workspaces, acts_for).await
-        }
-        Turn::Firing { saver, .. } => {
-            let person = hex::encode(workspaces.serving_certificate().user_public_key);
-            if *saver != person {
-                return Err(Ineligible::NotTheSaver);
-            }
-            Ok(())
-        }
-        Turn::Once { address, .. } => {
-            let (app, resource, action) = once_parts(address).ok_or(Ineligible::CannotOpen)?;
-            let device = workspaces.serving_certificate().device_public_key;
-            if !workspaces
-                .opens_record(device, workspace, app, resource)
-                .await
-            {
-                return Err(Ineligible::CannotOpen);
-            }
-            if !workspaces
-                .permits_action(device, workspace, (app, resource, action))
-                .await
-            {
-                return Err(Ineligible::NotPermitted);
-            }
-            Ok(())
         }
     }
 }
@@ -794,11 +840,7 @@ mod tests {
         let encoded = serde_json::to_vec(&canonical(&whole_float)).unwrap();
         assert_eq!(encoded, br#"{"a":1}"#);
 
-        let lease = Turn::Once {
-            address: "so.tilo.notes/notebook-1#migrate".to_owned(),
-            inputs: whole_float,
-        }
-        .lease();
+        let lease = Turn::once("so.tilo.notes/notebook-1#migrate", whole_float).lease();
         assert_eq!(
             lease,
             format!(
