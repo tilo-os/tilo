@@ -16,7 +16,7 @@
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
 //! it sends that same key: Tilo never runs one invocation twice.
 
-mod model_asks;
+pub(crate) mod model_asks;
 
 use tilo_device_identity::login as device;
 

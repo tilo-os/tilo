@@ -4,6 +4,8 @@
 use super::{Answer, Client, Method, fresh_key};
 use anyhow::{Result, bail};
 use serde_json::Value;
+use std::ops::ControlFlow;
+use wire_frame::sse::{Reader, Utf8};
 
 impl Client {
     /// The client a program of this computer asks the person's model with,
@@ -82,23 +84,23 @@ impl Client {
                 whole.extend_from_slice(&piece);
                 continue;
             }
-            for (kind, data) in events.read(&piece) {
-                match kind.as_str() {
-                    "answer" => return Ok(data),
-                    "error" => {
-                        let body = serde_json::to_vec(&data).unwrap_or_default();
-                        return Err(Answer { status: 503, body }.refused());
-                    }
-                    _ => told(&kind, &data),
+            if let Some(done) = events.push(&piece, |kind, data| match kind {
+                "answer" => Some(Ok(data)),
+                "error" => {
+                    let body = serde_json::to_vec(&data).unwrap_or_default();
+                    Some(Err(Answer { status: 503, body }.refused()))
                 }
+                _ => {
+                    told(kind, &data);
+                    None
+                }
+            }) {
+                return done;
             }
         }
         if !(200..300).contains(&opened.status) {
-            return Err(Answer {
-                status: opened.status,
-                body: whole,
-            }
-            .refused());
+            let (status, body) = (opened.status, whole);
+            return Err(Answer { status, body }.refused());
         }
         bail!("the model's answer ended before the turn did")
     }
@@ -111,32 +113,29 @@ fn is_socket(path: &std::path::Path) -> bool {
 }
 
 /// Server-sent events, read from pieces cut anywhere.
-#[derive(Default)]
-struct Events {
-    unread: Vec<u8>,
+pub(crate) struct Events(Reader);
+
+impl Default for Events {
+    fn default() -> Self {
+        // Lenient UTF-8, unbounded: an `answer` event wrapping a 1 MiB turn exceeds 1 MiB.
+        Self(Reader::new(Utf8::Lenient, None))
+    }
 }
 
 impl Events {
-    /// The events `piece` completes, each its kind and its data as JSON.
-    fn read(&mut self, piece: &[u8]) -> Vec<(String, Value)> {
-        self.unread.extend_from_slice(piece);
-        let mut read = Vec::new();
-        while let Some(end) = self.unread.windows(2).position(|pair| pair == b"\n\n") {
-            let event: Vec<u8> = self.unread.drain(..end.saturating_add(2)).collect();
-            let text = String::from_utf8_lossy(&event);
-            let (mut kind, mut data) = ("message".to_owned(), String::new());
-            for line in text.lines() {
-                if let Some(named) = line.strip_prefix("event:") {
-                    named.trim().clone_into(&mut kind);
-                } else if let Some(said) = line.strip_prefix("data:") {
-                    data.push_str(said.trim_start());
-                }
-            }
-            if let Ok(data) = serde_json::from_str(&data) {
-                read.push((kind, data));
-            }
-        }
-        read
+    /// Feed `piece` into the stream, calling `on` for each JSON event it completes.
+    pub(crate) fn push<B>(
+        &mut self,
+        piece: &[u8],
+        mut on: impl FnMut(&str, Value) -> Option<B>,
+    ) -> Option<B> {
+        let flow = self.0.push(piece, |event| {
+            serde_json::from_str(event.data)
+                .ok()
+                .and_then(|data| on(event.kind(), data))
+                .map_or(ControlFlow::Continue(()), ControlFlow::Break)
+        });
+        flow.ok().and_then(ControlFlow::break_value)
     }
 }
 
