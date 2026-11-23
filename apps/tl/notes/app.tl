@@ -486,6 +486,42 @@ action export_notebook(nb: Notebook) -> File (icon: .download) {
     File.zip("Notes.zip", files_under(nb, .none, "", pages))
 }
 
+/// The notebook as one Markdown document: each note a heading one level deeper than the note it
+/// stands under (six at the deepest), its body beneath, and the notes under it after it — the
+/// notebook read as one text, in the order the tree keeps it.
+action export_notebook_markdown(nb: Notebook) -> File (icon: .download) {
+    File.of_text("Notes.md", notebook_markdown(nb))
+}
+
+/// Every note of the notebook as one Markdown document, in the order the tree keeps them.
+fn notebook_markdown(nb: Notebook) -> Text {
+    markdown_under(nb, .none, 1).join("\n")
+}
+
+/// The sections of the notes under `parent` and of the notes under them, `depth` deep: each
+/// note's own section, then the sections of the notes it holds, one level deeper.
+fn markdown_under(nb: Notebook, parent: Option<Note>, depth: Int) -> List<Text> {
+    let sections: List<Text> = []
+    for kid in kids_of(nb, parent) {
+        sections = [
+            sections,
+            [markdown_of_note(kid, depth)],
+            markdown_under(nb, .some(kid), depth + 1),
+        ]
+            .flat_map(x -> x)
+    }
+    sections
+}
+
+/// One note as its section of the notebook's document: its title a heading `depth` deep — Markdown
+/// has six, so a deeper note stands at the sixth — and its body under it when it says anything.
+fn markdown_of_note(n: Note, depth: Int) -> Text {
+    let hashes = ["#", "##", "###", "####", "#####", "######"].at(depth.min(6) - 1) ?? "#"
+    let body = n.body.markdown.trim()
+    let title = n.title.trim()
+    if body == "" { "{hashes} {title}\n" } else { "{hashes} {title}\n\n{body}\n" }
+}
+
 /// Names the notes under `parent`, and the notes under them, in the order the notebook keeps
 /// them: `pages` takes the address each note is written at, by the note's id, and `at` the note
 /// each address is written for, which is what a link asks for.
@@ -947,6 +983,9 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
         }
         ui.MenuItem("Export the notebook…", icon: .download) {
             on choose: file.save(export_notebook(nb), name: "Notes.zip")
+        }
+        ui.MenuItem("Export the notebook as one Markdown document…", icon: .download) {
+            on choose: file.save(export_notebook_markdown(nb), name: "Notes.md")
         }
         if let n = open {
             ui.MenuItem("New sub-note", icon: .plus) {

@@ -590,6 +590,37 @@ fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     );
 }
 
+/// The notebook as one Markdown document: each note a heading one level deeper than the note it
+/// stands under, the notes under it after it, in the order the tree keeps them.
+#[test]
+fn a_notebook_is_exported_as_one_markdown_document() {
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let plan = note(&ada, None, "Q3 plan");
+    let standups = note(&ada, Some(&plan), "Standups");
+    let monday = note(&ada, Some(&standups), "Monday");
+    call(
+        &ada,
+        "add_text",
+        vec![
+            Value::resource(&monday),
+            Value::text("Ada is on the sync bug."),
+        ],
+    );
+    let _home = note(&ada, None, "Home");
+
+    let nb = ada.host.root_of(APP).unwrap();
+    let file = made_file(&ada, "export_notebook_markdown", vec![Value::resource(&nb)]);
+    assert_eq!(file.name, "Notes.md");
+    assert_eq!(file.media, "text/markdown");
+    let text = String::from_utf8(device.read(&file.hash).expect("the document's bytes"))
+        .expect("Markdown is text");
+    assert_eq!(
+        text, "# Q3 plan\n\n## Standups\n\n### Monday\n\nAda is on the sync bug.\n\n# Home\n",
+        "one document, each note a heading a level deeper than the note it stands under"
+    );
+}
+
 tilo_test_env::scenario! {
     fn an_export_names_its_files;
 
