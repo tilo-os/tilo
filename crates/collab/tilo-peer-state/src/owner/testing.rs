@@ -6,8 +6,7 @@
     reason = "test fixtures: a failed step is the test failing"
 )]
 use crate::owner::{
-    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
-    VerifiedNativeEnrollmentIntent, WorkspaceId,
+    NativeAuthorityStorage, NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, WorkspaceId,
 };
 use crate::{SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};

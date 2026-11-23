@@ -269,7 +269,7 @@ impl NativeWorkspaceOwner {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().clone();
-            let (kept, record) = candidate.change(|live, record| {
+            let (kept, record) = candidate.change(|live, record| -> Result<bool, String> {
                 let mut kept = false;
                 let mut unkept = Vec::new();
                 for (message, report) in &heard {
@@ -294,10 +294,9 @@ impl NativeWorkspaceOwner {
                     tracing::warn!(%error, "a document write's verdict was not kept");
                 }
                 if kept {
-                    record.generation = record
-                        .generation
-                        .checked_add(1)
-                        .ok_or("native owner generation exhausted")?;
+                    record.generation = record.generation.checked_add(1).ok_or_else(|| {
+                        WriteRefusal::Refused("native owner generation exhausted".into())
+                    })?;
                 }
                 Ok(kept)
             })?;
@@ -333,51 +332,55 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let device = candidate.device().device_public_key;
-        let (changed, mut record) = candidate.change(|live, record| {
-            let mut changed = false;
-            for write in &writes {
-                if write.envelope.author.as_bytes() != &device {
-                    return Err(WriteRefusal::Refused(
-                        "native local write signer differs from selected device".into(),
-                    ));
-                }
-                match live.lookup_exact_local_document(
-                    &write.app,
-                    &write.document,
-                    &write.envelope,
-                    now,
-                ) {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        if !live.sealed_history_takes(&write.app, &write.document, &write.envelope)
-                        {
-                            return Err(WriteRefusal::HistoryFull {
-                                app: write.app.clone(),
-                                record: write.document.clone(),
-                            });
+        let (changed, mut record) =
+            candidate.change(|live, record| -> Result<bool, WriteRefusal> {
+                let mut changed = false;
+                for write in &writes {
+                    if write.envelope.author.as_bytes() != &device {
+                        return Err(WriteRefusal::Refused(
+                            "native local write signer differs from selected device".into(),
+                        ));
+                    }
+                    match live.lookup_exact_local_document(
+                        &write.app,
+                        &write.document,
+                        &write.envelope,
+                        now,
+                    ) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            if !live.sealed_history_takes(
+                                &write.app,
+                                &write.document,
+                                &write.envelope,
+                            ) {
+                                return Err(WriteRefusal::HistoryFull {
+                                    app: write.app.clone(),
+                                    record: write.document.clone(),
+                                });
+                            }
+                            live.admit_new_local_document_read_by(
+                                (&write.app, &write.document),
+                                write.readers.as_deref(),
+                                write.envelope.clone(),
+                                now,
+                            )
+                            .map_err(refusal_of)?;
                         }
-                        live.admit_new_local_document_read_by(
-                            (&write.app, &write.document),
-                            write.readers.as_deref(),
-                            write.envelope.clone(),
-                            now,
-                        )
-                        .map_err(refusal_of)?;
+                        Err(AdmissionError::ChangeRefused(change)) => {
+                            return Err(WriteRefusal::ChangeRefused(change));
+                        }
+                        Err(error) => return Err(WriteRefusal::Refused(error.to_string())),
                     }
-                    Err(AdmissionError::ChangeRefused(change)) => {
-                        return Err(WriteRefusal::ChangeRefused(change));
+                    let bytes = postcard::to_stdvec(&message_of(workspace, write))
+                        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+                    if !record.frames.iter().any(|frame| frame.bytes == bytes) {
+                        record.frames.push(stored::FrameToSend { bytes });
+                        changed = true;
                     }
-                    Err(error) => return Err(WriteRefusal::Refused(error.to_string())),
                 }
-                let bytes = postcard::to_stdvec(&message_of(workspace, write))
-                    .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-                if !record.frames.iter().any(|frame| frame.bytes == bytes) {
-                    record.frames.push(stored::FrameToSend { bytes });
-                    changed = true;
-                }
-            }
-            Ok(changed)
-        })?;
+                Ok(changed)
+            })?;
         if !changed {
             return Ok(());
         }
@@ -443,22 +446,23 @@ impl NativeWorkspaceOwner {
         signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
-            let (changed, record) = candidate.change(|live, record| {
-                live.governance_mut()
-                    .drop_names_of_nobody(key, now)
-                    .map_err(WriteRefusal::from)?;
-                let changed = live
-                    .workspace_mut()
-                    .apply_workspace_membership_command(caller, command, key, now)
-                    .map_err(WriteRefusal::from)?;
-                key.settled()?;
-                if changed {
-                    record.generation = record.generation.checked_add(1).ok_or_else(|| {
-                        WriteRefusal::Refused("native owner generation exhausted".into())
-                    })?;
-                }
-                Ok(changed)
-            })?;
+            let (changed, record) =
+                candidate.change(|live, record| -> Result<bool, WriteRefusal> {
+                    live.governance_mut()
+                        .drop_names_of_nobody(key, now)
+                        .map_err(WriteRefusal::from)?;
+                    let changed = live
+                        .workspace_mut()
+                        .apply_workspace_membership_command(caller, command, key, now)
+                        .map_err(WriteRefusal::from)?;
+                    key.settled()?;
+                    if changed {
+                        record.generation = record.generation.checked_add(1).ok_or_else(|| {
+                            WriteRefusal::Refused("native owner generation exhausted".into())
+                        })?;
+                    }
+                    Ok(changed)
+                })?;
             if changed {
                 self.publish_document(workspace, &candidate, record, None)
                     .map_err(WriteRefusal::from)?;
@@ -483,7 +487,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
-        let (changed, mut record) = candidate.change(|live, _record| {
+        let (changed, mut record) = candidate.change(|live, _record| -> Result<bool, String> {
             live.workspace_mut()
                 .apply_own_effect_receipt(caller, receipt, now)
         })?;
@@ -563,8 +567,8 @@ impl NativeWorkspaceOwner {
                 std::collections::BTreeMap::new();
             for frame in &view.record.frames {
                 let message = tilo_failure::ignored!(
-                    "a frame this device kept is one it encoded",
-                    NeighbourMsg::decode(&frame.bytes)
+                    "a frame this device encoded is one it decodes",
+                    NeighbourMsg::decode(&frame.bytes).ok()
                 );
                 if let Some(NeighbourMsg::AppDocument {
                     app_id,

@@ -1,6 +1,6 @@
 //! Signing a device's own change to a record and the messages a peer starts from.
 
-use super::{DocumentMutation, NeighbourMsg, PeerPublicationMut, StatePeer, SystemTime};
+use super::{DocumentMutation, NeighbourMsg, PeerPublicationMut, SystemTime};
 use collab_types::signer::DeviceSigner;
 
 impl PeerPublicationMut<'_> {

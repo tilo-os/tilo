@@ -190,7 +190,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     peer.select_exact_admissions().unwrap();
     let opening = peer
         .publication_mut()
-        .durable_bootstrap_messages(&governor_key, now, 1)
+        .bootstrap_messages(&governor_key, now)
         .unwrap();
     let mut sync = Vec::new();
     let mut bootstrap = Vec::new();
@@ -216,7 +216,6 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
             bootstrap.push(written);
             texts.push(text);
         }
-        let before = peer.clone();
         let (_, _, redeemed) =
             redemption(&governor, &governor_key, &hint, (&cert, &key), author, now);
         assert!(
@@ -224,14 +223,8 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
                 .admit_invited_member(&redeemed, &governor_key, now)
                 .unwrap()
         );
-        let generation = u64::from(author) + 2;
-        bootstrap.extend(
-            peer.publication_mut()
-                .durable_mutation_messages(&before, &governor_key, now, generation)
-                .unwrap(),
-        );
+        bootstrap.push(peer.workspace_message());
     }
-    let before = peer.clone();
     let (verified, complete, redeemed) = redemption(
         &governor,
         &governor_key,
@@ -245,11 +238,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
             .admit_invited_member(&redeemed, &governor_key, now)
             .unwrap()
     );
-    bootstrap.extend(
-        peer.publication_mut()
-            .durable_mutation_messages(&before, &governor_key, now, u64::from(AUTHORS) + 2)
-            .unwrap(),
-    );
+    bootstrap.push(peer.workspace_message());
     let complete_bootstrap = join::JoinBootstrap {
         version: 1,
         invite_id: verified.invite_id(),

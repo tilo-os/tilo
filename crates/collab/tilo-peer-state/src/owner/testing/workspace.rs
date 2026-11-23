@@ -329,6 +329,7 @@ impl TestWorkspace {
         )?;
         self.peer = candidate;
         self.advance();
+        Ok(())
     }
 
     /// Let `member`'s device sign into the workspace a delegation of their own

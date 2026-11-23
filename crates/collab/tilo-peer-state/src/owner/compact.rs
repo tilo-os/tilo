@@ -138,7 +138,7 @@ impl NativeWorkspaceOwner {
             drafted = Some(ops);
             signed.settled()?;
             let record_name = record;
-            let ((), record) = candidate.change(|live, record| {
+            let ((), record) = candidate.change(|live, record| -> Result<(), String> {
                 live.publication_mut().admit_sealed_compaction(
                     app,
                     record_name,

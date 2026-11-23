@@ -24,18 +24,10 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
                 return Err("test edit was not a signed document write".into());
             };
-            Ok(OwnerCommitRequest {
-                workspace: WORKSPACE.into(),
-                operation: CommitOperation::Document {
-                    app: APP.into(),
-                    document: String::new(),
-                    envelope,
-                    readers: None,
-                },
-            })
+            Ok(*envelope)
         })
         .unwrap();
-    joined.owner.commit_document(request, joined.now).unwrap();
+    super::commit(&joined.owner, joined.workspace, request, joined.now).unwrap();
 }
 
 fn full(joined: &Enrolled, reader: [u8; 32]) -> CommittedDocument {
@@ -177,14 +169,14 @@ tilo_test_env::scenario! {
         let held = full(&joined, member);
         let governor_key = SigningKey::from_bytes(&[61; 32]);
         let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
-        joined.owner.commit_document(covered, joined.now).unwrap();
+        super::commit(&joined.owner, joined.workspace, covered, joined.now).unwrap();
         let mut remote = joined
             .owner
             .with_current(joined.workspace, |view| Ok(view.peer().clone()))
             .unwrap();
         let frames = remote
             .publication_mut()
-            .durable_bootstrap_messages(&governor_key, joined.now, 600)
+            .bootstrap_messages(&governor_key, joined.now)
             .unwrap();
         let mut pending = 0;
         for frame in frames {

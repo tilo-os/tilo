@@ -67,8 +67,10 @@ impl StatePeer {
         if exact && document && !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
-        if let TransportOrigin::RetainedNativePublication { publisher } = origin {
-            return self.receive_native_publication(publisher, message, now, exact);
+        if matches!(origin, TransportOrigin::RetainedNativePublication { .. }) {
+            return Err(AdmissionError::malformed(
+                "a retained native publication is no longer a carrier",
+            ));
         }
         if exact
             && document
@@ -103,9 +105,6 @@ impl StatePeer {
     ) -> Result<Option<AdmissionReport>, AdmissionError> {
         if !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
-        }
-        if let Some(publisher) = self.core.native_cut_publisher {
-            self.validate_native_publisher(publisher, now)?;
         }
         let (source, _) = self.resolve_origin(origin, message, now)?;
         if self.core.workspace_doc.is_none() || !self.core.certificates.contains_key(&source) {
@@ -364,9 +363,6 @@ impl StatePeer {
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
-        if let Some(publisher) = self.core.native_cut_publisher {
-            self.validate_native_publisher(publisher, now)?;
-        }
         match message {
             NeighbourMsg::IdentityHello {
                 protocol,

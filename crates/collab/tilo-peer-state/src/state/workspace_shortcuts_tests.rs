@@ -141,7 +141,6 @@ tilo_test_env::scenario! {
         let mut member = governor.clone();
 
         // The editor's save, relayed by the owner's device, reaches the member.
-        let before = governor.clone();
         let own = signed(&workspace, "water", &editor, &editor_key);
         governor
             .workspace_mut()
@@ -152,18 +151,13 @@ tilo_test_env::scenario! {
                 now,
             )
             .unwrap();
-        for message in governor
-            .publication_mut()
-            .durable_mutation_messages(&before, &authority, now, 2)
-            .unwrap()
-        {
-            member.receive(governor_device, message, now).unwrap();
-        }
+        member
+            .receive(governor_device, governor.workspace_message(), now)
+            .unwrap();
         assert_eq!(saved(&member), vec![own.clone()]);
 
         // The governor writing a shortcut that names the editor, with no device
         // of the editor's having signed it, is refused where it arrives.
-        let before = governor.clone();
         let mut forged = shortcut("ferns");
         forged.saved_by = Some(hex::encode(editor.user_public_key));
         let mut document = governor.admitted_workspace().unwrap().clone();
@@ -177,13 +171,7 @@ tilo_test_env::scenario! {
         .unwrap();
         document.commit();
         governor.core.workspace_doc = Some(document.into());
-        for message in governor
-            .publication_mut()
-            .durable_mutation_messages(&before, &authority, now, 3)
-            .unwrap()
-        {
-            let _ = member.receive(governor_device, message, now);
-        }
+        let _ = member.receive(governor_device, governor.workspace_message(), now);
         assert_eq!(saved(&member), vec![own], "the forgery never lands");
     }
 

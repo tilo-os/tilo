@@ -1634,123 +1634,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_governor_publishes_its_compaction_behind_the_records_receipt;
-    {
-        let f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut host = f.replica.clone();
-        let mut author = Author::new(&host);
-        for value in ["1", "2", "3"] {
-            let sealed = write(&host, &f.editor, &keys, &author.edit("value", value), now);
-            admit(&mut host, &f.editor, sealed, now);
-        }
-        let mut before = host.clone();
-        let compaction = envelope_of(&mint(&mut host, &keys, &f.owner, now).unwrap());
-        let sealed = |messages: &[NeighbourMsg]| {
-            messages
-                .iter()
-                .filter(|message| {
-                    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
-                })
-                .map(envelope_of)
-                .collect::<Vec<_>>()
-        };
-
-        let mutation = host
-            .clone()
-            .publication_mut()
-            .durable_mutation_messages(&before, &f.owner, now, 2)
-            .unwrap();
-        assert_eq!(sealed(&mutation), vec![compaction.clone()]);
-        assert_eq!(
-            mutation.last().map(envelope_of),
-            Some(compaction.clone()),
-            "behind the workspace change that carries the record's receipt"
-        );
-        let bootstrap = host
-            .clone()
-            .publication_mut()
-            .durable_bootstrap_messages(&f.owner, now, 2)
-            .unwrap();
-        assert_eq!(sealed(&bootstrap), vec![compaction]);
-        assert!(
-            sealed(
-                &host
-                    .clone()
-                    .publication_mut()
-                    .durable_mutation_messages(&host, &f.owner, now, 2)
-                    .unwrap()
-            )
-            .is_empty(),
-            "a compaction already published is not published again"
-        );
-        assert!(
-            sealed(
-                &before
-                    .publication_mut()
-                    .durable_bootstrap_messages(&f.owner, now, 2)
-                    .unwrap()
-            )
-            .is_empty(),
-            "other devices' sealed writes travel as themselves, never republished"
-        );
-    }
-
-    phase the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint;
-    {
-        let f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut host = f.replica.clone();
-        let before = host.clone();
-        let mut author = Author::new(&host);
-        let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
-        admit(&mut host, &f.editor, sealed.clone(), now);
-        let watermark = |peer: &StatePeer| {
-            crate::durability::entries(peer.admitted_workspace().unwrap())
-                .unwrap()
-                .get(&crate::coverage::route_key(APP, RECORD))
-                .and_then(|receipt| {
-                    receipt
-                        .coverage
-                        .watermarks
-                        .get(&hex::encode(f.editor.verifying_key().to_bytes()))
-                        .copied()
-                })
-        };
-        let documents = |messages: &[NeighbourMsg]| {
-            messages
-                .iter()
-                .any(|message| matches!(message, NeighbourMsg::AppDocument { document_id, .. } if document_id == RECORD))
-        };
-
-        let mut published = host.clone();
-        let messages = published
-            .publication_mut()
-            .durable_mutation_messages(&before, &f.owner, now, 2)
-            .unwrap();
-        assert!(
-            !documents(&messages),
-            "a cleartext checkpoint would downgrade the encrypted record"
-        );
-        assert_eq!(watermark(&published), Some(envelope_of(&sealed).seq));
-        assert_eq!(held(&published), vec![envelope_of(&sealed)]);
-        f.restore(&published.durable().unwrap()).unwrap();
-
-        let mut bootstrapped = published.clone();
-        let messages = bootstrapped
-            .publication_mut()
-            .durable_bootstrap_messages(&f.owner, now, 3)
-            .unwrap();
-        assert!(!documents(&messages));
-        assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
-    }
-}
-
-tilo_test_env::scenario! {
-    fn captured_history_replays_only_what_was_admitted;
-
     phase captured_history_replays_causal_order_and_continues_the_original_writer;
     {
         let mut f = fixture();
@@ -2330,7 +2213,7 @@ tilo_test_env::scenario! {
         assert!(restored.publication().is_sealed_document(APP, RECORD));
         let messages = host
             .publication_mut()
-            .durable_bootstrap_messages(&f.owner, f.now, 2)
+            .bootstrap_messages(&f.owner, f.now)
             .unwrap();
         assert!(!messages.iter().any(
             |message| matches!(message, NeighbourMsg::AppDocument { document_id, .. } if document_id == RECORD)

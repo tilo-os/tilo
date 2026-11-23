@@ -132,30 +132,22 @@ fn fixture_with(
 /// Give the member a grant: a change of the workspace's governance this
 /// device is allowed to make.
 async fn grant(fixture: &Fixture, id: &str) {
+    let command = crate::workspace_membership::WorkspaceMembershipCommand::Grant {
+        grant: tilo_action_policy::Grant::new(
+            id,
+            tilo_action_policy::Grantee::person(hex::encode(fixture.certificate.user_public_key)),
+            tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(fixture.certificate.user_public_key)),
+        ),
+    };
     fixture
         .owner
-        .commit_workspace_membership_command(
-            crate::owner_commit::OwnerCommitRequest {
-                workspace: testing::WORKSPACE.into(),
-                operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                    invocation: uuid::Uuid::new_v4(),
-                    caller: fixture.certificate.clone(),
-                    command: crate::workspace_membership::WorkspaceMembershipCommand::Grant {
-                        grant: tilo_action_policy::Grant::new(
-                            id,
-                            tilo_action_policy::Grantee::person(hex::encode(
-                                fixture.certificate.user_public_key,
-                            )),
-                            tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
-                            tilo_action_policy::KindSet::READ,
-                            tilo_action_policy::Answer::Allow,
-                            tilo_action_policy::Grantee::person(hex::encode(
-                                fixture.certificate.user_public_key,
-                            )),
-                        ),
-                    },
-                },
-            },
+        .commit_membership(
+            crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap(),
+            &fixture.certificate,
+            &command,
             &fixture.key,
             fixture.now,
         )
@@ -165,9 +157,19 @@ async fn grant(fixture: &Fixture, id: &str) {
 
 /// One write of this device's record, committed to its ownership.
 fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &str) {
+    let envelope = signed_write(fixture, workspace, key);
     fixture
         .owner
-        .commit_document(signed_write(fixture, workspace, key), fixture.now)
+        .admit_writes(
+            workspace,
+            vec![crate::owner::WorkspaceDocumentWrite {
+                app: "so.tilo.chat".into(),
+                document: String::new(),
+                readers: None,
+                envelope,
+            }],
+            fixture.now,
+        )
         .unwrap();
 }
 
@@ -193,7 +195,7 @@ fn signed_write(
     fixture: &Fixture,
     workspace: crate::owner::WorkspaceId,
     key: &str,
-) -> crate::owner_commit::OwnerCommitRequest {
+) -> collab_types::SignedOp {
     signed_write_to(
         fixture,
         workspace,
@@ -210,7 +212,7 @@ fn signed_write_to(
     workspace: crate::owner::WorkspaceId,
     record: &mut automerge::AutoCommit,
     key: &str,
-) -> crate::owner_commit::OwnerCommitRequest {
+) -> collab_types::SignedOp {
     use automerge::transaction::Transactable as _;
     let before = record.get_heads();
     record.put(automerge::ROOT, key, key).unwrap();
@@ -230,7 +232,33 @@ fn signed_write_to(
                 .map(|(message, _)| message)
         })
         .unwrap();
-    crate::owner::publication::request(&message).unwrap()
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a signed write is a document write")
+    };
+    *envelope
+}
+
+/// Admit `envelope`, this device's signed write to `document` of the chat app, and make it
+/// durable.
+fn admit(
+    fixture: &Fixture,
+    workspace: crate::owner::WorkspaceId,
+    document: &str,
+    envelope: collab_types::SignedOp,
+) {
+    fixture
+        .owner
+        .admit_writes(
+            workspace,
+            vec![crate::owner::WorkspaceDocumentWrite {
+                app: "so.tilo.chat".into(),
+                document: document.into(),
+                readers: None,
+                envelope,
+            }],
+            fixture.now,
+        )
+        .unwrap();
 }
 
 /// A member of the workspace, not one of its owner's devices, restarts with
@@ -255,25 +283,12 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     publish_write(&fixture, workspace, "first");
     publish_write(&fixture, workspace, "second");
     let reopened = open_file(&path).unwrap();
-    let ownership = reopened.outgoing_status(workspace, fixture.now).unwrap();
+    let frames = reopened.frames(workspace);
     assert_eq!(
-        ownership.pending, 4,
-        "the authorship grant, the record's creation and two writes"
+        frames.len(),
+        2,
+        "the record's creation and two writes are frames a peer is sent"
     );
-    assert_eq!(
-        ownership.blocked, 0,
-        "every retained frame publishes as it was signed"
-    );
-    reopened.retire_outgoing(workspace).unwrap();
-    let frames = reopened
-        .with_outgoing(workspace, fixture.now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| entry.bytes().to_vec())
-                .collect::<Vec<_>>())
-        })
-        .unwrap();
-    assert_eq!(frames.len(), 4);
     let frames = frames
         .into_iter()
         .map(|bytes| postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&bytes).unwrap())
@@ -401,34 +416,12 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
         let before = written();
         let read_from = crate::work::now().bytes_read;
         let started = std::time::Instant::now();
-        fixture.owner.commit_document(request, fixture.now).unwrap();
+        admit(&fixture, workspace, "", request);
         times.push(started.elapsed());
         reads.push(crate::work::now().bytes_read.saturating_sub(read_from));
         costs.push(written() - before);
         if n == 100 || n == 2_000 {
             wholes.push(whole());
-        }
-        if n % 50 == 49 {
-            // The workspace's holder keeps everything ownership sends it, as it answers a
-            // linked device: each answer lets the writes waiting behind it leave.
-            loop {
-                let answers = fixture
-                    .owner
-                    .with_outgoing(workspace, fixture.now, |_, outgoing| {
-                        Ok(outgoing
-                            .entries()
-                            .map(|entry| {
-                                order += 1;
-                                (entry.id(), crate::owner::HostAnswer::Durable(order))
-                            })
-                            .collect::<std::collections::BTreeMap<_, _>>())
-                    })
-                    .unwrap();
-                if answers.is_empty() {
-                    break;
-                }
-                fixture.owner.retire_answered(workspace, &answers).unwrap();
-            }
         }
     }
     let (early, late) = (median(&costs, 100..150), median(&costs, 2_000..2_050));
@@ -529,9 +522,7 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
             &text(n),
         ));
         costs.push(written(&fixture.owner) - before);
-        if n % 50 == 49 {
-            answer_everything(&fixture, workspace, &mut order);
-        }
+        if n % 50 == 49 {}
     }
     let (early, late) = (
         median(&costs, 300..400),
@@ -600,29 +591,6 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
     );
 }
 
-/// The workspace's holder keeps everything ownership sends it, as it answers
-/// a linked device: each answer lets the writes waiting behind it leave.
-fn answer_everything(fixture: &Fixture, workspace: crate::owner::WorkspaceId, order: &mut u64) {
-    loop {
-        let answers = fixture
-            .owner
-            .with_outgoing(workspace, fixture.now, |_, outgoing| {
-                Ok(outgoing
-                    .entries()
-                    .map(|entry| {
-                        *order = order.saturating_add(1);
-                        (entry.id(), crate::owner::HostAnswer::Durable(*order))
-                    })
-                    .collect::<std::collections::BTreeMap<_, _>>())
-            })
-            .unwrap();
-        if answers.is_empty() {
-            break;
-        }
-        fixture.owner.retire_answered(workspace, &answers).unwrap();
-    }
-}
-
 /// Write `text` into the chat app's document `document`, as its app signs it, and
 /// answer how long the owner took to commit it.
 fn write_text(
@@ -659,9 +627,22 @@ fn write_text(
                 .map(|(message, _)| message)
         })
         .unwrap();
-    let request = crate::owner::publication::request(&message).unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a write is a document write")
+    };
     let started = std::time::Instant::now();
-    owner.commit_document(request, now).unwrap();
+    owner
+        .admit_writes(
+            workspace,
+            vec![crate::owner::WorkspaceDocumentWrite {
+                app: "so.tilo.chat".into(),
+                document: document.into(),
+                readers: None,
+                envelope: *envelope,
+            }],
+            now,
+        )
+        .unwrap();
     started.elapsed()
 }
 
@@ -706,13 +687,12 @@ fn documents(
     fixture: &Fixture,
     workspace: crate::owner::WorkspaceId,
     made: std::ops::Range<usize>,
-    order: &mut u64,
 ) {
     const BATCH: usize = 100;
     let mut n = made.start;
     while n < made.end {
         let end = n.saturating_add(BATCH).min(made.end);
-        let requests = fixture
+        let writes = fixture
             .owner
             .with_current(workspace, |view| {
                 (n..end)
@@ -724,16 +704,23 @@ fn documents(
                             &fixture.key,
                             fixture.now,
                         )?;
-                        crate::owner::publication::request(&message)
+                        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+                            return Err("a record's founding write is a document write".to_owned());
+                        };
+                        Ok(crate::owner::WorkspaceDocumentWrite {
+                            app: "so.tilo.chat".into(),
+                            document: format!("r{n}"),
+                            readers: None,
+                            envelope: *envelope,
+                        })
                     })
                     .collect::<Result<Vec<_>, String>>()
             })
             .unwrap();
         fixture
             .owner
-            .commit_documents(requests, fixture.now)
+            .admit_writes(workspace, writes, fixture.now)
             .unwrap();
-        answer_everything(fixture, workspace, order);
         n = end;
     }
 }

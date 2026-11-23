@@ -128,6 +128,22 @@ pub(crate) struct Answer {
     last_order: Option<u64>,
 }
 
+impl Answer {
+    /// Its writes kept, its writes refused and the order of the last one kept.
+    pub(crate) const fn parts(self) -> (u64, u64, Option<u64>) {
+        (self.durable, self.refused, self.last_order)
+    }
+
+    /// The answer [`Self::parts`] names.
+    pub(crate) const fn from_parts(durable: u64, refused: u64, last_order: Option<u64>) -> Self {
+        Self {
+            durable,
+            refused,
+            last_order,
+        }
+    }
+}
+
 /// The server's answers, by app and document.
 pub(crate) type Answered = crate::ordered::Ordered<(String, String), Answer>;
 
@@ -388,6 +404,27 @@ impl StoredPublication {
         self.governance = governance;
         self.entries = entries;
         self.tail = tail;
+    }
+}
+
+impl crate::owner::stored::NativeAuthorityStorage {
+    /// The names of the runs of outgoing ownership a record built before the one
+    /// path kept, so a store keeps the files its entry still names.
+    pub fn ownership_runs(&self) -> impl Iterator<Item = String> + '_ {
+        self.workspaces
+            .values()
+            .filter_map(|record| {
+                record
+                    .publication
+                    .as_ref()
+                    .map(|publication| (record, publication))
+            })
+            .flat_map(|(record, publication)| {
+                publication
+                    .spilled
+                    .iter()
+                    .map(move |run| kept_name(record.workspace, "custody", run.hash))
+            })
     }
 }
 

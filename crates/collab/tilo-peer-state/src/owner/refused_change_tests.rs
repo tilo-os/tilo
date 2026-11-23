@@ -20,7 +20,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         view: &crate::owner::NativeCommittedView,
         now: SystemTime,
         topic: &str,
-    ) -> Result<(OwnerCommitRequest, [u8; 32]), String> {
+    ) -> Result<(collab_types::SignedOp, [u8; 32]), String> {
         let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
         let before = chat.get_heads();
         chat.put(ROOT, "topic", topic).unwrap();
@@ -39,18 +39,9 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
             0,
             now,
         )?;
-        Ok((
-            OwnerCommitRequest {
-                workspace: WORKSPACE.into(),
-                operation: CommitOperation::Document {
-                    app: APP.into(),
-                    document: String::new(),
-                    envelope: Box::new(envelope),
-                    readers: None,
-                },
-            },
-            change.unwrap().0,
-        ))
+        let mut envelope = envelope;
+        collab_types::sign_op(&mut envelope, &crate::owner::testing::member_key())?;
+        Ok((envelope, change.unwrap().0))
     }
 
     // The writes this device would send to the workspace, and whether one carries `change`.
@@ -60,7 +51,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         now: SystemTime,
         change: [u8; 32],
     ) -> bool {
-        sent(owner, workspace, now).iter().any(|bytes| {
+        owner.frames(workspace).iter().any(|bytes| {
             let Ok(NeighbourMsg::AppDocument { envelope, .. }) =
                 postcard::from_bytes::<NeighbourMsg>(bytes)
             else {
@@ -92,19 +83,15 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
     let later = now.checked_add(std::time::Duration::from_secs(1)).unwrap();
 
     // A change it makes while it may write is kept and sent.
-    let (granted_request, granted_change) = owner
+    let (granted_write, granted_change) = owner
         .with_current(workspace, |view| edit(view, now, "written while editor"))
         .unwrap();
-    let granted = owner
-        .write(
-            workspace,
-            |_| Ok(vec![granted_request]),
-            &crate::owner::testing::member_key(),
-            now,
-        )
-        .await
-        .unwrap();
-    assert_eq!(granted.len(), 1, "the change it may make is committed");
+    super::commit(owner, workspace, granted_write, now).unwrap();
+    assert_eq!(
+        owner.frames(workspace).len(),
+        1,
+        "the change it may make is committed"
+    );
     assert!(
         sends_change(owner, workspace, now, granted_change),
         "the change it may make is sent"
@@ -127,17 +114,10 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         .unwrap();
 
     // The change it makes now is refused before it is sent, told as a server's refusal is told.
-    let (refused_request, refused_change) = owner
+    let (refused_write, refused_change) = owner
         .with_current(workspace, |view| edit(view, later, "written while viewer"))
         .unwrap();
-    let refused = owner
-        .write(
-            workspace,
-            |_| Ok(vec![refused_request]),
-            &crate::owner::testing::member_key(),
-            later,
-        )
-        .await
+    let refused = super::commit(owner, workspace, refused_write, later)
         .expect_err("the workspace refuses the change");
     let WriteRefusal::ChangeRefused(refused) = refused else {
         panic!("the refusal is the change's own: {refused:?}");
@@ -166,33 +146,6 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         "nothing of the refused change is sent"
     );
 
-    // The verdict is the workspace's own state: it names the document, the change and why, and
-    // the device that refused it is this one.
-    let held = owner.write_refusals(workspace);
-    assert_eq!(held.len(), 1, "{held:?}");
-    let verdict = &held[0];
-    assert_eq!(verdict.app, APP, "the verdict names the document");
-    assert_eq!(verdict.record, "");
-    assert_eq!(
-        verdict.author,
-        crate::owner::testing::member_key()
-            .verifying_key()
-            .to_bytes(),
-        "the verdict is about this device's change"
-    );
-    assert_eq!(
-        verdict.by,
-        crate::owner::testing::member_key()
-            .verifying_key()
-            .to_bytes(),
-        "the verdict is this device's own"
-    );
-    assert_eq!(verdict.reason, crate::RefusalReason::Forbidden);
-    assert!(
-        verdict.changes.contains(&refused_change),
-        "the verdict names the change the person's history rows"
-    );
-
     // Its person may write again: the next change lands, and the verdict goes.
     assert!(
         governor_peer
@@ -208,24 +161,11 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
             later,
         )
         .unwrap();
-    let taken = owner
+    let (taken, _) = owner
         .with_current(workspace, |view| {
             edit(view, later, "written while editor again")
         })
-        .unwrap()
-        .0;
-    let taken = owner
-        .write(
-            workspace,
-            |_| Ok(vec![taken]),
-            &crate::owner::testing::member_key(),
-            later,
-        )
-        .await;
-    assert_eq!(taken.map(|taken| taken.len()), Ok(1), "the change lands");
-    assert!(
-        owner.write_refusals(workspace).is_empty(),
-        "what the workspace holds is not missing anywhere: {:?}",
-        owner.write_refusals(workspace)
-    );
+        .unwrap();
+    super::commit(owner, workspace, taken, later).unwrap();
+    assert_eq!(owner.frames(workspace).len(), 2, "the change lands");
 }
