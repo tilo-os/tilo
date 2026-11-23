@@ -133,7 +133,7 @@ impl ActionProvider for Broker {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let page = match query.provider.as_deref() {
-            None => CataloguePage {
+            None if query.needle.is_empty() => CataloguePage {
                 revision: "1".into(),
                 providers: vec![CatalogueProvider {
                     provider: "1".into(),
@@ -144,7 +144,8 @@ impl ActionProvider for Broker {
                 }],
                 ..CataloguePage::default()
             },
-            Some("1") => CataloguePage::from_rows(
+            // A search of the catalogue reaches every provider's rows.
+            None | Some("1") => CataloguePage::from_rows(
                 "1".into(),
                 vec![notebook(None), notebook(Some("pin"))],
                 &query,
@@ -223,6 +224,10 @@ impl Sessions for DeviceRuns {
             Caller::local_person("ada").delegated_to(tilo_mcp::devices::agent_id("agent", key));
         Ok((Arc::new(self.broker.clone()), caller))
     }
+
+    fn dispatch(&self) -> SessionHost {
+        Arc::new(self.broker.clone())
+    }
 }
 
 /// The person's device, hosting a workspace for them on its endpoint.
@@ -232,6 +237,7 @@ struct Box_ {
     endpoint: Endpoint,
     workspace: String,
     runs: Arc<DeviceRuns>,
+    key_sessions: Arc<KeySessions>,
     _router: Router,
     _state: tempfile::TempDir,
 }
@@ -293,6 +299,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
         endpoint,
         workspace: made.workspace,
         runs,
+        key_sessions,
         _router: router,
         _state: state,
     }
@@ -433,6 +440,184 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
         "the key entered nothing"
     );
     assert!(device.runs.opened.lock().unwrap().is_empty());
+}
+
+/// A window a device shows on a page, as its window process answers: the page whole, and what
+/// each act did, said back in the markup of the element it changed.
+struct ShownWindow {
+    /// Told when a window's device let go of it.
+    closed: std::sync::mpsc::Sender<()>,
+}
+
+impl tilo_runtime::key_sessions::PageViews for ShownWindow {
+    fn open(
+        &self,
+        workspace: &str,
+        app: &str,
+        caller: &Caller,
+    ) -> Result<
+        tilo_server_protocol::page::window::WindowLink,
+        tilo_server_protocol::page::PageRefusal,
+    > {
+        use tilo_server_protocol::page::window::{WindowAnswer, WindowAsk, receive, send};
+        if app != NOTES {
+            return Err(tilo_server_protocol::page::PageRefusal::NoSuchApp);
+        }
+        // The window acts in the page's workspace: a caller of another is refused.
+        if caller.workspace() != Some(workspace) {
+            return Err(tilo_server_protocol::page::PageRefusal::Elsewhere);
+        }
+        let (device, mut window) = std::os::unix::net::UnixStream::pair().unwrap();
+        let closed = self.closed.clone();
+        std::thread::spawn(move || {
+            while let Some(ask) = receive::<WindowAsk>(&mut window).unwrap() {
+                let answer = match ask {
+                    WindowAsk::Open { show } => WindowAnswer::Shown {
+                        title: "Notes".into(),
+                        css: ".n{}".into(),
+                        body: format!("<main data-p=\"0\">{}</main>", show.unwrap_or_default()),
+                    },
+                    WindowAsk::Act { id, action, .. } => {
+                        WindowAnswer::Changed(vec![tilo_server_protocol::page::PagePatch {
+                            id,
+                            html: format!("{action:?}"),
+                        }])
+                    }
+                    WindowAsk::Changed => WindowAnswer::Changed(Vec::new()),
+                };
+                send(&mut window, &answer).unwrap();
+            }
+            closed.send(()).unwrap();
+        });
+        Ok(tilo_server_protocol::page::window::WindowLink::over(device))
+    }
+}
+
+/// A member opens the workspace's pages on the device that holds it: the front page lists the
+/// apps its dispatch offers them, the search runs an action the catalogue offers as them, and an
+/// app's page is its window, which takes what they did and goes when the page closes.
+#[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one member's visit, read top to bottom"
+)]
+async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
+    use tilo_server_protocol::page::{PageAction, PageAddress};
+    use tilo_workspace_service::app_serving::AppActionServer as _;
+    let root = SigningKey::from_bytes(&[0x13; 32]);
+    let device = device_host(&root).await;
+    let (closed, window_closed) = std::sync::mpsc::channel();
+    device
+        .key_sessions
+        .pages_served()
+        .show_through(Arc::new(ShownWindow { closed }));
+    let pages = device.key_sessions.pages().unwrap();
+    let workspace_id = WorkspaceId::parse(&device.workspace).unwrap();
+    let ada = Caller::local_person("ada").in_workspace(device.workspace.clone());
+    let act = |id, action| tilo_workspace_service::app_serving::PageAct {
+        id,
+        target: None,
+        action,
+        signed: None,
+    };
+    let address = |app: &str, show: Option<&str>| PageAddress {
+        workspace: device.workspace.clone(),
+        app: app.into(),
+        show: show.map(str::to_owned),
+    };
+
+    let home = pages
+        .open(workspace_id, &ada, address("", None))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        home.body
+            .contains(&format!("href=\"/w/{workspace_id}/notes\"")),
+        "the front page opens Notes: {}",
+        home.body
+    );
+    assert!(
+        home.body.contains("/search\""),
+        "and the workspace's search"
+    );
+
+    let search = pages
+        .open(workspace_id, &ada, address("search", Some("pin")))
+        .await
+        .unwrap()
+        .unwrap();
+    let pin = search
+        .body
+        .split("data-p=\"")
+        .skip(1)
+        .find(|part| part.contains("Pin"))
+        .and_then(|part| part.split('"').next())
+        .and_then(|id| id.parse::<u32>().ok())
+        .expect("the search offers the notebook's Pin");
+    let ran = pages
+        .act(
+            workspace_id,
+            search.page,
+            Some(act(pin, PageAction::Activate)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        ran.iter().any(|patch| patch.html.contains("Pin: Done.")),
+        "the row's action ran and said so: {ran:?}"
+    );
+    let invoked = device.runs.broker.invoked.lock().unwrap().clone();
+    assert!(
+        invoked
+            .iter()
+            .any(|request| request.target.address.action == "pin"),
+        "the dispatch ran Pin"
+    );
+    assert!(
+        device
+            .runs
+            .broker
+            .callers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|caller| caller.workspace() == Some(device.workspace.as_str())),
+        "every call went as the page's person in its workspace"
+    );
+
+    let notes = pages
+        .open(workspace_id, &ada, address("notes", Some("groceries")))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(notes.title, "Notes");
+    assert!(
+        notes.body.contains("groceries"),
+        "the window opened what the address names"
+    );
+    let toggled = pages
+        .act(workspace_id, notes.page, Some(act(7, PageAction::Toggle)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        toggled.first().map(|patch| (patch.id, patch.html.as_str())),
+        Some((7, "Toggle"))
+    );
+    assert_eq!(
+        pages
+            .open(workspace_id, &ada, address("mail", None))
+            .await
+            .unwrap(),
+        Err(tilo_server_protocol::page::PageRefusal::NoSuchApp),
+        "an app the catalogue does not list them has no page"
+    );
+    pages.close(workspace_id, notes.page);
+    window_closed
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the window goes with its page");
 }
 
 /// The agent keys a test makes from the person's root it holds: the same key for the same agent
