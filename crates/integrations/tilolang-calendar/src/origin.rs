@@ -824,14 +824,10 @@ impl CalDavOrigin {
                     request,
                     Pending::Calendar {
                         record: record.to_owned(),
+                        name,
+                        color,
                     },
                 );
-                if let Some(state) = self.state.as_mut()
-                    && let Some(cal) = state.calendars.get_mut(record)
-                {
-                    cal.name = name;
-                    cal.color = color;
-                }
                 true
             }
             Err(Unmade::NoAccount) => {

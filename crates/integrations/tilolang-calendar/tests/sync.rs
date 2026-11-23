@@ -245,7 +245,11 @@ fn an_answer_tells_the_organiser_and_writes_the_persons_own_status() {
     rig.settle();
     let text = held(&server, "work");
     assert!(text.contains("PARTSTAT=ACCEPTED"), "{text}");
-    let guest = rig.attendees(&event).remove(0);
+    let guest = rig
+        .attendees(&event)
+        .into_iter()
+        .find(|guest| rig.text("Attendee", guest, "email") == ADA)
+        .expect("her own attendee");
     assert_eq!(rig.text("Attendee", &guest, "status"), "accepted");
 }
 
