@@ -13,11 +13,10 @@ use super::frame_line;
 use crate::outcome::InvocationId;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
-    ContentPutStep, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest,
-    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
-    MAX_REMOTE_ACTION_FRAME_BYTES, MAX_REMOTE_WAIT, Pending, RemoteActionFrame,
-    RemoteActionMessage, UpdateMark, pending,
+    ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer, ContentPutStep,
+    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, MAX_CONTENT_FRAME_BYTES,
+    MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES, MAX_REMOTE_ACTION_FRAME_BYTES,
+    MAX_REMOTE_WAIT, Pending, RemoteActionFrame, RemoteActionMessage, UpdateMark, pending,
 };
 
 /// How long past the longest remote wait an answer is waited for before the ask is given up.
@@ -431,7 +430,6 @@ impl ActionProvider for LineClient {
             other => Err(unexpected(&other)),
         })
     }
-
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         Some(Arc::new(self.clone()))
