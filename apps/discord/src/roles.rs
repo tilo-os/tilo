@@ -107,6 +107,12 @@ pub fn plan(guild: &Guild) -> RolePlan {
     if !guild.map_roles || guild.guild_id.is_empty() || guild.only_channel.is_some() {
         return plan;
     }
+    // Before Discord's layout is in, the bridge knows none of the server's roles, not even the
+    // ones it made itself (every server has `@everyone`, so none means none observed): a role
+    // it planned on an earlier pass looks missing, and would be made again.
+    if guild.roles.is_empty() {
+        return plan;
+    }
     for role in TILO_ROLES {
         let want_name = display_name(role);
         let want_perms = perm::bits(permissions(role));
@@ -115,7 +121,6 @@ pub fn plan(guild: &Guild) -> RolePlan {
         // Mapped but not observed yet: just created, Discord's echo not in.
         if mapped.is_some()
             && current.is_none()
-            && !guild.roles.is_empty()
             && !role_vanished(guild, mapped.map(|m| m.discord.as_str()))
         {
             continue;

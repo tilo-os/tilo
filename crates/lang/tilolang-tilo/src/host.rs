@@ -680,8 +680,13 @@ impl HostInner {
     /// the rows it is asked for, an invoked action is refused before it runs, and a window
     /// published the answer for what it shows, so no surface carries a condition's answer for
     /// every item it holds.
-    fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.offered_reading(resource, action)
+    fn availability(
+        &self,
+        resource: &str,
+        action: &str,
+        who: &Actor,
+    ) -> Option<tilo_actions::Availability> {
+        self.offered_reading(resource, action, who)
             .and_then(|(offered, _)| offered.availability)
     }
 
@@ -691,7 +696,12 @@ impl HostInner {
     /// caller keeping the answer asks again only when one of those fields moves ([`Reading`]).
     /// `None` when the app presents nothing of the action and keeps no requirement it can
     /// decide, or when one cannot be read.
-    fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
+    fn offered_reading(
+        &self,
+        resource: &str,
+        action: &str,
+        who: &Actor,
+    ) -> Option<(Offered, Reading)> {
         // What asking reads of the app's package: the action's declaration and the type of its
         // target. Copied out of the registry by value, not the package: a package is the whole
         // app's compiled metadata, and a window asks this once for each action of each row it
@@ -727,7 +737,7 @@ impl HostInner {
             // gives them now: a menu of a finished task offers "Reopen", not "Complete".
             match self
                 .runtime
-                .presentation_reading(action, &target, &self.viewer)
+                .presentation_reading(action, &target, who)
             {
                 Ok((presented, read_here)) => {
                     if let Some(presented) = presented {
@@ -751,7 +761,7 @@ impl HostInner {
             None => tilo_actions::Availability::Available,
         };
         if has_applies {
-            match self.runtime.applies_reading(action, &target, &self.viewer) {
+            match self.runtime.applies_reading(action, &target, who) {
                 Ok((Some(reason), applies)) => {
                     offered.availability = Some(decided(Some(reason)));
                     return Some((offered, merged(read, applies)));
@@ -766,7 +776,7 @@ impl HostInner {
             offered.availability = Some(decided(None));
             return Some((offered, read));
         }
-        match self.runtime.refusal_reading(action, &target, &self.viewer) {
+        match self.runtime.refusal_reading(action, &target, who) {
             Ok((reason, guard)) => {
                 offered.availability = Some(decided(reason));
                 Some((offered, merged(read, guard)))
@@ -796,20 +806,20 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id && !action.scenario)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        // A requirement is the app's, and the app is what can read it: an action published
-        // while its rule held, or one an agent addresses by name, is refused here, before it
-        // runs, with its rule's reason.
-        if let Some(target) = request.resource
-            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
-                self.availability(target, request.action_id)
-        {
-            return Err(reason);
-        }
         // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request
             .caller
             .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone());
+        // A requirement is the app's, and the app is what can read it: an action published
+        // while its rule held, or one an agent addresses by name, is refused here, before it
+        // runs, with its rule's reason, decided for the invoker it then runs as.
+        if let Some(target) = request.resource
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(target, request.action_id, &invoker)
+        {
+            return Err(reason);
+        }
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
@@ -1136,7 +1146,7 @@ impl Host {
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
         let id = self.published_action(resource, action)?.id;
-        self.inner.availability(resource, &id)
+        self.inner.availability(resource, &id, &self.inner.viewer)
     }
 
     /// What the action published as `action` offers on the published resource `resource` now, as
@@ -1148,7 +1158,7 @@ impl Host {
     #[must_use]
     pub fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
         let id = self.published_action(resource, action)?.id;
-        self.inner.offered_reading(resource, &id)
+        self.inner.offered_reading(resource, &id, &self.inner.viewer)
     }
 
     /// The action the API publishes as `action` on `resource`: one of the package whose

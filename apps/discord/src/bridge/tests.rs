@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
         assert!(
             first.chat_moves.iter().any(|moved| {
                 moved["id"] == json!(at("c_two"))
-                    && moved["category"] == json!(at("k_talk"))
+                    && moved["category"]["id"] == json!(at("k_talk"))
                     && moved["at"] == json!(0)
             }),
             "{:?}",

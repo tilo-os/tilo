@@ -329,17 +329,20 @@ pub struct Opened {
 
 /// The arguments `declared` (an action of `meta`) was invoked with, by the names its parameters
 /// declare, from `values` the position they were given in: what a program following the change
-/// reads as the verb's arguments. Empty when the change recorded none (a change not made by
-/// invoking the action).
+/// reads as the verb's arguments. A resource among them is named as the action API names it
+/// (`{"id", "kind"}`, by `published`), so a program addresses it as it would invoke it. Empty when
+/// the change recorded none (a change not made by invoking the action).
 fn named_arguments(
     meta: &tilolang_tilo::runtime::meta::Meta,
     declared: &tilolang_tilo::runtime::meta::ActionMeta,
     values: &[Json],
+    published: &dyn Fn(&str, &str) -> Option<Json>,
 ) -> Map<String, Json> {
     // An action that acts on a record takes it as its first parameter: a call that gives the
-    // record among its arguments carries it there, and one whose caller named it apart does not.
+    // record among its arguments carries it there, and one whose caller named it apart carries
+    // only the parameters after it.
     let target = usize::from(meta.target_of(&declared.params).is_some());
-    let skip = if values.len() >= declared.params.len() {
+    let apart = if values.len() < declared.params.len() {
         target
     } else {
         0
@@ -347,10 +350,38 @@ fn named_arguments(
     declared
         .params
         .iter()
+        .skip(apart)
         .zip(values)
-        .skip(skip)
-        .map(|(param, value)| (param.name.clone(), value.clone()))
+        .map(|(param, value)| (param.name.clone(), published_value(value, published)))
         .collect()
+}
+
+/// `value` with each resource it references (`{"ref", "ty"}`, as a stamp records it) named as
+/// `published` names it.
+fn published_value(value: &Json, published: &dyn Fn(&str, &str) -> Option<Json>) -> Json {
+    match value {
+        Json::Object(fields) => {
+            if let (Some(Json::String(id)), Some(Json::String(ty)), 2) =
+                (fields.get("ref"), fields.get("ty"), fields.len())
+                && let Some(named) = published(id, ty)
+            {
+                return named;
+            }
+            Json::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), published_value(value, published)))
+                    .collect(),
+            )
+        }
+        Json::Array(items) => Json::Array(
+            items
+                .iter()
+                .map(|item| published_value(item, published))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 impl Opened {
@@ -692,9 +723,18 @@ impl Opened {
                     }
                 })
                 .collect();
+            // What the change names it acted on, by the types of the resources its arguments
+            // reference: a resource it removed or moved out of its place is no longer read
+            // where the document held it, so the reference says what it was.
+            let named: Vec<String> = stamp
+                .args
+                .iter()
+                .filter_map(|arg| store.kind_of_type_id(arg.get("ty")?.as_str()?))
+                .collect();
             let Some(kind) = acted
                 .iter()
                 .find(|kind| targets.contains(kind))
+                .or_else(|| named.iter().find(|kind| targets.contains(kind)))
                 .or_else(|| acted.first())
                 .cloned()
             else {
@@ -714,8 +754,12 @@ impl Opened {
             let actor = stamp
                 .invoked_by()
                 .map_or_else(|| tilo_actions::Acting::person(String::new()), Into::into);
+            let published = |id: &str, ty: &str| {
+                let kind = store.kind_of_type_id(ty)?;
+                Some(serde_json::json!({ "id": resource_id(&self.app, id), "kind": kind }))
+            };
             let arguments = action.map_or_else(Map::new, |(meta, declared)| {
-                named_arguments(meta, declared, &stamp.args)
+                named_arguments(meta, declared, &stamp.args, &published)
             });
             events.push((
                 DocumentEvent {

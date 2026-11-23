@@ -445,6 +445,13 @@ pub fn published(id: &str) -> String {
     publish(id)
 }
 
+/// Chat's resource `id` of `kind` as Chat's actions take one among their arguments: a
+/// reference to it.
+#[must_use]
+pub fn reference(kind: &str, id: &str) -> Value {
+    serde_json::json!({ "app": APP, "id": publish(id), "kind": kind, "label": "" })
+}
+
 /// `id` as the published id of Chat's resource: what the tree's `item` names it by.
 fn publish(id: &str) -> String {
     if id.starts_with(ID_PREFIX) {

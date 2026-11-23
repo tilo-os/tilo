@@ -809,7 +809,10 @@ fn moved() -> Vec<Step> {
             then: vec![on_chat(
                 "move-a-category",
                 "move_category",
-                &[("c", item("id")), ("at", item("at"))],
+                &[
+                    ("c", reference(item("resource_kind"), item("id"))),
+                    ("at", item("at")),
+                ],
             )],
             otherwise: vec![on_chat(
                 "move-a-channel",

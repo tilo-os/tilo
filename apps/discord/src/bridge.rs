@@ -29,6 +29,9 @@ use crate::{import, layout, order, roles};
 pub const CHAT_PREFIX: &str = "tl.so.tilo.chat.";
 /// Chat's root resource kind: the sidebar's conversations.
 pub const CHAT_KIND: &str = "tl.so.tilo.chat.Conversations";
+/// Chat's kind of a category.
+const CATEGORY_KIND: &str = "tl.so.tilo.chat.Category";
+const MESSAGE_KIND: &str = "tl.so.tilo.chat.Message";
 /// The workspace's own emoji, which the bridge uploads to the server.
 pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The workspace's own governance resource kind, whose role changes the
@@ -289,6 +292,23 @@ fn actor(event: &Value) -> Option<MemberId> {
     acting.member_id().cloned()
 }
 
+/// Chat's moves into Discord's order as Chat's move actions take them: the category a channel
+/// goes under named by a reference to it.
+fn chat_moves(moves: Vec<order::ChatMove>) -> Vec<Value> {
+    moves
+        .into_iter()
+        .filter_map(|moved| {
+            let category = moved
+                .category
+                .as_deref()
+                .map_or(Value::Null, |category| tilo::reference(CATEGORY_KIND, category));
+            let mut value = serde_json::to_value(moved).ok()?;
+            value["category"] = category;
+            Some(value)
+        })
+        .collect()
+}
+
 fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
     serde_json::from_value(payload.clone()).ok()
 }
@@ -508,7 +528,7 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     // Adopted, the workspace lists the server's channels as the server does.
     if !import.finish.is_empty() {
         plan.chat_moves
-            .extend(values(order::to_chat(guild, guild, &tilo)));
+            .extend(chat_moves(order::to_chat(guild, guild, &tilo)));
     }
     plan.finish.extend(values(import.finish));
     if guild.ownership == Ownership::Adopted {
@@ -653,7 +673,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         // Back after a while: what moved in Discord meanwhile shows in Chat.
         if adopted && layout.connected {
             plan.chat_moves
-                .extend(values(order::to_chat(read.guild, read.guild, &workspace)));
+                .extend(chat_moves(order::to_chat(read.guild, read.guild, &workspace)));
         }
         // On every start too: the workspace's emoji made while the bridge
         // was away, or that the server had no workspace or permission for.
@@ -674,7 +694,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
             && (layout.connected || order::moved_in_discord(read.guild, &observed, &workspace))
         {
             plan.chat_moves
-                .extend(values(order::to_chat(&observed, read.guild, &workspace)));
+                .extend(chat_moves(order::to_chat(&observed, read.guild, &workspace)));
         }
     }
 }
@@ -699,7 +719,15 @@ fn relay_item_fetched(
         json!(chat.conversation_kind(&post.channel)),
     );
     fields.insert("text".into(), json!(post.text));
-    fields.insert("reply_to".into(), json!(post.parent));
+    // The message it answers, as Chat's `relay` takes a message: a reference to it.
+    fields.insert(
+        "reply_to".into(),
+        json!(
+            post.parent
+                .as_ref()
+                .map(|message| tilo::reference(MESSAGE_KIND, message))
+        ),
+    );
     fields.insert("by".into(), json!(post.appearance.name));
     fields.insert("written_in".into(), json!("Discord"));
     fields.insert("written".into(), json!(post.written.saturating_mul(1000)));

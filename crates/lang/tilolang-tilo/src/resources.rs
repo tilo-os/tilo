@@ -1345,6 +1345,13 @@ impl ResourceStore {
         self.kind_of_type(&self.type_of_id(id)?).ok()
     }
 
+    /// The kind the type `ty` stores its resources as, by the type's id, as a reference names it:
+    /// `None` for a type no loaded package declares.
+    #[must_use]
+    pub fn kind_of_type_id(&self, ty: &str) -> Option<String> {
+        self.kind_of_type(ty).ok()
+    }
+
     /// The type of the resource `id` (`doc` or `doc/item`), whatever type it is: what an id
     /// alone is read as, a published address or a reference in a text. `None` when the store
     /// holds no such resource of a loaded type.

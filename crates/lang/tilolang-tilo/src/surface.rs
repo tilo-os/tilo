@@ -719,6 +719,22 @@ pub fn personal_surface() -> Surface {
     }
 }
 
+/// The native records `app` keeps for its whole workspace ([`collab_types::WORKSPACE_DOCUMENTS`]),
+/// as their surfaces: a change to one is decided by its app's surface, so the package of an app
+/// that keeps one publishes it beside its own types.
+fn kept_for_workspace(app: &str) -> Vec<Surface> {
+    use tilo_resource::Resource as _;
+    [
+        tilo_workspace_emoji::WorkspaceEmoji::surface(),
+        moderation_model::Moderation::surface(),
+    ]
+    .into_iter()
+    .filter(|surface| {
+        collab_types::workspace_document_of_kind(&surface.kind).is_some_and(|kept| kept.app == app)
+    })
+    .collect()
+}
+
 #[derive(Serialize)]
 struct SurfaceFile<'a> {
     resources: &'a [Surface],
@@ -745,6 +761,7 @@ pub fn surface_toml_reading(
     let mut resources = vec![host_surface(), personal_surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta, words));
+        resources.extend(kept_for_workspace(&meta.app));
     }
     let reads = reads
         .iter()
