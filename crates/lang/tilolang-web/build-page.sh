@@ -16,7 +16,7 @@ out="${1:-target/tilolang-web}"
 cargo build --locked --target wasm32-unknown-unknown --profile "$profile" -p tilolang-web
 mkdir -p "$out/fonts"
 wasm-bindgen --target web --out-dir "$out" \
-  "target/wasm32-unknown-unknown/$profile/tilolang_web.wasm"
+  "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$profile/tilolang_web.wasm"
 
 python3 - "$out/apps.json" <<'PY'
 import json, pathlib, sys
