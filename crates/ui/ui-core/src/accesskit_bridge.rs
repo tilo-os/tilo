@@ -1106,15 +1106,17 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     }
     // Click depends on the roles that can actually be operated. Offering it
     // on every node — which this used to do — makes an AT read "clickable" on
-    // a plain label. `ListItem` is in the list because a synthetic segmented
-    // control's segments are list items, and without it an AT could see them
-    // but not press them. A table row is one too, as soon as it has a
-    // target an activation reaches: that is what a person's Enter on the row,
-    // a screen reader's activation and a click all route to.
+    // a plain label. A list item answers a press only where it carries a
+    // target one reaches (the row a person opens); a plain settings line is
+    // no control, and offering it the press would take the press a caller
+    // made on the chooser it stands beside. `Row` is one as soon as it has a
+    // target an activation reaches.
     let actionable = access.action_target.is_some() && access.bounds.is_some();
-    if !access.state.disabled
-        && (crate::a11y::activation_role(access.role) || (access.role == Role::Row && actionable))
-    {
+    let clickable = match access.role {
+        Role::ListItem => actionable,
+        role => crate::a11y::activation_role(role) || (role == Role::Row && actionable),
+    };
+    if !access.state.disabled && clickable {
         ak.add_action(AkAction::Click);
     }
     if let Some(expanded) = access.state.expanded.filter(|_| !access.state.disabled) {

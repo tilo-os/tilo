@@ -1533,9 +1533,11 @@ impl Widget for Dropdown {
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
         }
-        if self.action.is_none() {
-            node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
-        }
+        // The chooser is a control a press reaches whether or not a change is bound to it: a
+        // press opens its list, as a person's does. Without a target of its own, a caller
+        // asking for it by the words beside it would press the row it stands on instead, and
+        // the list would never open.
+        node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         if self.open && self.supports_filter() {
             node = node.with_description(widget_text("dropdown-search-description"));
         }

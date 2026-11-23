@@ -260,7 +260,9 @@ pub(crate) fn activation_role(role: Role) -> bool {
 /// node a widget described ([`crate::accesskit_bridge::map_role`]).
 ///
 /// A list box's option is one of them: a dropdown's open list is drawn, and its options are the
-/// rows a press chooses, so a screen reader and an agent are offered them as controls.
+/// rows a press chooses, so a screen reader and an agent are offered them as controls. A combo
+/// box is one too: the closed chooser is pressed to open the list, and what a person, a screen
+/// reader or an agent presses by its name is the control itself, never the row it stands on.
 #[must_use]
 pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
     matches!(
@@ -274,6 +276,7 @@ pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
             | crate::accesskit::Role::ListItem
             | crate::accesskit::Role::TreeItem
             | crate::accesskit::Role::ListBoxOption
+            | crate::accesskit::Role::ComboBox
             | crate::accesskit::Role::Link
     )
 }

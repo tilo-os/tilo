@@ -1724,3 +1724,184 @@ fn a_devices_display_requests_are_jobs_the_display_service_answers() {
         );
     }
 }
+
+/// Every control the window shows by `name`, in tree order: a choice's line
+/// publishes one, its chooser, and never a second pressable copy of the words.
+fn controls_named(app: &mut App, name: &str) -> Vec<ui::headless::Control> {
+    app.harness()
+        .controls()
+        .into_iter()
+        .filter(|control| control.name.as_deref() == Some(name) && !control.disabled)
+        .collect()
+}
+
+fn pressable_named(app: &mut App, name: &str) -> Option<ui::headless::Control> {
+    controls_named(app, name)
+        .into_iter()
+        .find(|control| control.verbs.iter().any(|verb| verb == "activate"))
+}
+
+fn control_binds(app: &mut App, resource: &str, action: &str) -> bool {
+    ui::widget::controls::control_action_bindings(app.harness().root_widget())
+        .iter()
+        .any(|binding| {
+            matches!(
+                &binding.kind,
+                ui::widget::ControlBindingKind::Action(address)
+                    if address.resource == resource && address.action == action
+            )
+        })
+}
+
+/// Choosing a scale is choosing the control, not pressing the line it stands
+/// on, and it asks before it keeps the change: the confirmation is drawn and
+/// its control runs the published action. Keep and revert answer through
+/// their published actions too.
+#[test]
+fn choosing_a_scale_offers_its_confirmation_and_keeping_or_reverting_it_works() {
+    use ui::headless::ControlInput;
+
+    let _guard = crate::prefs::test_env::ConfigGuard::new();
+    let mut app = laptop_on_displays();
+    frame(&mut app);
+
+    // One control is named after the setting: the chooser. A second, pressable copy of the
+    // words would leave an agent or a screen reader two controls of one name to choose
+    // between, and the one it pressed would run nothing.
+    let named = controls_named(&mut app, &t("display-scale"));
+    assert_eq!(
+        named.len(),
+        1,
+        "the setting publishes one control, its chooser: {named:?}"
+    );
+    let chooser = named.into_iter().next().expect("the one control");
+    assert!(
+        chooser.verbs.iter().any(|verb| verb == "activate"),
+        "the chooser is pressed to open its list: {chooser:?}"
+    );
+    app.harness()
+        .operate_control(&chooser.id, &ControlInput::Press)
+        .expect("the chooser opens its list");
+    frame(&mut app);
+    assert_eq!(
+        controls_named(&mut app, &t("display-scale")).len(),
+        1,
+        "the open list still publishes one control of that name"
+    );
+    let option =
+        pressable_named(&mut app, "125%").expect("the open list offers each scale a press reaches");
+    app.harness()
+        .operate_control(&option.id, &ControlInput::Press)
+        .expect("125% is chosen");
+    frame(&mut app);
+    assert_eq!(
+        read_model(&mut app, |model| model
+            .pending_candidate
+            .as_ref()
+            .map(|candidate| candidate.outputs["eDP-1"].scale)),
+        Some(1.25),
+        "the choice is staged on the display it names"
+    );
+
+    // A press anywhere on the line opens the same list: the whole row is the setting's, not
+    // only the chooser at its trailing edge.
+    let label = t("display-scale");
+    let line = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.role() == ui::accesskit::Role::Group && node.label() == Some(label.as_str()))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the setting's line is drawn beside its chooser");
+    app.harness()
+        .click_at(line.x0 + 24.0, f64::midpoint(line.y0, line.y1));
+    frame(&mut app);
+    assert!(
+        pressable_named(&mut app, "125%").is_some(),
+        "a press on the line itself opens its list"
+    );
+    app.harness().key("Escape");
+    frame(&mut app);
+
+    // The confirmation is one the app publishes: its control runs the
+    // action a caller anywhere invokes.
+    let try_button = pressable_named(&mut app, &t("display-apply"))
+        .expect("the staged change is confirmed where the person sees it");
+    assert!(
+        try_button.verbs.iter().any(|verb| verb == "activate"),
+        "the confirmation is pressed, not only read"
+    );
+    assert!(
+        control_binds(&mut app, "settings.root", "apply-display-changes"),
+        "the confirmation runs the published action"
+    );
+
+    app.call_on(
+        "settings.root",
+        "apply-display-changes",
+        serde_json::json!({}),
+    )
+    .expect("the change is tried through its published action");
+    let mut applied = DisplayTransaction::load().expect("the preview is requested");
+    assert_eq!(applied.state, DisplayTransactionState::Requested);
+
+    // The display service applied it and asks the person: what the card
+    // offers is drawn, and it runs the published actions.
+    applied.state = DisplayTransactionState::AwaitingConfirmation;
+    applied.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+    applied.save().expect("the service says the preview is up");
+    change_model(&mut app, move |model| {
+        model.of_device = true;
+        model.host_state = Some(settings_store::display_control::DisplayReply {
+            identify: None,
+            observed: DisplayHardwareSnapshot::default(),
+            transaction: Some(applied),
+            committed: DisplayConfig::default(),
+        });
+    });
+    frame(&mut app);
+    for (label, action) in [
+        ("display-keep", "keep-display-changes"),
+        ("display-revert-now", "revert-display-changes"),
+    ] {
+        assert!(
+            pressable_named(&mut app, &t(label)).is_some(),
+            "the confirmation offers {label} while the change can still go back"
+        );
+        assert!(
+            control_binds(&mut app, "settings.root", action),
+            "{label} runs the published action {action}"
+        );
+    }
+    change_model(&mut app, |model| model.of_device = false);
+
+    app.call_on(
+        "settings.root",
+        "keep-display-changes",
+        serde_json::json!({}),
+    )
+    .expect("keeping answers through its published action");
+    assert_eq!(
+        DisplayTransaction::load().map(|transaction| transaction.state),
+        Some(DisplayTransactionState::ConfirmRequested),
+        "the change is kept"
+    );
+
+    let mut again = DisplayTransaction::load().expect("the preview is still there");
+    again.state = DisplayTransactionState::AwaitingConfirmation;
+    again.save().expect("the service asks again");
+    app.call_on(
+        "settings.root",
+        "revert-display-changes",
+        serde_json::json!({}),
+    )
+    .expect("reverting answers through its published action");
+    assert_eq!(
+        DisplayTransaction::load().map(|transaction| transaction.state),
+        Some(DisplayTransactionState::RevertRequested),
+        "the change goes back"
+    );
+}
