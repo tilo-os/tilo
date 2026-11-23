@@ -2281,7 +2281,7 @@ pub(crate) struct Command {
     pub(crate) destructive: bool,
 }
 
-fn flag(node: &UiNode, name: &str) -> bool {
+pub(crate) fn flag(node: &UiNode, name: &str) -> bool {
     match node.props.get(name) {
         Some(Value::Bool(on)) => *on,
         Some(Value::Int(on)) => *on != 0,
@@ -2289,7 +2289,7 @@ fn flag(node: &UiNode, name: &str) -> bool {
     }
 }
 
-fn text_of(node: &UiNode, name: &str) -> Option<String> {
+pub(crate) fn text_of(node: &UiNode, name: &str) -> Option<String> {
     match node.props.get(name) {
         Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
         _ => None,
@@ -2347,7 +2347,7 @@ fn spec_commands() -> Vec<&'static str> {
     ]
 }
 
-fn labels(commands: &[Command]) -> Vec<&str> {
+pub(crate) fn labels(commands: &[Command]) -> Vec<&str> {
     commands
         .iter()
         .map(|command| command.label.as_str())
@@ -2355,7 +2355,7 @@ fn labels(commands: &[Command]) -> Vec<&str> {
 }
 
 /// The home list's drawn row for a task, with its menu when `menu`.
-fn home_row<'a>(view: &'a mut ViewInstance, want: &Value, menu: bool) -> &'a UiNode {
+pub(crate) fn home_row<'a>(view: &'a mut ViewInstance, want: &Value, menu: bool) -> &'a UiNode {
     view.poll_patches().unwrap();
     let list = view
         .tree()
@@ -2413,7 +2413,7 @@ fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
 }
 
 /// The commands a task's row offers from its own menu.
-fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
+pub(crate) fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
     (row_menu(view, want))
         .of_kind("ui.MenuItem")
         .into_iter()
@@ -2433,7 +2433,7 @@ fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
 }
 
 /// The key of the command `label` of a task's row menu: the node running it names.
-fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String {
+pub(crate) fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String {
     (row_menu(view, want))
         .of_kind("ui.MenuItem")
         .into_iter()

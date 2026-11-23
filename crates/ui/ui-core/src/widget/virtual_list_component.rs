@@ -1880,6 +1880,7 @@ mod tests {
     use super::*;
     use crate::component::{BoundValue, Event, Fired, Intent};
     use crate::widget::MenuItemProps;
+    use std::cell::Cell;
 
     /// The rows of a list given its items whole: a row a title each.
     fn given_rows(count: usize) -> DescribedRows {
@@ -2442,6 +2443,78 @@ mod tests {
         assert_eq!(fired[0].event, "select");
     }
 
+    /// A row whose item offers a menu the host has not built yet is asked for it, and the menu
+    /// the person opened waits for that answer: once it comes, the commands the row's own view
+    /// placed and the commands its item offers are listed together, rather than a menu holding
+    /// only the question every menu carries.
+    #[test]
+    fn a_row_whose_menu_is_asked_for_lists_its_own_and_its_items_commands() {
+        let _settled = crate::motion::testing::settled();
+        // A shell that can carry a question is connected, as in an app window: every menu then
+        // keeps its "Send to…" row, so an empty one opens rather than being held back.
+        crate::shared_selection::set_send_host_available(true);
+        // The host answers the ask for the row's menu when the test says so, as an app does a
+        // frame or two later.
+        let answered = Rc::new(Cell::new(false));
+        let list = DescribedList::from_props(
+            "list",
+            column_of(DescribedRows {
+                held: Held::Rendered(Rc::new(RefCell::new(
+                    ViewRows::new(&[("row-0", None), ("row-1", None)], 0.0, 0.0)
+                        .answering(Rc::clone(&answered)),
+                ))),
+                ..DescribedRows::default()
+            }),
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let key = "row-1".to_owned();
+        let row = harness
+            .root::<DescribedList>()
+            .list()
+            .and_then(|list| list.row_rect(&key))
+            .expect("the row is laid out");
+        harness.send(&crate::synthetic_input::cursor_moved(20.0, row.center().y));
+        harness.send(&crate::synthetic_input::mouse_input(
+            crate::winit::event::ElementState::Pressed,
+            crate::winit::event::MouseButton::Right,
+        ));
+        assert!(
+            !harness
+                .root_mut::<DescribedList>()
+                .menu_area_mut()
+                .as_deref()
+                .is_some_and(ContextMenuArea::is_open),
+            "the menu waits for the row's commands instead of opening on its question"
+        );
+        // The host answers: the row now carries what its item offers, and the list takes it.
+        answered.set(true);
+        harness.relayout();
+        let mut root = harness.root_mut::<DescribedList>();
+        let area = root.menu_area_mut().expect("the list stands");
+        assert!(
+            area.is_open(),
+            "the menu opens once what it offers has come"
+        );
+        let labels: Vec<&str> = area
+            .menu()
+            .items()
+            .iter()
+            .filter_map(crate::widget::MenuItem::label)
+            .collect();
+        assert_eq!(
+            labels.get(..3),
+            Some(["Open as page", "Complete", "Delete"].as_slice()),
+            "the row's own command first, then its item's, as a person reads them: {labels:?}"
+        );
+        crate::shared_selection::set_send_host_available(false);
+    }
+
     /// The item a host holds open stands open where it stands: the list it builds again shows
     /// it as the person left it, and an item it does not hold open does not.
     #[test]
@@ -2781,6 +2854,11 @@ mod tests {
         items: Vec<ViewItem>,
         /// The rows the host has named but not rendered: they are on their way.
         withheld: Vec<String>,
+        /// The row whose menu the host asked for: the app answers with the commands its item
+        /// offers, which the row did not carry before.
+        asked: Option<String>,
+        /// Whether the host has answered the ask: the asked row then carries its item's menus.
+        answered: Rc<Cell<bool>>,
         /// The width a row's leading control takes, and the gap after it.
         lead: f32,
         gap: f32,
@@ -2797,9 +2875,17 @@ mod tests {
                     })
                     .collect(),
                 withheld: Vec::new(),
+                asked: None,
+                answered: Rc::new(Cell::new(false)),
                 lead,
                 gap,
             }
+        }
+
+        /// The host answers the ask for a row's menu once `answered` is set.
+        fn answering(mut self, answered: Rc<Cell<bool>>) -> Self {
+            self.answered = answered;
+            self
         }
 
         /// The same rows, the host having rendered every one but `keys`: those are on their way.
@@ -2829,6 +2915,10 @@ mod tests {
 
         fn request_range(&mut self, _range: Range<usize>, _open: Option<String>) {}
 
+        fn ask_menu(&mut self, key: &str) {
+            self.asked = Some(key.to_owned());
+        }
+
         fn rendered(&self, key: &str) -> bool {
             !self.withheld.iter().any(|held| held == key)
                 && self.items.iter().any(|item| item.key == key)
@@ -2847,6 +2937,7 @@ mod tests {
             };
             read(&mut ViewItemSource {
                 item,
+                menu: self.answered.get() && self.asked.as_deref() == Some(key),
                 lead: self.lead,
                 gap: self.gap,
             })?;
@@ -2869,9 +2960,12 @@ mod tests {
         }
     }
 
-    /// One item as the host renders it: its row, and the document it opens into.
+    /// One item as the host renders it: its row, the document it opens into, and the menu the
+    /// host asked it for.
     struct ViewItemSource<'a> {
         item: &'a ViewItem,
+        /// The host asked for this row's menu: it carries the commands its item offers.
+        menu: bool,
         lead: f32,
         gap: f32,
     }
@@ -2889,6 +2983,8 @@ mod tests {
                     .parent
                     .as_deref()
                     .map(|parent| Value::Resource(ViewRows::item_of(parent))),
+                // Until the host asks, the row says its item offers a menu it does not carry.
+                "offers_menu" if !self.menu => Some(Value::Bool(true)),
                 _ => None,
             }
         }
@@ -2912,6 +3008,11 @@ mod tests {
             match part {
                 "row" => vec![Some(ListRowProps::NAME.to_owned())],
                 "detail" => vec![None],
+                "attached" => vec![Some(crate::widget::ContextMenuProps::NAME.to_owned())],
+                "menu" if self.menu => vec![
+                    Some(MenuItemProps::NAME.to_owned()),
+                    Some(MenuItemProps::NAME.to_owned()),
+                ],
                 _ => Vec::new(),
             }
         }
@@ -2921,13 +3022,105 @@ mod tests {
             part: &str,
             read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
         ) -> Result<usize, String> {
-            if part != "row" {
+            match part {
+                "row" => {
+                    read(&mut ViewRowSource {
+                        key: &self.item.key,
+                    })?;
+                    Ok(1)
+                }
+                "attached" => {
+                    read(&mut ViewAttachedMenuSource)?;
+                    Ok(1)
+                }
+                "menu" if self.menu => {
+                    read(&mut ViewMenuItemSource { label: "Complete" })?;
+                    read(&mut ViewMenuItemSource { label: "Delete" })?;
+                    Ok(2)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    /// The menu the row's own view attached: one command of the view's own.
+    struct ViewAttachedMenuSource;
+
+    impl Source for ViewAttachedMenuSource {
+        fn key(&self) -> &str {
+            "attached-menu"
+        }
+
+        fn prop(&mut self, _name: &str) -> Option<Value> {
+            None
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+            None
+        }
+
+        fn children(&mut self, _part: &str) -> Vec<Element> {
+            Vec::new()
+        }
+
+        fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+            match part {
+                "items" => vec![Some(MenuItemProps::NAME.to_owned())],
+                _ => Vec::new(),
+            }
+        }
+
+        fn components(
+            &mut self,
+            part: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            if part != "items" {
                 return Ok(0);
             }
-            read(&mut ViewRowSource {
-                key: &self.item.key,
+            read(&mut ViewMenuItemSource {
+                label: "Open as page",
             })?;
             Ok(1)
+        }
+    }
+
+    /// One command of a menu, as the app describes it.
+    struct ViewMenuItemSource<'a> {
+        label: &'a str,
+    }
+
+    impl Source for ViewMenuItemSource<'_> {
+        fn key(&self) -> &str {
+            self.label
+        }
+
+        fn prop(&mut self, name: &str) -> Option<Value> {
+            (name == "label").then(|| Value::Text(self.label.to_owned()))
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+            None
+        }
+
+        fn children(&mut self, _part: &str) -> Vec<Element> {
+            Vec::new()
+        }
+
+        fn components(
+            &mut self,
+            _part: &str,
+            _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            Ok(0)
         }
     }
 

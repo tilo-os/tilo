@@ -74,6 +74,7 @@ mod task;
 mod task_api;
 mod tasks;
 mod tasks_features;
+mod tasks_menu;
 mod tasks_places;
 mod tasks_time;
 mod tasks_today;
