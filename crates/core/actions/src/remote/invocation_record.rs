@@ -291,7 +291,7 @@ impl Invocations {
         let Some(recorded) = self.find(&id) else {
             return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
         };
-        if !self.may_manage(caller, &recorded, may_write_origin) {
+        if !Self::may_manage(caller, &recorded, may_write_origin) {
             let verb = if target.address.action == RETRY {
                 "run it again"
             } else {
@@ -300,18 +300,16 @@ impl Invocations {
             return Some(Pending::ready(Err(refused(verb, recorded.origin.as_ref()))));
         }
         if target.address.action == RETRY {
-            return Some(Self::retry(Arc::clone(self), &recorded, request.invocation));
+            return Some(Self::retry(self, &recorded, request.invocation));
         }
         let (provider, runs_as) = recorded.route;
         let invocation = request.invocation;
         Some(provider.cancel(&runs_as, &id).map(move |stopped| {
-            stopped.and_then(|()| {
-                Ok(InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Completed {
-                        output: crate::ActionOutput::default(),
-                    },
-                })
+            stopped.map(|()| InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Completed {
+                    output: crate::ActionOutput::default(),
+                },
             })
         }))
     }
@@ -322,7 +320,7 @@ impl Invocations {
     /// request its caller signed on another device binds its first id and is not signed again
     /// here: the caller asks for it again from there.
     fn retry(
-        records: Arc<Self>,
+        records: &Arc<Self>,
         recorded: &Recorded,
         asked: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
@@ -344,7 +342,7 @@ impl Invocations {
             Some(original),
         );
         let (provider, runs_as) = recorded.route.clone();
-        let waiting = Arc::clone(&records);
+        let waiting = Arc::clone(records);
         provider.invoke(&runs_as, request).map(move |result| {
             if result
                 .as_ref()
@@ -379,7 +377,6 @@ impl Invocations {
     /// ([`Caller::continues`]), the person the agent that made it works for, or someone who may
     /// write the resource it was made from, as `may_write_origin` reads it now.
     fn may_manage(
-        &self,
         caller: &Caller,
         recorded: &Recorded,
         may_write_origin: &OriginWrites<'_>,
@@ -402,7 +399,7 @@ impl Invocations {
         may_write_origin: &OriginWrites<'_>,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
         let recorded = self.find(id)?;
-        if !self.may_manage(caller, &recorded, may_write_origin) {
+        if !Self::may_manage(caller, &recorded, may_write_origin) {
             return Some(Pending::ready(Err(refused(
                 "stop it",
                 recorded.origin.as_ref(),
