@@ -615,6 +615,60 @@ view thread(c: Conversation) {{
         assert!(!got.is_empty(), "a bar chart is given no size: {got:#?}");
     }
 
+    phase every_shape_chart_is_placed_from_values;
+    // A distribution's samples, a polar area's directions, a radar's axes and shapes, and a
+    // funnel's stages are cases of the toolkit's own sets: a view gives readings and where they
+    // lie, never a colour or a size.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.DistributionChart(
+        [
+            .samples(values: [4.0, 5.0, 6.0], label: "Before"),
+            .samples(values: [3.0, 4.0, 3.5], label: "After"),
+        ],
+        title: .some(n.title),
+        kind: .violin,
+    )
+    ui.PolarAreaChart(
+        [.area(label: "Jan", value: 12.0), .area(label: "Feb", value: 9.0)],
+        title: .some("Sign-ups"),
+    )
+    ui.RadarChart(
+        [
+            .axis(label: "Speed", max: 100.0),
+            .axis(label: "Cost", max: 30.0),
+            .axis(label: "Quality", max: 100.0),
+        ],
+        series: [.series(values: [70.0, 12.0, 88.0], label: "This week")],
+    )
+    ui.FunnelChart(
+        [
+            .stage(label: "Visited", value: 1200.0),
+            .stage(label: "Signed up", value: 340.0),
+        ],
+        direction: .pyramid,
+    )
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        for name in [
+            "ui.DistributionChart",
+            "ui.PolarAreaChart",
+            "ui.RadarChart",
+            "ui.FunnelChart",
+        ] {
+            assert!(strings.contains(name), "{name} is placed");
+        }
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.FunnelChart([.stage(label: "Visited", value: 1200.0, color: "red")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a stage is given no colour: {got:#?}");
+    }
+
     phase a_list_maps_with_each_items_place;
     // `map` and `flat_map` give the lambda the item's place from 0 as its second name, so a
     // drawing lays its shapes out by where each reading stands.

@@ -415,6 +415,9 @@ impl PlotMarks for PolarAreaMarks {
     }
 }
 
+mod polar_area_chart_component;
+pub use polar_area_chart_component::{PolarAreaChartProps, PolarAreaValue, areas_description};
+
 #[cfg(test)]
 mod tests {
     use super::*;

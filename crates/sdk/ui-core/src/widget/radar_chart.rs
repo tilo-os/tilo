@@ -43,6 +43,9 @@ pub struct RadarSeries {
     pub id: String,
     pub name: String,
     pub color: Color,
+    /// Its place in the theme's palette, when it is coloured by that and not by `color`: the
+    /// colour then follows the theme the series is drawn with.
+    pub palette: Option<usize>,
     pub values: Vec<f64>,
     pub detail: String,
 }
@@ -58,10 +61,31 @@ impl RadarSeries {
             id: id.into(),
             name: name.into(),
             color,
+            palette: None,
             values,
             detail: String::new(),
         }
     }
+
+    /// A series in the colour the theme's palette has at `index`, whichever theme draws it.
+    pub fn from_palette(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        index: usize,
+        values: Vec<f64>,
+    ) -> Self {
+        Self {
+            palette: Some(index),
+            ..Self::new(id, name, Color::TRANSPARENT, values)
+        }
+    }
+
+    fn color_in(&self, theme: &Theme) -> Color {
+        self.palette.map_or(self.color, |index| {
+            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        })
+    }
+
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
@@ -149,6 +173,13 @@ impl RadarChart {
         marks
             .toggles
             .retain(|id| marks.series.iter().any(|series| series.id == id));
+        marks.frame.inspection.hovered = None;
+    }
+    /// The axes a series' readings are on, in order: the same readings stay on their axes by
+    /// place.
+    pub fn set_axes(&mut self, axes: Vec<RadarAxis>) {
+        let marks = &mut self.marks;
+        marks.axes = axes;
         marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, series_id: &str, axis_id: &str) -> bool {
@@ -440,23 +471,19 @@ impl PlotMarks for RadarMarks {
             if self.toggles.is_hidden(&series.id) {
                 continue;
             }
+            let color = series.color_in(theme);
             let path = self.polygon(series, 1.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(
-                    series.color.r(),
-                    series.color.g(),
-                    series.color.b(),
-                    self.style.fill_alpha,
-                ),
+                Color::from_rgba8(color.r(), color.g(), color.b(), self.style.fill_alpha),
                 None,
                 &path,
             );
             scene.stroke(
                 &Stroke::new(self.style.stroke_width),
                 transform,
-                series.color,
+                color,
                 None,
                 &path,
             );
@@ -469,12 +496,7 @@ impl PlotMarks for RadarMarks {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            Color::from_rgba8(
-                                series.color.r(),
-                                series.color.g(),
-                                series.color.b(),
-                                60,
-                            ),
+                            Color::from_rgba8(color.r(), color.g(), color.b(), 60),
                             None,
                             &Circle::new(point, self.style.marker_radius + 6.0),
                         );
@@ -482,7 +504,7 @@ impl PlotMarks for RadarMarks {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        series.color,
+                        color,
                         None,
                         &Circle::new(point, self.style.marker_radius),
                     );
@@ -495,9 +517,13 @@ impl PlotMarks for RadarMarks {
                 transform,
                 tr,
                 theme,
-                self.series
-                    .iter()
-                    .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+                self.series.iter().map(|series| {
+                    (
+                        series.id.as_str(),
+                        series.name.as_str(),
+                        series.color_in(theme),
+                    )
+                }),
             );
         }
     }
@@ -520,6 +546,11 @@ impl PlotMarks for RadarMarks {
         None
     }
 }
+
+mod radar_chart_component;
+pub use radar_chart_component::{
+    RadarAxisProps, RadarChartProps, RadarSeriesProps, axes_description, radar_series_description,
+};
 
 #[cfg(test)]
 mod tests {

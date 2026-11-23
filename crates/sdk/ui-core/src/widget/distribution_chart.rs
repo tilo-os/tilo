@@ -24,6 +24,9 @@ pub struct DistributionSeries {
     pub id: String,
     pub label: String,
     pub color: Color,
+    /// Its place in the theme's palette, when it is coloured by that and not by `color`: the
+    /// colour then follows the theme the series is drawn with.
+    pub palette: Option<usize>,
     pub samples: Vec<f64>,
     pub detail: String,
 }
@@ -39,6 +42,7 @@ impl DistributionSeries {
             id: id.into(),
             label: label.into(),
             color,
+            palette: None,
             samples: samples
                 .into_iter()
                 .filter(|value| value.is_finite())
@@ -46,6 +50,26 @@ impl DistributionSeries {
             detail: String::new(),
         }
     }
+
+    /// A series in the colour the theme's palette has at `index`, whichever theme draws it.
+    pub fn from_palette(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        index: usize,
+        samples: impl IntoIterator<Item = f64>,
+    ) -> Self {
+        Self {
+            palette: Some(index),
+            ..Self::new(id, label, Color::TRANSPARENT, samples)
+        }
+    }
+
+    fn color_in(&self, theme: &Theme) -> Color {
+        self.palette.map_or(self.color, |index| {
+            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        })
+    }
+
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
@@ -412,6 +436,7 @@ impl PlotMarks for DistributionMarks {
             let Some(summary) = summary else {
                 continue;
             };
+            let color = series.color_in(theme);
             let x = self.center_x(index);
             if matches!(
                 self.style.kind,
@@ -422,15 +447,15 @@ impl PlotMarks for DistributionMarks {
                     Fill::NonZero,
                     transform,
                     Color::from_rgba8(
-                        series.color.r(),
-                        series.color.g(),
-                        series.color.b(),
+                        color.r(),
+                        color.g(),
+                        color.b(),
                         self.style.violin_fill_alpha,
                     ),
                     None,
                     &path,
                 );
-                scene.stroke(&Stroke::new(1.5), transform, series.color, None, &path);
+                scene.stroke(&Stroke::new(1.5), transform, color, None, &path);
             }
             if matches!(
                 self.style.kind,
@@ -444,21 +469,21 @@ impl PlotMarks for DistributionMarks {
                 scene.stroke(
                     &Stroke::new(1.5),
                     transform,
-                    series.color,
+                    color,
                     None,
                     &Line::new((x, high), (x, low)),
                 );
                 scene.stroke(
                     &Stroke::new(1.5),
                     transform,
-                    series.color,
+                    color,
                     None,
                     &Line::new((x - width / 3.0, high), (x + width / 3.0, high)),
                 );
                 scene.stroke(
                     &Stroke::new(1.5),
                     transform,
-                    series.color,
+                    color,
                     None,
                     &Line::new((x - width / 3.0, low), (x + width / 3.0, low)),
                 );
@@ -466,14 +491,14 @@ impl PlotMarks for DistributionMarks {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    Color::from_rgba8(series.color.r(), series.color.g(), series.color.b(), 80),
+                    Color::from_rgba8(color.r(), color.g(), color.b(), 80),
                     None,
                     &RoundedRect::from_rect(box_rect, 4.0),
                 );
                 scene.stroke(
                     &Stroke::new(1.5),
                     transform,
-                    series.color,
+                    color,
                     None,
                     &RoundedRect::from_rect(box_rect, 4.0),
                 );
@@ -481,7 +506,7 @@ impl PlotMarks for DistributionMarks {
                 scene.stroke(
                     &Stroke::new(2.5),
                     transform,
-                    series.color,
+                    color,
                     None,
                     &Line::new((x - width / 2.0, median), (x + width / 2.0, median)),
                 );
@@ -502,7 +527,7 @@ impl PlotMarks for DistributionMarks {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        series.color,
+                        color,
                         None,
                         &Circle::new((x, self.y(*value, range)), 2.5),
                     );
@@ -568,6 +593,11 @@ impl PlotMarks for DistributionMarks {
         None
     }
 }
+
+mod distribution_chart_component;
+pub use distribution_chart_component::{
+    DistributionChartProps, DistributionSamples, samples_description,
+};
 
 #[cfg(test)]
 mod tests {

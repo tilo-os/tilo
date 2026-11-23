@@ -118,6 +118,48 @@ view custom(g: Gallery) {
                 unit: .some("h"),
                 total: .some("88 hours"),
             )
+            ui.FunnelChart(
+                [
+                    .stage(label: "Visited", value: 1200.0),
+                    .stage(label: "Signed up", value: 340.0),
+                    .stage(label: "Invited a team", value: 96.0),
+                    .stage(label: "Paid", value: 41.0),
+                ],
+                title: .some("Sign-ups"),
+            )
+            ui.PolarAreaChart(
+                [
+                    .area(label: "Jan", value: 12.0),
+                    .area(label: "Feb", value: 9.0),
+                    .area(label: "Mar", value: 15.0),
+                    .area(label: "Apr", value: 7.0),
+                    .area(label: "May", value: 11.0),
+                    .area(label: "Jun", value: 14.0),
+                ],
+                title: .some("Sign-ups by month"),
+            )
+            ui.RadarChart(
+                [
+                    .axis(label: "Speed", max: 100.0),
+                    .axis(label: "Cost", max: 40.0),
+                    .axis(label: "Quality", max: 100.0),
+                    .axis(label: "Reach", max: 100.0),
+                    .axis(label: "Care", max: 100.0),
+                ],
+                series: [
+                    .series(values: [72.0, 18.0, 88.0, 64.0, 79.0], label: "This week"),
+                    .series(values: [58.0, 27.0, 74.0, 51.0, 66.0], label: "Last week"),
+                ],
+                title: .some("Service health"),
+            )
+            ui.DistributionChart(
+                [
+                    .samples(values: [41.0, 44.0, 42.0, 47.0, 45.0, 43.0], label: "Before"),
+                    .samples(values: [33.0, 36.0, 31.0, 38.0, 35.0, 34.0], label: "After"),
+                ],
+                title: .some("Build times"),
+                kind: .violin,
+            )
             ui.GraphCanvas(
                 title: .some("Release pipeline"),
                 connections: [

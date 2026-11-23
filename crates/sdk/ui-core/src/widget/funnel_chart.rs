@@ -88,6 +88,13 @@ impl FunnelChart {
         self.marks.style.direction = direction;
         self
     }
+    /// The stages, from the first to the last: each stage's place in the funnel follows its
+    /// order.
+    pub fn set_stages(&mut self, stages: Vec<ChartItem>) {
+        let marks = &mut self.marks;
+        marks.stages = stages;
+        marks.frame.inspection.hovered = None;
+    }
     pub fn inspect(&mut self, id: &str) -> bool {
         let stage = self.marks.stages.iter().position(|stage| stage.id == id);
         self.inspect_item(stage)
@@ -429,6 +436,9 @@ impl PlotMarks for FunnelMarks {
         None
     }
 }
+
+mod funnel_chart_component;
+pub use funnel_chart_component::{FunnelChartProps, FunnelStage, stages_description};
 
 #[cfg(test)]
 mod tests {
