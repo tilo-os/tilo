@@ -17,7 +17,6 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -1922,25 +1921,29 @@ async fn export(asked: &KeyAsk<'_>, path: &Path, json: bool) -> Result<ExitCode>
 /// Write `file` at `path`, readable by this account only, in place of what was
 /// there.
 fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).with_context(|| format!("making {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let _ = std::fs::remove_file(path);
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
-    out.write_all(&serde_json::to_vec_pretty(file)?)
-        .with_context(|| format!("writing {}", path.display()))?;
-    out.sync_all()
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    let bytes = serde_json::to_vec_pretty(file)?;
+    match tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
+        Ok(()) => Ok(()),
+        // The server already approved this key; once the renamed file is in
+        // place, a refused directory sync must not fail the command and prompt
+        // the person to ask for a second key.
+        #[cfg(any(unix, windows))]
+        Err(error)
+            if tilo_files::native::atomic::publication_state(&error)
+                == Some(
+                    tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
+                ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| format!("writing {}", path.display())),
+    }
 }
 
 /// A key asked of the person: what `tilo keys create` and `tilo keys export` ask for.
@@ -2296,5 +2299,94 @@ mod tests {
                 "fields": {"title": "Todo", "markdown": "- milk"}});
             assert_eq!(lines::resource(&read), "# Todo\n- milk");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sample_key(name: &str, fill: &str) -> tilo_api::direct::KeyFile {
+        tilo_api::direct::KeyFile {
+            host: "https://eu1.tilo.test".into(),
+            site: Some("https://tilo.sh".into()),
+            name: name.into(),
+            key: fill.repeat(32),
+            cert: "aa".repeat(32),
+            reached_at: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn key_file_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "key_file_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace",
+            || {
+                use std::os::unix::fs::PermissionsExt as _;
+                use std::sync::atomic::{AtomicBool, Ordering};
+                use tilo_files::native::atomic::test_support::{
+                    Checkpoint, with_failure, with_observer,
+                };
+                use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+                let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                with_zero_umask(|| {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    let path = dir.path().join("visa.json");
+                    let first = sample_key("first", "11");
+                    let second = sample_key("second", "22");
+
+                    // With umask 0 and chmod/fchmod neutralized, neither the writer nor the
+                    // atomic backend's post-open fchmod can narrow the inode: the stage can
+                    // only be 0600 if openat created it with 0600.
+                    let observed = Arc::new(std::sync::Mutex::new(None));
+                    let seen = Arc::clone(&observed);
+                    let existed_at_stage = Arc::new(AtomicBool::new(false));
+                    let flag = Arc::clone(&existed_at_stage);
+                    let target = path.clone();
+                    on_a_thread_without_chmod(|| {
+                        with_observer(
+                            move |event| {
+                                if event.checkpoint == Checkpoint::StageCreated {
+                                    let m =
+                                        event.stage.as_ref().unwrap().metadata.permissions().mode()
+                                            & 0o777;
+                                    *seen.lock().unwrap() = Some(m);
+                                    flag.store(target.exists(), Ordering::SeqCst);
+                                }
+                            },
+                            || write_key_file(&path, &first).unwrap(),
+                        );
+                    });
+                    assert_eq!(*observed.lock().unwrap(), Some(0o600));
+                    assert!(!existed_at_stage.load(Ordering::SeqCst));
+                    assert_eq!(mode(&path), 0o600);
+                    assert_eq!(mode(dir.path()), 0o755);
+                    let before = std::fs::read(&path).unwrap();
+
+                    let failed =
+                        with_failure(Checkpoint::BeforePublish, || write_key_file(&path, &second));
+                    assert!(failed.is_err());
+                    assert_eq!(std::fs::read(&path).unwrap(), before);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+                    // Once the replacement is renamed into place, a refused directory sync
+                    // must not fail the export command.
+                    with_failure(Checkpoint::BeforeCommit, || write_key_file(&path, &second))
+                        .unwrap();
+                    assert_eq!(
+                        std::fs::read(&path).unwrap(),
+                        serde_json::to_vec_pretty(&second).unwrap()
+                    );
+                    assert_eq!(mode(&path), 0o600);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+                    let nested = dir.path().join("nested/visa.json");
+                    on_a_thread_without_chmod(|| write_key_file(&nested, &second).unwrap());
+                    assert_eq!(mode(&nested), 0o600);
+                    assert_eq!(mode(dir.path()), 0o755);
+                });
+            },
+        );
     }
 }

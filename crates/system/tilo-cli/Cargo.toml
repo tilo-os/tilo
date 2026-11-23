@@ -127,6 +127,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The folder states `tilo folders` describes, as the daemon's tree sync reports them.
 tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A scripted `/v1` server: the hosted commands' request mapping, without a host.
 test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
