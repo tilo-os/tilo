@@ -13,6 +13,7 @@
 
 mod agent_queries;
 mod atomic;
+mod block_search;
 mod board_lists;
 mod bundle;
 mod capture;

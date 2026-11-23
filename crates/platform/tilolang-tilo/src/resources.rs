@@ -559,6 +559,9 @@ fn published_verb(note: &ChangeNote) -> String {
     }
 }
 
+/// A field's value, by the field's id.
+pub type FieldOf = (String, FieldValue);
+
 impl ResourceStore {
     /// A store sending its commands to `port`.
     #[must_use]
@@ -1170,7 +1173,7 @@ impl ResourceStore {
         Ok(links)
     }
 
-    /// The fields `fields` of every resource of the type `ty`, each as [`Store::read`] reads it,
+    /// The fields `fields` of every resource of the type `ty`, each by its id as [`Store::read`] reads it,
     /// a page of resources at a time: a page holding only their indexed fields among these, and
     /// their content, where a field is held in it, in one read a page. What search reads of every
     /// resource of a type, without a read a resource and a field.
@@ -1181,7 +1184,7 @@ impl ResourceStore {
         &self,
         ty: &str,
         fields: &[FieldSpec],
-    ) -> Result<Vec<(ResourceRef, Vec<FieldValue>)>, StoreError> {
+    ) -> Result<Vec<(ResourceRef, Vec<FieldOf>)>, StoreError> {
         let entries: Vec<Option<kinds::FieldEntry>> = fields
             .iter()
             .map(|field| self.field(ty, &field.id))
@@ -1239,7 +1242,9 @@ impl ResourceStore {
                     if self.inner.local.borrow().contains_key(&id) {
                         let values = fields
                             .iter()
-                            .filter_map(|field| self.read(&at, field).ok())
+                            .filter_map(|field| {
+                                Some((field.id.clone(), self.read(&at, field).ok()?))
+                            })
                             .collect();
                         out.push((at, values));
                         continue;
@@ -1255,7 +1260,8 @@ impl ResourceStore {
                             let json = json.as_ref().and_then(Json::as_object).and_then(|map| {
                                 names.iter().find_map(|name| map.get(name.as_str()))
                             });
-                            self.value_from(field, entry.as_ref(), cell, json).ok()
+                            let value = self.value_from(field, entry.as_ref(), cell, json).ok()?;
+                            Some((field.id.clone(), value))
                         })
                         .collect();
                     out.push((at, values));

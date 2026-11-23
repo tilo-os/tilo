@@ -262,6 +262,16 @@ impl Place {
     }
 }
 
+/// A paragraph a search hit asked the window to show, which the editor of the text holding it
+/// shows.
+struct Revealing {
+    /// The resource whose text holds the paragraph, by its published id, as the window names
+    /// what a control is bound to.
+    resource: String,
+    /// The paragraph, by its place in that text.
+    block: crate::search::Block,
+}
+
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
@@ -364,6 +374,12 @@ pub struct Instance {
     /// note an action made opens in the notebook's tree beside it. A kind the window has no place
     /// for is left where it was, never opened as a page of its own.
     pressed_shows: Vec<(u64, String)>,
+    /// The paragraph a search hit asked the window to show, until an editor of the text that
+    /// holds it is told to.
+    revealing: Option<Revealing>,
+    /// How many paragraphs were asked for: what tells an ask for the paragraph shown last apart
+    /// from the one before, so it is shown again.
+    reveals: u64,
     ask: Option<crate::host::Waiting>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -477,6 +493,8 @@ impl Instance {
             opens_to_place: Vec::new(),
             pressed_opens: Vec::new(),
             pressed_shows: Vec::new(),
+            revealing: None,
+            reveals: 0,
             ask: None,
             settle_due: false,
             sink: Some(
@@ -1281,14 +1299,24 @@ impl Instance {
             return false;
         };
         for (open, front, press) in anchors {
-            // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
-            let anchor = open.anchor();
+            // A hit names the published resource (`tl:<app>:<id>`) or the resource's id, and
+            // the paragraph of its text to show when it is a hit on one.
+            let (anchor, block) = crate::search::split_anchor(open.anchor());
             let anchor = anchor
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
                 .map_or(anchor, |(_, id)| id);
             match host.open_plan(anchor, open.view()) {
                 Ok(plan) => {
+                    // The paragraph is shown by the editor of the text that holds it, wherever
+                    // the window draws that, once the window shows the resource.
+                    self.revealing = block.map(|block| Revealing {
+                        resource: crate::publish::resource_id(
+                            &plan.app,
+                            &tilolang_runtime::value::flat_id(anchor),
+                        ),
+                        block,
+                    });
                     // The app's own root in its default view is what the window shows already.
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())

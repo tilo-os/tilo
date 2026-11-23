@@ -71,7 +71,9 @@ pub struct BlockEditorProps {
     /// place of the heading among the document's headings (`headings` reports them in that
     /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
     /// already shown shows it again. The editor puts the caret at the heading's start and keeps it
-    /// in view.
+    /// in view. A block named by its place in the document instead (`¶5:2`, the sixth block from
+    /// the top, counted from 0) is shown the same way: what the window asks for when a search hit
+    /// on a paragraph opens the document.
     #[component(state)]
     pub reveal: Option<String>,
 }
@@ -346,9 +348,7 @@ impl Described for BlockEditor {
             command,
             headings,
             image,
-            // A view opened with a block asked for is just opened: the ask is answered on the
-            // change that follows, never on the editor a note is first shown in.
-            reveal: _,
+            reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
@@ -387,6 +387,9 @@ impl Described for BlockEditor {
             editor.show_rich_text(&value.unwrap_or_default());
         }
         editor.publish_headings();
+        // A view opened with a heading asked for, of the note shown before, is just opened; a
+        // block asked for by its place is shown.
+        editor.reveal_opened(reveal);
         editor
     }
 

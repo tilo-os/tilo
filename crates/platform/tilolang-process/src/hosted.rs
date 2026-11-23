@@ -1563,17 +1563,16 @@ impl Hosted {
         for package in host.packages() {
             for doc in &whole {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, doc);
-                let under = format!("{id}/");
                 let named: std::collections::BTreeSet<String> = texts
                     .iter()
                     .map(|path| tilolang_tilo::publish::resource_id(&package.meta.app, path))
                     .collect();
+                // A paragraph's entry stands while the resource it is in is named: what the
+                // resource holds now was published with it.
                 let vanished: Vec<String> = self
-                    .search_entries
-                    .range(id.clone()..)
-                    .take_while(|(key, _)| **key == id || key.starts_with(&under))
-                    .map(|(key, _)| key.clone())
-                    .filter(|key| !named.contains(key))
+                    .entries_under(&id)
+                    .into_iter()
+                    .filter(|key| !named.contains(tilolang_tilo::search::split_anchor(key).0))
                     .collect();
                 for key in vanished {
                     self.search_entries.remove(&key);
@@ -1738,8 +1737,23 @@ impl Hosted {
         let packages = host.packages();
         for path in texts {
             for package in &packages {
-                let entry = tilolang_tilo::search::index_entry_at(host, &package.meta, path);
-                if let Some(entry) = entry {
+                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
+                let entries = tilolang_tilo::search::index_entries_at(host, &package.meta, path);
+                // What the resource published before and no longer does goes: a paragraph
+                // deleted, or the whole resource once it holds no text, though it is still
+                // there. What is published under it is the entries of its own resources.
+                let before: Vec<String> = self
+                    .entries_under(&id)
+                    .into_iter()
+                    .filter(|key| tilolang_tilo::search::keys_resource(key, &id))
+                    .collect();
+                for key in before {
+                    if !entries.iter().any(|entry| entry.resource == key) {
+                        self.search_entries.remove(&key);
+                        remove.push(key);
+                    }
+                }
+                for entry in entries {
                     self.search_entries
                         .insert(entry.resource.clone(), entry.clone());
                     upsert.push(entry);
@@ -1750,37 +1764,25 @@ impl Hosted {
         for package in &packages {
             for path in gone {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                self.drop_entry(&id, &mut remove);
-            }
-        }
-        // A resource that holds no text any more is no entry, though it is still there: only its
-        // own entry goes, as what it published under it is the entries of its own resources.
-        for package in &packages {
-            let upserted: std::collections::BTreeSet<&str> =
-                upsert.iter().map(|entry| entry.resource.as_str()).collect();
-            for path in texts {
-                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                if !upserted.contains(id.as_str()) && self.search_entries.remove(&id).is_some() {
-                    remove.push(id);
+                for key in self.entries_under(&id) {
+                    self.search_entries.remove(&key);
+                    remove.push(key);
                 }
             }
         }
         (upsert, remove)
     }
 
-    /// Drop the index entry of `id`, and those of the resources published under it.
-    fn drop_entry(&mut self, id: &str, remove: &mut Vec<String>) {
+    /// The keys of the index entries of `id`: its own, its paragraphs' and those of the resources
+    /// published under it, and theirs.
+    fn entries_under(&self, id: &str) -> Vec<String> {
         let under = format!("{id}/");
-        let held: Vec<String> = self
-            .search_entries
+        self.search_entries
             .range(id.to_owned()..)
-            .take_while(|(key, _)| key.as_str() == id || key.starts_with(&under))
+            .take_while(|(key, _)| key.starts_with(id))
             .map(|(key, _)| key.clone())
-            .collect();
-        for key in held {
-            self.search_entries.remove(&key);
-            remove.push(key);
-        }
+            .filter(|key| tilolang_tilo::search::keys_resource(key, id) || key.starts_with(&under))
+            .collect()
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and
