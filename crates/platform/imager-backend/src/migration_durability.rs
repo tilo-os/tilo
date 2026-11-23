@@ -234,6 +234,13 @@ pub fn sync_directory(file: &File) -> io::Result<()> {
 
 pub use migration_sources::pinned::readable_directory;
 
+/// The persistent volume identity of a pinned directory itself.
+pub fn directory_identity(
+    directory: &migration_sources::pinned::PinnedDirectory,
+) -> io::Result<Identity> {
+    identity(&readable_directory(&directory.file)?)
+}
+
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {

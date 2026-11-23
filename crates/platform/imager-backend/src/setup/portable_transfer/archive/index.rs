@@ -149,9 +149,7 @@ impl Records {
                 .ok_or_else(|| changed("Existing archive workspace grant missing"))?;
             lease.validate_existing_output(existing)?;
             lease.validate_existing_output(root)?;
-            if durability::identity(&durability::readable_directory(&existing.file)?)?
-                != durability::identity(&durability::readable_directory(&root.file)?)?
-            {
+            if durability::directory_identity(existing)? != durability::directory_identity(root)? {
                 return Err(changed("Existing archive output root changed"));
             }
         }

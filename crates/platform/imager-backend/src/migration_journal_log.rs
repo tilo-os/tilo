@@ -1,12 +1,11 @@
 //! Source-independent private journal storage. Validation always precedes repair.
-use super::migration::{OwnedTemporary, PinnedDirectory, changed};
+use super::migration::{OwnedTemporary, PinnedDirectory, PublishMode, changed};
 use super::{
     destination_security, migration_durability as durability,
     nofollow::{metadata_nofollow, same_directory_identity},
 };
 use advisory_lock::FileLock;
-use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
+use cap_primitives::fs::Metadata;
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -118,24 +117,10 @@ pub fn open_private(
     parent: &Arc<PinnedDirectory>,
     name: &std::ffi::OsStr,
 ) -> io::Result<(FileLock, Metadata)> {
-    let expected = metadata_nofollow(&parent.file, Path::new(name))?;
-    if !expected.is_file() || expected.is_symlink() {
-        return Err(changed("journal is not a regular file"));
-    }
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .follow(FollowSymlinks::No)
-        .nonblock(true);
-    let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
-    destination_security::check_private_file(&file)?;
+    let file = parent.open_regular(name, true, true)?;
     let file =
         FileLock::try_exclusive(file).map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
-    if !super::migration::same_snapshot(&expected, &identity) {
-        return Err(changed("journal replaced while opening"));
-    }
     Ok((file, identity))
 }
 pub fn validate(
@@ -193,17 +178,9 @@ pub fn create_private<T: Serialize>(
     let mut sequence = 0;
     write_record(&mut temporary.file, &mut sequence, header)?;
     rest(&mut temporary.file, &mut sequence)?;
-    durability::sync_file(&temporary.file)?;
-    parent.validate_destination()?;
-    temporary.validate()?;
-    cap_primitives::fs::hard_link(
-        &parent.file,
-        Path::new(&temporary.name),
-        &parent.file,
-        Path::new(&name),
-    )?;
-    durability::sync_directory(&parent.file)?;
-    let file = FileLock::try_exclusive(temporary.file.try_clone()?)
+    let published = temporary.file.try_clone()?;
+    temporary.publish(&[], PublishMode::IfAbsent)?;
+    let file = FileLock::try_exclusive(published)
         .map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
     Ok((file, identity, sequence))

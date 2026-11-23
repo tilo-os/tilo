@@ -2,20 +2,18 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
+use cap_primitives::fs::Metadata;
 use serde::{Deserialize, Serialize};
 
 use super::destination_security;
-use super::migration::{CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory};
-use super::migration_durability;
+use super::migration::{CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory, PublishMode};
 use super::migration_worker::{MigrationJob, WorkerOutcome};
 use super::nofollow::{metadata_nofollow, same_directory_identity};
 use super::service_sources::ServiceJournal;
@@ -444,34 +442,16 @@ impl MigrationStore {
         {
             let temporary = OwnedTemporary::create(&root, OsStr::new("ownership.lock"))
                 .map_err(|e| e.to_string())?;
-            match cap_primitives::fs::hard_link(
-                &root.file,
-                Path::new(&temporary.name),
-                &root.file,
-                name,
-            ) {
+            match temporary.publish(&[], PublishMode::IfAbsent) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.to_string()),
             }
         }
-        let expected = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
-        if !expected.is_file() || expected.is_symlink() {
-            return Err("migration ownership lock is not a regular private file".into());
-        }
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .follow(FollowSymlinks::No)
-            .nonblock(true);
-        let ownership =
-            cap_primitives::fs::open(&root.file, name, &options).map_err(|e| e.to_string())?;
-        destination_security::check_private_file(&ownership).map_err(|e| e.to_string())?;
+        let ownership = root
+            .open_regular(name.as_os_str(), true, true)
+            .map_err(|e| format!("migration ownership lock is not a regular private file: {e}"))?;
         let ownership_identity = Metadata::from_file(&ownership).map_err(|e| e.to_string())?;
-        if !same_directory_identity(&expected, &ownership_identity) {
-            return Err("migration ownership lock was replaced".into());
-        }
         let ownership = advisory_lock::FileLock::try_exclusive(ownership)
             .map_err(|e| format!("folder imports are busy in another window or process: {e}"))?;
         let current = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
@@ -574,25 +554,14 @@ impl MigrationStore {
         if !expected.is_file() || expected.is_symlink() || expected.len() > limit {
             return Err("migration state is not a bounded regular file".into());
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let mut file =
-            cap_primitives::fs::open(&self.root.file, name, &options).map_err(|e| e.to_string())?;
-        destination_security::check_private_file(&file).map_err(|e| e.to_string())?;
-        if !same_directory_identity(
-            &expected,
-            &Metadata::from_file(&file).map_err(|e| e.to_string())?,
-        ) {
-            return Err("migration state changed while opening".into());
-        }
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(limit + 1)
-            .read_to_end(&mut bytes)
+        let file = self
+            .root
+            .open_regular(name.as_os_str(), false, true)
             .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > limit {
-            return Err("migration state exceeds bounds".into());
-        }
+        let bytes = crate::record::read_bounded(file, limit, || {
+            io::Error::other("migration state exceeds bounds")
+        })
+        .map_err(|e| e.to_string())?;
         Ok(Some(bytes))
     }
 
@@ -604,23 +573,14 @@ impl MigrationStore {
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
-        let name = OsStr::new(name);
-        let mut temporary = OwnedTemporary::create(&self.root, name).map_err(|e| e.to_string())?;
-        temporary.file.write_all(bytes).map_err(|e| e.to_string())?;
-        migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
-        temporary.validate().map_err(|e| e.to_string())?;
-        self.validate_ownership()?;
-        self.root
-            .validate_destination()
-            .map_err(|e| e.to_string())?;
-        cap_primitives::fs::rename(
-            &self.root.file,
-            Path::new(&temporary.name),
-            &self.root.file,
-            Path::new(name),
-        )
-        .map_err(|e| e.to_string())?;
-        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())
+        OwnedTemporary::create(&self.root, OsStr::new(name))
+            .and_then(|temporary| {
+                temporary.publish_with(bytes, PublishMode::Replace, || {
+                    self.validate_ownership().map_err(io::Error::other)?;
+                    self.root.validate_destination()
+                })
+            })
+            .map_err(|e| e.to_string())
     }
 
     pub fn load(&self) -> Result<Vec<OperationEntry>, String> {
@@ -637,23 +597,14 @@ impl MigrationStore {
         if !expected.is_file() || expected.is_symlink() || expected.len() > MAX_STORE_BYTES {
             return Err("migration state is not a bounded regular file".into());
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let mut file = cap_primitives::fs::open(&self.root.file, Path::new(STORE_FILE), &options)
+        let file = self
+            .root
+            .open_regular(OsStr::new(STORE_FILE), false, true)
             .map_err(|e| format!("cannot open migration state: {e}"))?;
-        destination_security::check_private_file(&file).map_err(|e| e.to_string())?;
-        let actual = Metadata::from_file(&file).map_err(|e| e.to_string())?;
-        if !same_directory_identity(&expected, &actual) {
-            return Err("migration state changed while opening".into());
-        }
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(MAX_STORE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_STORE_BYTES {
-            return Err("migration state exceeds its size bound".into());
-        }
+        let bytes = crate::record::read_bounded(file, MAX_STORE_BYTES, || {
+            io::Error::other("migration state exceeds its size bound")
+        })
+        .map_err(|e| e.to_string())?;
         let mut document: StoreDocument = serde_json::from_slice(&bytes)
             .map_err(|e| format!("migration state is invalid: {e}"))?;
         if document.version != 1 || document.operations.len() > MAX_OPERATIONS {
@@ -687,32 +638,24 @@ impl MigrationStore {
             .map(|time| time.as_nanos())
             .ok_or_else(|| "system time is before the Unix epoch".to_string())?;
         let name = format!("{}.{stamp}.issues", operation.id);
-        let mut temporary =
-            OwnedTemporary::create(&self.root, OsStr::new(&name)).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
         if let Some(report) = &operation.report {
             for issue in report.skipped.iter().chain(&report.failed) {
-                let bytes = serde_json::to_vec(issue).map_err(|e| e.to_string())?;
-                if bytes.len() as u64 > MAX_ISSUE_BYTES {
+                let encoded = serde_json::to_vec(issue).map_err(|e| e.to_string())?;
+                if encoded.len() as u64 > MAX_ISSUE_BYTES {
                     return Err("copy issue exceeds bounded record size".into());
                 }
-                temporary
-                    .file
-                    .write_all(&bytes)
-                    .and_then(|()| temporary.file.write_all(b"\n"))
-                    .map_err(|e| e.to_string())?;
+                bytes.extend_from_slice(&encoded);
+                bytes.push(b'\n');
             }
         }
-        migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
-        temporary.validate().map_err(|e| e.to_string())?;
-        self.validate_ownership()?;
-        cap_primitives::fs::hard_link(
-            &self.root.file,
-            Path::new(&temporary.name),
-            &self.root.file,
-            Path::new(&name),
-        )
-        .map_err(|e| e.to_string())?;
-        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())?;
+        OwnedTemporary::create(&self.root, OsStr::new(&name))
+            .and_then(|temporary| {
+                temporary.publish_with(&bytes, PublishMode::IfAbsent, || {
+                    self.validate_ownership().map_err(io::Error::other)
+                })
+            })
+            .map_err(|e| e.to_string())?;
         Ok(name)
     }
 
@@ -751,17 +694,10 @@ impl MigrationStore {
         if !expected.is_file() || expected.is_symlink() {
             return Err("copy issue details are not a regular file".into());
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let mut file = cap_primitives::fs::open(&self.root.file, Path::new(&name), &options)
+        let mut file = self
+            .root
+            .open_regular(OsStr::new(&name), false, true)
             .map_err(|e| e.to_string())?;
-        destination_security::check_private_file(&file).map_err(|e| e.to_string())?;
-        if !same_directory_identity(
-            &expected,
-            &Metadata::from_file(&file).map_err(|e| e.to_string())?,
-        ) {
-            return Err("copy details changed while opening".into());
-        }
         file.seek(SeekFrom::Start(offset))
             .map_err(|e| e.to_string())?;
         let mut reader = io::BufReader::new(file);
@@ -834,22 +770,9 @@ impl MigrationStore {
         if bytes.len() as u64 > MAX_STORE_BYTES {
             return Err("migration state exceeds its size bound".into());
         }
-        let mut temporary = OwnedTemporary::create(&self.root, OsStr::new(STORE_FILE))
+        OwnedTemporary::create(&self.root, OsStr::new(STORE_FILE))
+            .and_then(|temporary| temporary.publish(&bytes, PublishMode::Replace))
             .map_err(|e| e.to_string())?;
-        temporary
-            .file
-            .write_all(&bytes)
-            .map_err(|e| e.to_string())?;
-        migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
-        temporary.validate().map_err(|e| e.to_string())?;
-        cap_primitives::fs::rename(
-            &self.root.file,
-            Path::new(&temporary.name),
-            &self.root.file,
-            Path::new(STORE_FILE),
-        )
-        .map_err(|e| e.to_string())?;
-        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())?;
         Ok(document.operations)
     }
 }
@@ -953,11 +876,7 @@ pub fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
                 "migration state contains a non-normal component",
             ));
         };
-        current = match metadata_nofollow(&current.file, Path::new(name)) {
-            Ok(metadata) => current.open_child(name, &metadata)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => current.create_child(name)?,
-            Err(error) => return Err(error),
-        };
+        current = current.open_or_create_child(name)?;
     }
     current.validate_destination()?;
     destination_security::check_private_file(&current.file)?;

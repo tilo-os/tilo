@@ -348,7 +348,7 @@ pub struct MigrationJournal {
 }
 
 fn directory_identity(directory: &PinnedDirectory) -> io::Result<Identity> {
-    durability::identity(&durability::readable_directory(&directory.file)?)
+    durability::directory_identity(directory)
 }
 fn absolute(path: &NativeName) -> io::Result<PathBuf> {
     if path.len() > 4096 {

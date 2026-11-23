@@ -14,7 +14,6 @@ use cap_primitives::fs::{FollowSymlinks, MetadataExt, OpenOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
     ffi::{CString, OsStr},
     fs::File,
     io::{self, BufRead, Read, Seek, Write},

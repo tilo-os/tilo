@@ -53,18 +53,8 @@ impl MigrationIntent {
         if bytes.len() as u64 > MAX {
             return Err(error("Computer composite intent is too large"));
         }
-        let mut temporary =
-            OwnedTemporary::create(&main.directory_pin, std::ffi::OsStr::new(FILE))?;
-        temporary.file.write_all(&bytes)?;
-        migration_durability::sync_file(&temporary.file)?;
-        temporary.validate()?;
-        cap_primitives::fs::rename(
-            &main.directory_pin.file,
-            Path::new(&temporary.name),
-            &main.directory_pin.file,
-            Path::new(FILE),
-        )?;
-        migration_durability::sync_directory(&main.directory_pin.file)?;
+        OwnedTemporary::create(&main.directory_pin, std::ffi::OsStr::new(FILE))?
+            .publish(&bytes, crate::migration::PublishMode::Replace)?;
         main.validate_computer_applications()?;
         Ok(main)
     }

@@ -4,10 +4,7 @@ use super::hex_digest;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::{
-    io::{self, Read},
-    path::Path,
-};
+use std::{io, path::Path};
 
 const MARKER: &str = "/run/tilo-service-candidate-admission.json";
 
@@ -96,8 +93,7 @@ fn protected(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
     if !before.is_file() || before.nlink() != 1 || before.len() == 0 || before.len() > maximum {
         return Err(refused());
     }
-    let mut bytes = Vec::new();
-    file.by_ref().take(maximum + 1).read_to_end(&mut bytes)?;
+    let bytes = crate::record::read_bounded(&mut file, maximum, refused)?;
     let after = file.metadata()?;
     let observed = std::fs::symlink_metadata(path)?;
     if bytes.len() as u64 != before.len()
