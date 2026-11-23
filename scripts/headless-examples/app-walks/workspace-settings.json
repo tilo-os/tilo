@@ -87,7 +87,10 @@
         },
         {
           "must": [
-            "Lisbon trip"
+            [
+              "Lisbon trip",
+              "Switch workspace, now in Lisbon trip"
+            ]
           ]
         }
       ],
