@@ -96,6 +96,8 @@ type Session (readers: author) {
     preview: Option<File> = .none
     previewed: Text = ""
     words: Text = ""
+    /// The entry the person chose, by its path; empty while nothing is chosen.
+    selected: Text = ""
     /// The last thing that went wrong, for the window to say; empty while nothing did.
     notice: Text = ""
 }
@@ -130,9 +132,7 @@ initial action standard_places(f: Files) {
 /// Opening Files reads the folder the person is in, unless this window has read it already.
 opened action arrive(f: Files) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    if s.listings.find(l -> l.path == s.here) == .none {
-        read_listing(f, s.here)
-    }
+    if s.listings.find(l -> l.path == s.here) == .none { read_listing(f, s.here) }
 }
 
 /// Reads the place `place` into this window's listing for it: a folder's entries, this device's
@@ -143,46 +143,55 @@ action read_listing(f: Files, place: Text = "") uses files, time {
     if path == "recent" or path == "applications" {
         return
     }
-    let listing = s.listings.find(l -> l.path == path)
-        ?? s.listings.insert(Listing(path: path))
+    let listing = s.listings.find(l -> l.path == path) ?? s.listings.insert(Listing(path: path))
     if path != "trash" and listing.watch == "" {
         match File.watch(path, "changed") {
-            .ok(token) => { listing.watch = token },
-            .err(_) => {},
+            .ok(token) => {
+                listing.watch = token
+            }
+            .err(_) => {}
         }
     }
     if path == "trash" {
         match File.trash_entries() {
             .ok(items) => {
-                listing.entries = items.map(t -> Entry(
-                    name: t.name,
-                    path: t.path,
-                    folder: false,
-                    size: 0,
-                    modified: t.deleted,
-                    original: t.original,
-                ))
+                listing.entries = items.map(
+                    t -> Entry(
+                        name: t.name,
+                        path: t.path,
+                        folder: false,
+                        size: 0,
+                        modified: t.deleted,
+                        original: t.original,
+                    ),
+                )
                 listing.error = ""
                 listing.read = true
-            },
-            .err(why) => { listing.error = why },
+            }
+            .err(why) => {
+                listing.error = why
+            }
         }
         return
     }
     match File.list(path) {
         .ok(found) => {
-            listing.entries = found.map(e -> Entry(
-                name: e.name,
-                path: e.path,
-                folder: e.folder,
-                size: e.size,
-                modified: e.modified,
-                hidden: e.hidden,
-            ))
+            listing.entries = found.map(
+                e -> Entry(
+                    name: e.name,
+                    path: e.path,
+                    folder: e.folder,
+                    size: e.size,
+                    modified: e.modified,
+                    hidden: e.hidden,
+                ),
+            )
             listing.error = ""
             listing.read = true
-        },
-        .err(why) => { listing.error = why },
+        }
+        .err(why) => {
+            listing.error = why
+        }
     }
 }
 
@@ -201,6 +210,7 @@ action go(f: Files, place: Text) uses files, time {
         s.ahead = []
     }
     s.here = place
+    s.selected = ""
     s.preview = .none
     s.previewed = ""
     s.words = ""
@@ -209,6 +219,7 @@ action go(f: Files, place: Text) uses files, time {
 
 /// Goes back to the place the person came from.
 action back(f: Files) uses files, time {
+    require can_go_back(f) "There is nowhere to go back to"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if let last = s.went.last() {
         s.went = s.went.take(s.went.len() - 1)
@@ -220,6 +231,7 @@ action back(f: Files) uses files, time {
 
 /// Goes forward again to the place the person left.
 action forward(f: Files) uses files, time {
+    require can_go_forward(f) "There is nowhere to go forward to"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if let next = s.ahead.last() {
         s.ahead = s.ahead.take(s.ahead.len() - 1)
@@ -231,6 +243,7 @@ action forward(f: Files) uses files, time {
 
 /// Goes to the folder above the one shown.
 action up(f: Files) uses files, time {
+    require not at_top(f) "This is already the top folder"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     go(f, if folder_place(s.here) { parent_of(s.here) } else { "~" })
 }
@@ -242,7 +255,7 @@ action dismiss_notice(f: Files) {
 }
 
 /// Reads the place shown again, so what changed on the disk shows.
-action refresh(f: Files) uses files, time (icon: .refresh_cw, key: "Ctrl+R") {
+action refresh(f: Files) uses files, time (icon: .refresh, key: "Ctrl+R") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     read_listing(f, s.here)
 }
@@ -271,9 +284,9 @@ action choose_view(f: Files, i: Int) {
 }
 
 /// Shows or hides the names that start with a dot.
-action toggle_hidden(f: Files) (icon: .eye, label: "Show hidden files") {
+action toggle_hidden(f: Files, hidden: Bool) (icon: .eye, label: "Show hidden files") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    s.hidden = not s.hidden
+    s.hidden = hidden
 }
 
 /// Opens the entry `e`: a folder in this window, a file in the app that opens its kind.
@@ -283,8 +296,10 @@ action open_entry(f: Files, e: Entry) uses files, time {
         go(f, e.path)
     } else {
         match File.open(e.path) {
-            .ok(_) => { note_recent(f, e.name, e.path) },
-            .err(why) => { s.notice = "Nothing here opens “{e.name}”: {why}" },
+            .ok => { note_recent(f, e.name, e.path) }
+            .err(why) => {
+                s.notice = "Nothing here opens “{e.name}”: {why}"
+            }
         }
     }
 }
@@ -297,9 +312,11 @@ action open_recent(f: Files, r: Recent) uses files, time {
 /// A press on an entry: a folder opens as a person presses it once, and a file is read into the
 /// inspector beside the list.
 action touch_entry(f: Files, e: Entry) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
     if e.folder {
         go(f, e.path)
     } else {
+        s.selected = e.path
         inspect(f, e)
     }
 }
@@ -315,9 +332,7 @@ action note_recent(f: Files, name: Text, path: Text) uses time {
         f.recent.insert(Recent(name: name, path: path, opened: now))
     }
     if f.recent.len() > 60 {
-        if let oldest = f.recent.sort_by(r -> r.opened).first() {
-            f.recent.remove(oldest)
-        }
+        if let oldest = f.recent.sort_by(r -> r.opened).first() { f.recent.remove(oldest) }
     }
 }
 
@@ -330,8 +345,10 @@ action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .
     }
     let named = if name.trim() == "" { "New folder" } else { name.trim() }
     match File.mkdir(join(s.here, named)) {
-        .ok(_) => { read_listing(f, s.here) },
-        .err(why) => { s.notice = "Couldn’t make the folder: {why}" },
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t make the folder: {why}"
+        }
     }
 }
 
@@ -347,8 +364,10 @@ action new_file(f: Files, name: Text = "New file.txt") uses files, time (icon: .
         .ok(_) => {
             read_listing(f, s.here)
             note_recent(f, named, join(s.here, named))
-        },
-        .err(why) => { s.notice = "Couldn’t make the file: {why}" },
+        }
+        .err(why) => {
+            s.notice = "Couldn’t make the file: {why}"
+        }
     }
 }
 
@@ -357,39 +376,57 @@ action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .p
     require name.trim() != "" "A name cannot be empty"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     match File.rename(path, name.trim()) {
-        .ok(_) => { read_listing(f, s.here) },
-        .err(why) => { s.notice = "Couldn’t rename it: {why}" },
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t rename it: {why}"
+        }
     }
 }
 
 /// Moves the entries at `paths` to this device's trash.
-action trash_entries(f: Files, paths: List<Text>) uses files, time (icon: .trash_2, label: "Move to Trash", key: "Delete") {
+action trash_entries(f: Files, paths: List<Text>) uses files, time (
+    icon: .trash_2,
+    label: "Move to Trash",
+    key: "Delete",
+) {
     require not paths.is_empty() "Select files first"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     for path in paths {
         match File.trash(path) {
-            .ok(_) => {},
-            .err(why) => { s.notice = "Couldn’t move “{name_of(path)}” to Trash: {why}" },
+            .ok(_) => {}
+            .err(why) => {
+                s.notice = "Couldn’t move “{name_of(path)}” to Trash: {why}"
+            }
         }
     }
     read_listing(f, s.here)
 }
 
 /// Restores the trashed entry `name` to where it came from.
-action restore_entry(f: Files, name: Text) uses files, time (icon: .arrow_up_from_line, label: "Restore") {
+action restore_entry(f: Files, name: Text) uses files, time (
+    icon: .arrow_up_from_line,
+    label: "Restore",
+) {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     match File.restore(name) {
-        .ok(_) => { read_listing(f, s.here) },
-        .err(why) => { s.notice = "Couldn’t restore it: {why}" },
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t restore it: {why}"
+        }
     }
 }
 
 /// Removes the entry at `path` for good.
-action delete_permanently(f: Files, path: Text) uses files (icon: .trash, label: "Delete permanently") {
+action delete_permanently(f: Files, path: Text) uses files (
+    icon: .trash,
+    label: "Delete permanently",
+) {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     match File.remove(path) {
-        .ok(_) => { read_listing(f, s.here) },
-        .err(why) => { s.notice = "Couldn’t delete it: {why}" },
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t delete it: {why}"
+        }
     }
 }
 
@@ -400,17 +437,21 @@ action empty_trash(f: Files) uses files, time (icon: .trash, label: "Empty Trash
         .ok(items) => {
             for t in items {
                 match File.remove(t.path) {
-                    .ok(_) => {},
-                    .err(why) => { s.notice = "Couldn’t empty Trash: {why}" },
+                    .ok(_) => {}
+                    .err(why) => {
+                        s.notice = "Couldn’t empty Trash: {why}"
+                    }
                 }
                 let info = parent_of(parent_of(t.path)) + "/info/" + t.name + ".trashinfo"
                 match File.remove(info) {
-                    .ok(_) => {},
-                    .err(_) => {},
+                    .ok(_) => {}
+                    .err(_) => {}
                 }
             }
-        },
-        .err(why) => { s.notice = "Couldn’t empty Trash: {why}" },
+        }
+        .err(why) => {
+            s.notice = "Couldn’t empty Trash: {why}"
+        }
     }
     read_listing(f, s.here)
 }
@@ -426,15 +467,19 @@ action carry(f: Files, paths: List<Text>, cut: Bool) {
 action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste", key: "Ctrl+V") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if not folder_place(s.here) or s.carrying.is_empty() {
-        s.notice = if s.carrying.is_empty() { "Nothing has been copied or cut" } else { "Open a folder to paste into it" }
+        s.notice = if s.carrying.is_empty() {
+            "Nothing has been copied or cut"
+        } else { "Open a folder to paste into it" }
         return
     }
     let moving = s.cutting
     for path in s.carrying {
         let outcome = if moving { File.move(path, s.here) } else { File.copy(path, s.here) }
         match outcome {
-            .ok(_) => {},
-            .err(why) => { s.notice = "Couldn’t paste “{name_of(path)}”: {why}" },
+            .ok(_) => {}
+            .err(why) => {
+                s.notice = "Couldn’t paste “{name_of(path)}”: {why}"
+            }
         }
     }
     if moving {
@@ -452,9 +497,7 @@ action key_on(f: Files, paths: List<Text>, focused: Text, key: Text) uses files,
         carry(f, chosen, false)
     } else if key == "Ctrl+X" {
         carry(f, chosen, true)
-    } else if key == "Delete" {
-        trash_entries(f, chosen)
-    }
+    } else if key == "Delete" { trash_entries(f, chosen) }
 }
 
 /// Marks the place `place` in the sidebar.
@@ -464,7 +507,10 @@ action add_favorite(f: Files, place: Text) (icon: .star, label: "Add to Favorite
 }
 
 /// Takes the favorite `favorite` out of the sidebar.
-action remove_favorite(f: Files, favorite: Favorite) (icon: .star_off, label: "Remove from Favorites") {
+action remove_favorite(f: Files, favorite: Favorite) (
+    icon: .star_off,
+    label: "Remove from Favorites",
+) {
     f.favorites.remove(favorite)
 }
 
@@ -482,18 +528,33 @@ action inspect(f: Files, e: Entry) uses files {
         match File.read(e.path) {
             .ok(bytes) => {
                 s.preview = .some(File.of_bytes(e.name, bytes))
-            },
-            .err(_) => {},
+            }
+            .err(_) => {}
         }
     } else if is_text(e.name) and e.size < 1000000 {
         match File.read(e.path) {
             .ok(bytes) => {
                 let text = bytes.text()
                 s.words = text.slice(0, text.len().min(4000))
-            },
-            .err(_) => {},
+            }
+            .err(_) => {}
         }
     }
+}
+
+/// Whether this window has a place behind it.
+fn can_go_back(f: Files) -> Bool {
+    if let s = f.sessions.first() { not s.went.is_empty() } else { false }
+}
+
+/// Whether this window has a place ahead of it.
+fn can_go_forward(f: Files) -> Bool {
+    if let s = f.sessions.first() { not s.ahead.is_empty() } else { false }
+}
+
+/// Whether this window shows the top folder.
+fn at_top(f: Files) -> Bool {
+    if let s = f.sessions.first() { s.here == "/" } else { true }
 }
 
 /// The person's home folder: where Files opens, and the top of the places the system keeps.
@@ -541,34 +602,43 @@ fn name_of(path: Text) -> Text {
 fn join(folder: Text, name: Text) -> Text {
     if folder == "/" {
         "/" + name
-    } else if folder.ends_with("/") {
-        folder + name
-    } else {
-        folder + "/" + name
-    }
+    } else if folder.ends_with("/") { folder + name } else { folder + "/" + name }
 }
 
 /// A file's extension in lower case, or nothing when its name has none.
 fn extension(name: Text) -> Text {
     let parts = name.split(".")
-    if parts.len() < 2 {
-        ""
-    } else {
-        (parts.last() ?? "").lower()
-    }
+    if parts.len() < 2 { "" } else { (parts.last() ?? "").lower() }
 }
 
 /// Whether `name` is a picture's.
 fn is_picture(name: Text) -> Bool {
     let ext = extension(name)
-    [ext == "png", ext == "jpg", ext == "jpeg", ext == "gif", ext == "webp", ext == "bmp", ext == "svg"]
+    [
+        ext == "png",
+        ext == "jpg",
+        ext == "jpeg",
+        ext == "gif",
+        ext == "webp",
+        ext == "bmp",
+        ext == "svg",
+    ]
         .any(x -> x)
 }
 
 /// Whether `name` is a text file's.
 fn is_text(name: Text) -> Bool {
     let ext = extension(name)
-    [ext == "txt", ext == "md", ext == "json", ext == "toml", ext == "csv", ext == "tl", ext == "rs", ext == "ftl"]
+    [
+        ext == "txt",
+        ext == "md",
+        ext == "json",
+        ext == "toml",
+        ext == "csv",
+        ext == "tl",
+        ext == "rs",
+        ext == "ftl",
+    ]
         .any(x -> x)
 }
 
@@ -578,11 +648,7 @@ fn size_of(n: Int) -> Text {
         "{n} B"
     } else if n < 1000000 {
         "{n / 1000} KB"
-    } else if n < 1000000000 {
-        "{n / 1000000} MB"
-    } else {
-        "{n / 1000000000} GB"
-    }
+    } else if n < 1000000000 { "{n / 1000000} MB" } else { "{n / 1000000000} GB" }
 }
 
 /// The entries of `l` the person may see, named `found` where they searched, in the order the
@@ -611,7 +677,9 @@ fn ordered(entries: List<Entry>, sort: SortBy, ascending: Bool) -> List<Entry> {
     if sort == .size {
         if ascending { entries.sort_by(e -> e.size) } else { entries.sort_by(e -> e.size, desc) }
     } else if sort == .modified {
-        if ascending { entries.sort_by(e -> e.modified) } else { entries.sort_by(e -> e.modified, desc) }
+        if ascending {
+            entries.sort_by(e -> e.modified)
+        } else { entries.sort_by(e -> e.modified, desc) }
     } else if sort == .format {
         if ascending {
             entries.sort_by(e -> extension(e.name))
@@ -620,9 +688,7 @@ fn ordered(entries: List<Entry>, sort: SortBy, ascending: Bool) -> List<Entry> {
         }
     } else if ascending {
         entries.sort_by(e -> by_name(e))
-    } else {
-        entries.sort_by(e -> by_name(e), desc)
-    }
+    } else { entries.sort_by(e -> by_name(e), desc) }
 }
 
 /// One step of a path, drawn in the bar: what it is called and the path that reaches it.
@@ -661,11 +727,7 @@ fn kind_of(e: Entry) -> Text {
         "Image"
     } else if is_text(e.name) {
         "Text"
-    } else if extension(e.name) == "" {
-        "File"
-    } else {
-        extension(e.name).upper() + " file"
-    }
+    } else if extension(e.name) == "" { "File" } else { extension(e.name).upper() + " file" }
 }
 
 /// Files' window: the places down the side, the folder they chose beside it, and what is chosen
@@ -679,19 +741,24 @@ view files(f: Files) {
     // The name being asked for: a path renamed, or `new` for a folder being made; empty for none.
     state naming: Text = ""
     state name: Text = ""
-    // The entries chosen, by their paths.
-    state chosen: List<Text> = []
     if let s = f.sessions.first() {
         let listing = place_listing(s)
         let visible: List<Entry> = if let l = listing { shown(l, s, found) } else { [] }
         ui.NavShell(
             content_kind: if s.grid { .grid } else { .list },
             title: name_of(s.here),
-            count: if s.here == "recent" { f.recent.len() } else if s.here == "applications" { 0 } else { visible.len() },
+            count: if s.here == "recent" {
+                f.recent.len()
+            } else if s.here == "applications" { 0 } else { visible.len() },
         ) {
             on search(t: Text): set(found, t)
             sidebar_actions: {
-                ui.Button("Add the folder shown to Favorites", icon: .star, icon_only: true, role: .plain) {
+                ui.Button(
+                    "Add the folder shown to Favorites",
+                    icon: .star,
+                    icon_only: true,
+                    role: .plain,
+                ) {
                     on press: add_favorite(f, s.here)
                 }
             }
@@ -702,7 +769,7 @@ view files(f: Files) {
                 ui.Button("New folder", icon: .folder_plus, role: .primary) {
                     on press: set(naming, "new").then(set(name, ""))
                 }
-                view_options(f, s, chosen, naming, name)
+                view_options(f, s, naming, name)
             }
             content: {
                 stack {
@@ -723,7 +790,11 @@ view files(f: Files) {
                     if s.here == "recent" {
                         recent_files(f, s)
                     } else if s.here == "applications" {
-                        ui.EmptyState("No apps yet", icon: .store, message: "The apps on this device stand here once one is installed.")
+                        ui.EmptyState(
+                            "No apps yet",
+                            icon: .store,
+                            message: "The apps on this device stand here once one is installed.",
+                        )
                     } else if let l = listing {
                         if l.error != "" {
                             ui.EmptyState(
@@ -739,13 +810,15 @@ view files(f: Files) {
                             ui.EmptyState("Reading “{name_of(s.here)}”…", icon: .folder)
                         } else if visible.is_empty() {
                             ui.EmptyState(
-                                if found == "" { "This folder is empty" } else { "Nothing here matches “{found}”" },
+                                if found == "" {
+                                    "This folder is empty"
+                                } else { "Nothing here matches “{found}”" },
                                 icon: .folder,
                             )
                         } else if s.grid {
                             entry_grid(f, s, visible)
                         } else {
-                            entry_list(f, s, visible, chosen, naming, name)
+                            entry_list(f, s, visible, naming, name)
                         }
                     } else {
                         ui.EmptyState("Reading “{name_of(s.here)}”…", icon: .folder)
@@ -753,7 +826,7 @@ view files(f: Files) {
                 }
             }
             inspector: {
-                inspected(f, s, visible, chosen)
+                inspected(f, s, visible)
             }
         }
     } else {
@@ -767,7 +840,29 @@ view places(f: Files, s: Session) {
     ui.NavList(selected: s.here) {
         ui.NavSection("Places") {
             for place in f.places.filter(x -> x.group == "Places").sort_by(x -> x.label) {
-                ui.NavItem(place.path, place.label, icon: if place.path == "~" { .home } else if place.path == "trash" { .trash_2 } else if place.path == "recent" { .clock } else if place.path == "applications" { .store } else if place.path == "/" { .hard_drive } else if place.path == "~/Pictures" { .image } else if place.path == "~/Music" { .music } else if place.path == "~/Videos" { .video } else if place.path == "~/Downloads" { .download } else if place.path == "~/Desktop" { .monitor } else { .folder }) {
+                ui.NavItem(
+                    place.path,
+                    place.label,
+                    icon: if place.path == "~" {
+                        .home
+                    } else if place.path == "trash" {
+                        .trash_2
+                    } else if place.path == "recent" {
+                        .clock
+                    } else if place.path == "applications" {
+                        .store
+                    } else if place.path == "/" {
+                        .hard_drive
+                    } else if place.path == "~/Pictures" {
+                        .image
+                    } else if place.path == "~/Music" {
+                        .music
+                    } else if place.path == "~/Videos" {
+                        .video
+                    } else if place.path == "~/Downloads" {
+                        .download
+                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                ) {
                     on select: go(f, place.path)
                 }
             }
@@ -783,14 +878,58 @@ view places(f: Files, s: Session) {
         }
         ui.NavSection("Folders") {
             for place in f.places.filter(x -> x.group == "Folders") {
-                ui.NavItem(place.path, place.label, icon: if place.path == "~" { .home } else if place.path == "trash" { .trash_2 } else if place.path == "recent" { .clock } else if place.path == "applications" { .store } else if place.path == "/" { .hard_drive } else if place.path == "~/Pictures" { .image } else if place.path == "~/Music" { .music } else if place.path == "~/Videos" { .video } else if place.path == "~/Downloads" { .download } else if place.path == "~/Desktop" { .monitor } else { .folder }) {
+                ui.NavItem(
+                    place.path,
+                    place.label,
+                    icon: if place.path == "~" {
+                        .home
+                    } else if place.path == "trash" {
+                        .trash_2
+                    } else if place.path == "recent" {
+                        .clock
+                    } else if place.path == "applications" {
+                        .store
+                    } else if place.path == "/" {
+                        .hard_drive
+                    } else if place.path == "~/Pictures" {
+                        .image
+                    } else if place.path == "~/Music" {
+                        .music
+                    } else if place.path == "~/Videos" {
+                        .video
+                    } else if place.path == "~/Downloads" {
+                        .download
+                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                ) {
                     on select: go(f, place.path)
                 }
             }
         }
         ui.NavSection("This computer") {
             for place in f.places.filter(x -> x.group == "This computer") {
-                ui.NavItem(place.path, place.label, icon: if place.path == "~" { .home } else if place.path == "trash" { .trash_2 } else if place.path == "recent" { .clock } else if place.path == "applications" { .store } else if place.path == "/" { .hard_drive } else if place.path == "~/Pictures" { .image } else if place.path == "~/Music" { .music } else if place.path == "~/Videos" { .video } else if place.path == "~/Downloads" { .download } else if place.path == "~/Desktop" { .monitor } else { .folder }) {
+                ui.NavItem(
+                    place.path,
+                    place.label,
+                    icon: if place.path == "~" {
+                        .home
+                    } else if place.path == "trash" {
+                        .trash_2
+                    } else if place.path == "recent" {
+                        .clock
+                    } else if place.path == "applications" {
+                        .store
+                    } else if place.path == "/" {
+                        .hard_drive
+                    } else if place.path == "~/Pictures" {
+                        .image
+                    } else if place.path == "~/Music" {
+                        .music
+                    } else if place.path == "~/Videos" {
+                        .video
+                    } else if place.path == "~/Downloads" {
+                        .download
+                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                ) {
                     on select: go(f, place.path)
                 }
             }
@@ -802,20 +941,25 @@ view places(f: Files, s: Session) {
 view path_bar(f: Files, s: Session, typing: State<Bool>, typed: State<Text>) {
     if typing {
         stack {
-            ui.TextInput(bind: typed, placeholder: "Type a path, e.g. ~/Documents", entry: true, autofocus: true) {
+            ui.TextInput(
+                bind: typed,
+                placeholder: "Type a path, e.g. ~/Documents",
+                entry: true,
+                autofocus: true,
+            ) {
                 on submit(path): go(f, path).then(set(typing, false))
                 on cancel: set(typing, false)
             }
         }
     } else {
         row(gap: .related, align: .center) {
-            ui.Button("Back", icon: .arrow_left, icon_only: true, role: .plain, enabled: not s.went.is_empty()) {
+            ui.Button("Back", icon: .arrow_left, icon_only: true, role: .plain) {
                 on press: back(f)
             }
-            ui.Button("Forward", icon: .arrow_right, icon_only: true, role: .plain, enabled: not s.ahead.is_empty()) {
+            ui.Button("Forward", icon: .arrow_right, icon_only: true, role: .plain) {
                 on press: forward(f)
             }
-            ui.Button("Up one folder", icon: .arrow_up, icon_only: true, role: .plain, enabled: s.here != "/") {
+            ui.Button("Up one folder", icon: .arrow_up, icon_only: true, role: .plain) {
                 on press: up(f)
             }
             ui.Breadcrumb(root_icon: .home) {
@@ -834,7 +978,7 @@ view path_bar(f: Files, s: Session, typing: State<Bool>, typed: State<Text>) {
 }
 
 /// How the folder is read: as rows or cards, in which order, and which names show.
-view view_options(f: Files, s: Session, chosen: List<Text>, naming: State<Text>, name: State<Text>) {
+view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) {
     stack(gap: .related) {
         ui.ToggleGroup(selected: if s.grid { 1 } else { 0 }, label: "How the folder shows") {
             ui.Segment("List", icon: .list)
@@ -854,7 +998,6 @@ view view_options(f: Files, s: Session, chosen: List<Text>, naming: State<Text>,
             ui.MenuItem("Sort by date", checked: s.sort == .modified) {
                 on choose: sort_by(f, .modified)
             }
-            ui.MenuSeparator()
             ui.MenuItem("Ascending", checked: s.ascending) {
                 on choose: ascending(f, true)
             }
@@ -863,8 +1006,11 @@ view view_options(f: Files, s: Session, chosen: List<Text>, naming: State<Text>,
             }
         }
         ui.MenuButton("More", icon: .ellipsis, icon_only: true) {
-            ui.MenuItem(if s.hidden { "Hide hidden files" } else { "Show hidden files" }, icon: .eye) {
-                on choose: toggle_hidden(f)
+            ui.MenuItem(
+                if s.hidden { "Hide hidden files" } else { "Show hidden files" },
+                icon: .eye,
+            ) {
+                on choose: toggle_hidden(f, not s.hidden)
             }
             ui.MenuItem("New folder", icon: .folder_plus) {
                 on choose: set(naming, "new").then(set(name, ""))
@@ -872,21 +1018,26 @@ view view_options(f: Files, s: Session, chosen: List<Text>, naming: State<Text>,
             ui.MenuItem("New file", icon: .file_plus) {
                 on choose: set(naming, "new-file").then(set(name, ""))
             }
-            ui.MenuItem("Refresh", icon: .refresh_cw) {
+            ui.MenuItem("Refresh", icon: .refresh) {
                 on choose: refresh(f)
             }
-            ui.MenuSeparator()
-            ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C", disabled: chosen.is_empty()) {
-                on choose: carry(f, chosen, false)
+            ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C", disabled: s.selected == "") {
+                on choose: carry(f, [s.selected], false)
             }
-            ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X", disabled: chosen.is_empty()) {
-                on choose: carry(f, chosen, true)
+            ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X", disabled: s.selected == "") {
+                on choose: carry(f, [s.selected], true)
             }
             ui.MenuItem("Paste", icon: .clipboard_paste, key: "Ctrl+V") {
                 on choose: paste(f)
             }
-            ui.MenuItem("Move to Trash", icon: .trash_2, destructive: true, key: "Delete", disabled: chosen.is_empty()) {
-                on choose: trash_entries(f, chosen)
+            ui.MenuItem(
+                "Move to Trash",
+                icon: .trash_2,
+                destructive: true,
+                key: "Delete",
+                disabled: s.selected == "",
+            ) {
+                on choose: trash_entries(f, [s.selected])
             }
             if s.here == "trash" {
                 ui.MenuItem("Empty Trash", icon: .trash, destructive: true) {
@@ -902,7 +1053,9 @@ view naming_row(f: Files, naming: State<Text>, name: State<Text>) {
     row(gap: .related, align: .center) {
         ui.TextInput(
             bind: name,
-            placeholder: if naming == "new" { "Name of the new folder" } else if naming == "new-file" { "Name of the new file" } else { "New name" },
+            placeholder: if naming == "new" {
+                "Name of the new folder"
+            } else if naming == "new-file" { "Name of the new file" } else { "New name" },
             entry: true,
             autofocus: true,
         ) {
@@ -917,56 +1070,61 @@ view naming_row(f: Files, naming: State<Text>, name: State<Text>) {
 action name_it(f: Files, naming: Text, typed: Text) uses files, time {
     if naming == "new" {
         new_folder(f, typed)
-    } else if naming == "new-file" {
-        new_file(f, typed)
-    } else {
-        rename_entry(f, naming, typed)
-    }
+    } else if naming == "new-file" { new_file(f, typed) } else { rename_entry(f, naming, typed) }
 }
 
 /// The folder as rows, each with its menu.
-view entry_list(f: Files, s: Session, entries: List<Entry>, chosen: List<Text>, naming: State<Text>, name: State<Text>) {
+view entry_list(
+    f: Files,
+    s: Session,
+    entries: List<Entry>,
+    naming: State<Text>,
+    name: State<Text>,
+) {
     ui.VirtualList(name: "Files", multi_select: true, in_column: true) {
-        on activate(e): open_entry(f, e)
-        on select(e): set(chosen, [e.path]).then(touch_entry(f, e))
+        on activate(e: Entry): open_entry(f, e)
+        on select(e: Entry): touch_entry(f, e)
         for e in entries {
             ui.ListItem(item: e, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
-                on shortcut(k): key_on(f, chosen, e.path, k)
+                on shortcut(k): key_on(f, [s.selected], e.path, k)
                 menu: {
-                    ui.ContextMenu {
-                        if e.folder {
-                            ui.MenuItem("Open", icon: .folder_open) {
-                                on choose: go(f, e.path)
-                            }
-                        } else {
-                            ui.MenuItem("Open", icon: .external_link) {
-                                on choose: open_entry(f, e)
-                            }
+                    if e.folder {
+                        ui.MenuItem("Open", icon: .folder_open) {
+                            on choose: go(f, e.path)
                         }
-                        ui.MenuItem("Get info", icon: .info) {
-                            on choose: inspect(f, e)
+                    } else {
+                        ui.MenuItem("Open", icon: .external_link) {
+                            on choose: open_entry(f, e)
                         }
-                        ui.MenuSeparator()
-                        if s.here == "trash" {
-                            ui.MenuItem("Restore", icon: .arrow_up_from_line) {
-                                on choose: restore_entry(f, e.name)
-                            }
-                            ui.MenuItem("Delete permanently", icon: .trash, destructive: true) {
-                                on choose: delete_permanently(f, e.path)
-                            }
-                        } else {
-                            ui.MenuItem("Rename", icon: .pencil) {
-                                on choose: set(naming, e.path).then(set(name, e.name))
-                            }
-                            ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
-                                on choose: carry(f, [e.path], false)
-                            }
-                            ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
-                                on choose: carry(f, [e.path], true)
-                            }
-                            ui.MenuItem("Move to Trash", icon: .trash_2, destructive: true, key: "Delete") {
-                                on choose: trash_entries(f, [e.path])
-                            }
+                    }
+                    ui.MenuItem("Get info", icon: .info) {
+                        on choose: inspect(f, e)
+                    }
+                    ui.MenuSeparator()
+                    if s.here == "trash" {
+                        ui.MenuItem("Restore", icon: .arrow_up_from_line) {
+                            on choose: restore_entry(f, e.name)
+                        }
+                        ui.MenuItem("Delete permanently", icon: .trash, destructive: true) {
+                            on choose: delete_permanently(f, e.path)
+                        }
+                    } else {
+                        ui.MenuItem("Rename", icon: .pencil) {
+                            on choose: set(naming, e.path).then(set(name, e.name))
+                        }
+                        ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
+                            on choose: carry(f, [e.path], false)
+                        }
+                        ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
+                            on choose: carry(f, [e.path], true)
+                        }
+                        ui.MenuItem(
+                            "Move to Trash",
+                            icon: .trash_2,
+                            destructive: true,
+                            key: "Delete",
+                        ) {
+                            on choose: trash_entries(f, [e.path])
                         }
                     }
                 }
@@ -989,7 +1147,11 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
                         body: {
                             stack(gap: .tight) {
                                 ui.Icon(
-                                    if e.folder { .folder } else if is_picture(e.name) { .file_image } else if is_text(e.name) { .file_text } else { .file },
+                                    if e.folder {
+                                        .folder
+                                    } else if is_picture(e.name) {
+                                        .file_image
+                                    } else if is_text(e.name) { .file_text } else { .file },
                                     size: .large,
                                     secondary: not e.folder,
                                 )
@@ -1009,7 +1171,11 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
 view entry_row(e: Entry) {
     ui.ListRow(
         title: e.name,
-        icon: if e.folder { .folder } else if is_picture(e.name) { .file_image } else if is_text(e.name) { .file_text } else { .file },
+        icon: if e.folder {
+            .folder
+        } else if is_picture(e.name) {
+            .file_image
+        } else if is_text(e.name) { .file_text } else { .file },
         meta: e.modified,
         value: if e.folder { "" } else { size_of(e.size) },
     )
@@ -1018,7 +1184,11 @@ view entry_row(e: Entry) {
 /// The files opened recently, each opening again.
 view recent_files(f: Files, s: Session) {
     if f.recent.is_empty() {
-        ui.EmptyState("No recent files yet", icon: .clock, message: "Files you open stand here, one press away.")
+        ui.EmptyState(
+            "No recent files yet",
+            icon: .clock,
+            message: "Files you open stand here, one press away.",
+        )
     } else {
         ui.VirtualList(name: "Recent files", in_column: true) {
             on activate(r: Recent): open_recent(f, r)
@@ -1035,8 +1205,8 @@ view recent_files(f: Files, s: Session) {
 
 /// What is chosen: its kind, its size, when it changed and where it stands, and the picture or
 /// the first words a file holds.
-view inspected(f: Files, s: Session, entries: List<Entry>, chosen: List<Text>) {
-    let picked = entries.find(e -> chosen.contains(e.path))
+view inspected(f: Files, s: Session, entries: List<Entry>) {
+    let picked = entries.find(e -> e.path == s.selected)
     if let e = picked {
         stack(gap: .group) {
             text(e.name, role: .title)
