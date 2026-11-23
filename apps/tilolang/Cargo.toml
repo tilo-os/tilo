@@ -102,7 +102,7 @@ tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 # A video plays in the app's window on an Apple silicon Mac, decoded by the GStreamer Tilo.app
 # carries beside this binary (dist/macos/build-app.sh).
-tilo-media = { path = "../../crates/platform/tilo-media", features = ["decode"] }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media", features = ["decode"] }
 
 [target.'cfg(windows)'.dependencies]
 # An origin reaches its connector over a socket the session handed both; a Windows host has

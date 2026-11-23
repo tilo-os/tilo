@@ -1271,6 +1271,7 @@ doc = false
 "tilo-mail-session" = { path = "../../crates/platform/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
+"tilo-media-controls" = { path = "../../crates/session/media-controls", default-features = false, features = ["default", "service"] }
 "tilo-messaging" = { path = "../../crates/platform/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
@@ -3925,6 +3926,7 @@ doc = false
 "tilo-mail-session" = { path = "../../crates/platform/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
+"tilo-media-controls" = { path = "../../crates/session/media-controls", default-features = false, features = ["default", "service"] }
 "tilo-messaging" = { path = "../../crates/platform/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
