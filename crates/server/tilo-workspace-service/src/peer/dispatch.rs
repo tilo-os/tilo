@@ -25,6 +25,7 @@ use tilo_server_protocol::WorkspaceId;
 async fn handle_session_write(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     use tilo_server_protocol::refusal::Refusal;
@@ -51,6 +52,13 @@ async fn handle_session_write(
             refusal,
         })
     };
+    // A session writes only into a workspace it subscribed to, which is where
+    // its membership was checked.
+    if !subscribed.contains(&workspace_id) {
+        return Ok(refused(Refusal::NotAMember(
+            "the session does not follow that workspace".into(),
+        )));
+    }
     // The session authenticated `peer`; its write names the author it signs as.
     if author != peer.device_public_key {
         return Ok(refused(Refusal::NotAMember(
@@ -104,13 +112,21 @@ async fn handle_session_write(
     }
     // The link hands the frame to its own reader, which follows it into the
     // workspace's copy as it follows any link's frame: one admission, one
-    // follow, one notice to whoever follows the workspace's records.
-    link.admit_one(author, message).await;
-    Ok(op.map(|op| Envelope::Committed {
-        workspace_id,
-        op,
-        seq: crate::workspace_documents::host_order(),
-    }))
+    // follow, one notice to whoever follows the workspace's records. The
+    // writer hears what that admission decided: a write the workspace refused
+    // is never answered as committed, and one that waits for history the
+    // workspace lacks is not answered as kept either.
+    match link.admit_one(author, message).await {
+        (_, Some(tilo_peer_state::direct::Kept::Refused)) => Ok(refused(Refusal::NotAllowed(
+            "the workspace refused the write".into(),
+        ))),
+        (true, None) => Ok(refused(Refusal::NotReady)),
+        _ => Ok(op.map(|op| Envelope::Committed {
+            workspace_id,
+            op,
+            seq: crate::workspace_documents::host_order(),
+        })),
+    }
 }
 
 fn not_on_a_session(kind: &str) -> PeerError {
@@ -133,7 +149,7 @@ pub(super) async fn handle_envelope(
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
         }
         env @ (Envelope::Delta { .. } | Envelope::Commit { .. }) => {
-            handle_session_write(peer, session, env).await
+            handle_session_write(peer, session, subscribed, env).await
         }
         env @ Envelope::OpenDocument { .. } => {
             handle_open_document(peer, session, subscribed, env).await
