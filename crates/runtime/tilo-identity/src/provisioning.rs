@@ -1273,25 +1273,16 @@ pub fn verify_collaboration_identity(
 }
 
 /// Where this device's key and certificates live, for every program of this
-/// account (the session, its setup, `tilo`): `$TILO_IDENTITY_ROOT`
-/// when set, else Tilo's system tree (`/var/lib/tilo`) on a machine that has
+/// account (the session, its setup, `tilo`, and the shell runtime that proves to the session):
+/// `$TILO_IDENTITY_ROOT` when set, else Tilo's system tree (`/var/lib/tilo`) on a machine that has
 /// one, else the account's own data directory (`$XDG_DATA_HOME/tilo`), as on
-/// a computer running Tilo beside another operating system.
+/// a computer running Tilo beside another operating system. The rule is
+/// [`tilo_device_identity::persist::collaboration_identity_root`]'s, which every program reads it
+/// from.
 #[must_use]
 pub fn collaboration_identity_root() -> PathBuf {
-    if let Some(root) = std::env::var_os("TILO_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
-        return PathBuf::from(root);
-    }
-    let system = Path::new(SYSTEM_IDENTITY_ROOT);
-    if system.join("device").is_dir() {
-        return system.to_path_buf();
-    }
-    tilo_paths::data_dir()
-        .filter(|dir| dir.is_absolute())
-        .map_or_else(|| system.to_path_buf(), |dir| dir.join("tilo"))
+    tilo_device_identity::persist::collaboration_identity_root()
 }
-
-const SYSTEM_IDENTITY_ROOT: &str = "/var/lib/tilo";
 
 /// This device's identity paths under [`collaboration_identity_root`], with
 /// this session's device-key identity store ([`IdentityStorage::for_session`]).
