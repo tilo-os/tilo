@@ -82,38 +82,33 @@ fn a_restarted_computers_first_calls_go_through() {
 
 /// A computer's agent is one of the workspace's agents from its first call there: the workspace's
 /// own list of its agents names it, once, as its person's, under the one id its runs share, and
-/// the session it is here in is labelled as the client connects.
+/// both its row and the session it is here in read as the client connects.
 #[test]
 fn a_computers_agent_is_listed_once_where_it_acts() {
     host::run(|host| async move {
         let agent = host.agent();
-        let (_, failed) = act(&agent, "device#info", json!({})).await;
-        assert!(!failed, "the computer's agent acts in the workspace");
+        let (listed, failed) = ls(&agent, None).await;
+        assert!(
+            !failed,
+            "the computer's agent lists the workspace: {listed}"
+        );
 
         // One agent, whatever client connects to it: a client names its session, never the
         // identity it acts as.
         let id = mcp_agent(host.person());
-        let page = host.page_key("Visa backend");
-        let (status, listed) = page
-            .get(&format!("/v1/workspaces/{}/resources", host.workspace()))
-            .await;
-        assert_eq!(status, 200, "{listed}");
-        let listed = listed.to_string();
         assert_eq!(
             listed.matches(&id).count(),
             1,
             "the workspace's agents list the computer's agent once, by {id}: {listed}"
         );
+        assert!(
+            listed.contains("Claude Code"),
+            "the workspace's agents call it what the client named itself: {listed}"
+        );
 
         // Its session is the client's: who is here calls it what the client named itself.
-        let result = page
-            .tool(
-                "tilo_watch",
-                &json!({"workspace": host.workspace(), "wait_ms": 500}),
-            )
-            .await;
-        let (watched, failed) = crate::agent_fixture::said(&result);
-        assert!(!failed, "the page watches who is here: {watched}");
+        let (watched, failed) = watch(&agent, json!({"wait_ms": 500})).await;
+        assert!(!failed, "the agent watches who is here: {watched}");
         assert!(
             events(&watched)
                 .into_iter()

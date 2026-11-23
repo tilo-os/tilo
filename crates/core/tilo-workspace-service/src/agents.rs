@@ -2256,6 +2256,63 @@ pub async fn workspace_agent(
     Vec::new()
 }
 
+/// Name the agent `agent` in `workspace`'s list as `name`, keeping its id: what the client the
+/// agent serves named itself. The write is Assistant's own action, asked of the host and admitted
+/// as every write is, so every later read of the list names it so. Nothing when the list does not
+/// name it, or names it so already.
+pub async fn rename_agent(
+    workspaces: &Workspaces,
+    workspace: WorkspaceId,
+    (agent, name): (&str, &str),
+    person: &str,
+) -> Result<(), String> {
+    let Some(current) = workspaces.agent_name(&workspace.to_string(), agent).await else {
+        return Ok(());
+    };
+    let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
+    if current == name.as_str() {
+        return Ok(());
+    }
+    let workspace_text = workspace.to_string();
+    let route = DocumentRoute {
+        app_id: AGENTS_OWNER.to_owned(),
+        cluster_id: workspace_text.clone(),
+        document: collab_types::workspace_document_id(tilo_workspace_agent::KIND),
+    };
+    let caller = tilo_actions::remote::Caller::local_person(person).in_workspace(workspace_text);
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("agent".into(), serde_json::json!(agent));
+    arguments.insert("name".into(), serde_json::json!(name.as_str()));
+    let request = invocation_of(
+        target_named(&route, tilo_workspace_agent::KIND, "rename-agent"),
+        tilo_actions::remote::InvokeArgument::Json(arguments),
+    );
+    let requested = request.invocation;
+    let reply = workspaces
+        .serve_app(
+            workspace,
+            &caller,
+            tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        )
+        .await
+        .ok_or("this host serves no apps")?;
+    match reply {
+        tilo_actions::remote::RemoteActionMessage::Receipt(receipt)
+            if receipt.invocation == requested =>
+        {
+            match receipt.status {
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+                | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
+                tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+                tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
+                    .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
+            }
+        }
+        _ => Err("the host answered no receipt".to_owned()),
+    }
+}
+
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
 /// `person`: the list starts with it where the workspace has none yet. The write is Assistant's
 /// own action, asked of the host and admitted as every write is, so what follows the record sees

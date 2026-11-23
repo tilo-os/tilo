@@ -2457,6 +2457,42 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(execution) = caller.execution_id() {
             who_is_here.named(&execution.to_string(), client);
         }
+        // The workspace's record of its agents calls the agent what its client names itself,
+        // keeping the id every run of it shares: a person reads "Claude Code" in the roster, not
+        // the name the key its run acts under was made by.
+        let Some(agent) = session.agent.as_ref() else {
+            return;
+        };
+        let (Some(agent_id), Some(person)) = (
+            agent.acting().agent_id().map(str::to_owned),
+            agent.acting().acted_for_person().map(str::to_owned),
+        ) else {
+            return;
+        };
+        let (workspaces, workspace, client) = (
+            Arc::clone(&self.workspaces),
+            self.workspace.clone(),
+            client.to_owned(),
+        );
+        block_on_owned(async move {
+            let Some(workspace) = WorkspaceId::parse(&workspace) else {
+                return;
+            };
+            if let Err(error) = tilo_workspace_service::agents::rename_agent(
+                workspaces.copies(),
+                workspace,
+                (&agent_id, &client),
+                &person,
+            )
+            .await
+            {
+                tracing::warn!(
+                    %error,
+                    %agent_id,
+                    "an agent's name is not kept in the workspace's agents"
+                );
+            }
+        });
     }
 
     fn query(
