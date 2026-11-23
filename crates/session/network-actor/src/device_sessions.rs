@@ -774,13 +774,29 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::channel(4);
         let peer_id = client_conn.remote_id();
+        // The server reads whatever the client sends while `open` runs, and counts it. The
+        // stream the client opened and ended empty may reach it ahead of the close, so that the
+        // stream arrives says nothing: only its bytes do.
+        let server_read = tokio::spawn(async move {
+            let mut total = 0_usize;
+            if let Ok((_send, mut recv)) = server_conn.accept_bi().await {
+                let mut chunk = [0_u8; 4096];
+                while let Ok(read) = tokio::io::AsyncReadExt::read(&mut recv, &mut chunk).await {
+                    if read == 0 {
+                        break;
+                    }
+                    total = total.saturating_add(read);
+                }
+            }
+            total
+        });
         open(client_conn, oversized_hello, tx).await;
         assert!(matches!(
             rx.recv().await,
             Some(InternalEvent::SiblingFailed(peer)) if peer == peer_id
         ));
-        // The server saw no oversized frame: the connection closed cleanly.
-        assert!(server_conn.accept_bi().await.is_err());
+        // No byte of the refused hello reached the server.
+        assert_eq!(server_read.await.unwrap(), 0);
         a.close().await;
         let _ = router.shutdown().await;
 
