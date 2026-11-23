@@ -40,19 +40,25 @@
 //                   stay on the site, where the page holding their root shows
 //                   what their agents' hosts ask them on its question sheet.
 //                   Each line read from FIFO, `allow NAME` or `deny NAME`,
-//                   waits for the next question, keeps the person's view of it
-//                   as NAME-asked.png, presses Allow once or Deny on the sheet,
-//                   and keeps NAME-answered.png once the sheet is gone; a line
-//                   of {name, answer, page, sheet, askedMs, answeredMs} is
-//                   appended to OUT_DIR/answers.jsonl. A question a page was
-//                   held at also carries `page`: the page it leaves from, what
-//                   it does, the method, where it goes and the picture of the
-//                   filled page, as the sheet's own element carries them.
-//                   `pair WORKSPACE` makes a pairing link into that workspace
-//                   on the host this page is in, the device that follows it
-//                   approved here as an agent's link is, and appends {pair:
-//                   {workspace, link, invite, expiresAt}}. `done` (or the
-//                   FIFO's end) ends it.
+//                   waits for the next question, keeps what the sheet draws
+//                   (`shown`: its title, detail and facts, as the page's
+//                   accessibility tree reads them) and the person's view of it
+//                   as NAME-asked.png, presses Allow once or Deny on the
+//                   sheet, and keeps NAME-answered.png once the sheet is gone;
+//                   a line of {name, answer, page, shown, sheet, askedMs,
+//                   answeredMs} is appended to OUT_DIR/answers.jsonl. A
+//                   question a page was held at also carries `page`: the page
+//                   it leaves from, what it does, the method, where it goes and
+//                   the picture of the filled page, as the sheet's own element
+//                   carries them.
+//                   `none NAME` waits for a question without answering it, and
+//                   appends {name, answer: "none", shown, askedMs}: a sheet
+//                   that came is `shown`, and one that never did is empty.
+//                   `pair WORKSPACE` makes a link into that workspace on the
+//                   host this page is in, the browser that follows it let in
+//                   here as an agent's link is, and appends {pair: {workspace,
+//                   link, invite, expiresAt}}. `done` (or the FIFO's end) ends
+//                   it.
 //   --pair-link LINK
 //                   this browser is the device that follows LINK: it pairs to
 //                   the person the link names, holding none of their root, and
@@ -81,7 +87,7 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !server || !out) {
-  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]]');
+  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO]');
   process.exit(2);
 }
 const invite = option('--invite');
@@ -611,7 +617,22 @@ const clickNode = async node => {
   }
   return true;
 };
-
+// What the sheet draws, as the person's screen reader reads it: every name,
+// description and value the page's accessibility tree carries while it is up,
+// which is the question's title, its detail and its facts.
+const spoken = async () => {
+  await tab.send('Accessibility.enable', {}).catch(() => {});
+  const {result} = await tab.send('Accessibility.getFullAXTree', {}).catch(() => ({result: {nodes: []}}));
+  const said = [];
+  for (const node of result?.nodes ?? []) {
+    if (node.ignored) continue;
+    for (const field of [node.name?.value, node.description?.value, node.value?.value]) {
+      const line = String(field ?? '').trim().replace(/\s+/g, ' ').slice(0, 400);
+      if (line && !said.includes(line)) said.push(line);
+    }
+  }
+  return said;
+};
 // What the question sheet names of the page it leaves, as the sheet's own
 // element carries it where a person and an assistive reader meet it: the page
 // it leaves from, what it does, the method and where it goes, and the picture
@@ -654,9 +675,9 @@ if (answerFifo) {
     if (!answer) continue;
     if (answer === 'done') break;
     if (answer === 'pair') {
-      // A pairing link for a browser of the person's, into `name`'s
-      // workspace: the device that follows it is approved here, as an agent
-      // set up from this tab is.
+      // A link for a browser of the person's, into `name`'s workspace: the
+      // browser that follows it is let in here, as an agent set up from this
+      // tab is.
       await until('Boolean(globalThis.tiloIdentity?.connectAgent)', 'the page ready to pair a device', 120_000);
       const made = await tab.evaluate(`(async () => {
         try {
@@ -667,17 +688,31 @@ if (answerFifo) {
         }
       })()`).catch(error => ({error: String(error?.message ?? error)}));
       appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({pair: {workspace: name, ...made}})}\n`);
-      if (made.link) console.error(`ok: the page made a pairing link into ${name}`);
-      else console.error(`FAIL: the page made no pairing link into ${name}: ${JSON.stringify(made)}`);
+      if (made.link) console.error(`ok: the page made a link into ${name}`);
+      else console.error(`FAIL: the page made no link into ${name}: ${JSON.stringify(made)}`);
       continue;
     }
-    if (!['allow', 'deny'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME", "deny NAME" or "pair WORKSPACE", not ${JSON.stringify(line)}`);
+    if (!['allow', 'deny', 'none'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME", "deny NAME", "none NAME" or "pair WORKSPACE", not ${JSON.stringify(line)}`);
+    if (answer === 'none') {
+      // Answer nothing: the person sees whether the sheet draws a question,
+      // and the caller holds the host to having asked none.
+      const waiting = Date.now();
+      const button = await axNamed(/^(Allow once|Deny)$/, {within: 2_000});
+      const shown = button ? await spoken() : [];
+      appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, shown, askedMs: Date.now() - waiting})}\n`);
+      console.error(shown.length
+        ? `the person's sheet was asked for ${name} without an answer`
+        : `ok: no question came to the person's sheet for ${name}`);
+      continue;
+    }
     const waiting = Date.now();
     const button = await axNamed(answer === 'allow' ? /^Allow once$/ : /^Deny$/, {within: 300_000});
     if (!button) await finish(1, `no question came to the person's sheet for ${name} in 300 s (the page reads: ${await text()})`);
     const askedMs = Date.now() - waiting;
-    // The sheet as the person reads it, before they answer.
+    // What the sheet says, and the sheet as the person reads it, before they
+    // answer.
     await sleep(400);
+    const shown = await spoken();
     const page = await departure();
     const sheet = await text();
     const asked = await tab.screenshot().catch(() => null);
@@ -696,7 +731,7 @@ if (answerFifo) {
     await sleep(600);
     const after = await tab.screenshot().catch(() => null);
     if (after) writeFileSync(join(out, `${name}-answered.png`), after);
-    appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, ...(page ? {page} : {}), sheet, askedMs, answeredMs})}\n`);
+    appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, ...(page ? {page} : {}), shown, sheet, askedMs, answeredMs})}\n`);
     console.error(`ok: the person saw the question for ${name} after ${askedMs} ms and pressed ${answer}`);
   }
 }

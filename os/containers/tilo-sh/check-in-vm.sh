@@ -43,15 +43,6 @@ dir=$chrome
 while dir=$(dirname "$dir") && [[ $dir != / ]]; do chmod o+rx "$dir"; done
 chmod -R o+rX "$(dirname "$chrome")"
 
-# tilo-approve, where the check built it, is the user's to run: it answers for
-# the person the startup page made.
-for program in ${TILO_SH_TILO_APPROVE:-}; do
-  [[ -x $program ]] || { echo "$program is not a program the check built" >&2; exit 1; }
-  dir=$(dirname "$program")
-  chmod o+rx "$dir" 2>/dev/null || true
-  chmod o+rx "$program" 2>/dev/null || true
-done
-
 # The source tree is read-only to the user; the check writes only under
 # WORK and the state.
 exec runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" CHROME="$chrome" \
