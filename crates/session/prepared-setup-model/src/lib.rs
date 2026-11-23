@@ -40,6 +40,10 @@ fn valid_binding(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
+fn valid_installer_binding(value: &str) -> bool {
+    (1..=256).contains(&value.chars().count()) && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
+}
+
 /// Canonical lowercase non-nil RFC 4122 GUID (`8-4-4-4-12` hex digits).
 #[must_use]
 pub fn is_operation_id(value: &str) -> bool {
@@ -147,10 +151,9 @@ impl<K: UnitKind> Expectation<K> {
         K::PURPOSE
     }
 
-    /// Refuse malformed operations, bindings, and sizes beyond the unit's bounds.
-    pub fn validate(&self) -> io::Result<()> {
+    fn validate_with_binding(&self, binding_ok: impl FnOnce(&str) -> bool) -> io::Result<()> {
         if Self::filename(&self.operation).ok().as_deref() != Some(self.filename.as_str())
-            || !valid_binding(&self.setup_binding)
+            || !binding_ok(&self.setup_binding)
             || self.sealed_bytes == 0
             || self.plaintext_bytes == 0
             || self.plaintext_bytes > self.limits.plaintext_bytes
@@ -168,6 +171,17 @@ impl<K: UnitKind> Expectation<K> {
             return Err(invalid(K::INVALID));
         }
         Ok(())
+    }
+
+    /// Refuse malformed operations, bindings, and sizes beyond the unit's bounds.
+    pub fn validate(&self) -> io::Result<()> {
+        self.validate_with_binding(valid_binding)
+    }
+
+    /// Installer-extractor validation: preserves the extractor's 1..=256 character
+    /// and ASCII-control binding rule alongside all shared bounds.
+    pub fn validate_installer(&self) -> io::Result<()> {
+        self.validate_with_binding(valid_installer_binding)
     }
 
     #[must_use]
@@ -333,6 +347,7 @@ impl PortableHomeDeclaration {
     }
 }
 
+#[cfg(feature = "receipt")]
 const fn default_consumer_protocol() -> u32 {
     1
 }
@@ -501,7 +516,7 @@ impl<C> PreparedSetupReceipt<C> {
 pub mod stored {
     use super::{
         Applications, ApplicationsExpectation, Browser, BrowserExpectation, Home, HomeExpectation,
-        Limits, Purpose, default_consumer_protocol,
+        Limits, Purpose,
     };
     use serde::{Deserialize, Deserializer, de};
 
@@ -525,8 +540,6 @@ pub mod stored {
     #[serde(deny_unknown_fields)]
     struct FlatApplications {
         schema: u32,
-        #[serde(default = "default_consumer_protocol")]
-        consumer_protocol: u32,
         operation: String,
         purpose: Purpose,
         filename: String,
@@ -632,7 +645,7 @@ pub mod stored {
                         ciphertext_sha256: flat.ciphertext_sha256,
                         limits: flat.limits,
                         kind: Applications {
-                            consumer_protocol: flat.consumer_protocol,
+                            consumer_protocol: 1,
                             manifest_sha256: flat.manifest_sha256,
                         },
                     }))
@@ -714,6 +727,53 @@ pub mod stored {
     ) -> Result<Option<super::BrowserHandoff>, D::Error> {
         Option::<StoredBrowserDeclaration>::deserialize(deserializer)
             .map(|value| value.map(|stored| stored.0))
+    }
+
+    #[cfg(feature = "receipt")]
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields, bound(deserialize = "C: Deserialize<'de>"))]
+    struct StoredPreparedSetupReceiptFields<C> {
+        identity_public_key: [u8; 32],
+        account_count: usize,
+        #[serde(default)]
+        current_identity: Option<C>,
+        #[serde(default)]
+        service_sessions: Option<super::ServiceSessionsDeclaration>,
+        #[serde(default)]
+        device_label: String,
+        #[serde(default)]
+        portable_home: Option<super::PortableHomeDeclaration>,
+        #[serde(default, deserialize_with = "deserialize_option_applications")]
+        portable_flatpak: Option<ApplicationsExpectation>,
+        #[serde(default, deserialize_with = "deserialize_option_browser")]
+        browser: Option<super::BrowserHandoff>,
+        #[serde(default)]
+        mail: Vec<super::ThunderbirdImportReceipt>,
+    }
+
+    /// Read-only parser for `tilo-prepared-setup` receipts accepting both the
+    /// present nested `kind` shape and the earlier flat shape for
+    /// `portable_flatpak` and `browser.payload`.
+    #[cfg(feature = "receipt")]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StoredPreparedSetupReceipt<C>(pub super::PreparedSetupReceipt<C>);
+
+    #[cfg(feature = "receipt")]
+    impl<'de, C: Deserialize<'de>> Deserialize<'de> for StoredPreparedSetupReceipt<C> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let fields = StoredPreparedSetupReceiptFields::<C>::deserialize(deserializer)?;
+            Ok(Self(super::PreparedSetupReceipt {
+                identity_public_key: fields.identity_public_key,
+                account_count: fields.account_count,
+                current_identity: fields.current_identity,
+                service_sessions: fields.service_sessions,
+                device_label: fields.device_label,
+                portable_home: fields.portable_home,
+                portable_flatpak: fields.portable_flatpak,
+                browser: fields.browser,
+                mail: fields.mail,
+            }))
+        }
     }
 }
 
@@ -962,6 +1022,15 @@ mod tests {
                 .is_err()
         );
         flat_apps["purpose"] = serde_json::json!("flatpak_applications");
+        for protocol in [1, 2] {
+            let mut with_protocol = flat_apps.clone();
+            with_protocol["consumer_protocol"] = serde_json::json!(protocol);
+            assert!(
+                serde_json::from_value::<stored::StoredApplicationsExpectation>(with_protocol)
+                    .is_err(),
+                "flat applications must refuse consumer_protocol={protocol}"
+            );
+        }
         flat_apps["extra"] = serde_json::json!(1);
         assert!(
             serde_json::from_value::<stored::StoredApplicationsExpectation>(flat_apps).is_err()
@@ -989,6 +1058,35 @@ mod tests {
         );
         flat_browser["extra"] = serde_json::json!(1);
         assert!(serde_json::from_value::<stored::StoredBrowserExpectation>(flat_browser).is_err());
+    }
+
+    #[test]
+    fn session_and_installer_binding_rules_preserve_distinct_boundaries() {
+        let mut home = sample_home_expectation();
+        for (binding, session_ok, installer_ok) in [
+            ("é".repeat(128), true, true),
+            ("é".repeat(256), false, true),
+            ("é".repeat(257), false, false),
+            ("before\u{85}after".to_owned(), false, true),
+            ("before\u{7f}after".to_owned(), false, false),
+            ("before\x1fafter".to_owned(), false, false),
+        ] {
+            home.setup_binding = binding.clone();
+            assert_eq!(
+                home.validate().is_ok(),
+                session_ok,
+                "session binding rule for len={} chars={}",
+                binding.len(),
+                binding.chars().count()
+            );
+            assert_eq!(
+                home.validate_installer().is_ok(),
+                installer_ok,
+                "installer binding rule for len={} chars={}",
+                binding.len(),
+                binding.chars().count()
+            );
+        }
     }
 
     #[test]
@@ -1124,6 +1222,88 @@ mod tests {
             serde_json::from_value::<PreparedSetupReceipt<StubCurrentDevice>>(minimal_json)
                 .unwrap(),
             minimal
+        );
+    }
+
+    #[cfg(feature = "receipt")]
+    #[test]
+    fn stored_prepared_setup_receipt_accepts_kind_and_flat_and_refuses_flat_protocol() {
+        let key = [7u8; 32];
+        let apps = sample_applications_expectation(1);
+        let browser = sample_browser_declaration(key);
+        let expected = PreparedSetupReceipt {
+            identity_public_key: key,
+            account_count: 1,
+            current_identity: None,
+            service_sessions: Some(sample_service_sessions(1)),
+            device_label: "Ada's laptop".into(),
+            portable_home: Some(PortableHomeDeclaration {
+                schema: 1,
+                setup_binding: "setup-binding".into(),
+                selection: PortableHomeSelection::FullHome,
+                applications: true,
+            }),
+            portable_flatpak: Some(apps.clone()),
+            browser: Some(browser.clone()),
+            mail: vec![sample_mail_receipt()],
+        };
+        let from_kind = serde_json::from_slice::<
+            stored::StoredPreparedSetupReceipt<StubCurrentDevice>,
+        >(&serde_json::to_vec(&expected).unwrap())
+        .unwrap()
+        .0;
+        assert_eq!(from_kind, expected);
+
+        let mut flat_receipt = serde_json::json!({
+            "identity_public_key": key,
+            "account_count": 1,
+            "service_sessions": expected.service_sessions,
+            "device_label": "Ada's laptop",
+            "portable_home": expected.portable_home,
+            "portable_flatpak": {
+                "schema": 1,
+                "operation": apps.operation,
+                "purpose": "flatpak_applications",
+                "filename": apps.filename,
+                "setup_binding": apps.setup_binding,
+                "sealed_bytes": apps.sealed_bytes,
+                "plaintext_bytes": apps.plaintext_bytes,
+                "entries": apps.entries,
+                "ciphertext_sha256": apps.ciphertext_sha256,
+                "manifest_sha256": apps.kind.manifest_sha256,
+                "limits": apps.limits,
+            },
+            "browser": {
+                "plan": browser.plan,
+                "payload": {
+                    "schema": 1,
+                    "operation": browser.payload.operation,
+                    "purpose": "browser_profiles",
+                    "filename": browser.payload.filename,
+                    "setup_binding": browser.payload.setup_binding,
+                    "sealed_bytes": browser.payload.sealed_bytes,
+                    "plaintext_bytes": browser.payload.plaintext_bytes,
+                    "entries": browser.payload.entries,
+                    "ciphertext_sha256": browser.payload.ciphertext_sha256,
+                    "plan_sha256": browser.payload.kind.plan_sha256,
+                    "limits": browser.payload.limits,
+                }
+            },
+            "mail": expected.mail,
+        });
+        let from_flat = serde_json::from_value::<
+            stored::StoredPreparedSetupReceipt<StubCurrentDevice>,
+        >(flat_receipt.clone())
+        .unwrap()
+        .0;
+        assert_eq!(from_flat, expected);
+
+        flat_receipt["portable_flatpak"]["consumer_protocol"] = serde_json::json!(2);
+        assert!(
+            serde_json::from_value::<stored::StoredPreparedSetupReceipt<StubCurrentDevice>>(
+                flat_receipt
+            )
+            .is_err()
         );
     }
 
