@@ -27,7 +27,7 @@
 pub mod broker;
 pub mod certificates;
 pub mod certification_ceremony;
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub mod device_admin;
 pub mod device_fleet;
 pub mod enrolled_transport;
@@ -39,13 +39,8 @@ pub mod local_person;
 #[cfg(unix)]
 pub mod person_files;
 pub mod policy_change;
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub mod provisioning;
 pub mod sources;
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub mod store;
-
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-mod unsupported_platform;
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-pub use unsupported_platform::{provisioning, store};

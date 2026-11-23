@@ -15,7 +15,7 @@
 
 #![deny(rust_2018_idioms)]
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod branch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clock;

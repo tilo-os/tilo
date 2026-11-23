@@ -1,11 +1,6 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read};
-#[cfg(test)]
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -37,16 +32,12 @@ pub use tilo_identity_client::PortableBackupInfo;
 
 pub use ondisk::{IdentityRecord, SerializableIdentity};
 
-#[cfg(test)]
-use crate::store::test_wire::{read_frame, write_frame};
-#[cfg(test)]
-use tilo_identity_client::wire;
 use tilo_identity_client::{
     IdentityMetadata, IdentitySummary, KeyProtection, NotAvailable, collaboration_join_digest,
 };
 
 /// True when a secured identity's Secret Service item could not be obtained.
-/// The storage provider marks this condition with `ENOKEY`; keeping the
+/// The storage provider marks this condition with a typed error; keeping the
 /// classification typed avoids making startup policy depend on a store's
 /// localized diagnostics.
 pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
@@ -60,39 +51,22 @@ pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
 /// Equivalent classifier for callers that add context while preserving the
 /// original provider error as the source of an `io::Error`.
 pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        error.raw_os_error() == Some(libc::ENOKEY)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        error
-            .get_ref()
-            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<SecretServiceUnavailable>)
-    }
+    error
+        .get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<SecretServiceUnavailable>)
 }
 
-#[cfg(not(target_os = "linux"))]
 #[derive(Debug)]
 struct SecretServiceUnavailable;
-#[cfg(not(target_os = "linux"))]
 impl std::fmt::Display for SecretServiceUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("identity Secret Service item is unavailable")
     }
 }
-#[cfg(not(target_os = "linux"))]
 impl std::error::Error for SecretServiceUnavailable {}
 
 pub fn secret_service_unavailable_error() -> io::Error {
-    #[cfg(target_os = "linux")]
-    {
-        io::Error::from_raw_os_error(libc::ENOKEY)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        io::Error::other(SecretServiceUnavailable)
-    }
+    io::Error::other(SecretServiceUnavailable)
 }
 
 /// Opaque locator stored in public identity metadata. It never contains key
@@ -164,28 +138,6 @@ fn identity_path(dir: &std::path::Path, id: &str) -> io::Result<PathBuf> {
     Ok(dir.join(format!("{id}.json")))
 }
 
-fn ensure_private_dir(dir: &std::path::Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    let meta = fs::symlink_metadata(dir)?;
-    if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity root must be a real directory",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        if !tilo_files::native::private::owned_by_me(&meta) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity root is not owned by the current user",
-            ));
-        }
-        tilo_files::native::private::restrict_directory(dir)?;
-    }
-    Ok(())
-}
-
 /// Advisory process lock covering all identity lifecycle transitions. It
 /// closes the activate/remove and concurrent-import TOCTOU windows while the
 /// atomic writer gives each individual metadata update crash safety.
@@ -195,27 +147,8 @@ struct IdentityLock {
 
 impl IdentityLock {
     fn acquire(dir: &std::path::Path) -> io::Result<Self> {
-        ensure_private_dir(dir)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(dir.join(LOCK_FILE))?;
-        let meta = file.metadata()?;
-        if !meta.file_type().is_file() || !tilo_files::native::private::owned_by_me(&meta) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity lifecycle lock must be a private user-owned regular file",
-            ));
-        }
-        if meta.permissions().mode() & 0o077 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity lifecycle lock must be private",
-            ));
-        }
+        tilo_files::native::private::directory(dir)?;
+        let file = tilo_files::native::private::lock_file(&dir.join(LOCK_FILE))?;
         Ok(Self {
             _lock: advisory_lock::FileLock::exclusive(file)?,
         })
@@ -248,18 +181,11 @@ pub fn active_identity_path() -> io::Result<PathBuf> {
 }
 
 fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    let meta = file.metadata()?;
-    if !meta.file_type().is_file()
-        || !tilo_files::native::private::private_to_me(&meta)
-        || meta.len() > 128
-    {
+    let file = tilo_files::native::private::read(path)?;
+    if file.metadata()?.len() > 128 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "active identity selector is not a private regular file",
+            "active identity selector is longer than an identity id",
         ));
     }
     let mut value = String::new();
@@ -445,9 +371,9 @@ fn secure_record_unlocked(
     if is_public_member_projection(&record) {
         return Ok(KeyProtection::DeviceCertificate);
     }
-    #[cfg(not(test))]
+    #[cfg(not(all(test, unix)))]
     let preferred = secure_store::preferred_provider(dir);
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     let preferred = tests::preferred_provider(dir);
     if record.schema_version == 2 {
         let reference = record.secret_ref.as_ref().ok_or_else(|| {
@@ -1462,24 +1388,8 @@ fn parse_record(bytes: &[u8]) -> Result<ondisk::IdentityRecord, NotAvailable> {
 }
 
 fn read_record_bytes(path: &std::path::Path) -> io::Result<Vec<u8>> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
+    let mut file = tilo_files::native::private::read(path)?;
     let meta = file.metadata()?;
-    if !meta.file_type().is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity record must be a regular file",
-        ));
-    }
-    #[cfg(unix)]
-    if !tilo_files::native::private::private_to_me(&meta) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity record must be owned by the current user and mode 0600",
-        ));
-    }
     if meta.len() > MAX_RECORD_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1613,9 +1523,14 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
+    use crate::store::test_wire::{read_frame, write_frame};
     use getrandom::{SysRng, rand_core::UnwrapErr};
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::net::UnixStream;
+    use tilo_identity_client::wire;
 
     tilo_test_env::scenario! {
         fn a_minted_identity_round_trips_and_signs_for_itself;
@@ -2759,7 +2674,7 @@ mod tests {
         phase a_joined_public_projection_is_left_as_written_when_secured;
         {
             let dir = tempfile::tempdir().unwrap();
-            ensure_private_dir(dir.path()).unwrap();
+            tilo_files::native::private::directory(dir.path()).unwrap();
             let bytes = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
             let path = dir.path().join("identity-joined.json");
             replace(&path, &bytes, Privacy::OwnerOnly).unwrap();
@@ -2807,7 +2722,7 @@ mod tests {
         phase removing_one_legacy_duplicate_keeps_the_shared_provider_secret;
         {
             let dir = tempfile::tempdir().unwrap();
-            ensure_private_dir(dir.path()).unwrap();
+            tilo_files::native::private::directory(dir.path()).unwrap();
             let bytes = record_bytes("Ada", 28);
             replace(&dir.path().join("personal.json"), &bytes, Privacy::OwnerOnly).unwrap();
             replace(&dir.path().join("copy.json"), &bytes, Privacy::OwnerOnly).unwrap();
@@ -2838,6 +2753,52 @@ mod secret_service_error_bridge_tests {
         assert!(!super::is_secret_service_unavailable_io(
             &std::io::Error::from(std::io::ErrorKind::NotFound)
         ));
+    }
+}
+
+/// The store on every host: its records, selector, lock and broker-file
+/// secrets all go through the host's private files.
+#[cfg(test)]
+mod private_files_tests {
+    use super::*;
+
+    #[test]
+    fn an_imported_identity_is_chosen_listed_and_signs() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = [41_u8; 32];
+        let key = SigningKey::from_bytes(&secret);
+        let record = serde_json::to_vec(&serde_json::json!({
+            "display_name": "Ada",
+            "avatar_color": [10, 20, 30],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": key.verifying_key().to_bytes(),
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": secret.to_vec(),
+            },
+            "created_at": "2026-08-30T00:00:00Z",
+            "schema_version": 1,
+        }))
+        .unwrap();
+
+        let path = import_identity(dir.path(), "personal", &record).unwrap();
+        set_active_identity(dir.path(), "personal").unwrap();
+        assert_eq!(resolve_active_identity(dir.path()), Some(path.clone()));
+        let listed = list_identities(dir.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].display_name, "Ada");
+        assert!(
+            !fs::read_to_string(&path).unwrap().contains("secret_bytes"),
+            "the signing secret left the record for its provider"
+        );
+        let identity = load_from_path(path).unwrap();
+        assert_eq!(identity.display_name(), "Ada");
+        assert!(
+            import_identity(dir.path(), "personal", &record).is_err(),
+            "an id names one identity"
+        );
     }
 }
 

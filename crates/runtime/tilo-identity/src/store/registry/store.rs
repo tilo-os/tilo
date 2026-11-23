@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+use tilo_files::native::FileStamp;
 use tilo_identity_client::KeyProtection;
 use tilo_user_identity::DeviceCert;
 
@@ -148,47 +149,6 @@ fn read_import_record(source: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
-}
-
-/// Identity of an identity directory's contents, as far as rename-based
-/// writers can change it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct DirStamp {
-    dev: u64,
-    ino: u64,
-    modified: std::time::SystemTime,
-}
-
-impl DirStamp {
-    #[cfg(unix)]
-    pub(crate) fn of(dir: &Path) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = fs::metadata(dir).ok()?;
-        Some(Self {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            modified: meta.modified().ok()?,
-        })
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn of(_dir: &Path) -> Option<Self> {
-        None
-    }
-
-    /// Old enough that a later write cannot share its timestamp.
-    pub(crate) fn settled(self) -> bool {
-        std::time::SystemTime::now()
-            .duration_since(self.modified)
-            .is_ok_and(|age| age >= crate::device_fleet::SETTLE)
-    }
-
-    /// When it is [`Self::settled`].
-    pub(crate) fn settles_at(self) -> std::time::SystemTime {
-        self.modified
-            .checked_add(crate::device_fleet::SETTLE)
-            .unwrap_or(self.modified)
-    }
 }
 
 /// The registry a directory's last reconcile produced, kept current by a
@@ -355,14 +315,14 @@ impl IdentityRegistryStore {
     /// since a coarse filesystem clock can give a write that lands right
     /// after a reconcile the same time.
     pub fn load_reconciled_cached(&self) -> io::Result<IdentityRegistry> {
-        static CACHE: std::sync::Mutex<Option<(PathBuf, DirStamp, IdentityRegistry)>> =
+        static CACHE: std::sync::Mutex<Option<(PathBuf, FileStamp, IdentityRegistry)>> =
             std::sync::Mutex::new(None);
         if let Some(watched) = prompt_registry(&self.identity_dir)
             && let Ok(registry) = watched_registry(&watched)
         {
             return Ok((*registry).clone());
         }
-        let before = DirStamp::of(&self.identity_dir);
+        let before = FileStamp::of(&self.identity_dir).ok().flatten();
         if let Some(stamp) = before
             && let Ok(cache) = CACHE.lock()
             && let Some((dir, cached_stamp, registry)) = cache.as_ref()
@@ -372,7 +332,7 @@ impl IdentityRegistryStore {
             return Ok(registry.clone());
         }
         let registry = self.reconcile()?;
-        if let Some(stamp) = DirStamp::of(&self.identity_dir)
+        if let Some(stamp) = FileStamp::of(&self.identity_dir).ok().flatten()
             && before == Some(stamp)
             && stamp.settled()
             && let Ok(mut cache) = CACHE.lock()

@@ -27,6 +27,8 @@ mod watched;
 pub use watched::Watched;
 pub mod bounded;
 pub mod checked;
+mod file_stamp;
+pub use file_stamp::{FileStamp, SETTLE};
 #[cfg(unix)]
 pub mod guardian;
 pub mod held;

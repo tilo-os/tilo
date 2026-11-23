@@ -272,8 +272,8 @@ pub fn write_streaming(
 }
 
 /// Publishes `bytes` only if nothing exists there yet, never replacing a concurrently created file: the
-/// complete, synced temp file is hard-linked into place, and `false` comes back when another writer
-/// owns the name.
+/// complete, synced temp file is moved or linked into place only while the name is free, and `false`
+/// comes back when another writer owns the name.
 pub fn create_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -395,7 +395,7 @@ pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Publish {
     Replace,
-    /// Hard-link into place only while `path` is still absent.
+    /// Put into place only while `path` is still absent.
     CreateNew,
     /// Rename over `path` without syncing the file or its directory.
     ReplaceUnsynced,
@@ -430,11 +430,13 @@ pub(super) fn publish_with(
 
     let published = match how {
         Publish::Replace | Publish::ReplaceUnsynced => fs::rename(&tmp, path),
-        Publish::CreateNew => fs::hard_link(&tmp, path),
+        // Renamed without replacing where the system can, else linked and unlinked: either way
+        // only while nothing has the name.
+        Publish::CreateNew => crate::native::rename_file_noreplace(&tmp, path).map(drop),
     };
     if how == Publish::CreateNew || published.is_err() {
         // Never leave litter beside the target: after a hard link the temp name is a second link, and
-        // after a failed rename it is orphaned.
+        // after a failed rename it is orphaned; after a rename it is gone already.
         let _ = fs::remove_file(&tmp);
     }
     if let Err(error) = published {

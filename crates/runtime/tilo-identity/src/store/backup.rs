@@ -7,11 +7,9 @@
 //! complete legacy record.  No public API here returns that record or its
 //! secret bytes.
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use getrandom::{SysRng, rand_core::TryRng as _};
 use tilo_identity_client::PortableBackupInfo;
 use tilo_seal::envelope::{self, Envelope, KeySource};
 use tilo_seal::{Context, Label, PasswordParams};
@@ -406,26 +404,9 @@ fn write_new_backup(destination: &Path, bytes: &[u8]) -> io::Result<()> {
             "portable backup destination parent must be a real directory",
         ));
     }
-
-    let temp = new_temp_path(parent)?;
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        publish_new_file(&temp, destination)?;
-        sync_directory(parent);
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    // Published only while the name is still free: a backup never replaces a
+    // file someone else put there between a check and the write.
+    tilo_files::native::atomic::create_private(destination, bytes)
 }
 
 /// Remove a failed read-back's target only when it is still the exact regular
@@ -454,38 +435,6 @@ fn remove_exact_new_backup(destination: &Path, expected: &[u8]) -> io::Result<()
     Ok(())
 }
 
-fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
-    for _ in 0..16 {
-        let mut nonce = [0_u8; 16];
-        SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
-        let candidate = parent.join(format!(".tilo-identity-backup-{}.tmp", hex::encode(nonce)));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate an exclusive portable backup staging file",
-    ))
-}
-
-/// Atomically publish without replacement through
-/// [`tilo_files::native::rename_file_noreplace`]. On Linux and Apple systems
-/// it attempts the exclusive rename (`renameat2(RENAME_NOREPLACE)` /
-/// `renameatx_np(RENAME_EXCL)`) and falls back to a no-follow hard link and
-/// unlink on `EINVAL`, `ENOSYS`, or `ENOTSUP`; other targets (Android
-/// included) take the hard-link-then-unlink path directly. Unlinking `temp`
-/// failing after the link is returned as an error, and callers follow success
-/// with a directory fsync. A filesystem supporting neither is refused rather
-/// than risking an attacker swapping in a destination between a preflight
-/// check and rename.
-fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
-    match tilo_files::native::rename_file_noreplace(temp, destination)? {
-        tilo_files::native::FileRename::Moved => Ok(()),
-        tilo_files::native::FileRename::SourceUnlinkFailed(error) => Err(error),
-    }
-}
-
 fn sync_directory(path: &Path) {
     if let Ok(dir) = fs::File::open(path) {
         let _ = dir.sync_all();
@@ -493,10 +442,14 @@ fn sync_directory(path: &Path) {
 }
 
 fn read_backup_bytes(path: &Path) -> io::Result<Zeroizing<Vec<u8>>> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        libc::O_NOFOLLOW | libc::O_CLOEXEC,
+    );
+    let mut file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_BACKUP_BYTES {
         return Err(invalid_backup());
@@ -520,12 +473,6 @@ fn invalid_backup() -> io::Error {
     )
 }
 
-fn random_error(error: getrandom::Error) -> io::Error {
-    io::Error::other(format!(
-        "operating-system randomness is unavailable: {error}"
-    ))
-}
-
 fn not_available_as_io(error: super::NotAvailable) -> io::Error {
     match error {
         super::NotAvailable::ConnectionFailed(error) => error,
@@ -534,6 +481,7 @@ fn not_available_as_io(error: super::NotAvailable) -> io::Error {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -764,50 +712,31 @@ mod tests {
     tilo_test_env::scenario! {
         fn publication_and_restore_failures_leave_no_partial_state;
 
-        phase concurrent_publication_preserves_the_winner_and_loser_staging_file;
+        phase racing_backups_keep_the_winner_and_leave_no_staging_file;
         {
             let dir = tempfile::tempdir().expect("dir");
-            let first_staging = dir.path().join("first.tmp");
-            let second_staging = dir.path().join("second.tmp");
             let destination = dir.path().join("identity.backup");
-            fs::write(&first_staging, b"first complete payload").expect("first staging file");
-            fs::write(&second_staging, b"second complete payload").expect("second staging file");
 
             let start = Arc::new(Barrier::new(2));
-            let first_start = Arc::clone(&start);
-            let first_source = first_staging.clone();
-            let first_destination = destination.clone();
-            let first = std::thread::spawn(move || {
-                first_start.wait();
-                publish_new_file(&first_source, &first_destination)
-            });
-            let second_source = second_staging.clone();
-            let second_destination = destination.clone();
-            let second = std::thread::spawn(move || {
-                start.wait();
-                publish_new_file(&second_source, &second_destination)
-            });
-
-            let first_result = first.join().expect("first publisher");
-            let second_result = second.join().expect("second publisher");
-            assert_ne!(
-                first_result.is_ok(),
-                second_result.is_ok(),
-                "exactly one publication must succeed"
+            let publish = |payload: &'static [u8]| {
+                let start = Arc::clone(&start);
+                let destination = destination.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    write_new_backup(&destination, payload).map(|()| payload)
+                })
+            };
+            let first = publish(b"first complete payload");
+            let second = publish(b"second complete payload");
+            let results = [first, second].map(|publisher| publisher.join().expect("publisher"));
+            let winners: Vec<_> = results.iter().filter_map(|result| result.as_ref().ok()).collect();
+            assert_eq!(winners.len(), 1, "exactly one publication must succeed");
+            assert_eq!(fs::read(&destination).unwrap(), *winners[0]);
+            assert_eq!(
+                fs::read_dir(dir.path()).unwrap().count(),
+                1,
+                "no staging file is left beside the backup"
             );
-
-            if first_result.is_ok() {
-                assert_eq!(fs::read(&destination).unwrap(), b"first complete payload");
-                assert!(!first_staging.exists(), "winning staging name is consumed");
-                assert_eq!(
-                    fs::read(&second_staging).unwrap(),
-                    b"second complete payload"
-                );
-            } else {
-                assert_eq!(fs::read(&destination).unwrap(), b"second complete payload");
-                assert!(!second_staging.exists(), "winning staging name is consumed");
-                assert_eq!(fs::read(&first_staging).unwrap(), b"first complete payload");
-            }
         }
 
         phase failed_readback_removes_only_the_exact_new_envelope;
