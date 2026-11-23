@@ -50,10 +50,43 @@ fn after(now: Instant, delay: Duration) -> Instant {
 /// The result of one uncached prime read of `Profiles` and `ActiveProfile`.
 type ProfilePrimeResult = (zbus::Result<Vec<String>>, zbus::Result<String>);
 
-/// In-flight prime read polled beside the loop's streams so a silent daemon
-/// never holds lid, sleep or suspend handling.
-type ProfilePrimeFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = ProfilePrimeResult> + Send>>;
+/// In-flight prime task spawned onto the runtime so its D-Bus method calls keep
+/// draining `zbus`'s bounded method-return channel while the service loop awaits
+/// unrelated logind or `UPower` calls. Dropping aborts any unfinished read.
+struct ProfilePrimeTask(tokio::task::JoinHandle<ProfilePrimeResult>);
+
+impl Drop for ProfilePrimeTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Who currently owns `net.hadess.PowerProfiles` on the D-Bus connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProfilesOwner {
+    /// Direct peer-to-peer connection without a message bus: every signal is
+    /// accepted and prime reads always apply.
+    PeerToPeer,
+    /// Message bus where `net.hadess.PowerProfiles` is owned by this unique
+    /// connection name; only `PropertiesChanged` signals from this sender apply.
+    Bus(zbus::names::OwnedUniqueName),
+    /// Message bus where `net.hadess.PowerProfiles` currently has no known owner.
+    None,
+}
+
+impl ProfilesOwner {
+    const fn is_owned(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn accepts_sender(&self, sender: Option<&zbus::names::UniqueName<'_>>) -> bool {
+        match self {
+            Self::PeerToPeer => true,
+            Self::Bus(owner) => sender.is_some_and(|sender| sender.as_str() == owner.as_str()),
+            Self::None => false,
+        }
+    }
+}
 
 /// Every moment the service must wake without being told to; commands,
 /// inhibitor changes, the lid, the battery, sleep and profile changes wake it by
@@ -261,13 +294,13 @@ pub struct PowerService {
     logind: LogindManager,
     upower: UPowerMonitor,
     power_profiles: Option<PowerProfilesMonitor>,
-    /// Whether `net.hadess.PowerProfiles` currently has an owner (always `true`
-    /// on peer-to-peer test connections without a bus daemon). Property signals
-    /// arriving while `false` are dropped.
-    profiles_owned: bool,
-    /// In-flight uncached read of `Profiles` and `ActiveProfile`, polled beside
-    /// the loop's streams so a silent daemon never blocks other events.
-    profile_prime: Option<ProfilePrimeFuture>,
+    /// Current owner of `net.hadess.PowerProfiles`, tracked by unique bus name
+    /// so signals sent while unowned or by a departed owner are dropped.
+    profiles_owner: ProfilesOwner,
+    /// In-flight uncached read of `Profiles` and `ActiveProfile`, run in its
+    /// own task so a silent daemon never blocks other events or stalls the
+    /// shared D-Bus connection.
+    profile_prime: Option<ProfilePrimeTask>,
     bridge: PowerBridge,
     registry: InhibitRegistry,
     policy: PowerPolicy,
@@ -346,7 +379,7 @@ impl PowerService {
             logind,
             upower,
             power_profiles,
-            profiles_owned: false,
+            profiles_owner: ProfilesOwner::None,
             profile_prime: None,
             bridge,
             registry,
@@ -424,9 +457,12 @@ impl PowerService {
                         deadlines.profile_owner_stream = Some(stream_retry_after(Instant::now()));
                     }
                 }
-                primed = future_or_pending(&mut self.profile_prime), if self.profile_prime.is_some() => {
+                primed = join_profile_prime(&mut self.profile_prime), if self.profile_prime.is_some() => {
                     self.profile_prime = None;
-                    self.finish_profile_prime(primed, &mut deadlines);
+                    match primed {
+                        Ok(primed) => self.finish_profile_prime(primed, &mut deadlines),
+                        Err(error) => warn!(target: "tilo::power", %error, "power-profiles prime task failed"),
+                    }
                 }
                 changed = next_or_pending(&mut streams.lid), if streams.lid.is_some() => {
                     if let Some(changed) = changed {
@@ -496,14 +532,22 @@ impl PowerService {
             None => None,
         };
         if let Some(monitor) = profile_monitor.as_ref() {
-            self.profiles_owned = if monitor.is_bus() {
-                monitor.has_owner().await.unwrap_or(false)
-            } else {
-                true
-            };
-            if self.profiles_owned {
-                self.start_profile_prime(deadlines);
+            match Self::query_profiles_owner(monitor).await {
+                Ok(owner) => self.profiles_owner = owner,
+                Err(error) => {
+                    debug!(
+                        target: "tilo::power",
+                        %error,
+                        "power-profiles GetNameOwner failed; retrying"
+                    );
+                    self.profiles_owner = ProfilesOwner::None;
+                    deadlines.profile_owner_stream = Some(stream_retry_after(Instant::now()));
+                }
             }
+            // Send the startup read unconditionally so a bus-activatable daemon
+            // starts on demand; if the name still has no owner when it finishes
+            // or fails, finish_profile_prime discards it without arming a retry.
+            self.start_profile_prime(deadlines);
         }
 
         self.sample_history(deadlines).await;
@@ -546,7 +590,7 @@ impl PowerService {
             match monitor.receive_properties_changed().await {
                 Ok(stream) => {
                     streams.power_profiles = Some(stream);
-                    if self.profiles_owned {
+                    if self.profiles_owner.is_owned() {
                         self.start_profile_prime(deadlines);
                     }
                     info!(target: "tilo::power", "subscribed to power-profiles property changes");
@@ -560,32 +604,57 @@ impl PowerService {
         if take_due(&mut deadlines.profile_owner_stream, now)
             && let Some(monitor) = self.power_profiles.clone()
         {
-            match monitor.receive_owner_changed().await {
-                Ok(stream) => {
-                    streams.profile_owner = Some(stream);
-                    self.profiles_owned = if monitor.is_bus() {
-                        monitor.has_owner().await.unwrap_or(false)
-                    } else {
+            let subscribed = if streams.profile_owner.is_some() {
+                true
+            } else {
+                match monitor.receive_owner_changed().await {
+                    Ok(stream) => {
+                        streams.profile_owner = Some(stream);
+                        info!(target: "tilo::power", "subscribed to power-profiles owner changes");
                         true
-                    };
-                    if self.profiles_owned {
-                        self.start_profile_prime(deadlines);
-                    } else {
-                        self.profile_prime = None;
-                        deadlines.profile_prime = None;
-                        self.bridge.clear_profiles();
-                        self.reapply_policy();
                     }
-                    info!(target: "tilo::power", "subscribed to power-profiles owner changes");
+                    Err(error) => {
+                        debug!(target: "tilo::power", %error, "power-profiles owner subscription unavailable; retrying");
+                        deadlines.profile_owner_stream = Some(stream_retry_after(now));
+                        false
+                    }
                 }
-                Err(error) => {
-                    debug!(target: "tilo::power", %error, "power-profiles owner subscription unavailable; retrying");
-                    deadlines.profile_owner_stream = Some(stream_retry_after(now));
+            };
+            if subscribed {
+                match Self::query_profiles_owner(&monitor).await {
+                    Ok(owner) => {
+                        let replaced = matches!(
+                            (&self.profiles_owner, &owner),
+                            (ProfilesOwner::Bus(prev), ProfilesOwner::Bus(next)) if prev != next
+                        );
+                        self.profiles_owner = owner;
+                        if self.profiles_owner.is_owned() {
+                            if replaced {
+                                self.bridge.clear_profiles();
+                                self.reapply_policy();
+                            }
+                            self.start_profile_prime(deadlines);
+                        } else {
+                            self.profile_prime = None;
+                            deadlines.profile_prime = None;
+                            self.bridge.clear_profiles();
+                            self.reapply_policy();
+                        }
+                    }
+                    Err(error) => {
+                        debug!(
+                            target: "tilo::power",
+                            %error,
+                            "power-profiles GetNameOwner failed; retrying"
+                        );
+                        self.profiles_owner = ProfilesOwner::None;
+                        deadlines.profile_owner_stream = Some(stream_retry_after(now));
+                    }
                 }
             }
         }
         if take_due(&mut deadlines.profile_prime, now)
-            && self.profiles_owned
+            && self.profiles_owner.is_owned()
             && self.profile_prime.is_none()
         {
             self.start_profile_prime(deadlines);
@@ -682,23 +751,29 @@ impl PowerService {
         self.apply_battery_snapshot(snap).await;
     }
 
+    async fn query_profiles_owner(monitor: &PowerProfilesMonitor) -> zbus::Result<ProfilesOwner> {
+        if !monitor.is_bus() {
+            return Ok(ProfilesOwner::PeerToPeer);
+        }
+        Ok(match monitor.name_owner().await? {
+            Some(owner) => ProfilesOwner::Bus(owner),
+            None => ProfilesOwner::None,
+        })
+    }
+
     fn start_profile_prime(&mut self, deadlines: &mut Deadlines) {
         deadlines.profile_prime = None;
-        if !self.profiles_owned {
-            self.profile_prime = None;
-            return;
-        }
         let Some(monitor) = self.power_profiles.clone() else {
             self.profile_prime = None;
             return;
         };
-        self.profile_prime = Some(Box::pin(async move {
+        self.profile_prime = Some(ProfilePrimeTask(tokio::spawn(async move {
             tokio::join!(monitor.profiles(), monitor.active_profile())
-        }));
+        })));
     }
 
     fn finish_profile_prime(&mut self, result: ProfilePrimeResult, deadlines: &mut Deadlines) {
-        if !self.profiles_owned {
+        if !self.profiles_owner.is_owned() {
             return;
         }
         let (profiles, active) = result;
@@ -735,13 +810,21 @@ impl PowerService {
         owner: Option<&zbus::names::UniqueName<'_>>,
         deadlines: &mut Deadlines,
     ) {
+        deadlines.profile_owner_stream = None;
         if let Some(owner) = owner {
-            debug!(target: "tilo::power", %owner, "power-profiles-daemon acquired bus name");
-            self.profiles_owned = true;
+            let owned: zbus::names::OwnedUniqueName = owner.to_owned().into();
+            debug!(target: "tilo::power", %owned, "power-profiles-daemon acquired bus name");
+            let replaced =
+                matches!(&self.profiles_owner, ProfilesOwner::Bus(prev) if prev != &owned);
+            self.profiles_owner = ProfilesOwner::Bus(owned);
+            if replaced {
+                self.bridge.clear_profiles();
+                self.reapply_policy();
+            }
             self.start_profile_prime(deadlines);
         } else {
             debug!(target: "tilo::power", "power-profiles-daemon left the bus");
-            self.profiles_owned = false;
+            self.profiles_owner = ProfilesOwner::None;
             self.profile_prime = None;
             deadlines.profile_prime = None;
             self.bridge.clear_profiles();
@@ -754,7 +837,10 @@ impl PowerService {
         signal: &zbus::fdo::PropertiesChanged,
         deadlines: &mut Deadlines,
     ) {
-        if !self.profiles_owned {
+        if !self
+            .profiles_owner
+            .accepts_sender(signal.message().header().sender())
+        {
             return;
         }
         let Ok(args) = signal.args() else {
@@ -1067,10 +1153,13 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
     }
 }
 
-/// `select!` helper: poll an `Option<Future>`, or park forever when absent.
-async fn future_or_pending<F: std::future::Future + Unpin>(future: &mut Option<F>) -> F::Output {
-    match future {
-        Some(future) => future.await,
+/// `select!` helper: wait for the running power-profiles prime task, or park
+/// forever when absent.
+async fn join_profile_prime(
+    task: &mut Option<ProfilePrimeTask>,
+) -> Result<ProfilePrimeResult, tokio::task::JoinError> {
+    match task {
+        Some(task) => (&mut task.0).await,
         None => std::future::pending().await,
     }
 }

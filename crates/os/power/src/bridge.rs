@@ -67,8 +67,13 @@ struct BridgeInner {
     commands: Vec<PowerCommand>,
     /// power-profiles-daemon's active profile as the service last read it.
     active_profile: Option<String>,
-    /// The profiles power-profiles-daemon offers, in its order.
-    profiles: Vec<String>,
+    /// The profiles power-profiles-daemon offers, in its order (`None` before a
+    /// list has been delivered or after a clear; `Some(Vec::new())` for an
+    /// explicit empty list).
+    profiles: Option<Vec<String>>,
+    /// Whether the bridge has announced a complete profile state (both a
+    /// delivered list and an active profile) since its last clear.
+    profiles_announced: bool,
     /// Whether the machine runs on battery, as the service last saw it; `None`
     /// before it first looked.
     on_battery: Option<bool>,
@@ -156,23 +161,40 @@ impl PowerBridge {
         std::mem::take(&mut self.lock().signals)
     }
 
+    fn announce_if_complete(
+        &self,
+        mut inner: std::sync::MutexGuard<'_, BridgeInner>,
+        changed: bool,
+    ) {
+        let complete = inner.profiles.is_some() && inner.active_profile.is_some();
+        let should_announce = if complete {
+            let first = !inner.profiles_announced;
+            inner.profiles_announced = true;
+            first || changed
+        } else {
+            std::mem::take(&mut inner.profiles_announced)
+        };
+        if should_announce {
+            self.profiles_moved.fetch_add(1, Ordering::Release);
+            drop(inner);
+            self.wake_profiles();
+        }
+    }
+
     /// Record power-profiles-daemon's active profile, read over D-Bus by the
     /// service, so the compositor resolves the profile's idle-suspend timeout on a
     /// settings reload without asking the daemon from its frame thread.
     ///
-    /// Recording an active profile alone does not mark the bridge as fed with the
-    /// daemon's offered profile list: `profiles_moved` stays `0` until
-    /// [`Self::note_profiles`] or [`Self::note_profile_state`] delivers `Profiles`.
+    /// A lone active profile is stored for policy lookups, but `profiles_moved`
+    /// advances and profile listeners wake only once both a profile list and an
+    /// active profile have been delivered since the last clear.
     pub fn note_active_profile(&self, profile: &str) {
         let mut inner = self.lock();
-        if inner.active_profile.as_deref() != Some(profile) {
+        let changed = inner.active_profile.as_deref() != Some(profile);
+        if changed {
             inner.active_profile = Some(profile.to_owned());
-            if self.profiles_moved.load(Ordering::Relaxed) > 0 {
-                self.profiles_moved.fetch_add(1, Ordering::Release);
-                drop(inner);
-                self.wake_profiles();
-            }
         }
+        self.announce_if_complete(inner, changed);
     }
 
     /// The active power profile the service last observed; `None` before it has read
@@ -182,55 +204,57 @@ impl PowerBridge {
     }
 
     /// Record the power profiles power-profiles-daemon offers, in its order.
+    ///
+    /// An empty list still counts as a delivered list; `profiles_moved` advances
+    /// and profile listeners wake only once both a profile list and an active
+    /// profile have been delivered since the last clear.
     pub fn note_profiles(&self, profiles: Vec<String>) {
         let mut inner = self.lock();
-        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
-        if first || inner.profiles != profiles {
-            inner.profiles = profiles;
-            self.profiles_moved.fetch_add(1, Ordering::Release);
-            drop(inner);
-            self.wake_profiles();
+        let changed = inner.profiles.as_ref() != Some(&profiles);
+        if changed {
+            inner.profiles = Some(profiles);
         }
+        self.announce_if_complete(inner, changed);
     }
 
     /// Record the offered power profiles and the active profile together in one
     /// atomic revision and wake.
     pub fn note_profile_state(&self, profiles: Vec<String>, active: Option<String>) {
         let mut inner = self.lock();
-        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
-        if first || inner.profiles != profiles || inner.active_profile != active {
-            inner.profiles = profiles;
+        let changed = inner.profiles.as_ref() != Some(&profiles) || inner.active_profile != active;
+        if changed {
+            inner.profiles = Some(profiles);
             inner.active_profile = active;
-            self.profiles_moved.fetch_add(1, Ordering::Release);
-            drop(inner);
-            self.wake_profiles();
         }
+        self.announce_if_complete(inner, changed);
     }
 
     /// Clear both the offered power profiles and the active profile — for example,
     /// when `net.hadess.PowerProfiles` leaves the bus.
     pub fn clear_profiles(&self) {
         let mut inner = self.lock();
-        let had_any = !inner.profiles.is_empty() || inner.active_profile.is_some();
-        inner.profiles.clear();
+        inner.profiles = None;
         inner.active_profile = None;
-        if had_any && self.profiles_moved.load(Ordering::Relaxed) > 0 {
-            self.profiles_moved.fetch_add(1, Ordering::Release);
-            drop(inner);
-            self.wake_profiles();
-        }
+        self.announce_if_complete(inner, false);
     }
 
-    /// How often the offered power profiles or the active profile moved (`0` before
-    /// the service has ever recorded a daemon `Profiles` list).
+    /// How often the announced power-profile state moved (`0` before both a
+    /// profile list and an active profile have been delivered).
     pub fn profiles_moved(&self) -> u64 {
         self.profiles_moved.load(Ordering::Acquire)
     }
 
-    /// The offered power profiles and the active profile read together.
+    /// The announced offered power profiles and active profile read together.
     pub fn profiles_snapshot(&self) -> (Vec<String>, Option<String>) {
         let inner = self.lock();
-        (inner.profiles.clone(), inner.active_profile.clone())
+        if inner.profiles_announced {
+            (
+                inner.profiles.clone().unwrap_or_default(),
+                inner.active_profile.clone(),
+            )
+        } else {
+            (Vec::new(), None)
+        }
     }
 
     /// How often what the power readings show moved: a session that saw another
@@ -442,7 +466,14 @@ mod tests {
                 profile_woken.fetch_add(1, Ordering::SeqCst);
             }
         }));
+        // A lone profile list is stored without announcing until an active profile arrives too.
         service.note_profiles(vec!["balanced".into(), "power-saver".into()]);
+        assert_eq!(compositor.profiles_moved(), 0);
+        assert_eq!(compositor.readings_moved(), 0);
+        assert_eq!(profile_woken.load(Ordering::SeqCst), 0);
+        assert_eq!(compositor.profiles_snapshot(), (Vec::new(), None));
+
+        service.note_active_profile("power-saver");
         assert_eq!(compositor.profiles_moved(), 1);
         assert_eq!(compositor.readings_moved(), 0);
         assert_eq!(profile_woken.load(Ordering::SeqCst), 1);
@@ -451,11 +482,6 @@ mod tests {
             0,
             "profile changes wake only profile listeners, avoiding a double wake"
         );
-
-        service.note_active_profile("power-saver");
-        assert_eq!(compositor.profiles_moved(), 2);
-        assert_eq!(compositor.readings_moved(), 0);
-        assert_eq!(profile_woken.load(Ordering::SeqCst), 2);
         assert_eq!(
             compositor.profiles_snapshot(),
             (
@@ -467,23 +493,30 @@ mod tests {
         service.note_active_profile("power-saver");
         assert_eq!(
             compositor.profiles_moved(),
-            2,
+            1,
             "a duplicate profile note does not move the counter"
         );
         service.note_active_profile("performance");
-        assert_eq!(compositor.profiles_moved(), 3);
+        assert_eq!(compositor.profiles_moved(), 2);
 
         service.clear_profiles();
-        assert_eq!(compositor.profiles_moved(), 4);
+        assert_eq!(compositor.profiles_moved(), 3);
         assert_eq!(compositor.profiles_snapshot(), (Vec::new(), None));
-        assert_eq!(profile_woken.load(Ordering::SeqCst), 4);
+        assert_eq!(profile_woken.load(Ordering::SeqCst), 3);
         assert_eq!(signal_woken.load(Ordering::SeqCst), 0);
         service.clear_profiles();
         assert_eq!(
             compositor.profiles_moved(),
-            4,
+            3,
             "clearing already-empty profiles is a no-op"
         );
+
+        // After a clear, a lone half is not announced either — nor is clearing it.
+        service.note_profiles(vec!["balanced".into()]);
+        assert_eq!(compositor.profiles_moved(), 3);
+        assert_eq!(compositor.profiles_snapshot(), (Vec::new(), None));
+        service.clear_profiles();
+        assert_eq!(compositor.profiles_moved(), 3);
 
         // An active profile without a Profiles list updates active_profile() for
         // PowerService policy without flipping profiles_moved() away from 0.
@@ -495,10 +528,16 @@ mod tests {
         assert_eq!(half.active_profile(), None);
         assert_eq!(half.profiles_moved(), 0);
 
-        // Even an empty initial profile list marks the bridge as having received a daemon answer.
+        // An empty list still counts as a delivered list once paired with an active profile.
         let fresh = PowerBridge::new();
         assert_eq!(fresh.profiles_moved(), 0);
         fresh.note_profiles(Vec::new());
+        assert_eq!(fresh.profiles_moved(), 0);
+        fresh.note_active_profile("balanced");
         assert_eq!(fresh.profiles_moved(), 1);
+        assert_eq!(
+            fresh.profiles_snapshot(),
+            (Vec::new(), Some("balanced".to_owned()))
+        );
     }
 }

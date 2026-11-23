@@ -68,14 +68,20 @@ impl PowerProfilesMonitor {
         self.proxy.connection().is_bus()
     }
 
-    /// Whether `net.hadess.PowerProfiles` currently has an owner on the bus.
-    pub async fn has_owner(&self) -> zbus::Result<bool> {
+    /// Current unique bus name owning `net.hadess.PowerProfiles`, or `None`
+    /// when the bus reports `NameHasNoOwner`. Any other bus error is returned so
+    /// the caller can retry rather than treating the name as permanently unowned.
+    pub async fn name_owner(&self) -> zbus::Result<Option<zbus::names::OwnedUniqueName>> {
         let dbus = zbus::fdo::DBusProxy::builder(self.proxy.connection())
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
         let name = zbus::names::BusName::try_from(DEST)?;
-        dbus.name_has_owner(name).await.map_err(Into::into)
+        match dbus.get_name_owner(name).await {
+            Ok(owner) => Ok(Some(owner)),
+            Err(zbus::fdo::Error::NameHasNoOwner(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
