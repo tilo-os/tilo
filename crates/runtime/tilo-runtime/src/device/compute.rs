@@ -19,7 +19,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
@@ -612,8 +612,8 @@ where
         let io_root = job_dir.join(".tilo-compute");
         let input_dir = io_root.join("inputs");
         let output_dir = io_root.join("outputs");
-        prepare_private_dir(&input_dir)
-            .and_then(|()| prepare_private_dir(&output_dir))
+        tilo_files::native::private::directory(&input_dir)
+            .and_then(|()| tilo_files::native::private::directory(&output_dir))
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
         let output_dir_handle = File::open(&output_dir)
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
@@ -681,7 +681,7 @@ where
         if jobs.contains_key(&spec.job_id) {
             return Err(ComputeExecutionError::Replay);
         }
-        prepare_private_dir(&self.state_root)
+        tilo_files::native::private::directory(&self.state_root)
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
         let claim_path = self.claim_path(spec.job_id);
         let mut claim = OpenOptions::new()
@@ -1022,7 +1022,7 @@ fn copy_payload_snapshot(source: &Path, destination: &Path) -> std::io::Result<(
         files: &mut usize,
         bytes: &mut u64,
     ) -> std::io::Result<()> {
-        prepare_private_dir(destination)?;
+        tilo_files::native::private::directory(destination)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
             let file_type = entry.file_type()?;
@@ -1078,11 +1078,6 @@ fn resource_plan(
     }
     .validate()
     .map_err(|_| ComputeExecutionError::Admission(ComputeError::InvalidLimits))
-}
-
-fn prepare_private_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
 }
 
 #[derive(Serialize)]

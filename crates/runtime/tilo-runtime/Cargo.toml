@@ -156,10 +156,11 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-# What the daemon's command line needs on Windows: the profile it names and the
+# What the daemon's command line needs on Windows: the private profile it names and the
 # MCP projection it can answer without a daemon.
 [target.'cfg(windows)'.dependencies]
 tilo-mcp = { path = "../tilo-mcp" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true

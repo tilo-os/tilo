@@ -30,7 +30,6 @@ use tilo_lock::MutexRecover as _;
 use super::ticket::{
     INFO, device_info, device_only_catalogue, failed, logged_in, login_asked, provider, succeeded,
 };
-use crate::host;
 
 /// The credential a ticket is handed to the daemon as, in `$CREDENTIALS_DIRECTORY`: what a
 /// machine that is set up for a person without anyone at it (a VM, a server) logs in with.
@@ -60,7 +59,7 @@ impl ThisDevice {
         let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys)
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
         let place = Place::here(keys).map_err(io::Error::other)?;
-        host::private_directory(place.dir())?;
+        tilo_files::native::private::directory(place.dir())?;
         let daemon =
             tilo_api::daemon::DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
                 .map_err(io::Error::other)?;

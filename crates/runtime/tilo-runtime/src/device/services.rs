@@ -295,7 +295,7 @@ impl Daemon {
         let identity = Identity::here()?;
         let take_work =
             take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
-        host::private_directory(identity.place.dir())?;
+        tilo_files::native::private::directory(identity.place.dir())?;
         let place = DaemonPlace::of(
             identity.place.dir(),
             &identity.key.verifying_key().to_bytes(),
@@ -314,7 +314,7 @@ impl Daemon {
                 super::serve::lock_device(&place)?
             }
         };
-        host::private_directory(root)?;
+        tilo_files::native::private::directory(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
