@@ -1905,6 +1905,37 @@ impl Workspaces {
         state.lock().await.store_wrote(doc, hash)
     }
 
+    /// Every resource of `workspace`'s store that `query` finds, by id, with what the store's
+    /// index holds of it: the records this device holds, read for its own work (the agent
+    /// engine's look round, a wait an automation ends).
+    ///
+    /// # Errors
+    /// The workspace is not kept here: what is not read is never taken for gone.
+    pub async fn store_found(
+        &self,
+        workspace: &str,
+        query: tilo_resource_store::Query,
+    ) -> Result<Vec<(String, tilo_resource_store::Indexed)>, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let found = state.lock().await.store_found(query);
+        Ok(found)
+    }
+
+    /// The resource `id` of `kind` in `workspace`'s store, as the store's index holds it; none
+    /// where this device holds no such resource.
+    pub async fn store_held(
+        &self,
+        workspace: &str,
+        kind: &str,
+        id: &str,
+    ) -> Option<tilo_resource_store::Indexed> {
+        let state = self.workspace(workspace).await.ok()?;
+        state.lock().await.store_held(kind, id)
+    }
+
     /// The `(app, record)` of every record of `workspace` the governor's copy
     /// holds readable: in the clear, or sealed under channels this server
     /// takes part in ([`Self::resource_document`] opens those).

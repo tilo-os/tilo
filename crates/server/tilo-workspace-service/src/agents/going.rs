@@ -36,17 +36,16 @@ use tilo_lock::MutexRecover as _;
 use super::{Ask, Turn};
 
 /// Where an agent has one turn at a time: the workspace, the agent, and the conversation, or
-/// for an issue its ask.
+/// for a task the task itself.
 pub(super) type Place = (String, String, String);
 
 pub(super) fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
+        // Each task is worked on in sessions of its own, whatever else its agent works on.
+        Ask::Triggered(place) if place.app == super::triggered::TASKS => {
+            format!("{}/{}", place.app, place.item)
+        }
         Ask::Message { .. } | Ask::Triggered(_) => turn.conversation.clone(),
-        Ask::Issue {
-            record,
-            issue,
-            cause,
-        } => format!("{record}/{issue}/{cause}"),
     };
     (workspace.to_owned(), turn.agent.id.0.clone(), at)
 }
@@ -326,6 +325,7 @@ mod tests {
             fold: None,
             typed: true,
             line: None,
+            task: None,
         }
     }
 

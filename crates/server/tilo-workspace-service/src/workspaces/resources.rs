@@ -494,6 +494,33 @@ impl GovernedWorkspace {
         self.resources.store_mut().wrote(doc, hash)
     }
 
+    /// Every resource of the store `query` finds, page after page, with what the index holds
+    /// of each ([`Store::query`]): what this device itself holds, read for its own work.
+    pub(super) fn store_found(
+        &mut self,
+        mut query: tilo_resource_store::Query,
+    ) -> Vec<(String, tilo_resource_store::Indexed)> {
+        let store = self.resources.store_mut();
+        let mut found = Vec::new();
+        loop {
+            let page = store.query(&query, &|_| true);
+            found.extend(page.resources);
+            match page.next {
+                Some(next) => query.after = Some(next),
+                None => return found,
+            }
+        }
+    }
+
+    /// The resource `id` of `kind` in the store, as its index holds it ([`Store::get`]).
+    pub(super) fn store_held(
+        &mut self,
+        kind: &str,
+        id: &str,
+    ) -> Option<tilo_resource_store::Indexed> {
+        self.resources.store_mut().get(kind, id, &|_| true).cloned()
+    }
+
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     #[cfg(any(feature = "apps", feature = "agents"))]

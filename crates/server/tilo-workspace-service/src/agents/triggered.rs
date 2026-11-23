@@ -44,9 +44,9 @@ pub const CHAT: &str = "so.tilo.lang.chat";
 /// The kind of a message of [`CHAT`].
 pub const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
 /// tilolang Tasks, whose tasks are assigned to an agent.
-pub const TASKS: &str = "so.tilo.lang.tasks";
+pub const TASKS: &str = "so.tilo.tasks";
 /// The kind of a task of [`TASKS`].
-pub const TASK: &str = "tl.so.tilo.lang.tasks.Task";
+pub const TASK: &str = "tl.so.tilo.tasks.Task";
 
 /// The resource `agent` is published as: `agents.agent:<id>`.
 #[must_use]
@@ -82,8 +82,14 @@ const DISCUSSION: &str = "so.tilo.lang.discussion";
 /// value is the member's id as JSON), and inside an actor a field holds (a task's assignee, the
 /// person of a direct conversation), each kept as JSON text.
 fn named(agent: &str) -> String {
-    let member =
-        serde_json::to_string(&tilo_action_policy::MemberId::agent(agent)).unwrap_or_default();
+    names(&tilo_action_policy::MemberId::agent(agent))
+}
+
+/// What names `member` inside an actor a field holds, kept as JSON text: its id without the
+/// braces of whatever wraps it.
+#[must_use]
+pub fn names(member: &tilo_action_policy::MemberId) -> String {
+    let member = serde_json::to_string(member).unwrap_or_default();
     // `{"agent":"<id>"}` without its braces: the same within any actor that wraps it.
     member
         .strip_prefix('{')
@@ -225,7 +231,8 @@ pub fn started_here(
 }
 
 /// The published id of `id` of the tilolang app `app`.
-fn published(app: &str, id: &str) -> String {
+#[must_use]
+pub fn published(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")
 }
 
@@ -283,10 +290,16 @@ pub fn asker(event: &DocumentEvent) -> Option<String> {
 /// What the change says, as the turn is told it: the text of the item it made.
 #[must_use]
 pub fn said(event: &DocumentEvent) -> String {
+    said_in(event, &["title", "body", "notes", "text"])
+}
+
+/// The text the item `event` made holds in `fields`, in their order.
+#[must_use]
+pub fn said_in(event: &DocumentEvent, fields: &[&str]) -> String {
     let mut words = Vec::new();
     if let Some(after) = &event.after {
-        for field in ["title", "body", "notes", "text"] {
-            if let Some(value) = after.get(field) {
+        for field in fields {
+            if let Some(value) = after.get(*field) {
                 collect_text(value, &mut words);
             }
         }

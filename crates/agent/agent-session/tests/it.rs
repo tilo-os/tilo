@@ -52,10 +52,10 @@ mod chain_listing;
 mod chain_reads;
 #[path = "empty_state_actions.rs"]
 mod empty_state_actions;
-#[path = "issue_listing.rs"]
-mod issue_listing;
-#[path = "issue_reads.rs"]
-mod issue_reads;
+#[path = "message_listing.rs"]
+mod message_listing;
+#[path = "message_reads.rs"]
+mod message_reads;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
 #[path = "part_handover.rs"]

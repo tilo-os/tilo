@@ -10,18 +10,18 @@ use tilo_model_engine::Model;
 use tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
-pub(super) const TASKS: &str = "so.tilo.tasks";
+pub(super) const CALCULATOR: &str = "so.tilo.calculator";
 
-/// The resource kind of the app's tracker, which its module routes requests
+/// The resource kind of the app's document, which its module routes requests
 /// to.
-pub(super) const TRACKER: &str = "tasks.tracker";
+pub(super) const KIND: &str = "calculator.document";
 
 /// The invocation's origin clock, milliseconds since the Unix epoch.
 pub(super) const NOW_MS: i64 = 1_760_000_000_000;
 
-/// The Tasks app's signed surface, which its package ships and its changes are
-/// decided against.
-const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
+/// The Calculator app's signed surface, which its package ships and its changes
+/// are decided against.
+const CALCULATOR_SURFACE: &[u8] = include_bytes!("../../../../../apps/calculator/surface.toml");
 
 /// The app's model module the `app-models` check built (tools/ci/app-models.sh)
 /// from the guest crate beside the app (`apps/<app>-model-wasm`): the app's own
@@ -78,7 +78,7 @@ fn packaged_model(package: &[u8]) -> Vec<u8> {
 }
 
 /// The package the server installs: the image's own pack path built it when the
-/// check names one (`TILO_APP_PACKAGE`, from `tools/ci/pack-tasks-tapp.sh`, so
+/// check names one (`TILO_APP_PACKAGE`, from the `test-packaged-model` check, so
 /// what applies the action is a package an image would install), else the
 /// fixture below, which stages the same payload a test can make itself.
 #[expect(
@@ -87,7 +87,7 @@ fn packaged_model(package: &[u8]) -> Vec<u8> {
 )]
 fn installed_package() -> Vec<u8> {
     std::env::var_os("TILO_APP_PACKAGE").map_or_else(
-        || package(TASKS, Some(&model_module("tasks"))),
+        || package(CALCULATOR, Some(&model_module("calculator"))),
         |path| {
             let path = PathBuf::from(path);
             let asked = format!(
@@ -116,8 +116,8 @@ pub(super) fn package_on(app: &str, model: Option<&[u8]>, runtime: Option<&str>)
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin/tasks"), b"the app's window").unwrap();
-    std::fs::write(payload.join("surface.toml"), TASKS_SURFACE).unwrap();
+    std::fs::write(payload.join("bin/calculator"), b"the app's window").unwrap();
+    std::fs::write(payload.join("surface.toml"), CALCULATOR_SURFACE).unwrap();
     if let Some(model) = model {
         std::fs::write(payload.join(tilo_app_package::MODEL_MODULE), model).unwrap();
     }
@@ -143,7 +143,7 @@ landlock = "strict"
 mode = "off"
 
 [entrypoint]
-bin = "bin/tasks"
+bin = "bin/calculator"
 type = "gui"
 "#,
         hex::encode(identity.public_key_bytes()),
@@ -157,10 +157,10 @@ type = "gui"
     tapp::to_bytes(&packed.meta, Some(source)).unwrap()
 }
 
-/// `name` as the action API binds it.
-pub(super) fn create_area(name: &str) -> serde_json::Map<String, serde_json::Value> {
+/// The arguments the action API binds to add the graph function `formula`.
+pub(super) fn add_function(formula: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
-    arguments.insert("name".into(), serde_json::Value::String(name.into()));
+    arguments.insert("formula".into(), serde_json::Value::String(formula.into()));
     arguments
 }
 
@@ -186,13 +186,13 @@ fn failed(error: impl std::fmt::Debug) -> String {
 /// and the person. Answers the document and the change's head.
 fn what_the_action_wrote(after: &[u8]) -> Checked<(automerge::AutoCommit, automerge::ChangeHash)> {
     let document = automerge::AutoCommit::load(after).map_err(failed)?;
-    let tracker = tasks_model::Tracker::read(&document).map_err(failed)?;
+    let calculator = calculator_model::Calculator::read(&document).map_err(failed)?;
     check(
-        tracker
-            .areas
+        calculator
+            .funcs
             .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
-        "the tracker holds the project the action made",
+            .any(|(_, function)| function.expr == "x^2"),
+        "the calculator holds the function the action made",
     )?;
     let mut written = automerge::AutoCommit::load(after).map_err(failed)?;
     let head = *written
@@ -203,15 +203,15 @@ fn what_the_action_wrote(after: &[u8]) -> Checked<(automerge::AutoCommit, autome
         .ok_or("the change has an entry")?;
     let recorded = entry.action.as_ref().ok_or("the entry holds the action")?;
     check(
-        recorded.type_id == TRACKER,
-        "the recorded action is the tracker's",
+        recorded.type_id == KIND,
+        "the recorded action is the calculator's",
     )?;
     check(
-        String::from_utf8_lossy(&recorded.payload).contains("\"create-area\""),
+        String::from_utf8_lossy(&recorded.payload).contains("\"add-function\""),
         "the recorded action is the verb applied",
     )?;
     check(
-        entry.app.as_ref().map(|app| app.id.as_str()) == Some(TASKS),
+        entry.app.as_ref().map(|app| app.id.as_str()) == Some(CALCULATOR),
         "the entry names the app the package is",
     )?;
     check(entry.invoker.is_some(), "the entry names who acted")?;
@@ -238,7 +238,7 @@ fn a_holder_replays_it(
     let model = Model::compile(&module).map_err(failed)?;
     let envelope: tilo_actions::ActionEnvelope =
         serde_json::from_value(envelope).map_err(failed)?;
-    let replayed = model.replay(TRACKER, base, &envelope).map_err(failed)?;
+    let replayed = model.replay(KIND, base, &envelope).map_err(failed)?;
     let mut replayed_document = automerge::AutoCommit::load(base).map_err(failed)?;
     tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed)
         .map_err(failed)?;
@@ -259,18 +259,18 @@ async fn a_wrong_argument_writes_nothing(
     after: &[u8],
 ) -> Checked<()> {
     let mut wrong = serde_json::Map::new();
-    wrong.insert("name".into(), serde_json::Value::from(5));
+    wrong.insert("formula".into(), serde_json::Value::from(5));
     let member = tilo_actions::MemberId::person(hex::encode(cert.user_public_key));
     let refused = workspaces
         .apply_packaged_action(
             workspace,
             cert,
             PackagedAction {
-                app: TASKS,
-                kind: TRACKER,
+                app: CALCULATOR,
+                kind: KIND,
                 document: "",
                 package,
-                action: "create-area",
+                action: "add-function",
                 arguments: wrong,
                 member: member.clone(),
                 acting: tilo_actions::Acting::member(member),
@@ -280,7 +280,7 @@ async fn a_wrong_argument_writes_nothing(
         .await;
     check(refused.is_err(), "the device refuses a wrong argument")?;
     let document = workspaces
-        .resource_document(workspace, TASKS, "")
+        .resource_document(workspace, CALCULATOR, "")
         .await
         .map_err(failed)?
         .ok_or("the document still exists")?;
@@ -300,12 +300,12 @@ fn the_revert_takes_it_back(
     check(outcome.wrote, "the revert writes the step's inverse")?;
     written.commit();
     check(
-        !tasks_model::Tracker::read(written)
+        !calculator_model::Calculator::read(written)
             .map_err(failed)?
-            .areas
+            .funcs
             .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
-        "the reverted step's area is gone",
+            .any(|(_, function)| function.expr == "x^2"),
+        "the reverted step's function is gone",
     )?;
     Ok(())
 }
@@ -321,13 +321,13 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     let package = installed_package();
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
+            .prepare_packaged_application(&created.workspace, &cert, CALCULATOR, KIND, "", &package)
             .await
             .unwrap(),
         "the server makes the app's resource from its package"
     );
     let base = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, CALCULATOR, "")
         .await
         .unwrap()
         .expect("the workspace holds the resource the module made");
@@ -336,12 +336,12 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             &created.workspace,
             &cert,
             PackagedAction {
-                app: TASKS,
-                kind: TRACKER,
+                app: CALCULATOR,
+                kind: KIND,
                 document: "",
                 package: &package,
-                action: "create-area",
-                arguments: create_area("Ship it"),
+                action: "add-function",
+                arguments: add_function("x^2"),
                 member: tilo_actions::MemberId::person(hex::encode(cert.user_public_key)),
                 acting: tilo_actions::Acting::member(tilo_actions::MemberId::person(hex::encode(
                     cert.user_public_key,
@@ -356,7 +356,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
         "the model makes the invocation a peer replays"
     );
     let after = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, CALCULATOR, "")
         .await
         .unwrap()
         .expect("the document still exists");
@@ -376,9 +376,9 @@ async fn a_package_without_a_model_applies_nothing() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("No model").await.unwrap();
-    let package = package(TASKS, None);
+    let package = package(CALCULATOR, None);
     let refused = workspaces
-        .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
+        .prepare_packaged_application(&created.workspace, &cert, CALCULATOR, KIND, "", &package)
         .await;
     assert!(
         refused.is_err(),

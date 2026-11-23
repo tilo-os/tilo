@@ -130,7 +130,7 @@ pub(super) fn reply_of(turn: &Turn) -> Option<String> {
             )
             .to_string(),
         ),
-        Ask::Issue { .. } | Ask::Triggered(_) => None,
+        Ask::Triggered(_) => None,
     }
 }
 

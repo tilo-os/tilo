@@ -368,6 +368,7 @@ impl Team {
                     fold: told.fold,
                     typed: true,
                     line: None,
+                    task: None,
                     ask: Ask::Message {
                         part: document.to_owned(),
                         message: id.to_string(),

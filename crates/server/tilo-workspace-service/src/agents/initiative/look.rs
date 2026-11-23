@@ -21,8 +21,6 @@ use tilo_automation::dispatch::DocumentEvent;
 
 use crate::workspaces::Workspaces;
 
-/// The app that keeps the workspace's tasks.
-const TASKS: &str = "so.tilo.tasks";
 /// How far ahead a task counts as due: a day.
 const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most documents and the most tasks a look names; the rest it counts.
@@ -143,11 +141,11 @@ pub(super) async fn gather(
     let mut found = Found::default();
     let (mut changed, mut due) = (Vec::new(), Vec::new());
     let against = Against {
-        own,
+        person: tilo_action_policy::MemberId::person(own.person.as_str()),
         assistant: own
             .assistant
             .as_deref()
-            .map(|agent| tasks_model::agent_assignee(agent).0),
+            .map(tilo_action_policy::MemberId::agent),
         seen,
         now_ms,
     };
@@ -186,21 +184,10 @@ pub(super) async fn gather(
             }
         }
         next.documents.insert(key, heads);
-        let tasks_part = app == TASKS
-            && collab_types::document::DocumentId::parse(&document)
-                .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
-        if tasks_part
-            && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(&mut doc)
-        {
-            tasks_in(
-                part.issues.iter(),
-                &against,
-                &mut found,
-                &mut due,
-                &mut next,
-            );
-        }
+    }
+    // The workspace's tasks, as its store holds them.
+    if let Ok(tasks) = crate::agents::task_work::tasks(workspaces, workspace, Vec::new()).await {
+        tasks_in(&tasks, &against, &mut found, &mut due, &mut next);
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
@@ -247,9 +234,11 @@ fn changes_in(
     let kind = collaboration::resource::identity(doc)
         .map(|checkout| checkout.kind.as_str().to_owned())
         .unwrap_or_default();
-    let events = events_since(workspace, document, &kind, doc.document(), since);
+    let events =
+        tilo_agent_session::bot::events_since(workspace, document, &kind, doc.document(), since);
     let theirs: Vec<&DocumentEvent> = events
         .iter()
+        .map(|(event, _)| event)
         .filter(|event| !event.housekeeping && !own.made(event))
         .collect();
     if theirs.is_empty() {
@@ -265,85 +254,51 @@ fn changes_in(
     }))
 }
 
-/// The changes of `doc` after `since` (hex heads), as the events their recorded entries
-/// describe. A change that carries no entry (a genesis, a merge with no action) is none.
-fn events_since(
-    workspace: &str,
-    record: &str,
-    kind: &str,
-    doc: &automerge::Automerge,
-    since: &[String],
-) -> Vec<DocumentEvent> {
-    let since: Vec<automerge::ChangeHash> = since
-        .iter()
-        .filter_map(|hex| {
-            tilo_failure::ignored!(
-                "a head that does not parse names no change, so the changes are read from before it, none skipped",
-                hex.parse().ok()
-            )
-        })
-        .collect();
-    doc.get_changes(&since)
-        .into_iter()
-        .filter_map(|change| {
-            let context = change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message)?;
-            Some(tilo_automation::dispatch::event_of(
-                workspace,
-                record,
-                kind,
-                &change.hash().to_string(),
-                &context,
-            ))
-        })
-        .collect()
-}
-
-/// What a look holds a tracker's tasks against.
+/// What a look holds the workspace's tasks against.
 struct Against<'a> {
-    own: &'a Own,
+    /// The person the look is for, as a task's assignee names them.
+    person: tilo_action_policy::MemberId,
     /// The assistant, as a task's assignee names it.
-    assistant: Option<String>,
+    assistant: Option<tilo_action_policy::MemberId>,
     seen: &'a Seen,
     now_ms: i64,
 }
 
-/// The open tasks among `issues`: those that are the person's or their
-/// assistant's counted, and each that became due said once, and again when
-/// its date moves.
-fn tasks_in<'a>(
-    issues: impl IntoIterator<Item = (&'a tilo_resource::Id, &'a tasks_model::Issue)>,
+/// The open tasks among `tasks`: those that are the person's or their assistant's counted, and
+/// each that became due said once, and again when its date moves.
+fn tasks_in(
+    tasks: &[crate::agents::task_work::Held],
     against: &Against<'_>,
     found: &mut Found,
     due: &mut Vec<Value>,
     next: &mut Seen,
 ) {
-    for (id, issue) in issues {
-        if issue.status.closed() {
+    for task in tasks {
+        if task.closed() {
             continue;
         }
-        let theirs = issue.assignee.as_ref().is_some_and(|assignee| {
-            assignee.0 == against.own.person
-                || against.assistant.as_deref() == Some(assignee.0.as_str())
-        });
+        let theirs = task.assigned_to(&against.person)
+            || against
+                .assistant
+                .as_ref()
+                .is_some_and(|assistant| task.assigned_to(assistant));
         if theirs {
             found.open = found.open.saturating_add(1);
         }
-        let Some(due_ms) = issue
-            .due_ms
+        let Some(due_ms) = task
+            .due_ms()
             .filter(|due_ms| *due_ms <= against.now_ms.saturating_add(DUE_WITHIN_MS))
         else {
             continue;
         };
-        let said = format!("{id}@{due_ms}");
+        let said = format!("{}@{due_ms}", task.id);
         if against.seen.looked && !against.seen.due.contains(&said) {
             found.due = found.due.saturating_add(1);
             if due.len() < MAX_NAMED {
                 due.push(json!({
-                    "issue": tasks_model::issue_resource(id),
-                    "number": issue.number,
-                    "title": issue.title,
+                    "issue": task.address(),
+                    "number": task.number,
+                    "title": task.title,
                     "dueMs": due_ms,
                     "overdue": due_ms < against.now_ms,
                 }));
