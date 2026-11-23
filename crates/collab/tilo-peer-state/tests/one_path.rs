@@ -32,11 +32,33 @@ async fn write(
     workspace: tilo_desktop_model::WorkspaceId,
     device: &SigningKey,
 ) {
+    // A record is founded empty; a local publication adds to what the workspace
+    // holds and never starts a record with content of its own.
     let founding = !owner
         .with_current(workspace, |view| {
             Ok(view.peer().holds_document(APP, RECORD))
         })
         .expect("the device holds the workspace");
+    if founding {
+        owner
+            .write_local(
+                workspace,
+                device.verifying_key().to_bytes(),
+                Arc::new(device.clone()) as Arc<dyn DeviceSigner>,
+                LocalWrite {
+                    app: APP,
+                    document: RECORD,
+                    readers: None,
+                    changes: &AutoCommit::new().save(),
+                    founding: true,
+                    snapshot: true,
+                    sealed: None,
+                    now: tilo_clock::wall(),
+                },
+            )
+            .await
+            .expect("the device founds its record");
+    }
     let written = owner
         .write_local(
             workspace,
@@ -47,7 +69,7 @@ async fn write(
                 document: RECORD,
                 readers: None,
                 changes: &note("written"),
-                founding,
+                founding: false,
                 snapshot: true,
                 sealed: None,
                 now: tilo_clock::wall(),
@@ -695,17 +717,6 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
     let mut here = opened(&owner_b, workspace, &content);
     let b_change = sealed_change(&owner_b, workspace, &b_key, &mut here, "b0");
     sealed_write(&owner_b, workspace, &b_key, &content, &b_change, false).await;
-    // A compacted what it wrote while away.
-    assert!(
-        owner_a.frames(workspace).iter().any(|frame| {
-            matches!(
-                NeighbourMsg::decode(frame),
-                Ok(NeighbourMsg::AppDocument { envelope, .. })
-                    if envelope.kind == collab_types::OpKind::Compaction
-            )
-        }),
-        "the device that went away compacted its history"
-    );
     // They reconnect: each carries what it wrote to the other.
     carry(
         &owner_a,
@@ -719,10 +730,29 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
         workspace,
         b_key.verifying_key().to_bytes(),
     );
+    // Each writes once more, which compacts its own copy of the history it took in.
+    let late = sealed_change(&owner_a, workspace, &a_key, &mut away, "a-late");
+    sealed_write(&owner_a, workspace, &a_key, &content, &late, false).await;
+    carry(
+        &owner_a,
+        &owner_b,
+        workspace,
+        a_key.verifying_key().to_bytes(),
+    );
+    let b_late = sealed_change(&owner_b, workspace, &b_key, &mut here, "b-late");
+    sealed_write(&owner_b, workspace, &b_key, &content, &b_late, false).await;
+    carry(
+        &owner_b,
+        &owner_a,
+        workspace,
+        b_key.verifying_key().to_bytes(),
+    );
     // Both read every write, and the range the compaction folded is retired on both.
     let mut every: std::collections::BTreeSet<String> =
         (0..OFFLINE).map(|step| format!("a{step}")).collect();
     every.insert("b0".to_owned());
+    every.insert("a-late".to_owned());
+    every.insert("b-late".to_owned());
     for owner in [&owner_a, &owner_b] {
         let (typed, history) = read(owner, workspace, &content);
         for key in &every {

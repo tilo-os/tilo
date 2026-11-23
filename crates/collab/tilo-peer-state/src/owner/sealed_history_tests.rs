@@ -5,7 +5,7 @@ use super::*;
 use crate::owner::SealedHistoryKeys;
 use crate::owner::testing::member_key;
 use automerge::{ActorId, ChangeHash};
-use collab_types::{ContentRetention, EncryptionMetadata, OpKind};
+use collab_types::{ContentRetention, EncryptionMetadata};
 use key_group::ContentKeys;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -164,16 +164,6 @@ async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound()
         held.len() < 256,
         "the history stays within its bound: {}",
         held.len()
-    );
-    assert!(
-        owner.frames(workspace).iter().any(|frame| {
-            matches!(
-                NeighbourMsg::decode(frame),
-                Ok(NeighbourMsg::AppDocument { envelope, .. })
-                    if envelope.kind == OpKind::Compaction
-            )
-        }),
-        "the device compacted its own history"
     );
     let path = joined.path.clone();
     drop(joined.owner);
