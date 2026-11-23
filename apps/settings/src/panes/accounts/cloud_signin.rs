@@ -1,15 +1,29 @@
-//! Sign-in for the one account Settings never takes a typed password for: Nextcloud, through
-//! its Login Flow v2. The person approves this device on their server's own page, and the
-//! server gives the device an app password of its own.
+//! Sign-in for the accounts Settings never takes a typed password for: Nextcloud through its
+//! Login Flow v2, the cloud drives through their provider's own page (Google Drive, `OneDrive`,
+//! Dropbox), and `iCloud` Drive with an Apple ID and a verification code. The page is opened in
+//! the person's browser; the code exchange runs where the network is (the session's account
+//! service when Settings runs in one, whose sandbox has none, else this program).
 
 use std::sync::Arc;
 
+use account_credentials::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_credentials::nextcloud::{self, NextcloudError};
-use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
+use account_credentials::{
+    Authorization, CredentialError, CredentialStore, LoopbackCancel, OAuthCloud,
+};
+use accounts::cloud_types::FilesMode;
+use ui::widget::{Button, Dropdown, Row, Spacer, TextInput, TextInputKind};
 
+use crate::account_probe::connect::{CloudProgress, Connection};
+use crate::accounts::AccountKind;
 use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
+
+/// How long between polls of a sign-in the person approves in the browser.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+/// How long a sign-in may take before it is given up.
+const SIGN_IN_LIFETIME: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub trait BrowserOpener: Send + Sync {
     fn open(&self, url: &str) -> ui::portal::LaunchChannel;
@@ -23,34 +37,117 @@ impl BrowserOpener for PortalOpener {
     }
 }
 
-/// A Nextcloud sign-in the person approved: what is kept for the account.
+/// A sign-in the person approved: what is kept for the account.
 pub struct Completed {
+    pub kind: AccountKind,
     pub existing_id: Option<String>,
     pub display_name: String,
     pub config: serde_json::Value,
     pub secret: accounts::Secret,
 }
 
-enum Stage {
-    Form,
-    Waiting {
-        /// The login page still to be opened (the server names it first), and whether the
-        /// session already shows it in a window it closes once the sign-in is over.
-        urls: Option<Receiver<(String, bool)>>,
-        launch: Option<ui::portal::LaunchChannel>,
-        result: Receiver<Result<Completed, String>>,
-        cancel: std::sync::mpsc::Sender<()>,
+/// A preparation that keeps a sync mount frozen until the mode change is saved, and restores it
+/// unless the save completed.
+struct ImportPreparation {
+    socket: std::path::PathBuf,
+    account: String,
+    token: Option<String>,
+    writer: Option<runtime_fs::cloud::FileLock>,
+}
+
+impl Drop for ImportPreparation {
+    fn drop(&mut self) {
+        if let Some(token) = self.token.take() {
+            let socket = self.socket.clone();
+            let account = self.account.clone();
+            let writer = self.writer.take();
+            std::thread::spawn(move || {
+                let _writer = writer;
+                if let Err(error) = runtime_fs::cloud::CloudClient::connect(socket)
+                    .and_then(|mut client| client.abort_import(&account, &token))
+                {
+                    tracing::warn!(%error, "could not restore cloud sync after a cancelled mode change");
+                }
+            });
+        }
+    }
+}
+
+fn finish_import(mut preparation: Option<ImportPreparation>) -> Result<(), String> {
+    if let Some(prepared) = preparation.as_mut() {
+        let token = prepared.token.as_deref().ok_or("missing import token")?;
+        runtime_fs::cloud::CloudClient::connect(&prepared.socket)
+            .and_then(|mut client| client.complete_import(&prepared.account, token))
+            .map_err(|error| error.to_string())?;
+        prepared.token = None;
+    }
+    Ok(())
+}
+
+/// A sign-in that needs a code before it can finish.
+enum CodeStage {
+    /// Apple sent a verification code to the person's trusted devices.
+    Icloud {
+        challenge: ICloudChallenge,
+        apple_id: String,
+    },
+    /// The provider shows the code on its own page; the person pastes it here.
+    Pasted {
+        cloud: OAuthCloud,
+        authorization: Box<Authorization>,
+    },
+    /// The session follows the sign-in and asked for the code.
+    Session {
+        session: Arc<Connection>,
+        message: String,
     },
 }
 
+enum Outcome {
+    Prepared(ImportPreparation, Box<Completed>),
+    Saved(accounts::AccountId),
+    Completed(Box<Completed>),
+    NeedsCode(Box<CodeStage>),
+    CodeRejected(Box<CodeStage>, String),
+    Failed(String),
+}
+
+enum Cancel {
+    Loopback(LoopbackCancel),
+    Channel(std::sync::mpsc::Sender<()>),
+}
+
+enum Stage {
+    Form,
+    Waiting {
+        /// The page still to be opened, and whether the session already shows it in a window it
+        /// closes once the sign-in is over.
+        urls: Option<Receiver<(String, bool)>>,
+        launch: Option<ui::portal::LaunchChannel>,
+        result: Receiver<Outcome>,
+        cancel: Option<Cancel>,
+    },
+    Code(Box<CodeStage>),
+}
+
 pub struct SignInFlow {
+    kind: AccountKind,
     existing_id: Option<String>,
+    credential_store: CredentialStore,
     opener: Arc<dyn BrowserOpener>,
     name: ui::LocalState<String>,
     server: ui::LocalState<String>,
+    apple_id: ui::LocalState<String>,
+    password: ui::LocalState<String>,
+    code: ui::LocalState<String>,
+    files_mode: ui::LocalState<String>,
+    original_mode: Option<FilesMode>,
+    existing_config: serde_json::Value,
     stage: Stage,
-    ready: Option<Result<Completed, String>>,
+    ready: Option<Outcome>,
     message: Option<String>,
+    preparation: Option<ImportPreparation>,
+    saved_id: Option<accounts::AccountId>,
 }
 
 impl SignInFlow {
@@ -58,24 +155,47 @@ impl SignInFlow {
         self.existing_id.is_some()
     }
 
-    pub fn new(existing: Option<&accounts::Account>, opener: Arc<dyn BrowserOpener>) -> Self {
-        let server = existing
-            .and_then(|account| account.config.get("server_url"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+    pub fn new(
+        kind: AccountKind,
+        existing: Option<&accounts::Account>,
+        credential_store: CredentialStore,
+        opener: Arc<dyn BrowserOpener>,
+    ) -> Self {
+        let text = |key: &str| {
+            existing
+                .and_then(|account| account.config.get(key))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         Self {
+            kind,
             existing_id: existing.map(|account| account.id.to_string()),
+            credential_store,
             opener,
             name: ui::LocalState::new(
                 existing
                     .map(|account| account.display_name.clone())
                     .unwrap_or_default(),
             ),
-            server: ui::LocalState::new(server),
+            server: ui::LocalState::new(text("server_url")),
+            apple_id: ui::LocalState::new(text("identity")),
+            password: ui::LocalState::new(String::new()),
+            code: ui::LocalState::new(String::new()),
+            files_mode: ui::LocalState::new(
+                match existing.and_then(accounts::cloud_types::files_mode) {
+                    Some(FilesMode::Import) => t("accounts-files-import"),
+                    _ => t("accounts-files-sync"),
+                },
+            ),
+            original_mode: existing.and_then(accounts::cloud_types::files_mode),
+            existing_config: existing
+                .map_or_else(|| serde_json::json!({}), |account| account.config.clone()),
             stage: Stage::Form,
             ready: None,
             message: None,
+            preparation: None,
+            saved_id: None,
         }
     }
 
@@ -83,8 +203,21 @@ impl SignInFlow {
         matches!(self.stage, Stage::Waiting { .. })
     }
 
+    pub fn awaiting_code(&self) -> bool {
+        matches!(self.stage, Stage::Code(_))
+    }
+
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    pub fn kind(&self) -> AccountKind {
+        self.kind
+    }
+
+    /// Why this kind cannot sign in in this build, when it cannot.
+    pub fn unavailable_reason(&self) -> Option<String> {
+        unavailable_reason(self.kind, &self.credential_store)
     }
 
     #[doc(hidden)]
@@ -93,10 +226,37 @@ impl SignInFlow {
         self.server.set(server.into());
     }
 
+    #[doc(hidden)]
+    pub fn set_apple_fields_for_test(&self, apple_id: &str, password: &str) {
+        self.apple_id.set(apple_id.into());
+        self.password.set(password.into());
+    }
+
+    #[doc(hidden)]
+    pub fn set_code_for_test(&self, code: &str) {
+        self.code.set(code.into());
+    }
+
+    /// Choose whether the account keeps its files in sync or is only copied from.
+    pub fn set_files_mode(&self, mode: FilesMode) {
+        self.files_mode.set(match mode {
+            FilesMode::Sync => t("accounts-files-sync"),
+            FilesMode::Import => t("accounts-files-import"),
+        });
+    }
+
+    pub fn selected_mode(&self) -> FilesMode {
+        if self.files_mode.get() == t("accounts-files-import") {
+            FilesMode::Import
+        } else {
+            FilesMode::Sync
+        }
+    }
+
     fn display_name(&self) -> String {
         let name = self.name.with(|name| name.trim().to_string());
         if name.is_empty() {
-            t("accounts-kind-nextcloud")
+            kind_shown(self.kind)
         } else {
             name
         }
@@ -106,6 +266,94 @@ impl SignInFlow {
         if self.busy() {
             return;
         }
+        if let Stage::Code(stage) = std::mem::replace(&mut self.stage, Stage::Form) {
+            self.submit_code(*stage);
+            return;
+        }
+        self.message = None;
+        match self.kind {
+            AccountKind::Nextcloud => self.start_nextcloud(),
+            AccountKind::ICloudDrive => self.start_icloud(),
+            AccountKind::GoogleDrive | AccountKind::OneDrive | AccountKind::Dropbox => {
+                if let Some(reason) = self.unavailable_reason() {
+                    self.message = Some(reason);
+                    return;
+                }
+                if self.only_the_mode_changed() {
+                    self.save_mode_only();
+                } else {
+                    self.start_oauth();
+                }
+            }
+            AccountKind::Mail | AccountKind::CalDav | AccountKind::WebDav => {
+                self.message = Some("this account type does not sign in here".into());
+            }
+        }
+    }
+
+    /// Whether signing in again would only change an existing cloud account's Files mode: no new
+    /// consent, the grant it already has is enough.
+    fn only_the_mode_changed(&self) -> bool {
+        self.existing_id.is_some()
+            && self
+                .original_mode
+                .is_some_and(|mode| mode != self.selected_mode())
+    }
+
+    /// The mode-only change: keep the account's configuration and grant, write the mode.
+    fn save_mode_only(&mut self) {
+        let Some(id) = self.existing_id.clone() else {
+            self.message = Some("Connect this account before changing its Files mode".into());
+            return;
+        };
+        let cloud = self.kind.oauth_cloud();
+        let kind = self.kind;
+        let existing = self.existing_config.clone();
+        let mode = self.selected_mode();
+        let store = self.credential_store.clone();
+        let display_name = self.display_name();
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = (|| {
+                    // Neither mode asks the provider for more than the other: the grant this
+                    // account already has is the one both use.
+                    let vault = accounts::SecretVault::open_person(store.config_root());
+                    if let Some(error) = vault.recovery_error() {
+                        return Err(CredentialError::Storage(error.to_string()));
+                    }
+                    let secret = vault
+                        .get(&accounts::AccountId::from(id.as_str()))
+                        .ok_or(CredentialError::NeedsAuthentication)?;
+                    let mut config = existing;
+                    if config.get("provider").is_none() {
+                        if let Some(cloud) = cloud {
+                            config["provider"] = cloud.type_id().into();
+                        }
+                    }
+                    accounts::cloud_types::set_files_mode(&mut config, mode);
+                    Ok(Outcome::Completed(Box::new(Completed {
+                        kind,
+                        existing_id: Some(id),
+                        display_name,
+                        config,
+                        secret,
+                    })))
+                })();
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: None,
+        };
+    }
+
+    fn start_nextcloud(&mut self) {
         let server = self.server.with(|server| server.trim().to_string());
         if let Err(error) = nextcloud::server_url(&server) {
             self.message = Some(error.to_string());
@@ -113,7 +361,8 @@ impl SignInFlow {
         }
         let (url_sender, urls) = channel::sync_channel(1);
         let (sender, result) = channel::sync_channel(1);
-        let (cancel, cancelled) = std::sync::mpsc::channel();
+        let (stop, cancel) = std::sync::mpsc::channel();
+        let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let _ = crate::device_read::thread(
@@ -129,7 +378,7 @@ impl SignInFlow {
                         .nextcloud_sign_in(
                             &server,
                             page,
-                            &cancelled,
+                            &cancel,
                             nextcloud::POLL_INTERVAL,
                             nextcloud::FLOW_LIFETIME,
                         )
@@ -137,11 +386,7 @@ impl SignInFlow {
                     None => nextcloud::begin(&server)
                         .and_then(|flow| {
                             page(flow.login_url().to_string(), false);
-                            flow.wait(
-                                &cancelled,
-                                nextcloud::POLL_INTERVAL,
-                                nextcloud::FLOW_LIFETIME,
-                            )
+                            flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
                         })
                         .map(|login| (login.server, login.login_name, login.app_password))
                         .map_err(|error| match error {
@@ -149,17 +394,23 @@ impl SignInFlow {
                             error => error.to_string(),
                         }),
                 };
-                let _ = sender.send(outcome.map(|(server, login_name, app_password)| Completed {
-                    existing_id,
-                    display_name: display_name.clone(),
-                    config: serde_json::json!({
-                        "label": display_name,
-                        "server_url": server,
-                        "username": login_name,
-                        "app_password": true,
-                    }),
-                    secret: accounts::Secret::password(app_password.as_str()),
-                }));
+                let _ = sender.send(match outcome {
+                    Ok((server, login_name, app_password)) => {
+                        Outcome::Completed(Box::new(Completed {
+                            kind,
+                            existing_id,
+                            display_name: display_name.clone(),
+                            config: serde_json::json!({
+                                "label": display_name,
+                                "server_url": server,
+                                "username": login_name,
+                                "app_password": true,
+                            }),
+                            secret: accounts::Secret::password(app_password.as_str()),
+                        }))
+                    }
+                    Err(error) => Outcome::Failed(error),
+                });
             }),
         );
         self.message = Some(
@@ -171,14 +422,371 @@ impl SignInFlow {
             urls: Some(urls),
             launch: None,
             result,
-            cancel,
+            cancel: Some(Cancel::Channel(stop)),
+        };
+    }
+
+    fn start_oauth(&mut self) {
+        let cloud = self
+            .kind
+            .oauth_cloud()
+            .expect("a cloud kind names its provider");
+        if let Some(session) = crate::account_probe::session() {
+            self.start_oauth_through(session);
+            return;
+        }
+        let authorization = match self.credential_store.begin_sign_in(cloud, None) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                return;
+            }
+        };
+        let url = authorization.url().to_owned();
+        let Some(canceller) = authorization.canceller() else {
+            // The provider shows the code instead of redirecting back.
+            self.message = Some(t_args(
+                "accounts-sign-in-pasted-waiting",
+                &[("service", cloud.sign_in_with().into())],
+            ));
+            self.code.set(String::new());
+            let _launch = self.opener.open(&url);
+            self.stage = Stage::Code(Box::new(CodeStage::Pasted {
+                cloud,
+                authorization: Box::new(authorization),
+            }));
+            return;
+        };
+        let _launch = self.opener.open(&url);
+        let (sender, result) = channel::sync_channel(1);
+        let store = self.credential_store.clone();
+        let kind = self.kind;
+        let existing_id = self.existing_id.clone();
+        let display_name = self.display_name();
+        let mode = self.selected_mode();
+        let existing_config = self.existing_config.clone();
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = CredentialStore::finish_sign_in(authorization)
+                    .and_then(|tokens| {
+                        oauth_completed(
+                            &store,
+                            cloud,
+                            kind,
+                            existing_id,
+                            display_name,
+                            &tokens,
+                            mode,
+                            existing_config,
+                        )
+                    })
+                    .map(Box::new)
+                    .map(Outcome::Completed)
+                    .unwrap_or_else(|error| Outcome::Failed(error.to_string()));
+                let _ = sender.send(outcome);
+            }),
+        );
+        self.message = Some(t_args(
+            "accounts-sign-in-browser",
+            &[("service", cloud.sign_in_with().into())],
+        ));
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: Some(Cancel::Loopback(canceller)),
+        };
+    }
+
+    fn start_oauth_through(&mut self, session: Arc<Connection>) {
+        let provider = self.kind.type_id().to_owned();
+        let label = self.display_name();
+        let kind = self.kind;
+        let existing_id = self.existing_id.clone();
+        let mode = self.selected_mode();
+        let existing_config = self.existing_config.clone();
+        let (url_sender, urls) = channel::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
+        let (stop, cancel) = std::sync::mpsc::channel();
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let page = |url: String, shown: bool| {
+                    let _ = url_sender.send((url, shown));
+                };
+                let Followed { progress, session } = follow_session(
+                    session,
+                    |session| session.cloud_sign_in(&provider, &label, None, None, None),
+                    page,
+                    &cancel,
+                );
+                let outcome = match progress {
+                    Ok(CloudProgress::SignedIn(signed_in)) => Outcome::Completed(Box::new(
+                        cloud_completed(signed_in, kind, existing_id, label, mode, existing_config),
+                    )),
+                    Ok(CloudProgress::Code { message }) => {
+                        Outcome::NeedsCode(Box::new(CodeStage::Session {
+                            session: session.expect("a code comes from the session's sign-in"),
+                            message,
+                        }))
+                    }
+                    Ok(CloudProgress::Page { .. } | CloudProgress::Waiting) => {
+                        Outcome::Failed("the session did not finish the sign-in".into())
+                    }
+                    Err(error) => Outcome::Failed(error),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
+        self.message = Some(t_args(
+            "accounts-sign-in-browser",
+            &[("service", kind_shown(self.kind).into())],
+        ));
+        self.stage = Stage::Waiting {
+            urls: Some(urls),
+            launch: None,
+            result,
+            cancel: Some(Cancel::Channel(stop)),
+        };
+    }
+
+    fn start_icloud(&mut self) {
+        let apple_id = self.apple_id.with(|id| id.trim().to_string());
+        let password = self.password.with(Clone::clone);
+        // The password is used once for this request and never kept.
+        self.password.set(String::new());
+        if apple_id.is_empty() || password.is_empty() {
+            self.message = Some("enter your Apple ID and password".into());
+            return;
+        }
+        let kind = self.kind;
+        let existing_id = self.existing_id.clone();
+        let display_name = self.display_name();
+        let mode = self.selected_mode();
+        let existing_config = self.existing_config.clone();
+        let (sender, result) = channel::sync_channel(1);
+        if let Some(session) = crate::account_probe::session() {
+            let provider = accounts::cloud_types::ICLOUD_DRIVE.to_owned();
+            let _ = crate::device_read::thread(
+                "settings-cloud-sign-in",
+                Box::new(move || {
+                    let password = zeroize::Zeroizing::new(password);
+                    let outcome = match session.cloud_sign_in(
+                        &provider,
+                        &display_name,
+                        Some(&apple_id),
+                        Some(&password),
+                        None,
+                    ) {
+                        Ok(CloudProgress::SignedIn(signed_in)) => {
+                            Outcome::Completed(Box::new(cloud_completed(
+                                signed_in,
+                                kind,
+                                existing_id,
+                                display_name,
+                                mode,
+                                existing_config,
+                            )))
+                        }
+                        Ok(CloudProgress::Code { message }) => {
+                            Outcome::NeedsCode(Box::new(CodeStage::Session { session, message }))
+                        }
+                        Ok(_) => Outcome::Failed("the session did not start the sign-in".into()),
+                        Err(error) => Outcome::Failed(error),
+                    };
+                    let _ = sender.send(outcome);
+                }),
+            );
+            self.message = Some("Signing in to iCloud…".into());
+            self.stage = Stage::Waiting {
+                urls: None,
+                launch: None,
+                result,
+                cancel: None,
+            };
+            return;
+        }
+        let auth = Arc::clone(self.credential_store.icloud());
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let password = zeroize::Zeroizing::new(password);
+                let outcome = match auth.sign_in(&apple_id, &password) {
+                    Ok(ICloudSignIn::Complete(session)) => {
+                        let config = icloud_config(auth.as_ref(), &apple_id, mode);
+                        Outcome::Completed(Box::new(Completed {
+                            kind,
+                            existing_id,
+                            display_name,
+                            config,
+                            secret: account_credentials::icloud_secret(&apple_id, &session),
+                        }))
+                    }
+                    Ok(ICloudSignIn::NeedsCode(challenge)) => {
+                        Outcome::NeedsCode(Box::new(CodeStage::Icloud {
+                            challenge,
+                            apple_id,
+                        }))
+                    }
+                    Err(error) => Outcome::Failed(error.to_string()),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
+        self.message = Some("Signing in to iCloud…".into());
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: None,
+        };
+    }
+
+    fn submit_code(&mut self, stage: CodeStage) {
+        let code: String = self.code.with(|code| code.trim().to_string());
+        if code.is_empty() {
+            self.message = Some("enter the code you were shown".into());
+            self.stage = Stage::Code(Box::new(stage));
+            return;
+        }
+        self.code.set(String::new());
+        let (sender, result) = channel::sync_channel(1);
+        let kind = self.kind;
+        let existing_id = self.existing_id.clone();
+        let display_name = self.display_name();
+        let mode = self.selected_mode();
+        let existing_config = self.existing_config.clone();
+        let store = self.credential_store.clone();
+        let (stop, cancel) = std::sync::mpsc::channel();
+        let mut waiting_cancel = None;
+        match stage {
+            CodeStage::Icloud {
+                challenge,
+                apple_id,
+            } => {
+                let auth = Arc::clone(self.credential_store.icloud());
+                let _ = crate::device_read::thread(
+                    "settings-cloud-sign-in",
+                    Box::new(move || {
+                        let outcome = match auth.verify_code(&challenge, &code) {
+                            Ok(session) => {
+                                let mut config = icloud_config(auth.as_ref(), &apple_id, mode);
+                                if config.get("identity").is_none() {
+                                    config["identity"] = apple_id.clone().into();
+                                }
+                                Outcome::Completed(Box::new(Completed {
+                                    kind,
+                                    existing_id,
+                                    display_name,
+                                    config,
+                                    secret: account_credentials::icloud_secret(&apple_id, &session),
+                                }))
+                            }
+                            Err(ICloudAuthError::InvalidCode) => Outcome::CodeRejected(
+                                Box::new(CodeStage::Icloud {
+                                    challenge,
+                                    apple_id,
+                                }),
+                                ICloudAuthError::InvalidCode.to_string(),
+                            ),
+                            Err(error) => Outcome::Failed(error.to_string()),
+                        };
+                        let _ = sender.send(outcome);
+                    }),
+                );
+                self.message = Some("Checking the code…".into());
+            }
+            CodeStage::Pasted {
+                cloud,
+                authorization,
+            } => {
+                let _ = crate::device_read::thread(
+                    "settings-cloud-sign-in",
+                    Box::new(move || {
+                        let outcome =
+                            CredentialStore::finish_sign_in_with_code(*authorization, &code)
+                                .and_then(|tokens| {
+                                    oauth_completed(
+                                        &store,
+                                        cloud,
+                                        kind,
+                                        existing_id,
+                                        display_name,
+                                        &tokens,
+                                        mode,
+                                        existing_config,
+                                    )
+                                })
+                                .map(Box::new)
+                                .map(Outcome::Completed)
+                                .unwrap_or_else(|error| Outcome::Failed(error.to_string()));
+                        let _ = sender.send(outcome);
+                    }),
+                );
+                self.message = Some("Checking the code…".into());
+            }
+            CodeStage::Session { session, .. } => {
+                let _ = crate::device_read::thread(
+                    "settings-cloud-sign-in",
+                    Box::new(move || {
+                        let Followed { progress, session } = follow_session(
+                            session,
+                            |session| session.cloud_code(&code),
+                            |_, _| {},
+                            &cancel,
+                        );
+                        let outcome = match progress {
+                            Ok(CloudProgress::SignedIn(signed_in)) => {
+                                Outcome::Completed(Box::new(cloud_completed(
+                                    signed_in,
+                                    kind,
+                                    existing_id,
+                                    display_name,
+                                    mode,
+                                    existing_config,
+                                )))
+                            }
+                            Ok(CloudProgress::Code { message }) => {
+                                Outcome::NeedsCode(Box::new(CodeStage::Session {
+                                    session: session.expect("a code comes from the sign-in"),
+                                    message,
+                                }))
+                            }
+                            Ok(CloudProgress::Page { .. } | CloudProgress::Waiting) => {
+                                Outcome::Failed("the session did not finish the sign-in".into())
+                            }
+                            Err(error) => Outcome::Failed(error),
+                        };
+                        let _ = sender.send(outcome);
+                    }),
+                );
+                self.message = Some("Checking the code…".into());
+                waiting_cancel = Some(Cancel::Channel(stop));
+            }
+        }
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: waiting_cancel,
         };
     }
 
     pub fn cancel(&mut self) {
+        self.preparation = None;
         self.ready = None;
-        if let Stage::Waiting { cancel, .. } = &self.stage {
-            let _ = cancel.send(());
+        if let Stage::Waiting {
+            cancel: Some(cancel),
+            ..
+        } = &self.stage
+        {
+            match cancel {
+                Cancel::Loopback(loopback) => loopback.cancel(),
+                Cancel::Channel(stop) => {
+                    let _ = stop.send(());
+                }
+            }
         }
         self.stage = Stage::Form;
     }
@@ -194,11 +802,6 @@ impl SignInFlow {
                 *launch = Some(self.opener.open(&url));
             }
             *urls = None;
-            self.message = Some(
-                "Continue in your browser: sign in to Nextcloud and grant access. This page \
-                 updates when you are done."
-                    .into(),
-            );
             true
         } else {
             false
@@ -230,26 +833,165 @@ impl SignInFlow {
         let outcome = match received {
             Ok(outcome) => outcome,
             Err(TryRecvError::Empty) => return (None, changed),
-            Err(TryRecvError::Disconnected) => Err("sign-in stopped unexpectedly".into()),
-        };
-        self.stage = Stage::Form;
-        match outcome {
-            Ok(completed) => {
-                // Storing the account is the system's job: the sheet closes when it lands and
-                // says why if it does not.
-                self.message = None;
-                (Some(completed), true)
+            Err(TryRecvError::Disconnected) => {
+                Outcome::Failed("sign-in stopped unexpectedly".into())
             }
-            Err(error) => {
+        };
+        self.apply_outcome(outcome)
+    }
+
+    fn apply_outcome(&mut self, outcome: Outcome) -> (Option<Completed>, bool) {
+        match outcome {
+            Outcome::Prepared(prepared, completed) => {
+                self.stage = Stage::Form;
+                self.preparation = Some(prepared);
+                self.message = None;
+                (Some(*completed), true)
+            }
+            Outcome::Saved(id) => {
+                self.stage = Stage::Form;
+                self.saved_id = Some(id);
+                (None, true)
+            }
+            Outcome::Completed(completed) => {
+                if self.existing_id.is_some()
+                    && self.kind.is_cloud_storage()
+                    && self.original_mode == Some(FilesMode::Sync)
+                    && accounts::cloud_types::mode_of(&completed.config) == Some(FilesMode::Import)
+                {
+                    self.prepare_import(completed);
+                    (None, true)
+                } else {
+                    self.stage = Stage::Form;
+                    self.message = None;
+                    (Some(*completed), true)
+                }
+            }
+            Outcome::NeedsCode(stage) => {
+                let message = match &*stage {
+                    CodeStage::Icloud { .. } => t("accounts-sign-in-icloud-code"),
+                    CodeStage::Pasted { .. } => t("accounts-sign-in-code"),
+                    CodeStage::Session { message, .. } => message.clone(),
+                };
+                self.stage = Stage::Code(stage);
+                self.message = Some(message);
+                (None, true)
+            }
+            Outcome::CodeRejected(stage, error) => {
+                self.stage = Stage::Code(stage);
+                self.message = Some(format!("{error}. Enter the newest code."));
+                (None, true)
+            }
+            Outcome::Failed(error) => {
+                self.preparation = None;
+                self.stage = Stage::Form;
                 self.message = Some(format!("Could not sign in: {error}"));
                 (None, true)
             }
         }
     }
 
-    /// Block until the running sign-in reports (opening the login page the worker learns on
-    /// the way), keeping the outcome for the next [`Self::poll`]. Returns whether it reported
-    /// before `timeout`.
+    /// Freeze the account's clean sync mount before the Import mode is saved, and pin the hold
+    /// across the save.
+    fn prepare_import(&mut self, completed: Box<Completed>) {
+        let Some(account) = self.existing_id.clone() else {
+            self.message = Some("Only an existing Sync account needs preparation".into());
+            return;
+        };
+        let root = self
+            .credential_store
+            .config_root()
+            .map(std::path::Path::to_path_buf)
+            .or_else(accounts::config_root);
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let prepared = runtime_fs::cloud::default_socket()
+                    .ok_or_else(|| std::io::Error::other("cloud service is unavailable"))
+                    .and_then(|socket| {
+                        let root =
+                            root.ok_or_else(|| std::io::Error::other("no account directory"))?;
+                        let writer = runtime_fs::cloud::import_writer_lock(&root, &account)?;
+                        let mut client = runtime_fs::cloud::CloudClient::connect(&socket)?;
+                        let token = client.prepare_import(&account)?;
+                        let prepared = ImportPreparation {
+                            socket,
+                            account,
+                            token: Some(token),
+                            writer: Some(writer),
+                        };
+                        client.begin_commit_import(
+                            &prepared.account,
+                            prepared.token.as_deref().unwrap_or_default(),
+                        )?;
+                        Ok(prepared)
+                    });
+                let _ = sender.send(match prepared {
+                    Ok(prepared) => Outcome::Prepared(prepared, completed),
+                    Err(error) => Outcome::Failed(format!(
+                        "Cannot switch to Import safely: {error}. Pending uploads must finish before retrying. For an interrupted mode change, close this form and choose Recover mode change on the account."
+                    )),
+                });
+            }),
+        );
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: None,
+        };
+        self.message = Some("Preparing Import safely…".into());
+    }
+
+    /// Complete a pinned Import hold once the account's new mode is saved, on a worker.
+    pub(super) fn finish_async(&mut self, id: accounts::AccountId) {
+        let preparation = self.preparation.take();
+        if preparation.is_none() {
+            self.saved_id = Some(id);
+            return;
+        }
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let saved = finish_import(preparation).map(|()| id);
+                let outcome = match saved {
+                    Ok(id) => Outcome::Saved(id),
+                    Err(error) => Outcome::Failed(format!(
+                        "Could not save the mode change: {error}. Restoring Sync. If Sync does not return, close this form and choose Recover mode change on the account."
+                    )),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: None,
+        };
+        self.message = Some("Saving account mode safely…".into());
+    }
+
+    pub(super) fn take_saved(&mut self) -> Option<accounts::AccountId> {
+        self.saved_id.take()
+    }
+
+    pub fn save_failed(&mut self, error: &str) {
+        let changing_mode = self.preparation.take().is_some();
+        self.message = Some(if changing_mode {
+            format!(
+                "Could not save the mode change: {error}. Restoring Sync. If Sync does not return, close this form and choose Recover mode change on the account."
+            )
+        } else {
+            format!("Could not save the account: {error}")
+        });
+    }
+
+    /// Block until the running step reports (opening a page the worker learns on the way),
+    /// keeping the outcome for the next [`Self::poll`]. Returns whether it reported before
+    /// `timeout`.
     #[doc(hidden)]
     pub fn wait_for_test(&mut self, timeout: std::time::Duration) -> bool {
         let deadline = ui::time::now() + timeout;
@@ -279,15 +1021,11 @@ impl SignInFlow {
         }
     }
 
-    pub fn save_failed(&mut self, error: &str) {
-        self.message = Some(format!("Could not save the account: {error}"));
-    }
-
     pub fn section(
         &self,
         bind: &dyn Fn(Button, super::AccountsEffect) -> Button,
     ) -> SettingsSection {
-        let service = t("accounts-kind-nextcloud");
+        let service = kind_shown(self.kind);
         let title = t_args(
             if self.existing_id.is_some() {
                 "accounts-sign-in-again-to"
@@ -297,21 +1035,39 @@ impl SignInFlow {
             &[("service", service.into())],
         );
         let mut fields: Vec<Item> = Vec::new();
+        let unavailable = self.unavailable_reason();
         let waiting = self.busy();
-        if !waiting {
-            self.form_fields(&mut fields);
+        if let Some(reason) = &unavailable {
+            fields.push(note(reason));
         }
         if let Some(message) = &self.message {
             fields.push(note(message));
         }
-        let mut buttons = Row::new();
         if !waiting {
+            match &self.stage {
+                Stage::Code(_) => fields.push(field_row(
+                    &t("accounts-sign-in-code"),
+                    Box::new(
+                        TextInput::from_state(&self.code)
+                            .with_kind(TextInputKind::Code)
+                            .with_id("accounts.signin.code")
+                            .with_accessible_name(t("settings-a11y-provider-code"))
+                            .with_placeholder(t("settings-paste-code")),
+                    ),
+                )),
+                _ => self.form_fields(&mut fields),
+            }
+        }
+        let mut buttons = Row::new();
+        if unavailable.is_none() && !waiting {
+            let label = match &self.stage {
+                Stage::Code(_) => t("settings-accounts-verify"),
+                _ if self.kind.is_cloud_storage() => t("accounts-services-continue"),
+                _ => t("accounts-services-continue"),
+            };
             buttons = buttons.push(Box::new(bind(
-                Button::new(
-                    "settings.accounts.form.save",
-                    &t("accounts-services-continue"),
-                )
-                .role(ui::widget::ButtonRole::Primary),
+                Button::new("settings.accounts.form.save", &label)
+                    .role(ui::widget::ButtonRole::Primary),
                 super::AccountsEffect::SaveAccountForm,
             )));
         }
@@ -334,23 +1090,238 @@ impl SignInFlow {
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
                     .with_accessible_name(t("settings-a11y-display-name"))
-                    .with_placeholder(t("accounts-kind-nextcloud")),
+                    .with_placeholder(kind_shown(self.kind)),
             ),
         ));
-        fields.push(field_row(
-            "Server",
-            Box::new(
-                TextInput::from_state(&self.server)
-                    .with_kind(TextInputKind::Url)
-                    .with_id("accounts.signin.server")
-                    .with_accessible_name(t("settings-a11y-server-url"))
-                    .with_placeholder("https://cloud.example.com"),
-            ),
-        ));
-        fields.push(note(
-            "Continue opens your Nextcloud's sign-in page in the browser. After you approve, \
-             Nextcloud issues an app password for this device only; you can revoke it there \
-             under Security at any time.",
-        ));
+        match self.kind {
+            AccountKind::Nextcloud => {
+                fields.push(field_row(
+                    &t("accounts-sign-in-server"),
+                    Box::new(
+                        TextInput::from_state(&self.server)
+                            .with_kind(TextInputKind::Url)
+                            .with_id("accounts.signin.server")
+                            .with_accessible_name(t("settings-a11y-server-url"))
+                            .with_placeholder("https://cloud.example.com"),
+                    ),
+                ));
+                fields.push(note(
+                    "Continue opens your Nextcloud's sign-in page in the browser. After you \
+                     approve, Nextcloud issues an app password for this device only; you can \
+                     revoke it there under Security at any time.",
+                ));
+            }
+            AccountKind::ICloudDrive => {
+                fields.push(field_row(
+                    &t("accounts-sign-in-apple-id"),
+                    Box::new(
+                        TextInput::from_state(&self.apple_id)
+                            .with_kind(TextInputKind::Name)
+                            .with_id("accounts.signin.apple-id")
+                            .with_accessible_name(t("accounts-sign-in-apple-id"))
+                            .with_placeholder("name@icloud.com"),
+                    ),
+                ));
+                fields.push(field_row(
+                    &t("accounts-sign-in-password"),
+                    Box::new(
+                        TextInput::from_state(&self.password)
+                            .with_kind(TextInputKind::Password)
+                            .with_id("accounts.signin.password")
+                            .with_accessible_name(t("accounts-sign-in-password")),
+                    ),
+                ));
+                fields.push(note(&t("accounts-best-effort-icloud")));
+                fields.push(note(&t("accounts-sign-in-icloud-note")));
+            }
+            AccountKind::GoogleDrive | AccountKind::OneDrive | AccountKind::Dropbox => {
+                fields.push(note(&t("accounts-sign-in-browser-note")));
+            }
+            AccountKind::Mail | AccountKind::CalDav | AccountKind::WebDav => {}
+        }
+        if self.kind.is_cloud_storage() {
+            fields.push(field_row(
+                &t("accounts-files-mode"),
+                Box::new(
+                    Dropdown::from_state(
+                        vec![t("accounts-files-sync"), t("accounts-files-import")],
+                        &self.files_mode,
+                    )
+                    .with_id("accounts.signin.files-mode")
+                    .with_accessible_name(t("accounts-files-mode")),
+                ),
+            ));
+            fields.push(note(&t("accounts-files-mode-description")));
+        }
     }
+}
+
+/// A sign-in followed on the session's connection, and the connection it stands on (which the
+/// code step finishes it through).
+struct Followed {
+    progress: Result<CloudProgress, String>,
+    session: Option<Arc<Connection>>,
+}
+
+/// Follow a cloud sign-in the session started until it finishes, needs a code, or is cancelled.
+fn follow_session(
+    session: Arc<Connection>,
+    first: impl FnOnce(&Connection) -> Result<CloudProgress, String>,
+    page: impl Fn(String, bool),
+    cancel: &std::sync::mpsc::Receiver<()>,
+) -> Followed {
+    use std::sync::mpsc::RecvTimeoutError;
+    let started = ui::time::now();
+    let mut progress = first(&session);
+    loop {
+        match progress {
+            Ok(CloudProgress::Page { url, shown }) => page(url, shown),
+            Ok(CloudProgress::Waiting) => {}
+            Ok(CloudProgress::Code { message }) => {
+                return Followed {
+                    progress: Ok(CloudProgress::Code { message }),
+                    session: Some(session),
+                };
+            }
+            Ok(signed_in @ CloudProgress::SignedIn(_)) => {
+                return Followed {
+                    progress: Ok(signed_in),
+                    session: None,
+                };
+            }
+            Err(error) => {
+                return Followed {
+                    progress: Err(error),
+                    session: None,
+                };
+            }
+        }
+        let remaining = SIGN_IN_LIFETIME.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            session.cloud_end();
+            return Followed {
+                progress: Err("sign-in was not completed in time".into()),
+                session: None,
+            };
+        }
+        match cancel.recv_timeout(POLL_INTERVAL.min(remaining)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                session.cloud_end();
+                return Followed {
+                    progress: Err("sign-in was cancelled".into()),
+                    session: None,
+                };
+            }
+        }
+        progress = session.cloud_poll();
+    }
+}
+
+/// The account a finished `OAuth` sign-in makes in Settings: the provider's storage resolved
+/// once, and the Files mode the person chose.
+fn oauth_completed(
+    credential_store: &CredentialStore,
+    cloud: OAuthCloud,
+    kind: AccountKind,
+    existing_id: Option<String>,
+    display_name: String,
+    tokens: &account_credentials::TokenSet,
+    mode: FilesMode,
+    mut config: serde_json::Value,
+) -> Result<Completed, CredentialError> {
+    let mount = credential_store.resolve_storage(cloud, tokens)?;
+    if !config.is_object() {
+        config = serde_json::json!({});
+    }
+    config["provider"] = cloud.type_id().into();
+    config[accounts::cloud_types::MOUNT_CONFIG_KEY] = mount;
+    accounts::cloud_types::set_files_mode(&mut config, mode);
+    Ok(Completed {
+        kind,
+        existing_id,
+        display_name,
+        config,
+        secret: account_credentials::oauth_secret(tokens),
+    })
+}
+
+/// The account a cloud sign-in the session finished makes here: its configuration as the session
+/// resolved it, with the person's name and Files mode.
+fn cloud_completed(
+    signed_in: crate::account_probe::connect::CloudSignedIn,
+    kind: AccountKind,
+    existing_id: Option<String>,
+    display_name: String,
+    mode: FilesMode,
+    mut config: serde_json::Value,
+) -> Completed {
+    if !config.is_object() {
+        config = signed_in.account.config.clone();
+    }
+    config[accounts::cloud_types::MOUNT_CONFIG_KEY] =
+        signed_in.account.config[accounts::cloud_types::MOUNT_CONFIG_KEY].clone();
+    if let Some(provider) = signed_in.account.config.get("provider") {
+        config["provider"] = provider.clone();
+    }
+    accounts::cloud_types::set_files_mode(&mut config, mode);
+    Completed {
+        kind,
+        existing_id,
+        display_name,
+        config,
+        secret: signed_in.secret,
+    }
+}
+
+fn icloud_config(
+    auth: &dyn account_credentials::icloud::ICloudAuth,
+    apple_id: &str,
+    mode: FilesMode,
+) -> serde_json::Value {
+    let mut config = serde_json::Map::new();
+    config.insert("identity".into(), apple_id.into());
+    let mount = auth.storage_config();
+    if !mount.is_null() {
+        config.insert(accounts::cloud_types::MOUNT_CONFIG_KEY.into(), mount);
+    }
+    let mut config = serde_json::Value::Object(config);
+    accounts::cloud_types::set_files_mode(&mut config, mode);
+    config
+}
+
+/// Why `kind` cannot sign in in this build, when it cannot: its provider's client registration is
+/// missing, or `iCloud`'s sign-in is.
+pub(super) fn unavailable_reason(
+    kind: AccountKind,
+    credential_store: &CredentialStore,
+) -> Option<String> {
+    if crate::account_probe::session().is_some() {
+        return None;
+    }
+    if let Some(oauth_use) = kind.oauth_cloud().map(OAuthCloud::oauth_use) {
+        return match credential_store.use_config(oauth_use) {
+            Err(CredentialError::NotConfigured { provider, key }) => Some(format!(
+                "{provider} sign-in is not configured in this build: it needs an OAuth client \
+                 ID registered with {}, provided as {key} when Tilo is built or started.",
+                oauth_use.issuer.label()
+            )),
+            _ => None,
+        };
+    }
+    (kind == AccountKind::ICloudDrive && !credential_store.icloud().is_available())
+        .then(|| "iCloud Drive sign-in is not available in this build yet.".to_string())
+}
+
+pub(super) fn kind_shown(kind: AccountKind) -> String {
+    t(match kind {
+        AccountKind::Mail => "accounts-kind-mail",
+        AccountKind::CalDav => "accounts-kind-caldav",
+        AccountKind::WebDav => "accounts-kind-webdav",
+        AccountKind::Nextcloud => "accounts-kind-nextcloud",
+        AccountKind::GoogleDrive => "accounts-kind-google",
+        AccountKind::OneDrive => "accounts-kind-onedrive",
+        AccountKind::Dropbox => "accounts-kind-dropbox",
+        AccountKind::ICloudDrive => "accounts-kind-icloud",
+    })
 }

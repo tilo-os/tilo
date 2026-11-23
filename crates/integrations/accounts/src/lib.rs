@@ -28,7 +28,12 @@ pub mod cloud_types {
 
     /// Legacy accounts sync. Unknown explicit modes fail closed.
     pub fn files_mode(account: &crate::Account) -> Option<FilesMode> {
-        match account.config.get(FILES_MODE_KEY) {
+        mode_of(&account.config)
+    }
+
+    /// The Files mode `config` names, when it is one this build knows.
+    pub fn mode_of(config: &serde_json::Value) -> Option<FilesMode> {
+        match config.get(FILES_MODE_KEY) {
             None => Some(FilesMode::Sync),
             Some(value) => serde_json::from_value(value.clone()).ok(),
         }

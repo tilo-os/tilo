@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 use wire_frame::{FrameError, Framing};
 
 pub mod import;
+/// The guard [`import_writer_lock`] returns: held across a mode change's save, so an interrupted
+/// one is never recovered while a writer could still commit it.
+pub use advisory_lock::FileLock;
 pub use import::{
     IMPORT_CHUNK_LIMIT, ImportEntry, ImportError, ImportErrorKind, ImportKind, ImportReadState,
     ImportReply, ImportRequest,

@@ -74,6 +74,59 @@ impl crate::account_probe::AccountTester for RejectCandidate {
     }
 }
 
+/// A drive that `tilo migrate connect` made, in the workspace's accounts record: it shows in
+/// Settings with its sign-in-again and remove actions, whether or not it is mounted.
+#[test]
+fn a_drive_connected_elsewhere_shows_with_its_sign_in_and_remove_actions() {
+    let (_dir, root) = scratch_root();
+    let mut account = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
+    account.display_name = "Drive".into();
+    account.config = serde_json::json!({
+        "provider": "google-drive",
+        "files_mode": "import",
+    });
+    let mut store = accounts::AccountStore::new();
+    store.upsert(account.clone());
+    root.save_store(&store).unwrap();
+    let pane = AccountsPane::in_root(root.clone());
+    let mut app = window_showing(pane);
+    let published: Vec<(String, Vec<String>, String)> = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .unwrap()
+                .rows()
+                .into_iter()
+                .map(|published| {
+                    let id = published.id().to_string();
+                    let resource = published.into_resource();
+                    let label = resource.label.clone();
+                    let actions = resource
+                        .actions
+                        .into_iter()
+                        .map(|spec| spec.id.clone())
+                        .collect();
+                    (id, actions, label)
+                })
+                .collect()
+        })
+        .unwrap();
+    let (_, actions, label) = published
+        .iter()
+        .find(|(id, _, _)| id == "settings.account:drive-1")
+        .expect("the drive's row is published");
+    assert_eq!(label, "Drive");
+    for wanted in ["sign-in-again", "remove-account"] {
+        assert!(
+            actions.iter().any(|action| action == wanted),
+            "{wanted} is offered: {actions:?}"
+        );
+    }
+    assert!(
+        actions.iter().all(|action| action != "sync-now"),
+        "an import-only drive has no mount to sync: {actions:?}"
+    );
+}
+
 /// A private config root: the stores, vault and mutation journal of one
 /// test never meet another's, and nothing reaches the user's own.
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
@@ -781,6 +834,56 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
             "{labels:?}"
         );
     }
+}
+
+/// An account whose mode change was interrupted says so and offers its recovery, through the
+/// action the row publishes.
+#[test]
+fn an_interrupted_mode_change_offers_its_recovery_on_the_row() {
+    let (_dir, root) = scratch_root();
+    let mut account = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
+    account.display_name = "Drive".into();
+    account.config = serde_json::json!({
+        "provider": "google-drive",
+        "files_mode": "sync",
+    });
+    let mut store = accounts::AccountStore::new();
+    store.upsert(account.clone());
+    root.save_store(&store).unwrap();
+    root.sync_reporter(account.id.clone())
+        .failed()
+        .expect("the interrupted change is recorded");
+    let pane =
+        AccountsPane::in_root(root.clone()).with_cloud_mounts(CloudMounts::known(Vec::new()));
+    let mut app = window_showing(pane);
+    let published = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .unwrap()
+                .rows()
+                .into_iter()
+                .map(|published| {
+                    let id = published.id().to_string();
+                    let actions: Vec<String> = published
+                        .into_resource()
+                        .actions
+                        .into_iter()
+                        .map(|spec| spec.id.clone())
+                        .collect();
+                    (id, actions)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    let actions = published
+        .iter()
+        .find(|(id, _)| id == "settings.account:drive-1")
+        .map(|(_, actions)| actions.clone())
+        .expect("the drive's row is published");
+    assert!(
+        actions.iter().any(|action| action == "recover-cloud-mode"),
+        "recovering the interrupted change is offered: {actions:?}"
+    );
 }
 
 fn until_finished(finished: impl Fn() -> bool) {

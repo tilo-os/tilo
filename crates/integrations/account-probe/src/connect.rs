@@ -15,7 +15,7 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Read as _, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,31 @@ pub enum Request {
     NextcloudPoll,
     /// Stop following the sign-in.
     NextcloudEnd,
+    /// Start signing in to the cloud storage `provider` (an account type id: `google-drive`,
+    /// `onedrive`, `dropbox` or `icloud-drive`) in a browser the session opens: the answer is
+    /// the page the person approves it on, or that a code is needed. One sign-in is followed
+    /// per connection; starting another ends the one before.
+    CloudSignIn {
+        provider: String,
+        /// The account's name, as the person reads it.
+        label: String,
+        /// The Apple ID to sign in with (`icloud-drive` only).
+        #[serde(default)]
+        apple_id: Option<String>,
+        /// The Apple ID's password, used once and never kept (`icloud-drive` only).
+        #[serde(default)]
+        password: Option<String>,
+        /// The address to start an `OAuth` sign-in at.
+        #[serde(default)]
+        login_hint: Option<String>,
+    },
+    /// Answer Apple's verification code, or the code the provider showed because no browser
+    /// can be redirected back to this device.
+    CloudCode { code: String },
+    /// Whether the cloud sign-in finished yet.
+    CloudPoll,
+    /// Stop following the cloud sign-in.
+    CloudEnd,
 }
 
 /// One calendar of an account.
@@ -98,6 +123,24 @@ pub enum Reply {
         server: String,
         login_name: String,
         app_password: String,
+    },
+    /// The page the person approves the cloud sign-in on; `shown` as for a Nextcloud page.
+    CloudPage {
+        url: String,
+        #[serde(default)]
+        shown: bool,
+    },
+    /// The session needs a code before it can finish: Apple's verification code, or the code a
+    /// provider shows when no browser can be redirected back to this device.
+    CloudCode {
+        message: String,
+    },
+    /// The person has not finished approving the sign-in yet.
+    CloudWaiting,
+    /// The person signed in: the account it makes, and the secret it keeps.
+    CloudSignedIn {
+        account: accounts::Account,
+        secret: accounts::Secret,
     },
     /// What went wrong, in words a person can act on.
     Failed {
@@ -150,6 +193,254 @@ impl Drop for Following<'_> {
     }
 }
 
+/// Where a cloud sign-in stands on this connection.
+enum CloudStage {
+    /// The person approves the sign-in in their browser; the tokens come back from the
+    /// exchange running on its own thread.
+    Oauth {
+        pending: std::sync::mpsc::Receiver<Result<(accounts::Account, accounts::Secret), String>>,
+        page: Option<u64>,
+        /// Stops the loopback redirect listener while nothing has come back.
+        canceller: Option<account_credentials::LoopbackCancel>,
+    },
+    /// The provider shows the code instead of redirecting back: the person pastes it.
+    Pasted {
+        store: account_credentials::CredentialStore,
+        cloud: account_credentials::OAuthCloud,
+        label: String,
+        authorization: Box<account_credentials::Authorization>,
+    },
+    /// Apple sent a verification code to the person's trusted devices.
+    Icloud {
+        auth: Arc<dyn account_credentials::icloud::ICloudAuth>,
+        apple_id: String,
+        challenge: account_credentials::icloud::ICloudChallenge,
+    },
+}
+
+/// A cloud storage sign-in this connection follows, and the page shown for it.
+struct CloudFollowing<'a> {
+    stage: Option<CloudStage>,
+    pages: &'a dyn SignInPages,
+}
+
+impl CloudFollowing<'_> {
+    fn end(&mut self) {
+        match self.stage.take() {
+            Some(CloudStage::Oauth {
+                page, canceller, ..
+            }) => {
+                if let Some(canceller) = canceller {
+                    canceller.cancel();
+                }
+                if let Some(page) = page {
+                    self.pages.over(page);
+                }
+            }
+            Some(CloudStage::Pasted { .. } | CloudStage::Icloud { .. }) | None => {}
+        }
+    }
+
+    fn begin(
+        &mut self,
+        provider: &str,
+        label: &str,
+        apple_id: Option<String>,
+        password: Option<String>,
+        login_hint: Option<String>,
+    ) -> Reply {
+        self.end();
+        let store = account_credentials::CredentialStore::live().with_apple_icloud();
+        if provider == accounts::cloud_types::ICLOUD_DRIVE {
+            let auth = Arc::clone(store.icloud());
+            if !auth.is_available() {
+                return Reply::Failed {
+                    message: account_credentials::icloud::ICloudAuthError::Unavailable.to_string(),
+                };
+            }
+            let Some(apple_id) = apple_id.filter(|id| !id.trim().is_empty()) else {
+                return Reply::Failed {
+                    message: "enter your Apple ID".into(),
+                };
+            };
+            let Some(password) = password.filter(|password| !password.is_empty()) else {
+                return Reply::Failed {
+                    message: "enter your Apple ID's password".into(),
+                };
+            };
+            use account_credentials::icloud::ICloudSignIn;
+            return match auth.sign_in(&apple_id, &password) {
+                Ok(ICloudSignIn::Complete(session)) => {
+                    cloud_account(store.icloud_account(&apple_id, &session))
+                }
+                Ok(ICloudSignIn::NeedsCode(challenge)) => {
+                    self.stage = Some(CloudStage::Icloud {
+                        auth,
+                        apple_id,
+                        challenge,
+                    });
+                    Reply::CloudCode {
+                        message: "Apple sent a verification code to your trusted devices. Enter it here to continue."
+                            .into(),
+                    }
+                }
+                Err(error) => Reply::Failed {
+                    message: error.to_string(),
+                },
+            };
+        }
+        let Some(cloud) = account_credentials::OAuthCloud::from_type_id(provider) else {
+            return Reply::Failed {
+                message: "this account type does not sign in on its provider's page".into(),
+            };
+        };
+        let authorization = match store.begin_sign_in(cloud, login_hint.as_deref()) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                return Reply::Failed {
+                    message: error.to_string(),
+                };
+            }
+        };
+        let url = authorization.url().to_owned();
+        let Some(canceller) = authorization.canceller() else {
+            self.stage = Some(CloudStage::Pasted {
+                store,
+                cloud,
+                label: label.to_owned(),
+                authorization: Box::new(authorization),
+            });
+            return Reply::CloudPage { url, shown: false };
+        };
+        let page = self.pages.show(&url);
+        let (sender, pending) = std::sync::mpsc::channel();
+        let thread_store = store.clone();
+        let thread_label = label.to_owned();
+        std::thread::spawn(move || {
+            let outcome = account_credentials::CredentialStore::finish_sign_in(authorization)
+                .and_then(|tokens| thread_store.cloud_account(cloud, &thread_label, &tokens))
+                .map_err(|error| error.to_string());
+            let _ = sender.send(outcome);
+        });
+        self.stage = Some(CloudStage::Oauth {
+            pending,
+            page,
+            canceller: Some(canceller),
+        });
+        Reply::CloudPage {
+            url,
+            shown: page.is_some(),
+        }
+    }
+
+    fn poll(&mut self) -> Reply {
+        match &mut self.stage {
+            None => Reply::Failed {
+                message: "no cloud sign-in was started".into(),
+            },
+            Some(CloudStage::Oauth { pending, .. }) => match pending.try_recv() {
+                Ok(Ok((account, secret))) => {
+                    self.end();
+                    Reply::CloudSignedIn { account, secret }
+                }
+                Ok(Err(message)) => {
+                    self.end();
+                    Reply::Failed { message }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => Reply::CloudWaiting,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.end();
+                    Reply::Failed {
+                        message: "the sign-in stopped unexpectedly".into(),
+                    }
+                }
+            },
+            Some(CloudStage::Pasted { .. } | CloudStage::Icloud { .. }) => Reply::CloudWaiting,
+        }
+    }
+
+    fn code(&mut self, code: &str) -> Reply {
+        let code = code.trim().to_owned();
+        if code.is_empty() {
+            return Reply::Failed {
+                message: "enter the code you were shown".into(),
+            };
+        }
+        let Some(stage) = self.stage.take() else {
+            return Reply::Failed {
+                message: "no cloud sign-in was started".into(),
+            };
+        };
+        match stage {
+            CloudStage::Pasted {
+                store,
+                cloud,
+                label,
+                authorization,
+            } => {
+                let finished = account_credentials::CredentialStore::finish_sign_in_with_code(
+                    *authorization,
+                    &code,
+                )
+                .and_then(|tokens| store.cloud_account(cloud, &label, &tokens));
+                cloud_account(finished)
+            }
+            CloudStage::Icloud {
+                auth,
+                apple_id,
+                challenge,
+            } => {
+                use account_credentials::icloud::ICloudAuthError;
+                let verified = auth.verify_code(&challenge, &code);
+                match verified {
+                    Ok(session) => {
+                        let store =
+                            account_credentials::CredentialStore::live().with_apple_icloud();
+                        cloud_account(store.icloud_account(&apple_id, &session))
+                    }
+                    Err(ICloudAuthError::InvalidCode) => {
+                        // The newest code can be tried without signing in again.
+                        self.stage = Some(CloudStage::Icloud {
+                            auth,
+                            apple_id,
+                            challenge,
+                        });
+                        Reply::Failed {
+                            message: ICloudAuthError::InvalidCode.to_string(),
+                        }
+                    }
+                    Err(error) => Reply::Failed {
+                        message: error.to_string(),
+                    },
+                }
+            }
+            other => {
+                let page = match &other {
+                    CloudStage::Oauth { page, .. } => *page,
+                    CloudStage::Pasted { .. } | CloudStage::Icloud { .. } => None,
+                };
+                if let Some(page) = page {
+                    self.pages.over(page);
+                }
+                Reply::Failed {
+                    message: "this sign-in needs no code".into(),
+                }
+            }
+        }
+    }
+}
+
+fn cloud_account(
+    made: Result<(accounts::Account, accounts::Secret), account_credentials::CredentialError>,
+) -> Reply {
+    match made {
+        Ok((account, secret)) => Reply::CloudSignedIn { account, secret },
+        Err(error) => Reply::Failed {
+            message: error.to_string(),
+        },
+    }
+}
+
 /// Serve one connection until it closes: each request answered with what the account's servers
 /// said, through `tester` and the Nextcloud login flow, whose page `pages` shows.
 pub fn serve(stream: UnixStream, tester: &dyn AccountTester, pages: &dyn SignInPages) {
@@ -162,10 +453,11 @@ pub fn serve(stream: UnixStream, tester: &dyn AccountTester, pages: &dyn SignInP
         page: None,
         pages,
     };
+    let mut cloud = CloudFollowing { stage: None, pages };
     loop {
         let reply = match read_line(&mut reader) {
             Ok(Some(line)) => match serde_json::from_slice::<Request>(&line) {
-                Ok(request) => answer(request, tester, &mut nextcloud),
+                Ok(request) => answer(request, tester, &mut nextcloud, &mut cloud),
                 Err(_) => Reply::Failed {
                     message: "Settings asked something the session does not understand".into(),
                 },
@@ -179,7 +471,12 @@ pub fn serve(stream: UnixStream, tester: &dyn AccountTester, pages: &dyn SignInP
     }
 }
 
-fn answer(request: Request, tester: &dyn AccountTester, nextcloud: &mut Following<'_>) -> Reply {
+fn answer(
+    request: Request,
+    tester: &dyn AccountTester,
+    nextcloud: &mut Following<'_>,
+    cloud: &mut CloudFollowing<'_>,
+) -> Reply {
     use account_credentials::nextcloud;
     let failed = |message: String| Reply::Failed { message };
     match request {
@@ -233,6 +530,19 @@ fn answer(request: Request, tester: &dyn AccountTester, nextcloud: &mut Followin
             nextcloud.end();
             Reply::NextcloudWaiting
         }
+        Request::CloudSignIn {
+            provider,
+            label,
+            apple_id,
+            password,
+            login_hint,
+        } => cloud.begin(&provider, &label, apple_id, password, login_hint),
+        Request::CloudCode { code } => cloud.code(&code),
+        Request::CloudPoll => cloud.poll(),
+        Request::CloudEnd => {
+            cloud.end();
+            Reply::CloudWaiting
+        }
     }
 }
 
@@ -253,6 +563,28 @@ pub struct NextcloudSignedIn {
     pub server: String,
     pub login_name: String,
     pub app_password: Zeroizing<String>,
+}
+
+/// A cloud storage sign-in the person approved: the account it makes and the secret it keeps.
+pub struct CloudSignedIn {
+    pub account: accounts::Account,
+    pub secret: accounts::Secret,
+}
+
+/// Where a cloud sign-in stands, as Settings follows it.
+pub enum CloudProgress {
+    /// The page the person approves it on, and whether the session shows it itself.
+    Page {
+        url: String,
+        shown: bool,
+    },
+    /// The session needs a code: Apple's, or the provider's when no browser can come back.
+    Code {
+        message: String,
+    },
+    /// The person has not finished approving it yet.
+    Waiting,
+    SignedIn(CloudSignedIn),
 }
 
 impl Connection {
@@ -372,6 +704,68 @@ impl Connection {
 
 fn unexpected() -> String {
     "the session answered Settings out of turn: try again".to_owned()
+}
+
+impl Connection {
+    /// Start signing in to the cloud storage `provider` (an account type id): the page the
+    /// person approves it on, a code the session needs first, or the account itself when no
+    /// page was needed.
+    ///
+    /// # Errors
+    /// The provider is not configured in this build, or the connection failed.
+    pub fn cloud_sign_in(
+        &self,
+        provider: &str,
+        label: &str,
+        apple_id: Option<&str>,
+        password: Option<&str>,
+        login_hint: Option<&str>,
+    ) -> Result<CloudProgress, String> {
+        let reply = self.ask(&Request::CloudSignIn {
+            provider: provider.to_owned(),
+            label: label.to_owned(),
+            apple_id: apple_id.map(str::to_owned),
+            password: password.map(str::to_owned),
+            login_hint: login_hint.map(str::to_owned),
+        })?;
+        cloud_progress(reply)
+    }
+
+    /// Whether the cloud sign-in finished yet.
+    ///
+    /// # Errors
+    /// The sign-in failed, or the connection did.
+    pub fn cloud_poll(&self) -> Result<CloudProgress, String> {
+        cloud_progress(self.ask(&Request::CloudPoll)?)
+    }
+
+    /// Answer the code the session asked for.
+    ///
+    /// # Errors
+    /// The code was refused, the sign-in failed, or the connection did.
+    pub fn cloud_code(&self, code: &str) -> Result<CloudProgress, String> {
+        cloud_progress(self.ask(&Request::CloudCode {
+            code: code.to_owned(),
+        })?)
+    }
+
+    /// Stop following the cloud sign-in.
+    pub fn cloud_end(&self) {
+        let _ = self.ask(&Request::CloudEnd);
+    }
+}
+
+fn cloud_progress(reply: Reply) -> Result<CloudProgress, String> {
+    Ok(match reply {
+        Reply::CloudPage { url, shown } => CloudProgress::Page { url, shown },
+        Reply::CloudCode { message } => CloudProgress::Code { message },
+        Reply::CloudWaiting => CloudProgress::Waiting,
+        Reply::CloudSignedIn { account, secret } => {
+            CloudProgress::SignedIn(CloudSignedIn { account, secret })
+        }
+        Reply::Failed { message } => return Err(message),
+        _ => return Err(unexpected()),
+    })
 }
 
 impl AccountTester for Connection {
