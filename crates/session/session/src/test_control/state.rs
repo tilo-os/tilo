@@ -481,8 +481,8 @@ pub(super) fn snapshot(compositor: &Compositor, session: &Session<'_>) -> Snapsh
     }
 }
 
-/// [`keeping_devices`] with no app narrowing: the person at this device sees every workspace it
-/// holds.
+/// The devices keeping each workspace this computer holds: the person at this device sees every
+/// workspace it holds.
 fn keeping_devices_all(tree: &Layout, session: &Session<'_>) -> Vec<Json> {
     tree.workspaces
         .iter()

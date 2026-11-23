@@ -36,7 +36,7 @@ const TITLE: &str = "Groceries";
 
 /// The ops only a development session's test-control socket answers: synthetic input, the hosted
 /// surfaces' controls, the fixtures and a picture of the screen.
-const DEV_ONLY: [&str; 17] = [
+const DEV_ONLY: [&str; 16] = [
     "click_at",
     "click_named",
     "drag",
@@ -49,7 +49,6 @@ const DEV_ONLY: [&str; 17] = [
     "pointer_button",
     "pointer_move",
     "scroll",
-    "search_rows",
     "snapshot",
     "swipe",
     "type",

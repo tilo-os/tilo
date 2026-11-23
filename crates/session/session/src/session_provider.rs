@@ -54,11 +54,18 @@ pub const NODE_PREFIX: &str = "ui:";
 /// read them: the same values the control socket's own reads answered.
 #[derive(Clone, Default)]
 pub struct Snapshot {
+    /// The desktop state, as `tilo-control state-dump` printed it.
     pub state: Value,
+    /// The open windows, each with the surface it fills, where its frame draws it and how many
+    /// frames it drew.
     pub windows: Value,
+    /// The person's layout.
     pub layout: Value,
+    /// The questions waiting for the person.
     pub questions: Value,
+    /// The shell's open search: its query, its rows and whether it still waits for sources.
     pub search: Value,
+    /// The devices keeping each workspace this computer holds.
     pub devices: Value,
 }
 
@@ -96,6 +103,16 @@ pub struct SessionProvider<H: ActionProvider> {
     snapshot: Arc<Mutex<Snapshot>>,
     /// Where a press runs, once a host that shows windows hands it here.
     press: Option<Arc<dyn Press>>,
+}
+
+impl<H> Clone for SessionProvider<H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            snapshot: Arc::clone(&self.snapshot),
+            press: self.press.clone(),
+        }
+    }
 }
 
 impl<H: ActionProvider> SessionProvider<H> {
