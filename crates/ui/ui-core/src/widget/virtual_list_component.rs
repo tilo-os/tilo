@@ -52,6 +52,12 @@ pub struct ListItemProps {
     pub key: String,
     /// The resource the row shows: what selecting or activating the row reports.
     pub item: Option<ResourceId>,
+    /// What the row stands for when it shows no resource of the workspace (a path on this
+    /// device): what the list's `select_value` and `selected_values` report of it, and what its
+    /// `chosen_values` names it by. Activating such a row (a double click, Enter, an assistive
+    /// technology) runs its own row's `activate`, since the row knows what it is and the list
+    /// does not.
+    pub value: Option<String>,
     /// Who else is at the item now (a member's or an agent's lens on it), shown on the
     /// row.
     pub presence: Option<Person>,
@@ -256,6 +262,11 @@ pub struct VirtualListProps {
     /// The selected rows, by key.
     #[component(state)]
     pub selection: Option<Vec<String>>,
+    /// The rows selected, by the values they stand for (`ListItem.value`): a selection the host
+    /// keeps for its person, given back whole each time, so a list whose rows come and go (a
+    /// folder read again, another folder) selects what the host chose and nothing else. Empty
+    /// selects nothing; none leaves the list's own choice.
+    pub chosen_values: Option<Vec<String>>,
     /// The items selected, in the order they stand: the selection a host keeps for its person,
     /// given back so a list built again shows it as they left it.
     #[component(state)]
@@ -294,6 +305,13 @@ pub struct VirtualListProps {
     /// when the selection was put away.
     #[component(event)]
     pub selected: Event,
+    /// A row that stands for a value was selected: carries its value.
+    #[component(event(value = String))]
+    pub select_value: Event,
+    /// The selection changed: carries the values of the rows selected that stand for one, in the
+    /// order they stand.
+    #[component(event(value = Vec<String>))]
+    pub selected_values: Event,
     /// The person opened a row into its item where it stands: carries the item.
     #[component(event(value = ResourceId))]
     pub opened: Event,
@@ -919,6 +937,68 @@ fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
         .flatten()
 }
 
+/// The value the row `key` stands for, when it stands for one.
+fn value_of(rows: &DescribedRows, key: &str) -> Option<String> {
+    rows.with_facts(key, |item| item.value).flatten()
+}
+
+/// What the list reports of the rows `keys` (a selection): the items they show, and the values
+/// those that stand for one stand for.
+fn chosen_of(rows: &DescribedRows, keys: &[String]) -> (Vec<Value>, Vec<Value>) {
+    let items = keys.iter().filter_map(|key| item_of(rows, key)).collect();
+    let values = keys
+        .iter()
+        .filter_map(|key| value_of(rows, key))
+        .map(Value::Text)
+        .collect();
+    (items, values)
+}
+
+/// The events of a list's rows that stand for values: one selected, and the values the
+/// selection stands for.
+#[derive(Clone)]
+struct ValueEvents {
+    select: Event,
+    selected: Event,
+}
+
+impl ValueEvents {
+    fn selected(&self, rows: &DescribedRows, key: &str) {
+        if let Some(value) = value_of(rows, key) {
+            self.select.fire(Some(Value::Text(value)));
+        }
+    }
+
+    /// The row `key` was activated: one that stands for a value runs its own row's `activate`.
+    fn activated(&self, rows: &DescribedRows, key: &str) {
+        let own = rows
+            .with_facts(key, |item| item.value.is_some().then_some(item.activate))
+            .flatten();
+        if let Some(activate) = own {
+            activate.fire(None);
+        }
+    }
+}
+
+/// The rows that stand for `values`, as a selection: the host's choice, given back whole. A row
+/// the list has not built yet cannot say what it stands for, so it is chosen once it is built
+/// and the host gives its choice again.
+fn rows_standing_for(rows: &DescribedRows, values: &[String]) -> KeySelection<String> {
+    let mut picked = KeySelection::new();
+    if values.is_empty() {
+        return picked;
+    }
+    for index in 0..rows.len() {
+        let Some(key) = rows.key_at(index) else {
+            continue;
+        };
+        if value_of(rows, &key).is_some_and(|value| values.contains(&value)) {
+            picked.toggle(key);
+        }
+    }
+    picked
+}
+
 /// The rows a host chose for its person ([`VirtualListProps::chosen`]), from the items it names:
 /// none when it names none, so a choice the list made itself stands. A choice of several rows is
 /// the host's while it holds: what the host kept of it gone, an action over the rows ran and put it
@@ -1539,6 +1619,9 @@ impl Described for DescribedList {
             select,
             activate,
             selected: selected_changed,
+            chosen_values,
+            select_value,
+            selected_values,
             opened: opened_changed,
             closed: closed_changed,
             revealed: revealed_changed,
@@ -1641,39 +1724,51 @@ impl Described for DescribedList {
         if let Some(picked) = picked_rows(chosen, &reading.borrow(), 0) {
             list = list.with_selection(picked);
         }
+        if let Some(values) = &chosen_values {
+            list = list.with_selection(rows_standing_for(&reading.borrow(), values));
+        }
         list = reorderable(list, &reorder);
-        if !select.is_none() || !activate.is_none() {
+        let values = ValueEvents {
+            select: select_value,
+            selected: selected_values,
+        };
+        // A row that stands for a value runs its own `activate`, whatever the list's events, so
+        // the callbacks are always there.
+        {
             let (on_select, on_pick) = (select.clone(), activate.clone());
             let (selecting, picking) = (Rc::clone(&reading), Rc::clone(&reading));
+            let (valued, valuing) = (values.clone(), values.clone());
             list = list
                 .on_select(move |key, selected| {
                     if !selected {
                         return;
                     }
-                    let item = item_of(&selecting.borrow(), &key);
+                    let rows = selecting.borrow();
+                    let item = item_of(&rows, &key);
                     if selection_follows_focus && by_hand() {
                         on_pick.fire(item);
+                        valued.activated(&rows, &key);
                     } else {
                         on_select.fire(item);
+                        valued.selected(&rows, &key);
                     }
                 })
                 .on_activate(move |key| {
-                    if !picking.borrow().is_removed(&key) {
-                        activate.fire(item_of(&picking.borrow(), &key));
+                    let rows = picking.borrow();
+                    if !rows.is_removed(&key) {
+                        activate.fire(item_of(&rows, &key));
+                        valuing.activated(&rows, &key);
                     }
                 });
         }
-        if !selected_changed.is_none() {
+        if !selected_changed.is_none() || !values.selected.is_none() {
             let fired = selected_changed.clone();
+            let valued = values.selected.clone();
             let selecting = Rc::clone(&reading);
             list = list.on_selected(move |keys| {
-                let items: Vec<Value> = {
-                    let selecting = selecting.borrow();
-                    keys.iter()
-                        .filter_map(|key| item_of(&selecting, key))
-                        .collect()
-                };
+                let (items, values) = chosen_of(&selecting.borrow(), keys);
                 fired.fire(Some(Value::List(items)));
+                valued.fire(Some(Value::List(values)));
             });
         }
         // // The item the host holds open stands open where its row stands, unless the item is no // row
@@ -1737,6 +1832,9 @@ impl Described for DescribedList {
             select,
             activate,
             selected: selected_changed,
+            chosen_values,
+            select_value,
+            selected_values,
             opened: opened_changed,
             closed: closed_changed,
             reveal,
@@ -1795,35 +1893,45 @@ impl Described for DescribedList {
         if let Some(picked) = picked {
             list.set_selection(picked);
         }
+        if let Some(values) = &chosen_values {
+            list.set_selection(rows_standing_for(&reading.borrow(), values));
+        }
+        let values = ValueEvents {
+            select: select_value,
+            selected: selected_values,
+        };
         let selecting = Rc::clone(&reading);
         let picking = Rc::clone(&reading);
         let (on_select, on_pick) = (select, activate.clone());
+        let (valued, valuing) = (values.clone(), values.clone());
         list.set_on_select(move |key, selected| {
             if !selected {
                 return;
             }
-            let item = item_of(&selecting.borrow(), &key);
+            let rows = selecting.borrow();
+            let item = item_of(&rows, &key);
             if selection_follows_focus && by_hand() {
                 on_pick.fire(item);
+                valued.activated(&rows, &key);
             } else {
                 on_select.fire(item);
+                valued.selected(&rows, &key);
             }
         });
         list.set_on_activate(move |key| {
-            if !picking.borrow().is_removed(&key) {
-                activate.fire(item_of(&picking.borrow(), &key));
+            let rows = picking.borrow();
+            if !rows.is_removed(&key) {
+                activate.fire(item_of(&rows, &key));
+                valuing.activated(&rows, &key);
             }
         });
         let fired = selected_changed;
         let opening = Rc::clone(&reading);
+        let valued = values.selected;
         list.set_on_selected(move |keys| {
-            let items: Vec<Value> = {
-                let selecting = reading.borrow();
-                keys.iter()
-                    .filter_map(|key| item_of(&selecting, key))
-                    .collect()
-            };
+            let (items, values) = chosen_of(&reading.borrow(), keys);
             fired.fire(Some(Value::List(items)));
+            valued.fire(Some(Value::List(values)));
         });
         if !opened_changed.is_none() {
             list.set_on_opened(move |key| {

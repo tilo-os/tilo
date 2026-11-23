@@ -40,6 +40,8 @@ mod e2e_cleanup;
 mod e2e_counter;
 #[path = "e2e_ebook.rs"]
 mod e2e_ebook;
+#[path = "e2e_file_picker.rs"]
+mod e2e_file_picker;
 #[path = "e2e_enums.rs"]
 mod e2e_enums;
 #[path = "engine.rs"]

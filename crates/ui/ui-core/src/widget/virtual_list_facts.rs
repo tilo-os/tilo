@@ -1,6 +1,6 @@
 //! What a [`super::DescribedList`] reads of an item beside building its row.
 
-use crate::component::{Component as _, Moment, Person, ResourceId, Source};
+use crate::component::{Component as _, Event, Moment, Person, ResourceId, Source};
 use crate::widget::{ListRowProps, Tone};
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
@@ -8,6 +8,9 @@ use super::{DescribedRows, Held, ItemRow, ListItemProps};
 #[derive(Default)]
 pub(super) struct ItemFacts {
     pub(super) item: Option<ResourceId>,
+    pub(super) value: Option<String>,
+    /// What the item's row does when it is activated: run for a row that stands for a value.
+    pub(super) activate: Event,
     pub(super) author: Option<Person>,
     pub(super) time: Option<Moment>,
     pub(super) read_by: Vec<Person>,
@@ -35,15 +38,18 @@ fn prop_of<T: crate::component::PropType + Default>(
 impl ItemFacts {
     pub(super) fn read(source: &mut dyn Source) -> Result<Self, String> {
         let mut title = None;
+        let mut activate = Event::None;
         if matches!(source.part_kinds("row").as_slice(), [Some(kind)] if kind == ListRowProps::NAME)
         {
             source.components("row", &mut |row| {
                 title = Some(prop_of::<String>(row, "title")?);
+                activate = row.event("activate");
                 Ok(())
             })?;
         }
         Ok(Self {
             item: prop_of(source, "item")?,
+            value: prop_of(source, "value")?,
             author: prop_of(source, "author")?,
             time: prop_of(source, "time")?,
             read_by: prop_of(source, "read_by")?,
@@ -56,12 +62,14 @@ impl ItemFacts {
             opens: prop_of(source, "opens")?,
             detail: source.holds("detail"),
             title,
+            activate,
         })
     }
 
     pub(super) fn of(item: &ListItemProps) -> Self {
         Self {
             item: item.item.clone(),
+            value: item.value.clone(),
             author: item.author.clone(),
             time: item.time,
             read_by: item.read_by.clone(),
@@ -76,6 +84,10 @@ impl ItemFacts {
             title: match &item.row {
                 ItemRow::Row(row) => Some(row.title.clone()),
                 ItemRow::View(_) | ItemRow::None => None,
+            },
+            activate: match &item.row {
+                ItemRow::Row(row) => row.activate.clone(),
+                ItemRow::View(_) | ItemRow::None => Event::None,
             },
         }
     }

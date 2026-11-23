@@ -994,7 +994,9 @@ view call_member(m: host.CallMember) {
             ui.Text(
                 if m.service == "discord" {
                     phrase("tilolang-call-from-discord")
-                } else { phrase("tilolang-call-from", service: m.service) },
+                } else {
+                    phrase("tilolang-call-from", service: m.service)
+                },
                 role: .caption,
                 secondary: true,
             )
@@ -1422,4 +1424,348 @@ fn without_hex(key: Text) -> Text {
     if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
         without_hex(key.slice(0, key.len() - 1))
     } else { key }
+}
+
+/// The file picker: the person chooses files, a folder, or where to save one, among the folders
+/// this device holds. It reads no disk itself. The view it stands in reads the folder shown with
+/// an action that uses files (`File.list`), keeps it read as it changes (`File.watch`), and gives
+/// what it read as `entries`; going elsewhere asks it to read another folder (`go`), so what the
+/// picker lists is always what the disk holds now, whoever changed it.
+///
+/// It lists the folder's entries, folders first, sorted by name, by when they changed or by size,
+/// and only the types the app takes (`types`: each type's name, then its kinds as extensions,
+/// `[["Images", ".png", ".jpg"], ["All files"]]`; none takes every file). The sidebar holds the
+/// places (`places`: home, the usual folders under it, the workspace folders) and the recent
+/// files when there are any; the path over the list leads back up, as far as the root the folder
+/// is in (`roots`) and no further; `home` is this device's home folder, which it calls Home. The
+/// system search narrows the folder to what it asks (`query`): the picker keeps no search of its
+/// own.
+///
+/// What the person chooses comes back through `pick`, as `mode` asks: the files (`"open"`,
+/// several with `multiple`), the folder (`"folder"`: the one chosen, or the one shown), or the
+/// one path to write (`"save"`), and a name that is already a file there asks before replacing
+/// it. `cancel` closes it and gives nothing. Every step is the keyboard's too: arrows move, Enter
+/// opens a folder or takes a file, and the dialog that asks before replacing takes Enter and
+/// Escape.
+template view file_picker(
+    folder: Text,
+    entries: List<host.FileEntry>,
+    go: (Text) -> Action,
+    pick: (List<Text>) -> Action,
+    cancel: Action,
+    mode: Text = "open",
+    multiple: Bool = false,
+    types: List<List<Text>> = [],
+    name: Text = "",
+    accept: Text = "",
+    places: List<host.FileEntry> = [],
+    recent: List<host.FileEntry> = [],
+    roots: List<Text> = [],
+    home: Text = "",
+    query: Text = "",
+) {
+    // What the person chose here: each row's value, a folder's ending in a slash.
+    state chosen: List<Text> = []
+    state at_recent: Bool = false
+    state sort: Text = "Name"
+    state kind: Text = types.first()?.first() ?? ""
+    state typed: Text = name
+    state hidden: Bool = false
+    state replacing: Bool = false
+    let kinds = (types.find(t -> t.first() == .some(kind)) ?? []).filter(k -> k != kind)
+    let listed = if at_recent { recent } else { entries }
+    let shown = picker_sorted(
+        listed.filter(e -> picker_shows(e, hidden, mode == "folder", kinds, query)),
+        sort,
+    )
+    let root = picker_root(folder, roots)
+    let up = picker_parent(folder)
+    let named = typed.trim()
+    let target = picker_join(folder, named)
+    let file_named = mode == "save" and entries.any(e -> e.name == named and not e.folder)
+    let folder_named = entries.find(e -> e.name == named and e.folder)?.path ?? ""
+    let files = chosen.filter(v -> not v.ends_with("/"))
+    let folder_chosen = picker_unslashed(chosen.find(v -> v.ends_with("/")) ?? folder + "/")
+    let ready = if mode == "save" {
+        named != "" and not named.contains("/") and not at_recent
+    } else if mode == "folder" { not at_recent } else { not files.is_empty() }
+    let place = places
+        .filter(p -> folder == p.path or folder.starts_with(p.path + "/"))
+        .sort_by(p -> p.path.len(), desc)
+        .first()
+        ?.path
+        ?? ""
+    stack(gap: .related, fill) {
+        row(gap: .related, align: .center) {
+            ui.Button(
+                "Up",
+                icon: .arrow_up,
+                icon_only: true,
+                enabled: not at_recent and folder != root and up != "",
+                description: "There is no folder above this one to go to",
+            ) {
+                on press: set(chosen, []).then(go(up))
+            }
+            if at_recent {
+                ui.Text("Recent", role: .subheading)
+            } else {
+                ui.Breadcrumb(root_icon: .folder) {
+                    for crumb in picker_crumbs(folder, root) {
+                        ui.BreadcrumbSegment(picker_name(crumb, home)) {
+                            on activate: set(chosen, []).then(go(crumb))
+                        }
+                    }
+                }
+            }
+            spacer
+            if types.len() > 1 {
+                ui.Dropdown(bind: kind, options: types.map(t -> t.first() ?? ""), size: .small)
+            }
+            ui.Dropdown(bind: sort, options: ["Name", "Modified", "Size"], size: .small)
+            ui.Button(
+                "Hidden files",
+                icon: if hidden { .eye } else { .eye_off },
+                icon_only: true,
+                toggled: hidden,
+            ) {
+                on press: set(hidden, not hidden)
+            }
+        }
+        split(side: .leading, collapse: .stack) {
+            secondary(min: 12rem) {
+                ui.NavList(selected: if at_recent { "recent" } else { place }) {
+                    if not recent.is_empty() {
+                        ui.NavItem("recent", "Recent", icon: "history") {
+                            on select: set(at_recent, true).then(set(chosen, []))
+                        }
+                    }
+                    for p in places {
+                        ui.NavItem(
+                            p.path,
+                            picker_name(p.path, home),
+                            icon: picker_place_icon(p.path, home),
+                        ) {
+                            on select: set(at_recent, false).then(set(chosen, [])).then(go(p.path))
+                        }
+                    }
+                }
+            }
+            primary(min: 18rem) {
+                if shown.is_empty() {
+                    ui.EmptyState(
+                        if query != "" {
+                            "Nothing here matches “{query}”"
+                        } else if at_recent {
+                            "No recent files"
+                        } else if mode == "folder" {
+                            "No folders here"
+                        } else { "This folder is empty" },
+                        icon: .folder_open,
+                    )
+                } else {
+                    ui.VirtualList(
+                        name: if at_recent { "Recent" } else { picker_name(folder, home) },
+                        multi_select: multiple and mode == "open",
+                        chosen_values: chosen,
+                        in_column: false,
+                    ) {
+                        on select_value(v: Text): set(
+                            typed,
+                            picker_saved_name(v, typed, mode == "save"),
+                        )
+                        on selected_values(vs: List<Text>): set(chosen, vs)
+                        for e in shown {
+                            ui.ListItem(value: if e.folder { e.path + "/" } else { e.path }) {
+                                ui.ListRow(
+                                    title: e.name,
+                                    icon: if e.folder { .folder } else { .file },
+                                    meta: if e.folder { "Folder" } else { picker_size(e.size) },
+                                ) {
+                                    on activate: if e.folder {
+                                        set(at_recent, false).then(set(chosen, [])).then(go(e.path))
+                                    } else if mode == "save" {
+                                        set(typed, e.name)
+                                    } else if mode == "open" {
+                                        pick([e.path])
+                                    } else { set(chosen, []) }
+                                    trailing: {
+                                        ui.Time(e.modified, role: .caption, secondary: true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        row(gap: .related, align: .center) {
+            if mode == "save" {
+                ui.TextInput(bind: typed, placeholder: "Name", autofocus: true, fill)
+            } else if mode == "open" and multiple and files.len() > 1 {
+                text("{files.len()} files chosen", role: .caption, secondary: true)
+            }
+            spacer
+            ui.Button("Cancel") {
+                on press: cancel
+            }
+            ui.Button(
+                if accept != "" {
+                    accept
+                } else if mode == "save" {
+                    "Save"
+                } else if mode == "folder" { "Choose folder" } else { "Open" },
+                role: .primary,
+                enabled: ready,
+                description: if at_recent {
+                    "Recent files hold no folder to save in or to choose"
+                } else if mode == "save" { "Name the file first" } else { "Choose a file first" },
+            ) {
+                on press: if mode == "save" {
+                    if folder_named != "" {
+                        set(typed, "").then(go(folder_named))
+                    } else if file_named { set(replacing, true) } else { pick([target]) }
+                } else if mode == "folder" { pick([folder_chosen]) } else { pick(files) }
+            }
+        }
+        ui.ModalDialog(
+            title: "Replace “{named}”?",
+            open: replacing,
+            primary: "Replace",
+            secondary: "Cancel",
+            destructive: true,
+            icon: .triangle_alert,
+        ) {
+            on act_primary: set(replacing, false).then(pick([target]))
+            on act_secondary: set(replacing, false)
+            on dismiss: set(replacing, false)
+            ui.Text(
+                "{picker_name(folder, home)} already holds a file with this name. Replacing it writes over what it holds.",
+            )
+        }
+    }
+}
+
+/// Whether the picker lists `e`: a hidden entry only with `hidden`, only folders when it picks
+/// one (`folders`), a file only of `kinds`, and only what the search asks (`query`).
+fn picker_shows(
+    e: host.FileEntry,
+    hidden: Bool,
+    folders: Bool,
+    kinds: List<Text>,
+    query: Text,
+) -> Bool {
+    let kept = hidden or not e.hidden
+    let fits = if folders { e.folder } else { e.folder or picker_fits(e.name, kinds) }
+    let found = query == "" or e.name.lower().contains(query.lower())
+    kept and fits and found
+}
+
+/// Whether a file called `name` is of one of `kinds` (extensions, with or without the dot or a
+/// leading `*`); every file is when there are none, or one of them is `*`.
+fn picker_fits(name: Text, kinds: List<Text>) -> Bool {
+    let lower = name.lower()
+    kinds.is_empty() or kinds.any(k -> picker_kind_fits(lower, k))
+}
+
+/// Whether the file called `lower` (in lower case) is of the kind `kind`.
+fn picker_kind_fits(lower: Text, kind: Text) -> Bool {
+    let ext = kind.lower().replace("*", "").replace(".", "")
+    ext == "" or lower.ends_with("." + ext)
+}
+
+/// `entries` in the order `by` names, folders first.
+fn picker_sorted(entries: List<host.FileEntry>, by: Text) -> List<host.FileEntry> {
+    let folders = entries.filter(e -> e.folder)
+    let files = entries.filter(e -> not e.folder)
+    if by == "Modified" {
+        [folders.sort_by(e -> e.modified, desc), files.sort_by(e -> e.modified, desc)]
+            .flat_map(x -> x)
+    } else if by == "Size" {
+        [folders.sort_by(e -> e.name.lower()), files.sort_by(e -> e.size, desc)].flat_map(x -> x)
+    } else {
+        [folders.sort_by(e -> e.name.lower()), files.sort_by(e -> e.name.lower())].flat_map(x -> x)
+    }
+}
+
+/// The root of `roots` that holds `folder`, the deepest when they nest; none when none does.
+fn picker_root(folder: Text, roots: List<Text>) -> Text {
+    roots
+        .filter(r -> folder == r or folder.starts_with(r + "/"))
+        .sort_by(r -> r.len(), desc)
+        .first()
+        ?? ""
+}
+
+/// The folder that holds `path`; none for the top of the disk or of home.
+fn picker_parent(path: Text) -> Text {
+    let parts = path.split("/")
+    if parts.len() < 2 {
+        ""
+    } else if parts.len() == 2 and parts.first() == .some("") {
+        if path == "/" { "" } else { "/" }
+    } else { parts.take(parts.len() - 1).join("/") }
+}
+
+/// The path of `name` in `folder`.
+fn picker_join(folder: Text, name: Text) -> Text {
+    if folder.ends_with("/") { folder + name } else { folder + "/" + name }
+}
+
+/// `value` without the slash a folder's value ends in.
+fn picker_unslashed(value: Text) -> Text {
+    if value.ends_with("/") and value.len() > 1 { value.slice(0, value.len() - 1) } else { value }
+}
+
+/// What the path over the list holds: each folder from `root` (or the top) down to `folder`.
+fn picker_crumbs(folder: Text, root: Text) -> List<Text> {
+    let above = picker_parent(folder)
+    if folder == root or above == "" or folder == "" {
+        [folder]
+    } else {
+        [picker_crumbs(above, root), [folder]].flat_map(x -> x)
+    }
+}
+
+/// What a path is called where the picker shows it: its last name, home as Home.
+fn picker_name(path: Text, home: Text) -> Text {
+    if path == "~" or path == home {
+        "Home"
+    } else if path == "/" {
+        "Computer"
+    } else {
+        picker_unslashed(path).split("/").last() ?? path
+    }
+}
+
+/// The name a Save stands at once the row `value` is chosen: a file's own name, so writing over
+/// it is one step; a folder leaves what was typed.
+fn picker_saved_name(value: Text, typed: Text, saving: Bool) -> Text {
+    if saving and not value.ends_with("/") { picker_name(value, "") } else { typed }
+}
+
+/// The glyph of a place at `path`, by the usual folder it is.
+fn picker_place_icon(path: Text, home: Text) -> Text {
+    let name = picker_name(path, "")
+    if path == "~" or path == home {
+        "home"
+    } else if name == "Documents" {
+        "file_text"
+    } else if name == "Downloads" {
+        "download"
+    } else if name == "Pictures" {
+        "image"
+    } else if name == "Music" {
+        "music"
+    } else if name == "Videos" { "video" } else if name == "Desktop" { "monitor" } else { "folder" }
+}
+
+/// A file's size, as a person reads it.
+fn picker_size(bytes: Int) -> Text {
+    if bytes < 1000 {
+        "{bytes} bytes"
+    } else if bytes < 1000000 {
+        "{(bytes + 500) / 1000} KB"
+    } else if bytes < 1000000000 {
+        "{(bytes + 500000) / 1000000} MB"
+    } else { "{(bytes + 500000000) / 1000000000} GB" }
 }

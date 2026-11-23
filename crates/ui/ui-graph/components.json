@@ -6612,6 +6612,15 @@
           }
         },
         {
+          "name": "chosen_values",
+          "doc": "The rows selected, by the values they stand for (`ListItem.value`): a selection the host keeps for its person, given back whole each time, so a list whose rows come and go (a folder read again, another folder) selects what the host chose and nothing else. Empty selects nothing; none leaves the list's own choice.",
+          "type": {
+            "option": {
+              "list": "text"
+            }
+          }
+        },
+        {
           "name": "reveal",
           "doc": "The row the view asks the list to show, by its key: a row below the fold scrolls into view at the list's motion, without taking the keyboard or the selection, as an address book does for the first card under a letter. It moves the list when the key it names changes; a key the list does not hold yet is shown as soon as it does, and one already in view stays where the person scrolled it.",
           "type": {
@@ -6674,6 +6683,18 @@
         {
           "name": "selected",
           "doc": "The selection changed: carries the items selected, in the order they stand, and none when the selection was put away."
+        },
+        {
+          "name": "select_value",
+          "doc": "A row that stands for a value was selected: carries its value.",
+          "value": "text"
+        },
+        {
+          "name": "selected_values",
+          "doc": "The selection changed: carries the values of the rows selected that stand for one, in the order they stand.",
+          "value": {
+            "list": "text"
+          }
         },
         {
           "name": "opened",
@@ -9080,6 +9101,13 @@
           "doc": "The resource the row shows: what selecting or activating the row reports.",
           "type": {
             "option": "resource"
+          }
+        },
+        {
+          "name": "value",
+          "doc": "What the row stands for when it shows no resource of the workspace (a path on this device): what the list's `select_value` and `selected_values` report of it, and what its `chosen_values` names it by. Activating such a row (a double click, Enter, an assistive technology) runs its own row's `activate`, since the row knows what it is and the list does not.",
+          "type": {
+            "option": "text"
           }
         },
         {
