@@ -10,6 +10,7 @@
 # `tools/docs/build-api-reference.sh` under it. SDK source links stay on the
 # repository host.
 
+title = "Tilo developer docs"
 base = "/docs/developers/"
 origin = "https://tilo.so"
 repository = "https://code.tilo.so/tilo/tilo"
