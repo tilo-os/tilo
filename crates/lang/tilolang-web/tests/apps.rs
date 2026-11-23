@@ -239,6 +239,7 @@ fn layout(second_at: (i64, i64)) -> tilo_desktop_model::reading::LayoutReading {
             key: "w".to_owned(),
             name: "Home".to_owned(),
             current: true,
+            home: String::new(),
         }],
         rows: vec![LayoutRowReading {
             key: "r".to_owned(),
@@ -311,6 +312,69 @@ fn a_hosted_canvas_follows_the_layout_its_host_reads() {
             .iter()
             .all(|patch| !patch.html.contains("Groceries")),
         "the window that stayed is not sent again: {patches:?}"
+    );
+}
+
+#[test]
+fn a_hosted_shell_reads_the_apps_the_windows_and_the_surface_its_host_publishes() {
+    let packages = std::rc::Rc::new(tilolang_web::Packages::new(
+        std::rc::Rc::new(tilolang_tilo::shell::compile().expect("the shell compiles")),
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages"),
+    ));
+    let origin = std::rc::Rc::new(std::cell::RefCell::new(
+        tilolang_tilo::shell::LayoutOrigin::default(),
+    ));
+    origin.borrow_mut().read(layout((600, 120)));
+    let mut page = tilolang_web::window::AppPage::hosted(
+        tilolang_tilo::shell::SHELL_APP,
+        &packages,
+        tilolang_web::window::Hosting {
+            root: "layout",
+            view: "strips",
+            origin: std::rc::Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin,
+            me: ("ada", "Ada"),
+            viewport: (1280, 800),
+            dark: false,
+            link_home: None,
+        },
+    )
+    .expect("the strips open");
+    // The host publishes what a device's session publishes for its shell: the apps the
+    // workspace serves, the windows on its layout, and the surface over them.
+    page.fill_reading(
+        "session:apps",
+        &serde_json::json!({ "installed": [
+            { "key": "so.tilo.tasks", "name": "Tasks", "icon": "list-checks", "category": "work" },
+        ] }),
+    )
+    .expect("the apps are read");
+    page.fill_reading(
+        "session:windows",
+        &serde_json::json!({ "all": [{
+            "key": "t2", "title": "Tasks", "origin_app": "Tasks", "app_key": "so.tilo.tasks",
+            "icon": "list-checks", "strip": "Main", "strip_key": "s2", "workspace": "Home",
+            "workspace_key": "w", "group_key": "s2", "tab_index": 0, "share": 1.0,
+            "local": true, "device": "", "device_name": "", "place": 2, "recency": 1,
+            "focused": true, "preview": "none", "not_responding": false,
+        }] }),
+    )
+    .expect("the windows are read");
+    // The dock shows the running app, so the reading reached the view that reads it.
+    page.follow();
+    let body = page.render();
+    assert!(
+        body.contains("aria-label=\"Tasks\""),
+        "the dock has the window's app: {body}"
+    );
+
+    // The launcher opens over the windows: the panel lists the apps the workspace serves.
+    page.fill_reading("desktop:overlays", &serde_json::json!({ "here": "launcher" }))
+        .expect("the surface is read");
+    page.follow();
+    let body = page.render();
+    assert!(
+        body.contains("All apps") && body.contains("so.tilo.tasks"),
+        "the launcher lists the installed app: {body}"
     );
 }
 

@@ -659,6 +659,9 @@ function start() {
     if (!element || !page.contains(element)) return;
     const action = element.dataset.a;
     if (action === 'activate') {
+      // A link that names an address opens it: the browser's own step, as a link on any
+      // page. A link naming the view's target (`data-t`) is an ask, as a press on a row is.
+      if (element.tagName === 'A' && element.getAttribute('href') && !element.dataset.t) return;
       event.preventDefault();
       // What is typed next is not for the field the person clicked away from.
       const active = document.activeElement;

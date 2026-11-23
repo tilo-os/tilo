@@ -4,7 +4,9 @@
 //! A person's computer has Tasks open. Their browser's desktop page is the shell's own view of
 //! the layout, its windows strip by strip, and Tasks' window leads to the Tasks page: the window
 //! continues on the web. Closing it on the page closes it on the layout, which the computer
-//! follows.
+//! follows. The page's shell reads what a device's shell reads: the launcher lists the apps the
+//! workspace serves, and opening one from it puts a window on the shared layout that the
+//! computer shows; the workspace switcher lists the person's workspaces and links to each.
 use super::*;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch};
 
@@ -22,6 +24,29 @@ fn answered<T>(pending: tilo_actions::remote::Pending<T>) -> T {
 /// The window frames the shell's view writes, each from its opening tag to the next one's.
 fn windows(html: &str) -> Vec<&str> {
     html.split("data-w=\"WindowFrame\"").skip(1).collect()
+}
+
+/// The patches the page answered with, as one piece of HTML, as the browser puts them in place.
+fn patched(patches: &[PagePatch]) -> String {
+    patches
+        .iter()
+        .map(|patch| patch.html.as_str())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// The number of the innermost element labelled `label` in `html`: a row and a tile a view
+/// writes are elements of their own with the label they are read out by, not always a
+/// `<button>`, and a tile that rides a drag target is the one that takes the press.
+fn labelled(html: &str, label: &str) -> Option<u32> {
+    let at = html.rfind(&format!("aria-label=\"{label}\""))?;
+    let open = html.get(html.get(..at)?.rfind('<')?..at)?;
+    open.split("data-p=\"")
+        .nth(1)?
+        .split('"')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The number of the button labelled `label` in the window holding `words`.
@@ -146,14 +171,76 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
         }
     })
     .await;
+
+    // The dock's launcher opens on the page, as it does on a device: the panel lists the apps
+    // the workspace serves, from the catalogue the server holds.
+    let launcher = labelled(&opened.body, "Launcher")
+        .unwrap_or_else(|| panic!("the dock's launcher entry: {}", opened.body));
+    let patches = answered(actions.act_on_page(
+        workspace_id,
+        opened.page,
+        Some((launcher, None, PageAction::Activate)),
+    ))
+    .expect("the launcher opens");
+    let launcher_shown = patched(&patches);
+    let tasks_row = labelled(&launcher_shown, "Tasks")
+        .unwrap_or_else(|| panic!("the launcher lists Tasks: {launcher_shown}"));
+
+    // She opens Tasks from the launcher: it stands on the shared layout as a window, and her
+    // computer shows it.
+    let patches = answered(actions.act_on_page(
+        workspace_id,
+        opened.page,
+        Some((tasks_row, None, PageAction::Activate)),
+    ))
+    .expect("the app opens");
+    assert!(
+        patched(&patches).contains(&tasks_page),
+        "the page shows the window it opened: {patches:?}"
+    );
+    desk.until(|desk| {
+        let apps = window_apps(desk.layout().as_ref());
+        if apps == [TASKS] {
+            Ok(())
+        } else {
+            Err(format!("the computer shows {apps:?}"))
+        }
+    })
+    .await;
+
+    // And a page opened again shows it, as every page of the workspace does.
     let again = answered(actions.open_page(workspace_id, &caller, address))
         .expect("the desktop opens again");
     assert!(
         windows(&again.body)
             .iter()
-            .all(|window| !window.contains(&tasks_page)),
-        "the closed window stays closed: {}",
+            .any(|window| window.contains(&tasks_page)),
+        "the window she opened is on the page: {}",
         again.body
+    );
+
+    // The launcher's own row for the workspaces opens the switcher: it lists the person's
+    // workspaces, each a link to that workspace's page.
+    let patches = answered(actions.act_on_page(
+        workspace_id,
+        opened.page,
+        Some((launcher, None, PageAction::Activate)),
+    ))
+    .expect("the launcher opens again");
+    let launcher_shown = patched(&patches);
+    let switcher = labelled(&launcher_shown, "Workspaces")
+        .unwrap_or_else(|| panic!("the launcher's Workspaces row: {launcher_shown}"));
+    let patches = answered(actions.act_on_page(
+        workspace_id,
+        opened.page,
+        Some((switcher, None, PageAction::Activate)),
+    ))
+    .expect("the workspaces open");
+    let switcher_shown = patched(&patches);
+    assert!(
+        switcher_shown.contains("Workspaces")
+            && switcher_shown.contains(&format!("href=\"/w/{workspace}/desktop\"")),
+        "the switcher lists the person's workspaces, each a link to its page: {switcher_shown}"
     );
 
     actions.close_page(workspace_id, again.page);

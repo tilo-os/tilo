@@ -15,6 +15,10 @@ pub struct LayoutWorkspaceReading {
     /// Whether it is the workspace in front: a layout holds several and shows one, so a shell draws
     /// the rows of this one and no other.
     pub current: bool,
+    /// Where the workspace opens as a page on the web, when the shell is a page
+    /// (`/w/<workspace>/desktop`): what its workspace card links to. Empty on a device, where
+    /// switching to a workspace shows it in the same layout.
+    pub home: String,
 }
 
 /// A row of the layout, as the person's layout names it.
@@ -183,6 +187,7 @@ pub fn of(
             // A layout holds every workspace the person is in and shows one: the shell draws the
             // rows of the one in front, so the reading says which that is.
             current: workspace.id() == tree.active,
+            home: String::new(),
         });
         let front = tree.active_strip_for(workspace);
         for (at, row) in workspace.strips.iter().enumerate() {

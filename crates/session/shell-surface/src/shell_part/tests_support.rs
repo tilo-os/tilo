@@ -161,6 +161,7 @@ pub(super) fn reading_with_windows() -> Staged {
                 key: "1".to_owned(),
                 name: "Home".to_owned(),
                 current: true,
+                home: String::new(),
             }],
             ..LayoutReading::default()
         },

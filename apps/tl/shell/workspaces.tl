@@ -32,14 +32,22 @@ view workspaces() {
 }
 
 /// One workspace: its name, and for the one in front, who is here. The one in front is lifted,
-/// and pressing it does nothing; the others switch to it.
+/// and pressing it does nothing; the others switch to it. Where the shell is a page and the
+/// workspace opens as one of its own (`LayoutWorkspace.home`), its card opens that page, as the
+/// workspace switcher has always led from one workspace to another.
 view workspace_card(w: LayoutWorkspace) {
-    ui.Card(item: w, title: w.name, selected: w.current) {
-        if w.current and not layout.people.is_empty() {
-            ui.Facts {
-                ui.Fact("{layout.people.len()} here", icon: .users)
-            }
+    if w.home != "" {
+        ui.Card(title: w.name, selected: w.current) {
+            ui.Link(w.home, label: "Open")
         }
-        on activate: session.switch_workspace(workspace: w.key)
+    } else {
+        ui.Card(item: w, title: w.name, selected: w.current) {
+            if w.current and not layout.people.is_empty() {
+                ui.Facts {
+                    ui.Fact("{layout.people.len()} here", icon: .users)
+                }
+            }
+            on activate: session.switch_workspace(workspace: w.key)
+        }
     }
 }

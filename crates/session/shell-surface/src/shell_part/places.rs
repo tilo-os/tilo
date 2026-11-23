@@ -110,6 +110,7 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),
             current: true,
+            home: String::new(),
         }],
         rows: vec![LayoutRowReading {
             key: "r1".to_owned(),

@@ -268,8 +268,14 @@ view workspace_menu() {
         or space.compact and folders_need_person(device.folders.folders)
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in layout.workspaces {
-            ui.MenuItem(w.name, checked: w.current) {
-                on choose: session.switch_workspace(workspace: w.key)
+            if w.home != "" {
+                // Where the shell is a page, each workspace is a page of its own: the menu
+                // leads to it as the workspaces' own cards do (`workspaces.tl`).
+                ui.Link(w.home, label: w.name)
+            } else {
+                ui.MenuItem(w.name, checked: w.current) {
+                    on choose: session.switch_workspace(workspace: w.key)
+                }
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {

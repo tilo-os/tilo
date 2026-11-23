@@ -253,6 +253,36 @@ impl AppPage {
         self.page.wells = wells;
     }
 
+    /// Hand the page's views the reading of `published`, a resource the host publishes for its
+    /// shell (`session:apps`, `session:windows`, `desktop:overlays`): what a device's shell reads
+    /// of its own state, so a page's shell reads the same names and needs no branch for the web.
+    /// The page's next render shows what the reading says.
+    ///
+    /// # Errors
+    /// `published` is no resource of the platform's packages, or its reading is not the object of
+    /// fields they describe.
+    pub fn fill_reading(
+        &mut self,
+        published: &str,
+        reading: &serde_json::Value,
+    ) -> Result<(), String> {
+        let ty = tilolang_tilo::platform_apps::platform_roots()
+            .into_iter()
+            .find(|(id, _)| *id == published)
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| format!("`{published}` is no resource the platform publishes"))?;
+        let target = tilolang_tilo::runtime::ResourceRef::parse_id(published, ty)
+            .ok_or_else(|| format!("`{published}` names no resource"))?;
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the page's host is not open".to_owned())?;
+        host.runtime()
+            .set_reading(&target, &reading.to_string())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     /// What changed on the page since it was last written, after the instance took in what its
     /// origins hold now (another member moved a place): the elements to replace.
     pub fn follow(&mut self) -> Vec<Patch> {

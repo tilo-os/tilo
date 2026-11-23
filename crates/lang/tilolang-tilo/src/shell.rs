@@ -507,6 +507,7 @@ fn workspace_fields(w: &LayoutWorkspaceReading) -> Vec<(&'static str, Value)> {
         ("key", text(&w.key)),
         ("name", text(&w.name)),
         ("current", Value::Bool(w.current)),
+        ("home", text(&w.home)),
     ]
 }
 
