@@ -44,7 +44,7 @@ fn card_rect(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
                 && node
                     .semantics
                     .as_ref()
-                    .is_some_and(|access| access.name.as_deref() == Some(title))
+                    .is_some_and(|access| access.answers_to(title))
         })
         .map_or_else(|| panic!("no card `{title}`"), |node| node.rect)
 }

@@ -13,10 +13,12 @@ fn settle(app: &mut TestApp<SettingsShell>) {
 }
 
 fn node_named(app: &mut TestApp<SettingsShell>, name: &str) -> ui::accesskit::Node {
+    let id = app
+        .harness()
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the {name} control is a target"));
     app.harness()
-        .a11y_nodes()
-        .into_iter()
-        .find_map(|(_, node)| (node.label() == Some(name)).then_some(node))
+        .a11y_node(id)
         .unwrap_or_else(|| panic!("the {name} control is a target"))
 }
 

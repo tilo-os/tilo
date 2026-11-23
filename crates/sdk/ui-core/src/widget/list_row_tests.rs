@@ -1085,6 +1085,8 @@ tilo_test_env::scenario! {
         assert_eq!(node.name.as_deref(), Some("Home, /home/quinten"));
         assert_eq!(node.value, None, "the secondary line is said once, in the name");
         assert_eq!(node.description, None);
+        // The title stays a field of its own, the line the row is found by.
+        assert_eq!(node.title.as_deref(), Some("Home"));
     }
 }
 

@@ -343,10 +343,19 @@ fn a_result_states_downloads_and_likes_as_separate_facts() {
     let said = announced(&mut pane);
     let row = said
         .iter()
-        .find(|text| text.lines().any(|fact| fact.trim() == "1 download"))
-        .unwrap_or_else(|| panic!("the result says its downloads as a fact: {said:?}"));
+        .find(|text| text.starts_with("acme/Chat-GGUF"))
+        .unwrap_or_else(|| panic!("the result names its repository: {said:?}"));
+    let facts: Vec<&str> = row
+        .lines()
+        .flat_map(|line| line.split(", "))
+        .map(str::trim)
+        .collect();
     assert!(
-        row.lines().any(|fact| fact.trim() == "312 likes"),
+        facts.contains(&"1 download"),
+        "the result says its downloads as a fact: {row:?}"
+    );
+    assert!(
+        facts.contains(&"312 likes"),
         "its likes are a fact of their own beside it: {row:?}"
     );
 }

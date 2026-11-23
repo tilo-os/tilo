@@ -43,17 +43,22 @@ fn page(screen: Screen) -> Page {
     }
 }
 
-/// Every control with a name, by that name, where it stands.
+/// Every control with a name, by that name, where it stands. A list row is
+/// named by its title and its detail; it is named here by the line it is
+/// titled with.
 fn named(app: &mut HeadlessApp<OnboardingApp>) -> Vec<(String, Rect)> {
+    let titles: std::collections::HashMap<_, _> =
+        app.harness().a11y_row_titles().into_iter().collect();
     app.harness()
         .a11y_nodes()
         .into_iter()
-        .filter_map(|(_, node)| {
+        .filter_map(|(id, node)| {
             let bounds = node.bounds()?;
-            Some((
-                node.label()?.to_owned(),
-                Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
-            ))
+            let name = titles
+                .get(&id)
+                .cloned()
+                .or_else(|| node.label().map(str::to_owned))?;
+            Some((name, Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)))
         })
         .collect()
 }

@@ -1863,10 +1863,12 @@ mod window_tests {
             .merge_peer_document(index_doc.save())
             .expect("the tree arrives");
         app.flush().unwrap();
-        let texts = app.texts();
+        // The file's row is named by its name and what it shows beside it; it is found by the
+        // name it is titled with.
         assert!(
-            texts.iter().any(|text| text == "terms.txt"),
-            "the window draws the tree's file: {texts:?}"
+            app.harness().a11y_node_named("terms.txt").is_some(),
+            "the window draws the tree's file: {:?}",
+            app.texts()
         );
         // History, opened from the window, lists the folder's change: the file, by its
         // path, written by the agent.
@@ -1905,10 +1907,10 @@ mod window_tests {
             .expect("the row opens");
         app.flush().unwrap();
         app.harness().relayout();
-        let texts = app.texts();
         assert!(
-            texts.iter().any(|text| text == "nda.txt"),
-            "the window shows the folder's files: {texts:?}"
+            app.harness().a11y_node_named("nda.txt").is_some(),
+            "the window shows the folder's files: {:?}",
+            app.texts()
         );
     }
 
@@ -1941,15 +1943,13 @@ mod window_tests {
         app.flush().unwrap();
     }
 
-    /// Choose the row of the open folder whose label starts with `name`, as a click does.
+    /// Choose the row titled `name`, a file's or a folder's own line, as a click does.
     fn choose_row(app: &mut ui::prelude::TestApp<FilesTreeShell>, name: &str) {
         app.harness().relayout();
         let row = app
             .harness()
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label().is_some_and(|label| label.starts_with(name)))
-            .map_or_else(|| panic!("the folder lists {name}"), |(id, _)| id);
+            .a11y_node_named(name)
+            .unwrap_or_else(|| panic!("the folder lists {name}"));
         app.harness()
             .perform_a11y_action(row, &ui::a11y::Action::Activate)
             .expect("the row opens");
@@ -1965,14 +1965,14 @@ mod window_tests {
         deliver_terms_and_legal(&mut first);
         deliver_terms_and_legal(&mut second);
         assert!(
-            second.texts().iter().any(|text| text == "terms.txt"),
+            second.harness().a11y_node_named("terms.txt").is_some(),
             "the second window shows the workspace's top: {:?}",
             second.texts()
         );
         // The first window goes into `legal`.
         choose_row(&mut first, "legal");
         assert!(
-            first.texts().iter().any(|text| text == "nda.txt"),
+            first.harness().a11y_node_named("nda.txt").is_some(),
             "the window that went shows the folder: {:?}",
             first.texts()
         );
@@ -1985,9 +1985,10 @@ mod window_tests {
         second.flush().unwrap();
         second.harness().relayout();
         let texts = second.texts();
+        let top = second.harness().a11y_node_named("terms.txt").is_some();
+        let in_folder = second.harness().a11y_node_named("nda.txt").is_some();
         assert!(
-            texts.iter().any(|text| text == "terms.txt")
-                && !texts.iter().any(|text| text == "nda.txt"),
+            top && !in_folder,
             "the other window stays at the top: {texts:?}"
         );
         // Enclosing folder brings the first window back up, again on its own.
@@ -1995,7 +1996,7 @@ mod window_tests {
         first.flush().unwrap();
         first.harness().relayout();
         assert!(
-            first.texts().iter().any(|text| text == "terms.txt"),
+            first.harness().a11y_node_named("terms.txt").is_some(),
             "the window is back at the top: {:?}",
             first.texts()
         );
@@ -2035,7 +2036,7 @@ mod window_tests {
         app.flush().unwrap();
         app.harness().relayout();
         assert!(
-            app.texts().iter().any(|text| text == "nda.txt"),
+            app.harness().a11y_node_named("nda.txt").is_some(),
             "the window opens on the folder it showed: {:?}",
             app.texts()
         );
@@ -2051,7 +2052,7 @@ mod window_tests {
         app.flush().unwrap();
         app.harness().relayout();
         assert!(
-            app.texts().iter().any(|text| text == "nda.txt"),
+            app.harness().a11y_node_named("nda.txt").is_some(),
             "the window comes back in the folder it went into: {:?}",
             app.texts()
         );
@@ -2120,7 +2121,7 @@ mod window_tests {
             "the file was made: {texts:?}"
         );
         assert!(
-            texts.iter().any(|text| text == "plan.txt"),
+            app.harness().a11y_node_named("plan.txt").is_some(),
             "the new file is listed under the typed name: {texts:?}"
         );
         assert!(
@@ -2348,7 +2349,7 @@ mod window_tests {
         app.flush().unwrap();
         let texts = app.texts();
         assert!(
-            texts.iter().any(|text| text == "docs"),
+            app.harness().a11y_node_named("docs").is_some(),
             "the window lists the folder of the first chunk: {texts:?}"
         );
         // A change of the second chunk alone shows, and the first chunk's folder stays.
@@ -2374,11 +2375,11 @@ mod window_tests {
         app.flush().unwrap();
         let texts = app.texts();
         assert!(
-            texts.iter().any(|text| text == "notes.txt"),
+            app.harness().a11y_node_named("notes.txt").is_some(),
             "a change of the second chunk shows: {texts:?}"
         );
         assert!(
-            texts.iter().any(|text| text == "docs"),
+            app.harness().a11y_node_named("docs").is_some(),
             "the folder in the untouched chunk is still listed: {texts:?}"
         );
     }

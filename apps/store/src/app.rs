@@ -3856,11 +3856,9 @@ mod tests {
         app: &mut ui::framework::testing::TestApp<crate::resource::StoreShell>,
         name: &str,
     ) -> bool {
-        let drawn = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some(name));
+        let drawn = app.harness().controls().into_iter().find(|control| {
+            control.name.as_deref() == Some(name) || control.title.as_deref() == Some(name)
+        });
         if BAR_ACTIONS.contains(&name) {
             assert!(
                 drawn.is_none(),

@@ -327,6 +327,12 @@ impl SemanticNode {
         self.actions.iter().find(|a| a.name == name)
     }
 
+    /// Whether the node answers to `name`: it is named it, or it is a row
+    /// titled it ([`AccessNode::answers_to`](crate::a11y::AccessNode::answers_to)).
+    pub fn answers_to(&self, name: &str) -> bool {
+        self.name.as_deref() == Some(name) || self.title.as_deref() == Some(name)
+    }
+
     fn same_exported_content(&self, other: &Self) -> bool {
         // `widget_taffy_id` is a frame-local routing address. A keyed widget can
         // be rebound to a new layout node without changing anything exposed to
@@ -878,11 +884,11 @@ impl SemanticTree {
         &self.duplicate_ids
     }
 
-    /// The first node whose accessible [`name`](SemanticNode::name) equals `name`, in reading order —
-    /// the ergonomic handle for a CLI / agent that addresses elements by label ("focus the node called
-    /// 'Volume'").
+    /// The first node that answers to `name` — its accessible [`name`](SemanticNode::name), or a
+    /// row's title — in reading order: the ergonomic handle for a CLI / agent that addresses
+    /// elements by label ("focus the node called 'Volume'").
     pub fn find_by_name(&self, name: &str) -> Option<&SemanticNode> {
-        self.iter().find(|n| n.name.as_deref() == Some(name))
+        self.iter().find(|n| n.answers_to(name))
     }
 
     /// Every live semantic path to a control binding id, shortest first.

@@ -1482,11 +1482,10 @@ mod tests {
         }
         let thesis = text
             .iter()
-            .position(|line| line.starts_with("Thesis"))
-            .unwrap();
-        let kept_on = &text[thesis + 1];
+            .find(|line| line.starts_with("Thesis"))
+            .unwrap_or_else(|| panic!("Thesis is listed: {text:#?}"));
         for keeper in ["Laptop", "Desktop", "Home server"] {
-            assert!(kept_on.contains(keeper), "where Thesis is kept: {text:#?}");
+            assert!(thesis.contains(keeper), "where Thesis is kept: {text:#?}");
         }
         assert!(
             !text.iter().any(|line| line.contains("Not available")),
@@ -1948,7 +1947,7 @@ mod tests {
         let text = said(&mut app);
         let state = t("settings-storage-not-running");
         assert!(
-            text.iter().any(|line| line == &state),
+            text.iter().any(|line| line.contains(&state)),
             "the section says the state in its own words: {text:#?}"
         );
         assert!(

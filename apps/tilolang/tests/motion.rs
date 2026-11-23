@@ -292,8 +292,7 @@ fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
         .filter(|node| {
             node.semantics
                 .as_ref()
-                .and_then(|semantics| semantics.name.as_deref())
-                == Some(title)
+                .is_some_and(|semantics| semantics.answers_to(title))
         })
         .any(|node| {
             node.semantics

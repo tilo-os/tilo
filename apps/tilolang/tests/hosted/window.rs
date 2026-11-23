@@ -268,10 +268,14 @@ fn swipe(row: &UiNode) -> Option<(String, bool)> {
     })
 }
 
-/// Whether the window shows the row `title` selected, as a person and a screen reader see it.
+/// Whether the window shows the row `title` selected, as a person and a screen reader see it. A
+/// row is named by its title and its secondary line, so the whole title, then the join, is what
+/// is matched.
 fn selected(session: &mut Session, title: &str) -> bool {
+    let joined = format!("{title}, ");
     session.window.a11y().into_iter().any(|(_, node)| {
-        node.label().map(str::trim) == Some(title) && node.is_selected() == Some(true)
+        let said = node.label().map(str::trim).unwrap_or_default();
+        (said == title || said.starts_with(&joined)) && node.is_selected() == Some(true)
     })
 }
 

@@ -109,10 +109,12 @@ impl VirtualRows {
         let child = crate::a11y::stated_node(row.widget.as_ref());
         // The item held open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
-        let name = self
+        let held_title = self
             .held_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
-            .flatten()
+            .flatten();
+        let name = held_title
+            .clone()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
             .or_else(|| {
                 matches!(&row.state, MountedRowState::Pending)
@@ -133,6 +135,8 @@ impl VirtualRows {
                 .context_menu(self.menus.row_offers(&*self.model, &row.key))
                 .disabled(!enabled),
         );
+        // The row's own title, the line it is found by, beside the name that says all of it.
+        item.title = held_title.or_else(|| child.as_ref().and_then(|node| node.title.clone()));
         // A row that is a control of its own — a task's box, say — keeps its state and what it
         // explains of itself on the node the list gives it, so a reader hears one row rather
         // than a row and an unnamed child of it.

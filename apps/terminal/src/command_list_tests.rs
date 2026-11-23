@@ -47,6 +47,15 @@ fn ended(app: &mut TestApp<Page>, id: &str, command: &str, exit: i32, printed: &
     app.invoke(Terminal::RECORD_COMMAND.with(finished)).unwrap();
 }
 
+/// The command row titled `command`, as assistive technology reads it: its
+/// whole name, which names who typed it, and what is said beside it, how it
+/// ended.
+fn row(app: &mut TestApp<Page>, command: &str) -> Option<(String, String)> {
+    let harness = app.harness();
+    let node = harness.a11y_node(harness.a11y_node_named(command)?)?;
+    Some((node.label()?.to_owned(), node.value()?.to_owned()))
+}
+
 #[test]
 fn output_reads_as_the_screen_shows_it() {
     assert_eq!(
@@ -74,16 +83,15 @@ fn each_command_shows_with_what_it_printed_and_how_it_ended() {
     ended(&mut app, "c2", "ls", 0, b"src\n");
     app.settle();
     let texts = app.texts();
-    for shown in ["$ cargo build", "error: it broke", "$ ls", "src"] {
+    for shown in ["error: it broke", "src"] {
         assert!(texts.iter().any(|text| text == shown), "{shown}: {texts:?}");
     }
-    // Who typed it, and how it ended.
-    assert!(
-        texts
-            .iter()
-            .any(|text| text.contains("ada") && text.contains("Exit 101 after 2 sec")),
-        "{texts:?}"
-    );
+    // A command is a row titled with its line; who typed it and how it ended
+    // are said beside that title.
+    let build = row(&mut app, "$ cargo build").unwrap_or_else(|| panic!("{texts:?}"));
+    assert_eq!(build.0, "$ cargo build, ada", "{texts:?}");
+    assert!(build.1.contains("Exit 101 after 2 sec"), "{build:?}");
+    assert!(row(&mut app, "$ ls").is_some(), "{texts:?}");
     // A session the server keeps takes the next command here.
     assert!(
         !texts
@@ -131,8 +139,8 @@ fn a_typed_command_is_asked_of_whoever_keeps_the_session() {
     // Until the session holds it, the command shows with how it ended.
     app.settle();
     let texts = app.texts();
-    assert!(texts.iter().any(|text| text == "$ echo hi"), "{texts:?}");
-    assert!(texts.iter().any(|text| text == "Exit 0"), "{texts:?}");
+    let echo = row(&mut app, "$ echo hi").unwrap_or_else(|| panic!("{texts:?}"));
+    assert!(echo.1.contains("Exit 0"), "{echo:?}");
 }
 
 #[test]
@@ -146,7 +154,7 @@ fn a_session_on_someones_computer_shows_its_commands_without_a_line() {
     ended(&mut app, "c1", "make", 0, b"done\n");
     app.settle();
     let texts = app.texts();
-    assert!(texts.iter().any(|text| text == "$ make"), "{texts:?}");
+    assert!(row(&mut app, "$ make").is_some(), "{texts:?}");
     assert!(
         texts
             .iter()

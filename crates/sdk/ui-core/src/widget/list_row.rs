@@ -843,7 +843,8 @@ impl<'a> ListRowFace<'a> {
 
     /// The row's accessibility node: a list item named by its badge, title and secondary
     /// line, with the subtitle, meta, value, count, tags and status as its value, and one
-    /// button child per action.
+    /// button child per action. The title alone is kept as the node's
+    /// [`title`](crate::a11y::AccessNode::title), the line the row is found by.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
         let spans: String = self
             .meta_spans
@@ -892,6 +893,7 @@ impl<'a> ListRowFace<'a> {
         let target: String = action_target.into();
         let mut node = AccessNode::new(Role::ListItem)
             .with_name(self.spoken_name())
+            .with_title(self.shown_title())
             .with_action_target(target.clone())
             .with_bounds(rect)
             .with_state(state);

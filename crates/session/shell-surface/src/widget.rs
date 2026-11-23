@@ -411,6 +411,22 @@ impl WidgetSurface {
         &self.host
     }
 
+    /// Where the control assistive technology names `name` stands, in the desktop's logical
+    /// layout `(x, y, width, height)`: what a test or a tool presses it by.
+    pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        let rect = self
+            .host
+            .a11y_node(self.host.a11y_node_named(name)?)?
+            .bounds()?;
+        let (ox, oy) = self.placement.origin;
+        Some((
+            f64::from(ox) + rect.x0,
+            f64::from(oy) + rect.y0,
+            rect.width(),
+            rect.height(),
+        ))
+    }
+
     /// Three fingers landed on the strip shown, `travel` pixels into the
     /// gesture: the strip follows them from here.
     pub fn begin_strip_carry(&mut self, travel: f64) {

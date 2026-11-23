@@ -5039,6 +5039,13 @@ impl FrameHarness {
         named
     }
 
+    /// The exported accessibility node `id` names, as the last frame exported it.
+    pub fn a11y_node(&self, id: accesskit::NodeId) -> Option<accesskit::Node> {
+        self.a11y_nodes()
+            .into_iter()
+            .find_map(|(other, node)| (other == id).then_some(node))
+    }
+
     /// The accessibility node the exported tree currently marks focused — what a screen reader would be
     /// sitting on.
     pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {

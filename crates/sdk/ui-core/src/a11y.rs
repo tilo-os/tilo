@@ -611,6 +611,18 @@ impl AccessNode {
         self
     }
 
+    /// Whether the node answers to `name`: it is named it, or it is a row
+    /// titled it — the one test every row lookup shares.
+    pub fn answers_to(&self, name: &str) -> bool {
+        self.name.as_deref() == Some(name) || self.title.as_deref() == Some(name)
+    }
+
+    /// The line the node is titled with when it is a row, else the name it is
+    /// known by.
+    pub fn shown_name(&self) -> Option<&str> {
+        self.title.as_deref().or(self.name.as_deref())
+    }
+
     /// Handy when an empty label should collapse to `None`.
     pub fn with_optional_name(mut self, name: Option<String>) -> Self {
         self.name = name;

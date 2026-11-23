@@ -202,7 +202,7 @@ fn a_registered_modem_shows_operator_technology_signal_and_data() {
         );
     }
     assert!(
-        said.iter().any(|text| text == "Vodafone.de"),
+        said.iter().any(|text| text.starts_with("Vodafone.de")),
         "both SIMs are listed"
     );
     assert!(

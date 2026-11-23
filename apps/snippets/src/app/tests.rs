@@ -52,22 +52,19 @@ fn snippet(title: &str, body: &str) -> Snippet {
 /// Activate the control labelled `label` as assistive technology does.
 fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     let harness = app.harness();
-    let nodes = harness.a11y_nodes();
-    let actionable: Vec<_> = nodes
-        .iter()
-        .filter(|(_, node)| {
-            node.label() == Some(label) && node.supports_action(ui::accesskit::Action::Click)
+    let actionable: Vec<_> = harness
+        .a11y_nodes_named(label)
+        .into_iter()
+        .filter(|id| {
+            harness
+                .a11y_node(*id)
+                .is_some_and(|node| node.supports_action(ui::accesskit::Action::Click))
         })
-        .map(|(id, _)| *id)
-        .collect();
-    let inventory: Vec<_> = nodes
-        .iter()
-        .filter_map(|(_, node)| node.label().map(|name| (name, node.role())))
         .collect();
     assert_eq!(
         actionable.len(),
         1,
-        "expected one actionable control labelled {label:?} among {inventory:?}"
+        "one actionable control labelled {label:?}"
     );
     harness
         .perform_a11y_action(actionable[0], &ui::a11y::Action::Activate)
@@ -81,18 +78,16 @@ fn press_bar(app: &mut TestApp<SnippetsShell>, name: &str) {
     app.settle();
 }
 
-/// The list's item for the snippet titled `title`: the row's own node, which the list
-/// exports as the item, named by the row's language badge and title.
+/// The list's item for the snippet titled `title`, found by the line the row is
+/// titled with.
 fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
-    let suffix = format!(" {title}");
-    app.harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.role() == ui::accesskit::Role::ListItem
-                && node.label().is_some_and(|label| label.ends_with(&suffix))
-        })
-        .map_or_else(|| panic!("the list item of {title:?}"), |(id, _)| id)
+    let item = app.harness().a11y_node_named(title);
+    item.unwrap_or_else(|| {
+        panic!(
+            "the list item of {title:?}; the rows are {:?}",
+            app.harness().a11y_row_titles()
+        )
+    })
 }
 
 /// Open the snippet titled `title` from the list, as assistive technology activates a list
@@ -337,12 +332,8 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         .harness()
         .focused_access_node()
         .expect("the list remains the actual keyboard focus owner");
-    let named = |child: &ui::a11y::AccessNode, title: &str| {
-        child
-            .name
-            .as_deref()
-            .is_some_and(|name| name.ends_with(&format!(" {title}")))
-    };
+    // A row is titled with its own line; its name says the badge and the rest too.
+    let named = |child: &ui::a11y::AccessNode, title: &str| child.title.as_deref() == Some(title);
     assert!(
         focused
             .children
@@ -610,10 +601,7 @@ fn the_content_column_lays_out_its_controls() {
 }
 
 fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
-    app.harness()
-        .a11y_nodes()
-        .iter()
-        .any(|(_, node)| node.label() == Some(label))
+    app.harness().a11y_node_named(label).is_some()
 }
 
 /// A new window starts on an empty library; captures stage the starter library through

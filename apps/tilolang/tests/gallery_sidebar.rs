@@ -78,9 +78,9 @@ fn until(app: &mut App, waited: &str, shows: impl Fn(&App) -> bool) {
 /// Whether the sidebar lists every place.
 fn lists_places(app: &App) -> bool {
     PLACES.iter().all(|place| {
-        app.semantic_tree().iter().any(|node| {
-            node.role == ui::a11y::Role::TreeItem && node.name.as_deref() == Some(*place)
-        })
+        app.semantic_tree()
+            .iter()
+            .any(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
     })
 }
 
@@ -89,7 +89,7 @@ fn row(app: &App, place: &str) -> (f64, f64) {
     let bounds = app
         .semantic_tree()
         .iter()
-        .find(|node| node.role == ui::a11y::Role::TreeItem && node.name.as_deref() == Some(place))
+        .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
         .and_then(|node| node.bounds)
         .unwrap_or_else(|| panic!("the sidebar has a row for {place}"));
     (
@@ -118,7 +118,7 @@ fn named(app: &App, role: ui::a11y::Role, name: &str) -> Option<(f64, f64)> {
     let bounds = app
         .semantic_tree()
         .iter()
-        .find(|node| node.role == role && node.name.as_deref() == Some(name))
+        .find(|node| node.role == role && node.answers_to(name))
         .and_then(|node| node.bounds)?;
     Some((
         f64::midpoint(bounds.x0, bounds.x1),

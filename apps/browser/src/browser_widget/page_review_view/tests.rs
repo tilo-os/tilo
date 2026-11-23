@@ -175,17 +175,33 @@ fn page_holds(engine: &TestEngine, answers: &[Answer<'_>], record: &[Value]) {
     );
 }
 
-/// What the row named `name` says under its name: its marks, what it holds,
-/// who set it and its status, as assistive technology reads it.
-fn row(app: &mut App, name: &str) -> Option<String> {
-    let texts = app.texts();
-    let at = texts.iter().position(|text| text == name)?;
-    texts.get(at + 1).cloned()
+/// What a row says, as a reader meets it: the name its screen reader says,
+/// what describes it and what it holds, joined in that order.
+fn said(node: &ui::accesskit::Node) -> String {
+    [node.label(), node.description(), node.value()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// Whether the row named `name` says each of `words`.
-fn row_says(app: &mut App, name: &str, words: &[&str]) -> bool {
-    row(app, name).is_some_and(|said| words.iter().all(|word| said.contains(word)))
+/// The review's rows titled `title` — the line each is titled with — in the
+/// order it lists them.
+fn rows_titled(app: &mut App, title: &str) -> Vec<String> {
+    let ids = app.harness().a11y_nodes_named(title);
+    ids.into_iter()
+        .filter_map(|id| Some(said(&app.harness().a11y_node(id)?)))
+        .collect()
+}
+
+/// The review row titled `title`, as a reader meets it.
+fn row(app: &mut App, title: &str) -> Option<String> {
+    rows_titled(app, title).into_iter().next()
+}
+
+/// Whether the row titled `title` says each of `words`.
+fn row_says(app: &mut App, title: &str, words: &[&str]) -> bool {
+    row(app, title).is_some_and(|text| words.iter().all(|word| text.contains(word)))
 }
 
 /// The page requests the engine was sent, with who asked each.
@@ -378,15 +394,16 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
     let passport = row(&mut app, "Passport number").expect("Ben's row");
     assert!(!passport.contains("ada"), "{passport}");
 
-    // What was done in the tab, in order, with who did it.
-    let texts = app.texts();
-    let done: Vec<&str> = texts
-        .iter()
-        .zip(texts.iter().skip(1))
-        .filter(|(name, _)| *name == "Answered 1 question")
-        .map(|(_, said)| said.as_str())
-        .collect();
-    assert_eq!(done, ["Given names, By ada", "Passport number, By ben"]);
+    // What was done in the tab, in order, with who did it: each row's whole
+    // spoken name, then what it holds.
+    assert_eq!(
+        rows_titled(&mut app, "Answered 1 question"),
+        [
+            "Answered 1 question, By ada, Given names",
+            "Answered 1 question, By ben, Passport number",
+        ]
+        .map(str::to_owned)
+    );
 
     // Each agent acted under its own name; the review's reads under none.
     let asks = page_asks(&engine);
@@ -468,20 +485,14 @@ fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
     );
 
     // What was done in the tab, in order, with who did it and from where.
-    let texts = app.texts();
-    let done: Vec<&str> = texts
-        .iter()
-        .zip(texts.iter().skip(1))
-        .filter(|(name, _)| *name == "Answered 1 question")
-        .map(|(_, said)| said.as_str())
-        .collect();
     assert_eq!(
-        done,
+        rows_titled(&mut app, "Answered 1 question"),
         [
-            "Given names, By ada on Studio laptop",
-            "Passport number, By ben on 40404040",
-            "Arrival, By cy"
+            "Answered 1 question, By ada on Studio laptop, Given names",
+            "Answered 1 question, By ben on 40404040, Passport number",
+            "Answered 1 question, By cy, Arrival",
         ]
+        .map(str::to_owned)
     );
 }
 
@@ -574,10 +585,10 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     });
     let arrival = row(&mut app, "Arrival").expect("the row");
     assert!(!arrival.contains("Changed"), "{arrival}");
+    // The resource keeps what each wrote, oldest first.
     assert_eq!(
         row(&mut app, "Filled Arrival").as_deref(),
-        Some("2027-02-03, By ada"),
-        "the resource keeps what each wrote, oldest first"
+        Some("Filled Arrival, By ada, 2027-02-03")
     );
 }
 
@@ -608,17 +619,17 @@ fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
     });
     assert_eq!(
         row(&mut app, "Typed into Email").as_deref(),
-        Some("ada@example.org, Direct input")
+        Some("Typed into Email, Direct input, ada@example.org")
     );
+    // The resource says the field was set.
     assert_eq!(
         row(&mut app, "Typed into Portal password").as_deref(),
-        Some("Set, not shown, Direct input"),
-        "the resource says the field was set"
+        Some("Typed into Portal password, Direct input, Set, not shown")
     );
+    // No key is named.
     assert_eq!(
         row(&mut app, "Pressed a key in Card PIN").as_deref(),
-        Some("Set, not shown, By ada"),
-        "no key is named"
+        Some("Pressed a key in Card PIN, By ada, Set, not shown")
     );
     let tree = format!("{:?}", app.harness().a11y_tree_update());
     assert!(!tree.contains("hunter2"), "a secret reached the tree");
@@ -662,15 +673,12 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
     eventually(&mut app, "the review lists what was held", |app| {
         row(app, &waits).is_some()
     });
+    // Under the agent whose action reached it; the row holds nothing more.
+    assert_eq!(row(&mut app, &waits), Some(format!("{waits}, By intake")));
+    // The person let it leave, and the row says what.
     assert_eq!(
-        row(&mut app, &waits).as_deref(),
-        Some("By intake"),
-        "under the agent whose action reached it"
-    );
-    assert_eq!(
-        row(&mut app, "Let leave by you").as_deref(),
-        Some(visa),
-        "the person let it leave, and the row says what"
+        row(&mut app, "Let leave by you"),
+        Some(format!("Let leave by you, {visa}"))
     );
     let texts = app.texts();
     for said in [
@@ -679,14 +687,14 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
     ] {
         assert!(texts.contains(&said), "{said:?} is not in {texts:?}");
     }
+    // The agent that kept the page is named, and what it kept stays under it.
     assert_eq!(
-        row(&mut app, "Kept as it is").as_deref(),
-        Some("POST https://tracker.example, By rev"),
-        "the agent that kept the page is named"
+        row(&mut app, "Kept as it is"),
+        Some(format!("Kept as it is, By rev, {tracker}"))
     );
     assert_eq!(
-        row(&mut app, "Dropped, nobody answered").as_deref(),
-        Some(receipt)
+        row(&mut app, "Dropped, nobody answered"),
+        Some(format!("Dropped, nobody answered, {receipt}"))
     );
     assert!(
         !texts.iter().any(|text| text == "Sent the form"),
@@ -723,12 +731,7 @@ fn what_was_dropped_is_listed_with_why() {
         "Dropped, too many were waiting",
         "Dropped, the page went away",
     ] {
-        assert_eq!(
-            row(&mut app, why).as_deref(),
-            Some(tracker),
-            "{why}: {:?}",
-            app.texts()
-        );
+        assert_eq!(row(&mut app, why), Some(format!("{why}, {tracker}")));
     }
 }
 
@@ -766,21 +769,21 @@ fn a_secrets_text_is_never_in_the_reviews_accessibility_tree() {
     });
     assert_eq!(
         row(&mut app, "Portal password").as_deref(),
-        Some("Set, Set by ada")
+        Some("Portal password, Set by ada, Set")
     );
+    // A field the page lists by its length is a secret too.
     assert_eq!(
         row(&mut app, "Card PIN").as_deref(),
-        Some("Set, Typed into the page"),
-        "a field the page lists by its length is a secret too"
+        Some("Card PIN, Typed into the page, Set")
     );
     assert_eq!(
         row(&mut app, "Recovery code").as_deref(),
-        Some("Not set, No one set this")
+        Some("Recovery code, No one set this, Not set")
     );
+    // What was written into a secret is not listed.
     assert_eq!(
         row(&mut app, "Filled Portal password").as_deref(),
-        Some("By ada"),
-        "what was written into a secret is not listed"
+        Some("Filled Portal password, By ada")
     );
     let tree = format!("{:?}", app.harness().a11y_tree_update());
     for hidden in ["hunter2", "characters hidden"] {
@@ -979,10 +982,10 @@ fn the_fields_of_a_frame_are_reviewed_under_their_frame() {
         "Given names",
         &["Maria Elena", "Set by ada"]
     ));
+    // A secret in a frame is said as set.
     assert_eq!(
         row(&mut app, "Card number").as_deref(),
-        Some("Set, Typed into the page"),
-        "a secret in a frame is said as set"
+        Some("Card number, Typed into the page, Set")
     );
     assert!(row_says(
         &mut app,
@@ -1055,7 +1058,7 @@ fn the_screenshot_scenario_reviews_a_filled_application() {
     assert!(row_says(&mut app, "Phone", &["Required", "No answer"]));
     assert_eq!(
         row(&mut app, "Portal password").as_deref(),
-        Some("Set, Set by you")
+        Some("Portal password, Set by you, Set")
     );
     assert!(row_says(
         &mut app,

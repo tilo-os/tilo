@@ -471,25 +471,27 @@ fn the_review_screen_says_a_forgotten_actors_device_is_not_known() {
         app.harness()
             .wait_until(ui::time::Duration::from_millis(20), |_| false);
     }
-    let texts = app.texts();
-    let kept: Vec<&str> = texts
-        .iter()
-        .zip(texts.iter().skip(1))
-        .filter(|(title, _)| *title == "Kept as it is")
-        .map(|(_, said)| said.as_str())
-        .collect();
-    // The row ends with when it was set down, as this device shows times.
-    assert!(
-        matches!(
-            kept.as_slice(),
-            [said] if said.starts_with("POST https://orders.test, By task-x, device not known")
-        ),
-        "the step set down under the forgotten name: {kept:?}"
+    let id = app.harness().a11y_node_named("Kept as it is");
+    let kept = id
+        .and_then(|id| app.harness().a11y_node(id))
+        .unwrap_or_else(|| panic!("the review lists the kept step: {:?}", app.texts()));
+    // The row is named by its title and who set it down, and holds what it kept.
+    assert_eq!(
+        kept.label(),
+        Some("Kept as it is, By task-x, device not known"),
+        "the step set down under the forgotten name"
     );
     assert!(
-        texts
+        kept.value()
+            .is_some_and(|value| value.starts_with("POST https://orders.test")),
+        "the row holds what was kept: {:?}",
+        kept.value()
+    );
+    assert!(
+        app.texts()
             .iter()
             .any(|text| text.contains("By task-x on Studio laptop")),
-        "the fill set down while the window knew the agent keeps its device: {texts:?}"
+        "the fill set down while the window knew the agent keeps its device: {:?}",
+        app.texts()
     );
 }

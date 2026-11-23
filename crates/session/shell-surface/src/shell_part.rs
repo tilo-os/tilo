@@ -1137,32 +1137,24 @@ impl ShellPart {
     /// Where the control assistive technology names `name` stands, in the desktop's logical
     /// layout `(x, y, width, height)`: what a test or a tool presses it by.
     pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
-        let (ox, oy) = self.widgets.placement().origin;
-        self.widgets
-            .host_mut()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some(name))
-            .find_map(|(_, node)| node.bounds())
-            .map(|rect| {
-                (
-                    f64::from(ox) + rect.x0,
-                    f64::from(oy) + rect.y0,
-                    rect.width(),
-                    rect.height(),
-                )
-            })
+        self.widgets.control_bounds(name)
     }
 
     /// Where every control assistive technology names `name` stands: a menu item repeats the
     /// name of the row it moves a place to, which a chip of that row elsewhere says too.
     pub fn control_bounds_all(&mut self, name: &str) -> Vec<(f64, f64, f64, f64)> {
         let (ox, oy) = self.widgets.placement().origin;
+        let ids: std::collections::HashSet<_> = self
+            .widgets
+            .host_mut()
+            .a11y_nodes_named(name)
+            .into_iter()
+            .collect();
         self.widgets
             .host_mut()
             .a11y_nodes()
             .into_iter()
-            .filter(|(_, node)| node.label() == Some(name))
+            .filter(|(id, _)| ids.contains(id))
             .filter_map(|(_, node)| node.bounds())
             .map(|rect| {
                 (

@@ -208,9 +208,9 @@ fn nodes(composition: &Composition) -> Vec<&Composed> {
 /// The sidebar's row for `place`.
 fn row<'a>(composition: &'a Composition, place: &str) -> Option<&'a Composed> {
     nodes(composition).into_iter().find(|node| {
-        node.semantics.as_ref().is_some_and(|access| {
-            access.role == Role::TreeItem && access.name.as_deref() == Some(place)
-        })
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| access.role == Role::TreeItem && access.answers_to(place))
     })
 }
 
