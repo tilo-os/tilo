@@ -55,6 +55,20 @@ by = "os/tests/test_ci_fast_images.py"
 suite = "os/tests/image_size_budget.py"
 by = "os/tests/test_image_size_budget.py"
 
+# The flows family builds a disk per scenario and boots it: four-devices and
+# laptop-phone-server are the two the script runs.
+[[covered]]
+suite = "os/tests/flow_scenario.sh"
+check = "flows/four-devices"
+
+# The developer docs' hosted-Browser example: it needs the built web desktop bundle, the
+# tilo-sh programs and site, headless Chromium, the VM host image and minutes of a machine's
+# walls, on a stack of its own, so the check runs it when dispatched or idle, never on a change.
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-docs-browser.sh"
+reason = "one docs example brought up on a whole tilo.sh of its own, with a VM host and the hosted guest: the check runs it when dispatched or idle"
+check = "docs-examples-browser"
+
 [[covered]]
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
@@ -800,9 +814,9 @@ inputs = [
   "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
+  "apps/contacts/surface.toml",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
-  "apps/contacts/surface.toml",
   "crates/session/vision-service/surface.json",
 ]
 readers = [
@@ -1469,16 +1483,16 @@ inputs = [
   "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/sdk/ui-core/assets/fonts/",
+  "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
+  "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "crates/session/client/tests/support/",
-  "tools/with-test-environment.sh",
   "docs/tilo-sh/pages.toml",
-  "crates/integrations/tilo-web-search/tests/fixtures/",
+  "tools/with-test-environment.sh",
 ]
 # One test binary includes the fixtures every file shares, the two examples
 # reuse the workspace-actions one, and the surface tests read the app's. The
 # update test carries the Notes and Tasks surfaces an earlier build wrote.
 readers = [
-  "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/src/workspace_actions/tests.rs",
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
@@ -1487,6 +1501,7 @@ readers = [
   "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
   "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
   "crates/agent/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
+  "crates/agent/agent-session/examples/api-on-server.rs",
 ]
 
 [[cargo]]
@@ -1503,7 +1518,8 @@ package = "tilo-workspace-service"
 # app-models check.
 inputs = [
   "apps/tasks/surface.toml",
-  "crates/integrations/tilo-web-search/tests/fixtures/",
+  "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
+  "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
 ]
 readers = [
   "crates/server/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
@@ -1552,6 +1568,7 @@ inputs = [
   "apps/tl/session/",
   "os/usr/lib/systemd/system/tilo-firstboot.service",
   "os/components.toml",
+  "tools/protocols/airdrop_sender.py",
   # The tilolang apps a development session seeds.
   "apps/tl/tasks/",
   "apps/tl/chat/",
@@ -1575,21 +1592,20 @@ inputs = [
   "crates/system/settings-store/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
   "crates/engines/paint-stream/tests/fixtures/layers.top.json",
-  "tools/protocols/airdrop_sender.py",
 ]
 readers = [
-  "crates/session/session/src/app_wire.rs",
-  "crates/session/session/src/nearby_transfer.rs",
+  "crates/session/session/tests/no_locale_leaks.rs",
   "crates/session/session/src/page_track.rs",
-  "crates/session/session/src/services/mod.rs",
-  "crates/session/session/src/shell/mod.rs",
   "crates/session/session/src/window_share/tests/page.rs",
   "crates/session/session/src/window_share/tests/watching.rs",
+  "crates/session/session/src/services/mod.rs",
+  "crates/session/session/src/nearby_transfer.rs",
+  "crates/session/session/src/app_wire.rs",
+  "crates/session/session/src/shell/mod.rs",
   "crates/session/session/tests/common/dev_apps.rs",
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
-  "crates/session/session/tests/no_locale_leaks.rs",
   "crates/session/session/tests/session_package.rs",
 ]
 
@@ -1605,7 +1621,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
 readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
@@ -1693,16 +1709,6 @@ check = "image-web-entry"
 suite = "os/containers/tilo-lounge/test-e2e.sh"
 reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
 check = "e2e"
-
-[[unrequired]]
-suite = "os/containers/tilo-sh/test-docs-browser.sh"
-reason = "needs a local tilo.sh stack with its VM host and a workspace VM's Browser; the docs-examples-browser check brings them up, when named or on idle room"
-check = "docs-examples-browser"
-
-[[unrequired]]
-suite = "os/tests/flow_scenario.sh"
-reason = "boots the target flows' devices as VMs from built disk images; the flow-scenario checks run it when named (flow-scenario-laptop-phone-server runs the other flow)"
-check = "flow-scenario-four-devices"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-program.sh"
