@@ -18,8 +18,8 @@ class MediaDataTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix='media data spaces & $() ')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.profile = {'app': 'tube', 'packages': {}, 'data_assets': {}}
-        for name in media.PACKAGES:
+        self.profile = {'app': 'video-editor', 'packages': {}, 'data_assets': {}}
+        for name in media.expected_packages('video-editor'):
             root = self.root / name / '1'
             root.mkdir(parents=True)
             notice = root / ('LICENCE' if name == 'libunibreak' else 'COPYING')
@@ -37,7 +37,7 @@ class MediaDataTests(unittest.TestCase):
     def test_data_notices_and_config_are_pinned(self):
         media.additional_assets(self.plan, self.profile)
         assets = self.plan['assets']
-        self.assertEqual(len(assets), 21)
+        self.assertEqual(len(assets), 23)
         self.assertTrue(self.plan['media_data'])
         self.assertIn('Contents/Resources/libthai/thbrk.tri', assets)
         self.assertIn('Contents/Resources/Notices/libunibreak/LICENCE', assets)
@@ -88,25 +88,11 @@ class MediaDataTests(unittest.TestCase):
         self.assertEqual([(p.attrib, p.text) for p in tree.findall('cachedir')],
                          [({'prefix': 'xdg'}, 'fontconfig')])
 
-    def test_tube_adds_only_good_catalogs_and_requires_them(self):
-        locale = self.root / 'gstreamer/1/share/locale'
-        messages = locale / 'de/LC_MESSAGES'
-        messages.mkdir(parents=True)
-        (messages / 'gst-plugins-good-1.0.mo').write_bytes(b'catalog')
-        (messages / 'unrelated.mo').write_bytes(b'foreign')
-        self.plan['locale_prefixes'] = {'gstreamer': str(locale)}
-        extension.additional_assets(self.plan, self.profile, 'tube')
-        self.assertTrue(self.plan['extended_locale_catalogs'])
-        self.assertFalse(any('unrelated' in name for name in self.plan['assets']))
-        (messages / 'gst-plugins-good-1.0.mo').unlink()
-        with self.assertRaisesRegex(ValueError, 'missing additional'):
-            extension.additional_assets({'assets': {}, 'locale_prefixes': {'gstreamer': str(locale)}}, self.profile, 'tube')
-
     def test_media_macro_is_opt_in_and_compile_never_signs(self):
         intl = str(self.root / 'libintl.dylib')
         plan = {'locale_prefixes': {'glib': '/glib', 'gstreamer': '/gst'},
                 'intl': intl, 'profile_sha256': 'a' * 64,
-                'app_launcher': 'Contents/MacOS/tube',
+                'app_launcher': 'Contents/MacOS/video-editor',
                 'adapter_sources': {name: digest(runtime.HERE / name) for name in
                                     ['local_runtime_intl.c', 'local_runtime_launcher.c']},
                 'images': {intl: {'slices': {'arm64': {'install_id': '/old/intl'}}}}}
@@ -129,24 +115,11 @@ class MediaDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'media runtime adapter changed'):
             extension.augment(self.root / 'absent.app', plan, Path('/guard'))
 
-    def test_player_profile_cannot_expand_to_editor_packages(self):
-        self.profile['app'] = 'video-player'
-        media.additional_assets(self.plan, self.profile)
-        self.profile['packages']['/foreign/flac/1'] = {'package_root': '/foreign/flac/1'}
-        with self.assertRaisesRegex(ValueError, 'must match the app'):
-            media.additional_assets({'assets': {}}, self.profile)
-
     def test_editor_requires_its_added_packages_and_catalogs(self):
-        self.profile['app'] = 'video-editor'
+        flac = self.profile['packages'].pop(str(self.root / 'flac/1'))
         with self.assertRaisesRegex(ValueError, 'must match the app'):
             media.additional_assets(self.plan, self.profile)
-        for name in ('flac', 'libogg'):
-            root = self.root / name / '1'
-            root.mkdir(parents=True)
-            notice = root / 'COPYING'
-            notice.write_bytes(b'notice')
-            self.profile['packages'][str(root)] = {'package_root': str(root),
-                'top_level_notice_candidates': [{'path': str(notice), 'sha256': digest(notice)}]}
+        self.profile['packages'][str(self.root / 'flac/1')] = flac
         locale = self.root / 'gstreamer/1/share/locale'
         messages = locale / 'de/LC_MESSAGES'
         messages.mkdir(parents=True)

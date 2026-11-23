@@ -91,15 +91,15 @@ The command intentionally has no `sign`, `install`, or `notarize` action. Its
 receipts and signing inventory make the next step concrete while user presence
 is pending.
 
-## Tube media profile
+## Shared media set
 
-Tube's default `media/decode` feature uses the shared media engine's `playbin`,
-appsink video path and audio bin. Its normal resolved stream is a progressive
-HTTP(S) media URL. A separately pinned `--app-profile` now covers this shape;
-it does not disable production features or relax the ordinary SDK adapter.
-The same main-executable relocation and inside-out signing inventory used by
-Music and Remote apply. Actual playback remains unqualified until signed tests
-can run. This profile does not promise adaptive HLS/DASH or additional apps.
+The shared media engine's `playbin`, appsink video path and audio bin, playing a
+local file or a progressive HTTP(S) media URL, need the set below; an app's
+pinned `--app-profile` builds on it. It does not disable production features or
+relax the ordinary SDK adapter. The same main-executable relocation and
+inside-out signing inventory used by Music and Remote apply. Actual playback
+remains unqualified until signed tests can run. It does not promise adaptive
+HLS/DASH.
 
 The reviewed delta from the 41-image base is 20 plugins: `coreelements`, `app`,
 `playback`, `typefindfunctions`, `videoconvertscale`, `videofilter`, `deinterlace`,
@@ -145,28 +145,23 @@ Sources: [GStreamer HTTP source](https://gstreamer.freedesktop.org/documentation
 [Pango backend selection](https://gitlab.gnome.org/GNOME/pango/-/blob/main/pango/pangocairo-fontmap.c),
 and [LibThai dictionary selection](https://github.com/tlwg/libthai/blob/master/src/thbrk/brk-common.c).
 
-## Video Player and Video Editor profiles
+## Video Editor profile
 
-These are separate app-pinned profiles built on Tube's reviewed media set. A
-profile cannot be reused under another app name or silently add package roots.
-The launcher and data policy are unchanged. All three media deltas remain
-bounded to 24 MiB of additional code; this does not change the Music/Remote limit.
-
-Video Player's file chooser includes AVI alongside MP4, MOV, WebM and Matroska.
-Its profile adds `avi` (232,720 bytes), with no additional library or package.
-The full delta from the base payload is 47 images (18,322,416 bytes) and the
-same 70 data/notice files as Tube. A completed bundle contains 92 code objects.
+This app-pinned profile builds on the shared media set. It cannot be reused
+under another app name or silently add package roots. The launcher and data
+policy are unchanged. Its delta remains bounded to 24 MiB of additional code;
+this does not change the Music/Remote limit.
 
 Video Editor's default features include both preview and export. Its profile
 adds `avi`, `x264`, `opus`, `ogg`, `wavparse`, `aiff`, `asf`, `flac`, `flv`,
-`mpegpsdemux`, `mpegtsdemux`, `id3demux` and `apetag` beyond Tube. These bring five
+`mpegpsdemux`, `mpegtsdemux`, `id3demux` and `apetag` beyond the shared set. These bring five
 libraries: `libgstmpegts`, `libFLAC`, `libogg`, `libgstsdp` and `libgstrtsp`.
 Only FLAC and libogg are additional packages; x264 and Opus libraries are already
 in the base payload. MP4/MOV export uses the app's existing H.264/AAC selection;
 WebM uses VP8/Opus. Adding the installed plugins does not change that selection
 policy or introduce a Cisco download or a hardware-encoding claim.
 
-The Editor delta beyond Tube is 18 images (2,780,752 bytes). From the base payload
+The Editor delta beyond the shared set is 18 images (2,780,752 bytes). From the base payload
 it is 64 images (20,870,448 bytes) and 168 resource/notice files (1,671,792 bytes),
 including the Bad/Ugly catalogs and the new packages' notices. A completed bundle
 contains 109 code objects. Package versions, image names, input hashes, notice

@@ -38,7 +38,6 @@ def additional_assets(plan, profile, name):
         music_notices(plan, profile, deadline)
     locale = Path(plan['locale_prefixes']['gstreamer'])
     found = set()
-    domains = DOMAINS if name in ('music', 'video-editor') else {'gst-plugins-good-1.0'}
     for language in runtime.directory_entries(locale, 512, deadline):
         if language.is_symlink():
             raise ValueError('symlink locale directory')
@@ -49,13 +48,13 @@ def additional_assets(plan, profile, name):
             raise ValueError('symlink message directory')
         if not messages.is_dir():
             continue
-        for domain in sorted(domains):
+        for domain in sorted(DOMAINS):
             source = messages / (domain + '.mo')
             if source.exists():
                 target = 'Contents/Resources/locale/' + str(source.relative_to(locale))
                 runtime.add_asset(assets, source, target, (locale,), deadline)
                 found.add(domain)
-    if found != domains:
+    if found != DOMAINS:
         raise ValueError('missing additional GStreamer translation catalogs')
     plan['extended_locale_catalogs'] = True
 
