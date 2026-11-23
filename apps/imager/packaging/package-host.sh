@@ -25,16 +25,6 @@ case "$machine" in
 esac
 if [ "$require_signing" = 1 ]; then
   case "$host" in
-    Darwin)
-      [ -n "${TILO_MAC_SIGNING_IDENTITY:-}" ] \
-        && { [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ] \
-             || { [ -n "${TILO_APPLE_ID:-}" ] \
-                  && [ -n "${TILO_APPLE_TEAM_ID:-}" ] \
-                  && [ -n "${TILO_APPLE_APP_PASSWORD:-}" ]; }; } \
-        || { printf 'macOS signing and notarization credentials are required\n' >&2; exit 1; }
-      command -v codesign >/dev/null && command -v xcrun >/dev/null \
-        || { printf 'codesign and xcrun are required\n' >&2; exit 1; }
-      ;;
     Linux)
       { [ -n "${TILO_LINUX_SIGNER:-}" ] && [ -n "${TILO_LINUX_VERIFY_KEY:-}" ]; } \
         || [ -n "${TILO_LINUX_SIGNING_KEY:-}" ] \
@@ -153,98 +143,11 @@ prepare_linux_release_identity() {
 
 case "$host" in
   Darwin)
-    app="$out/Tilo Imager.app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    cp target/release/imager "$app/Contents/MacOS/tilo-imager-bin"
-    cp apps/imager/packaging/macos/tilo-imager "$app/Contents/MacOS/tilo-imager"
-    chmod +x "$app/Contents/MacOS/tilo-imager" "$app/Contents/MacOS/tilo-imager-bin"
-    cp apps/imager/packaging/macos/Info.plist "$app/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" \
-      "$app/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" \
-      "$app/Contents/Info.plist"
-    if [ -n "${TILO_MAC_SIGNING_IDENTITY:-}" ]; then
-      codesign --force --options runtime --timestamp \
-        --sign "$TILO_MAC_SIGNING_IDENTITY" "$app/Contents/MacOS/tilo-imager-bin"
-      codesign --force --options runtime --timestamp \
-        --sign "$TILO_MAC_SIGNING_IDENTITY" "$app"
-      codesign --verify --deep --strict --verbose=2 "$app"
-      expected_team="${TILO_MAC_EXPECTED_TEAM_ID:-}"
-      expected_cert="${TILO_MAC_EXPECTED_CERT_SHA256:-}"
-      if [ "$require_signing" = 1 ]; then
-        [[ "$expected_team" =~ ^[A-Z0-9]{10}$ ]] \
-          || { printf 'TILO_MAC_EXPECTED_TEAM_ID is required for a release build\n' >&2; exit 1; }
-        [[ "$expected_cert" =~ ^[A-F0-9]{64}$ ]] \
-          || { printf 'TILO_MAC_EXPECTED_CERT_SHA256 is required for a release build\n' >&2; exit 1; }
-      fi
-      actual_team="$(codesign -dvv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
-      [ -z "$expected_team" ] || [ "$actual_team" = "$expected_team" ] \
-        || { printf 'macOS Team ID does not match protected release policy\n' >&2; exit 1; }
-      actual_cert="$(
-        cert_tmp="$(mktemp -d)"
-        trap 'rm -rf "$cert_tmp"' EXIT
-        codesign -d --extract-certificates "$cert_tmp/cert" "$app"
-        shasum -a 256 "$cert_tmp/cert0" | awk '{print toupper($1)}'
-      )"
-      [ -z "$expected_cert" ] || [ "$actual_cert" = "$expected_cert" ] \
-        || { printf 'macOS signing certificate fingerprint does not match protected release policy\n' >&2; exit 1; }
-    elif [ "$require_signing" = 1 ]; then
-      printf 'TILO_MAC_SIGNING_IDENTITY is required for a release build\n' >&2
-      exit 1
-    fi
-    artifact_base="tilo-imager-macos-$package_arch"
-    ditto -c -k --keepParent "$app" "$out/$artifact_base.zip"
-    if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
-      xcrun notarytool submit "$out/$artifact_base.zip" --wait \
-        --keychain-profile "$TILO_NOTARY_KEYCHAIN_PROFILE"
-      xcrun stapler staple "$app"
-      rm -f "$out/$artifact_base.zip"
-      ditto -c -k --keepParent "$app" "$out/$artifact_base.zip"
-    elif [ -n "${TILO_APPLE_ID:-}" ] && [ -n "${TILO_APPLE_TEAM_ID:-}" ] \
-         && [ -n "${TILO_APPLE_APP_PASSWORD:-}" ]; then
-      xcrun notarytool submit "$out/$artifact_base.zip" --wait \
-        --apple-id "$TILO_APPLE_ID" --team-id "$TILO_APPLE_TEAM_ID" \
-        --password "$TILO_APPLE_APP_PASSWORD"
-      xcrun stapler staple "$app"
-      rm -f "$out/$artifact_base.zip"
-      ditto -c -k --keepParent "$app" "$out/$artifact_base.zip"
-    elif [ "$require_signing" = 1 ]; then
-      printf 'Apple notarization credentials are required for a release build\n' >&2
-      exit 1
-    fi
-    if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ] \
-       || { [ -n "${TILO_APPLE_ID:-}" ] && [ -n "${TILO_APPLE_TEAM_ID:-}" ] \
-            && [ -n "${TILO_APPLE_APP_PASSWORD:-}" ]; }; then
-      xcrun stapler validate "$app"
-    fi
-    write_digest "$out/$artifact_base.zip"
-    if command -v hdiutil >/dev/null 2>&1; then
-      dmg_root="$(mktemp -d)"
-      cp -R "$app" "$dmg_root/"
-      ln -s /Applications "$dmg_root/Applications"
-      hdiutil create -quiet -volname "Tilo Imager" -srcfolder "$dmg_root" \
-        -ov -format UDZO "$out/$artifact_base.dmg"
-      rm -rf "$dmg_root"
-      if [ -n "${TILO_MAC_SIGNING_IDENTITY:-}" ]; then
-        codesign --force --timestamp --sign "$TILO_MAC_SIGNING_IDENTITY" \
-          "$out/$artifact_base.dmg"
-        codesign --verify --verbose=2 "$out/$artifact_base.dmg"
-        if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
-          xcrun notarytool submit "$out/$artifact_base.dmg" --wait \
-            --keychain-profile "$TILO_NOTARY_KEYCHAIN_PROFILE"
-        else
-          xcrun notarytool submit "$out/$artifact_base.dmg" --wait \
-            --apple-id "$TILO_APPLE_ID" --team-id "$TILO_APPLE_TEAM_ID" \
-            --password "$TILO_APPLE_APP_PASSWORD"
-        fi
-        xcrun stapler staple "$out/$artifact_base.dmg"
-        xcrun stapler validate "$out/$artifact_base.dmg"
-      fi
-      write_digest "$out/$artifact_base.dmg"
-    elif [ "$require_native_packages" = 1 ]; then
-      printf 'hdiutil is required for the release DMG\n' >&2
-      exit 1
-    fi
+    # macOS packaging is the same step for a package built here and for the
+    # release's per-architecture DMGs; package-macos.sh owns the bundle, the
+    # signature, notarization and the DMG.
+    bash "$(dirname -- "${BASH_SOURCE[0]}")/package-macos.sh" \
+      "$package_arch" target/release/imager "$out"
     ;;
   Linux)
     if [ "$require_signing" = 1 ] || [ -n "${TILO_LINUX_SIGNER:-}" ] \
