@@ -18435,6 +18435,7 @@ dependencies = [
  "wasm-bindgen",
  "wayland-backend",
  "wayland-server",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -22022,6 +22023,7 @@ dependencies = [
  "tilo-broker-core",
  "tilo-capture-studio",
  "tilo-cli-kit",
+ "tilo-clipboard",
  "tilo-clock",
  "tilo-color-pipeline",
  "tilo-compositor",
@@ -23758,6 +23760,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app-state",
  "tilo-automerge-fork",
+ "tilo-clipboard",
  "tilo-clock",
  "tilo-content",
  "tilo-content-device",

@@ -16,6 +16,8 @@ mod abi_parity;
 mod authority;
 #[path = "boundaries.rs"]
 mod boundaries;
+#[path = "clipboard.rs"]
+mod clipboard;
 #[path = "counter.rs"]
 mod counter;
 #[path = "e2e_abi.rs"]

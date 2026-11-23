@@ -398,3 +398,44 @@ tilo_test_env::scenario! {
         assert_eq!(telling(all), Vec::<String>::new());
     }
 }
+
+tilo_test_env::scenario! {
+    /// `uses clipboard`: copying reaches the person's device and a paste reads what is on it now,
+    /// so neither is written without saying so, and neither is a view's.
+    fn the_clipboard_is_declared_with_uses_clipboard;
+
+    phase an_action_that_copies_or_pastes_declares_uses_clipboard;
+    {
+        let copy = "type N {\n    t: Text\n}\naction keep(n: N) {\n    clipboard.copy(n.t)\n}\n";
+        assert_eq!(codes(copy), ["E121"]);
+        let declared =
+            "type N {\n    t: Text\n}\naction keep(n: N) uses clipboard {\n    clipboard.copy(n.t)\n}\n";
+        assert_eq!(codes(declared), Vec::<String>::new());
+    }
+
+    phase a_paste_answers_an_option_of_what_it_holds;
+    {
+        let text = "type N {\n    t: Text\n}\naction read(n: N) uses clipboard {\n    n.t = clipboard.paste() ?? n.t\n}\n";
+        assert_eq!(codes(text), Vec::<String>::new());
+        let image = "type N {\n    t: Text\n}\naction read(n: N) uses clipboard {\n    let f = clipboard.paste_image()\n    if let chosen = f {\n        n.t = chosen.name\n    }\n}\n";
+        assert_eq!(codes(image), Vec::<String>::new());
+        // What it answers is an `Option`, so it is not read as the value itself.
+        let unguarded =
+            "type N {\n    t: Text\n}\naction read(n: N) uses clipboard {\n    n.t = clipboard.paste()\n}\n";
+        assert_eq!(codes(unguarded), ["E020"]);
+    }
+
+    phase a_copy_takes_its_value_by_position_and_an_image_is_a_file;
+    {
+        let named = "type N {\n    t: Text\n}\naction keep(n: N) uses clipboard {\n    clipboard.copy(text: n.t)\n}\n";
+        assert!(codes(named).contains(&"E022".to_owned()), "a copy takes the value by position");
+        let not_an_image = "type N {\n    t: Text\n}\naction keep(n: N) uses clipboard {\n    clipboard.copy_image(n.t)\n}\n";
+        assert_eq!(codes(not_an_image), ["E020"], "an image is a file, not text");
+    }
+
+    phase a_view_cannot_reach_the_clipboard;
+    {
+        let view = "type N {\n    t: Text\n}\nview look(n: N) {\n    text(clipboard.paste() ?? n.t)\n}\n";
+        assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
+    }
+}

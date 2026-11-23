@@ -22,10 +22,18 @@ pub enum Effect {
     Time,
     /// A person told something: `notify(...)` reaches their device, which a replay cannot take back.
     Notify,
+    /// The person's clipboard: a copy reaches their device, and a paste reads what is on it now.
+    Clipboard,
 }
 
 impl Effect {
-    pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time, Self::Notify];
+    pub const ALL: &'static [Self] = &[
+        Self::Web,
+        Self::Random,
+        Self::Time,
+        Self::Notify,
+        Self::Clipboard,
+    ];
 
     pub const fn word(self) -> &'static str {
         match self {
@@ -33,6 +41,7 @@ impl Effect {
             Self::Random => "random",
             Self::Time => "time",
             Self::Notify => "notify",
+            Self::Clipboard => "clipboard",
         }
     }
 
@@ -42,6 +51,7 @@ impl Effect {
             Self::Random => "a draw",
             Self::Time => "the clock and the person's zone",
             Self::Notify => "telling a person something",
+            Self::Clipboard => "the person's clipboard",
         }
     }
 

@@ -152,6 +152,18 @@ fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> 
         .ok()
 }
 
+/// The person's clipboard over the connection the session opened for this instance: what
+/// `clipboard.copy` and `clipboard.paste` reach, since an instance's process holds no display to
+/// offer or read a selection on.
+fn clipboard_of(fd: Option<OwnedFd>) -> Option<Arc<tilo_clipboard::service::Connected>> {
+    let stream = std::os::unix::net::UnixStream::from(fd?);
+    let Some(connected) = tilo_clipboard::service::Connected::connect(stream) else {
+        tracing::warn!("the person's clipboard is unusable");
+        return None;
+    };
+    Some(Arc::new(connected))
+}
+
 /// One running instance and its window's connection, watched for the window closing.
 struct Running {
     hosted: Hosted,
@@ -177,6 +189,8 @@ struct Opening {
     content: Option<tilo_content::ContentStore>,
     /// The person's chooser, over the connection the session opened for this instance.
     chooser: Option<Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, over the connection the session opened for this instance.
+    clipboard: Option<Arc<tilo_clipboard::service::Connected>>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -397,6 +411,7 @@ impl TilolangProcess {
             earlier,
             content: None,
             chooser: None,
+            clipboard: None,
         }
     }
 
@@ -586,6 +601,7 @@ impl TilolangProcess {
             origin: fds.origin,
             content: store_of(fds.content),
             chooser: chooser_of(fds.chooser),
+            clipboard: clipboard_of(fds.clipboard),
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -620,6 +636,7 @@ impl TilolangProcess {
             origin: None,
             content: None,
             chooser: None,
+            clipboard: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -784,6 +801,7 @@ impl TilolangProcess {
         // opened by the session for the app in its workspace.
         kept.content = opening.content.take();
         kept.chooser = opening.chooser.take();
+        kept.clipboard = opening.clipboard.take();
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(

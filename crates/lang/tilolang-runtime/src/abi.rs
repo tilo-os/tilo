@@ -307,6 +307,12 @@ imports! {
     (ActChoose, "act_choose", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 
+    // The clipboard: text or an image offered as the person's copy, and what is on it now.
+    (ClipboardCopyText, "clipboard_copy_text", "i", "i"),
+    (ClipboardCopyImage, "clipboard_copy_image", "i", "i"),
+    (ClipboardPasteText, "clipboard_paste_text", "", "i"),
+    (ClipboardPasteImage, "clipboard_paste_image", "", "i"),
+
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),
 }

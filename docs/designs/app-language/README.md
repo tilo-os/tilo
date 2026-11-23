@@ -153,6 +153,14 @@ replayed writes no second one.
 What a notice says is words a person reads: its `title` and `body` are messages of the action,
 translated in the package's catalogues like the text of a view (`d-<action>.w-<word>`).
 
+`clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
+`clipboard.paste_image()` are the person's clipboard. A copy is theirs: it reaches their device
+and stays there as a copy of theirs, kept in their history and on their other devices like one
+they made in an app. A paste reads what is on the clipboard now, as an `Option<Text>` or an
+`Option<File>` — an image the device keeps for the app once pasted. An action that copies or
+pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
+shown.
+
 ```
 action remind(t: Task) uses notify {
     notify(

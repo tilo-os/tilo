@@ -127,6 +127,8 @@ pub struct Instance {
     pub content: Option<OwnedFd>,
     /// Its connection to the person's chooser, when this session serves one.
     pub chooser: Option<OwnedFd>,
+    /// Its connection to the person's clipboard, when this session serves one.
+    pub clipboard: Option<OwnedFd>,
     /// The record the window was asked to show, by its id.
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
@@ -335,6 +337,7 @@ impl Processes {
             origin: instance.origin,
             content: instance.content,
             chooser: instance.chooser,
+            clipboard: instance.clipboard,
         };
         let started = self.send(&key, &request, &fds, build)?;
         tracing::info!(

@@ -1094,6 +1094,12 @@ impl Runtime {
         *self.core.blobs.borrow_mut() = Some(Box::new(host));
     }
 
+    /// The person's clipboard ([`crate::clipboard`]): what a copy offers the device, and what a
+    /// paste reads off it. Until it is set, nothing copies and nothing pastes.
+    pub fn set_clipboard(&self, host: impl crate::clipboard::ClipboardHost + 'static) {
+        *self.core.clipboard.borrow_mut() = Some(Box::new(host));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

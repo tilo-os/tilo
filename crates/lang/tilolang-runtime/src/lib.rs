@@ -16,6 +16,7 @@ pub mod amstore;
 pub mod authority;
 pub mod blob;
 pub mod catalogue;
+pub mod clipboard;
 mod colls;
 mod core;
 pub mod cost;

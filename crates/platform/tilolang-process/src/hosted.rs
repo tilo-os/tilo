@@ -499,6 +499,8 @@ struct HostPlatform {
     content: Option<tilo_content::ContentStore>,
     /// The person's own chooser, which the session opened for this instance.
     chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, which the session opened for this instance.
+    clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
 }
@@ -662,6 +664,21 @@ impl Platform for HostPlatform {
         crate::files::keep(store, name, media, bytes)
     }
 
+    /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection
+    /// the session holds, as any app's copy is.
+    fn copy_clipboard(&self, mime: &str, bytes: &[u8]) -> bool {
+        self.clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.copy(mime, bytes))
+    }
+
+    /// `clipboard.paste` and `clipboard.paste_image`: what the person's selection holds.
+    fn paste_clipboard(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+        self.clipboard
+            .as_ref()
+            .and_then(|clipboard| clipboard.paste(types))
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }
@@ -703,6 +720,8 @@ pub struct Kept {
     pub content: Option<tilo_content::ContentStore>,
     /// The person's chooser, when the session opened one for this instance.
     pub chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, when the session opened one for this instance.
+    pub clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -989,6 +1008,7 @@ impl Hosted {
             builds: Rc::clone(&builds),
             content: kept.content.clone(),
             chooser: kept.chooser.clone(),
+            clipboard: kept.clipboard.clone(),
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
         };
         let mut instance = Instance::new(

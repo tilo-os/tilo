@@ -1702,8 +1702,19 @@ impl Compositor {
         selection: Selection,
         mime: &str,
     ) -> Result<clipboard_history::Pull, Error> {
+        self.pull_selection_up_to(selection, mime, clipboard_history::MAX_COPY_BYTES)
+    }
+
+    /// [`Compositor::pull_selection`] held to `limit` bytes: what an app pastes of an image,
+    /// which is larger than a copy the history keeps.
+    pub fn pull_selection_up_to(
+        &mut self,
+        selection: Selection,
+        mime: &str,
+        limit: usize,
+    ) -> Result<clipboard_history::Pull, Error> {
         let reader = self.receive_selection(selection, mime)?;
-        clipboard_history::Pull::new(reader, mime).map_err(Error::Io)
+        clipboard_history::Pull::bounded(reader, mime, limit).map_err(Error::Io)
     }
 
     /// The executables of display tools the person trusts: their risky changes apply without asking

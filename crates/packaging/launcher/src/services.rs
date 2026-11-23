@@ -30,6 +30,9 @@ pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// The session shell's authenticated file chooser (`tilo_dialogs::shell`), served alongside any desktop
 /// portal.
 pub const CHOOSER_SERVICE: &str = "chooser";
+/// The person's clipboard, served by the session to the tilolang app instances it starts: they
+/// run with no display of their own, so the selection is not theirs to offer or read.
+pub const CLIPBOARD_SERVICE: &str = "clipboard";
 const CHOOSER_PROTOCOL: u16 = 1;
 pub const COMPAT_SERVICE: &str = "compat";
 /// The system interface: the image-owned grant through which the device's control panel reaches the

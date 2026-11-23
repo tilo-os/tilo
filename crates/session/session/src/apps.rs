@@ -51,6 +51,8 @@ struct AppConnections {
     content: Option<std::os::fd::OwnedFd>,
     /// Its connection to the person's chooser, when this session serves one.
     chooser: Option<std::os::fd::OwnedFd>,
+    /// Its connection to the person's clipboard, when this session serves one.
+    clipboard: Option<std::os::fd::OwnedFd>,
     /// What the person may do in the app.
     access: Option<tilo_action_policy::MemberAccess>,
 }
@@ -709,6 +711,21 @@ impl Apps {
                 None
             }
         };
+        // The person's clipboard, over the session's own socket: what `clipboard.copy` and
+        // `clipboard.paste` reach, since an instance's process holds no display to offer or read
+        // a selection on.
+        let clipboard = launcher::services::socket_for(launcher::services::CLIPBOARD_SERVICE);
+        let clipboard = if clipboard.exists() {
+            match tilo_files::native::socket::connect(&clipboard) {
+                Ok(stream) => Some(std::os::fd::OwnedFd::from(stream)),
+                Err(error) => {
+                    tracing::warn!(%error, "the clipboard service refused connection");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
         let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
@@ -718,6 +735,7 @@ impl Apps {
             origin,
             content,
             chooser,
+            clipboard,
             access,
         })
     }
@@ -765,6 +783,7 @@ impl Apps {
             origin: resources.origin,
             content: resources.content,
             chooser: resources.chooser,
+            clipboard: resources.clipboard,
             document: hosted.opens.record,
             reveal: hosted.opens.reveal,
             open: hosted
@@ -2087,6 +2106,7 @@ impl Apps {
                 origin: resources.origin,
                 content: resources.content,
                 chooser: resources.chooser,
+                clipboard: resources.clipboard,
                 document: None,
                 reveal: None,
                 open: None,

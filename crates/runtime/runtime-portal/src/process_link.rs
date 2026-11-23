@@ -264,6 +264,11 @@ pub struct InstanceFds {
     /// ask. `None` on a session that serves none.
     #[serde(with = "crate::packet::optional_fd")]
     pub chooser: Option<Descriptor>,
+    /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
+    /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
+    /// session that serves none.
+    #[serde(with = "crate::packet::optional_fd")]
+    pub clipboard: Option<Descriptor>,
 }
 
 #[cfg(unix)]
@@ -295,6 +300,11 @@ impl InstanceFds {
                 .transpose()?,
             chooser: self
                 .chooser
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
+            clipboard: self
+                .clipboard
                 .as_ref()
                 .map(Descriptor::try_clone)
                 .transpose()?,
@@ -695,6 +705,7 @@ mod tests {
                 (unnamed, Some(connection()), (None, Some(connection()), None)),
                 (nothing, None, (None, None, None)),
             ] {
+                let clipboard = chooser.is_some().then(connection);
                 let had = (origin.is_some(), content.is_some(), chooser.is_some());
                 ToProcess::Instance {
                     request: Box::new(request.clone()),
@@ -706,6 +717,7 @@ mod tests {
                         origin,
                         content,
                         chooser,
+                        clipboard,
                     },
                 }
                 .send(&session)
@@ -725,6 +737,11 @@ mod tests {
                     (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
                     had,
                     "the instance's own chooser and content store cross with it"
+                );
+                assert_eq!(
+                    fds.clipboard.is_some(),
+                    had.2,
+                    "the instance's clipboard connection crosses with it"
                 );
             }
         }

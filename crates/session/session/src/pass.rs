@@ -760,6 +760,11 @@ impl Session {
         // What the apps copied since the last pass joins the history; a copy chosen in it is pasted
         // once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
+        // What the tilolang apps copied goes on the clipboard as the person's own copy, and what
+        // they paste is read off the selection: their processes hold no display to do it on.
+        if let Some(clipboard) = self.shared.table.clipboard() {
+            clipboard.follow(&self.shared.clipboard, &mut self.compositor);
+        }
         // The question about a display change, before the sheets are placed: one that just opened
         // stands on this pass's displays.
         if let Some(confirm) = self.shared.display_confirm.as_ref() {

@@ -290,6 +290,8 @@ tilo-seal = { path = "../../system/tilo-seal" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
 tilo-compositor = { path = "../compositor" }
+# The clipboard an app's process reaches over its connection to this session.
+tilo-clipboard = { path = "../../platform/tilo-clipboard" }
 # The session's own profiler: what its frame went on, recorded on the owner's
 # request and read from the same socket.
 tilo-frame-metrics = { path = "../frame-metrics" }
