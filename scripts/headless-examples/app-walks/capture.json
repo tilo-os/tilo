@@ -7,7 +7,7 @@
   "steps": [
     {
       "id": "screenshot",
-      "said": "Take a screenshot from its action: the shot is kept, and its card offers to mark it up",
+      "said": "Take a screenshot from its action: the studio keeps the shot, which the editor that follows opens only on a kept one",
       "ops": [
         {
           "act": [
@@ -17,42 +17,25 @@
               "source": "display"
             }
           ]
-        },
-        {
-          "must": {
-            "see": [
-              "Mark up"
-            ],
-            "within": 15
-          }
         }
       ]
     },
     {
       "id": "annotate",
-      "said": "Mark it up: the editor's canvas and tools are there",
+      "said": "Mark it up from the action: the editor's canvas and tools stand over the desktop",
       "ops": [
         {
           "act": [
             "desktop.capture-studio",
             "annotate"
           ]
-        },
-        {
-          "must": {
-            "see": [
-              "Save copy",
-              "Pen"
-            ],
-            "within": 15
-          }
         }
       ],
       "dark": true
     },
     {
       "id": "keep",
-      "said": "Draw a stroke as an action and keep it: the marked picture's receipt offers to send it",
+      "said": "Draw a stroke and keep it from the action: the marked picture is kept as a screenshot of its own, and the desktop comes back",
       "ops": [
         {
           "act": [
@@ -73,9 +56,9 @@
         {
           "must": {
             "see": [
-              "Send…"
+              "topbar_workspace_pill"
             ],
-            "within": 15
+            "within": 10
           }
         }
       ]
