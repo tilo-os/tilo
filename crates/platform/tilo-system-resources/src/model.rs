@@ -44,7 +44,9 @@ pub struct Power {
 }
 
 /// The `time-zone` resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Time {
     /// The zone the clock shows, as tzdata names it.

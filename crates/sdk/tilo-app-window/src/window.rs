@@ -2660,7 +2660,7 @@ pub fn show_bound<S: std::hash::BuildHasher>(
                 || node.kind == crate::adapter::kind("ListRow");
             let mut value = value;
             while let Value::Opt(Some(inner)) = value {
-                value = inner;
+                value = &**inner;
             }
             changed |= match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),

@@ -12,7 +12,9 @@ pub const RESTART_DESKTOP: &str = "restart-desktop";
 pub const RESTART_TO_UPDATE: &str = "restart-to-update";
 
 /// One deployment of the system: the image it was made from.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Deployment {
     /// The image as the update service fetches it (`registry.tilo.so/tilo/tilo-vm:x86_64-ci`).
@@ -42,7 +44,9 @@ impl Deployment {
 /// A deployment this machine went back from: it did not start within its
 /// tries, so the boot loader started the previous one and the machine settled
 /// on it. What the boot-time settling recorded of it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Fallback {
     /// The report's directory name, `<when>-<composefs>`, which names the
@@ -61,7 +65,9 @@ pub struct Fallback {
 }
 
 /// The `system-update` resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 #[expect(
     clippy::struct_excessive_bools,
