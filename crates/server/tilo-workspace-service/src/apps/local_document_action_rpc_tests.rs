@@ -1,12 +1,10 @@
 /// What the app reports, as its SDK sends it on its channel.
 async fn admit(
     channel: &runtime_collab::ChannelHandle,
-    request: &crate::apps::local_document_action::Request,
+    report: &runtime_collab::LocalDocumentActionReport,
 ) -> Result<runtime_collab::PublishedInvocationObservation, runtime_collab::LocalDocumentActionError>
 {
-    let report: runtime_collab::LocalDocumentActionReport =
-        serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
-    channel.admit_local_document_action(&report).await
+    channel.admit_local_document_action(report).await
 }
 
 fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
@@ -146,7 +144,7 @@ async fn local_report_admission(
             });
             let before_stale = receipt_barriers(&rig);
             no_delivery(&rig).await;
-            let mut request = crate::apps::local_document_action::Request {
+            let mut request = runtime_collab::LocalDocumentActionReport {
                 ownership: Some(runtime_collab::committed_document::ConnectionSnapshot {
                     root: env.cert.user_public_key,
                     device: env.cert.device_public_key,

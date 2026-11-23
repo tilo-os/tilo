@@ -16,7 +16,7 @@ impl AppBrokerState {
         offered: (PublishedSurface, PublishedAction),
         inputs: InvocationInputs<'_>,
         provenance: AdmissionProvenance<'_>,
-        local_report: Option<&crate::apps::local_document_action::Request>,
+        local_report: Option<&runtime_collab::LocalDocumentActionReport>,
     ) -> Result<StagedJob, String> {
         if local_report.is_some()
             && (!offered
@@ -41,7 +41,9 @@ impl AppBrokerState {
             return Err("local report invocation does not bind capture".into());
         }
         let typed_local_arguments = local_report
-            .map(|report| report.typed_arguments(&offered.1.params))
+            .map(|report| {
+                crate::apps::local_document_action::typed_arguments(report, &offered.1.params)
+            })
             .transpose()?;
         let InvocationInputs {
             original_request,

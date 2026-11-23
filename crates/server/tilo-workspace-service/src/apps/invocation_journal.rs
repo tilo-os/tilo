@@ -182,46 +182,13 @@ fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<
 
 /// The journal's exact retry digest, also bound by private admission evidence.
 pub(crate) fn admission_request_digest(request: &serde_json::Value) -> [u8; 32] {
-    request_digest(request).0
+    runtime_collab::admission_request_digest(request)
 }
 
 /// A digest of `request` that is equal exactly when the JSON values are:
 /// object members are hashed in key order, whatever order they arrived in.
 fn request_digest(request: &serde_json::Value) -> Digest {
-    fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let mut members: Vec<_> = fields.iter().collect();
-                members.sort_unstable_by(|left, right| left.0.cmp(right.0));
-                out.push(b'{');
-                for (position, (name, member)) in members.into_iter().enumerate() {
-                    if position > 0 {
-                        out.push(b',');
-                    }
-                    canonical(&serde_json::Value::String(name.clone()), out);
-                    out.push(b':');
-                    canonical(member, out);
-                }
-                out.push(b'}');
-            }
-            serde_json::Value::Array(items) => {
-                out.push(b'[');
-                for (position, item) in items.iter().enumerate() {
-                    if position > 0 {
-                        out.push(b',');
-                    }
-                    canonical(item, out);
-                }
-                out.push(b']');
-            }
-            scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
-        }
-    }
-    let mut encoded = Vec::new();
-    canonical(request, &mut encoded);
-    let mut hasher = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
-    hasher.update(&encoded);
-    Digest(*hasher.finalize().as_bytes())
+    Digest(runtime_collab::admission_request_digest(request))
 }
 
 /// The store version this build writes and the only one it reads.

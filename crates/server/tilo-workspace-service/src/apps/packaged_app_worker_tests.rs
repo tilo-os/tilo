@@ -85,7 +85,7 @@ fn launched_app_connection(
 
 /// A report of one edit on `route`, made by `env`'s person.
 fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDocumentActionReport {
-    let mut request = crate::apps::local_document_action::Request {
+    let mut report = runtime_collab::LocalDocumentActionReport {
         ownership: Some(runtime_collab::committed_document::ConnectionSnapshot {
             root: env.cert.user_public_key,
             device: env.cert.device_public_key,
@@ -110,8 +110,8 @@ fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDoc
         mutation_hashes: vec![[1; 32]],
         group: None,
     };
-    request.invocation = request.bound_invocation().unwrap();
-    serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap()
+    report.invocation = report.bound_invocation().unwrap();
+    report
 }
 
 /// Typing in an app the shell launched is history like any worker's: the

@@ -345,7 +345,7 @@ struct IntentInputs<'a> {
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
-    local_report: Option<&'a crate::apps::local_document_action::Request>,
+    local_report: Option<&'a runtime_collab::LocalDocumentActionReport>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,
 }
