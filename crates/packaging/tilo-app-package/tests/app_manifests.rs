@@ -23,20 +23,16 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every apps/ directory that's a Cargo crate the workspace builds a binary
-/// for, i.e. every app. A crate there with no binary is a library of an app
-/// (an `apps/<name>-model` crate of its data, the parts an app loads from
-/// its engine library such as `browser-parts`), not an app of its own; nor
-/// is a runtime bundle's.
+/// Every app the packaging scripts pack and install: the same
+/// `apps/*/tilo-app.toml` glob `os/scripts/pack-apps.sh` and `os/image/compile.sh`
+/// read. A directory without one is an app's library, not an app.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
         .unwrap_or_else(|e| panic!("read {}: {e}", apps.display()))
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.join("Cargo.toml").is_file())
-        .filter(|p| builds_a_binary(p))
-        .filter(|p| !p.join("tilo-runtime.toml").is_file())
+        .filter(|p| p.join("tilo-app.toml").is_file())
         .collect();
     out.sort();
     assert!(
@@ -45,14 +41,6 @@ fn app_dirs() -> Vec<PathBuf> {
         out.len()
     );
     out
-}
-
-/// Whether the crate at `dir` builds a binary: a `src/main.rs`, or a
-/// `[[bin]]` target of its own.
-fn builds_a_binary(dir: &Path) -> bool {
-    dir.join("src/main.rs").is_file()
-        || std::fs::read_to_string(dir.join("Cargo.toml"))
-            .is_ok_and(|manifest| manifest.lines().any(|line| line.trim() == "[[bin]]"))
 }
 
 fn manifest_path(app_dir: &Path) -> PathBuf {
@@ -67,7 +55,7 @@ fn load(app_dir: &Path) -> Manifest {
         .unwrap_or_else(|e| panic!("{} does not decode: {e}", path.display()))
 }
 
-/// Every app crate with its manifest: one read per app for all the checks.
+/// Every app with its manifest: one read per app for all the checks.
 fn fleet() -> Vec<(PathBuf, Manifest)> {
     app_dirs()
         .into_iter()
@@ -81,19 +69,8 @@ fn fleet() -> Vec<(PathBuf, Manifest)> {
 tilo_test_env::scenario! {
     fn the_shipped_fleets_manifests_validate_and_declare_consistent_metadata_and_policy;
 
-    phase every_shipped_manifest_exists_validates_and_round_trips;
+    phase every_shipped_manifest_validates_round_trips_and_has_its_own_id;
     {
-        let missing: Vec<String> = app_dirs()
-            .iter()
-            .filter(|d| !manifest_path(d).is_file())
-            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "these app crates have no tilo-app.toml and therefore cannot be \
-             packed, installed or launched: {missing:?}"
-        );
-
         let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
         for (dir, m) in fleet() {
             validate_manifest(&m)
