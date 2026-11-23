@@ -29,6 +29,12 @@ type Counter {
 
 root Counter
 
+default view counter for Counter
+
+view counter(c: Counter) {
+    text("{c.value}")
+}
+
 action twice(c: Counter) -> Int {
     c.value += 1
     let n = callee.add(2)
