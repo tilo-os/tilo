@@ -2,13 +2,13 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     io::{self, Read as _},
-    os::unix::net::UnixStream as StdUnixStream,
     path::Path,
     sync::Arc,
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
+use tilo_socket::Stream;
 use tokio::io::AsyncReadExt as _;
 use wire_frame::Framing;
 
@@ -369,6 +369,7 @@ impl BlobClient {
     /// # Errors
     ///
     /// Returns [`BlobError::Disconnected`] when no descriptor was inherited.
+    #[cfg(unix)]
     pub fn from_environment() -> Result<Self, BlobError> {
         let connection = runtime_portal::connect_service_fd(BLOB_SERVICE).map_err(|error| {
             BlobError::Disconnected(match error {
@@ -387,7 +388,7 @@ impl BlobClient {
     /// # Errors
     ///
     /// Returns [`BlobError::Disconnected`] if the driver thread cannot start.
-    pub fn from_app_stream(stream: StdUnixStream) -> Result<Self, BlobError> {
+    pub fn from_app_stream(stream: Stream) -> Result<Self, BlobError> {
         Self::start(stream, false)
     }
 
@@ -397,7 +398,7 @@ impl BlobClient {
     ///
     /// Returns [`BlobError::Disconnected`] when the socket cannot be reached.
     pub fn connect_session(socket: &Path) -> Result<Self, BlobError> {
-        let mut stream = StdUnixStream::connect(socket)
+        let mut stream = tilo_socket::connect(socket)
             .map_err(|error| BlobError::Disconnected(format!("{}: {error}", socket.display())))?;
         write_handoff(&mut stream, &BlobActor::Session)
             .map_err(|error| BlobError::Disconnected(error.to_string()))?;
@@ -409,7 +410,7 @@ impl BlobClient {
     /// # Errors
     ///
     /// Returns [`BlobError::Disconnected`] if the driver thread cannot start.
-    pub fn from_session_stream(stream: StdUnixStream) -> Result<Self, BlobError> {
+    pub fn from_session_stream(stream: Stream) -> Result<Self, BlobError> {
         Self::start(stream, true)
     }
 
@@ -793,7 +794,7 @@ impl BlobClient {
             .map_err(|_| BlobError::Disconnected("document media service did not answer".into()))?
     }
 
-    fn start(stream: StdUnixStream, session: bool) -> Result<Self, BlobError> {
+    fn start(stream: Stream, session: bool) -> Result<Self, BlobError> {
         let (jobs, receiver) = tokio::sync::mpsc::unbounded_channel();
         std::thread::Builder::new()
             .name("blob-client".into())
@@ -1099,11 +1100,7 @@ impl Session {
     }
 }
 
-fn drive(
-    stream: StdUnixStream,
-    session: bool,
-    mut jobs: tokio::sync::mpsc::UnboundedReceiver<Job>,
-) {
+fn drive(stream: Stream, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceiver<Job>) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

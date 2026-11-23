@@ -12,7 +12,6 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
-    os::unix::net::UnixStream,
     pin::Pin,
     sync::{
         Arc, Mutex, RwLock,
@@ -21,7 +20,8 @@ use std::{
 };
 
 use runtime_portal::NotAvailable;
-use tokio::sync::oneshot;
+use tilo_socket::Stream;
+use tokio::sync::{Notify, oneshot};
 use wire_frame::{FrameReader, Framing};
 
 use crate::wire::{Frame, FsReply, FsRequest, MAX_FRAME, ROOT};
@@ -48,7 +48,8 @@ type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<FsReply, String>>>>;
 struct Inner {
     outgoing: tokio::sync::mpsc::UnboundedSender<Frame>,
     pending: Pending,
-    transport: UnixStream,
+    /// Told when this end closes before its last handle goes: the driver drops the stream.
+    closing: Arc<Notify>,
     live: AtomicBool,
     next_call: AtomicU64,
 }
@@ -56,8 +57,9 @@ struct Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         self.live.store(false, Ordering::Release);
-        // The reader only notices a peer that left; this end must say so.
-        let _ = self.transport.shutdown(std::net::Shutdown::Both);
+        // The reader only notices a peer that left; this end must say so. (The queue closing
+        // with the last sender ends the driver too; this does not wait for it.)
+        self.closing.notify_one();
     }
 }
 
@@ -68,21 +70,20 @@ pub struct Connection(Arc<Inner>);
 impl Connection {
     /// Drive a connected stream on a thread of its own, so callers need no
     /// runtime of their own and calls from any context share one transport.
-    pub fn connect(name: &str, stream: UnixStream) -> io::Result<Arc<Self>> {
-        let transport = stream.try_clone()?;
-        stream.set_nonblocking(true)?;
+    pub fn connect(name: &str, stream: Stream) -> io::Result<Arc<Self>> {
         let (outgoing, frames) = tokio::sync::mpsc::unbounded_channel();
+        let closing = Arc::new(Notify::new());
         let inner = Arc::new(Inner {
             outgoing,
             pending: Mutex::new(HashMap::new()),
-            transport,
+            closing: Arc::clone(&closing),
             live: AtomicBool::new(true),
             next_call: AtomicU64::new(1),
         });
         let driveable = Arc::downgrade(&inner);
         std::thread::Builder::new()
             .name(name.into())
-            .spawn(move || drive(stream, frames, driveable))?;
+            .spawn(move || drive(stream, frames, &closing, driveable))?;
         Ok(Arc::new(Self(inner)))
     }
 
@@ -129,7 +130,7 @@ impl Connection {
     /// the end at once and every waiting call fails.
     pub fn close(&self) {
         self.0.live.store(false, Ordering::Release);
-        let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
+        self.0.closing.notify_one();
     }
 
     /// Tell the serving side an object is no longer held here.
@@ -139,8 +140,9 @@ impl Connection {
 }
 
 fn drive(
-    stream: UnixStream,
+    stream: Stream,
     mut frames: tokio::sync::mpsc::UnboundedReceiver<Frame>,
+    closing: &Notify,
     connection: std::sync::Weak<Inner>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -154,15 +156,15 @@ fn drive(
         }
     };
     runtime.block_on(async move {
-        let stream = match tokio::net::UnixStream::from_std(stream) {
+        let stream = match tilo_socket::tokio::from_std(stream) {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("filesystem stream unusable: {error}");
                 return;
             }
         };
-        let (read, mut write) = stream.into_split();
-        let writer = tokio::spawn(async move {
+        let (read, mut write) = tokio::io::split(stream);
+        let mut writer = tokio::spawn(async move {
             while let Some(frame) = frames.recv().await {
                 FRAMING.write_value_async(&mut write, &frame).await?;
                 tokio::io::AsyncWriteExt::flush(&mut write).await?;
@@ -170,29 +172,38 @@ fn drive(
             io::Result::Ok(())
         });
         let mut reader = FrameReader::new(read, FRAMING);
-        loop {
-            match reader.read_value_async::<Frame>().await {
-                Ok(Some(Frame::Reply { call, reply })) => {
-                    let Some(connection) = connection.upgrade() else {
+        let replies = async {
+            loop {
+                match reader.read_value_async::<Frame>().await {
+                    Ok(Some(Frame::Reply { call, reply })) => {
+                        let Some(connection) = connection.upgrade() else {
+                            break;
+                        };
+                        let answer = lock(&connection.pending).remove(&call);
+                        if let Some(answer) = answer {
+                            let _ = answer.send(reply);
+                        }
+                    }
+                    // A caller never receives calls; a release on this side would
+                    // name an object the peer serves.
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(error) => {
+                        eprintln!("filesystem connection ended: {error}");
                         break;
-                    };
-                    let answer = lock(&connection.pending).remove(&call);
-                    if let Some(answer) = answer {
-                        let _ = answer.send(reply);
                     }
                 }
-                // A caller never receives calls; a release on this side would
-                // name an object the peer serves.
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(error) => {
-                    eprintln!("filesystem connection ended: {error}");
-                    break;
-                }
             }
+        };
+        // This end closing, or its writer ending with the last handle, ends the connection as
+        // much as the peer leaving: the stream drops below, and the peer reads its end.
+        tokio::select! {
+            () = replies => {}
+            () = closing.notified() => {}
+            _ = &mut writer => {}
         }
-        // The last handle letting go already shut the stream down; a peer that
-        // still left cannot take more calls, so tell everyone still waiting.
+        // A peer that left, or an end that closed, takes no more calls: tell everyone still
+        // waiting.
         if let Some(connection) = connection.upgrade() {
             connection.live.store(false, Ordering::Release);
             lock(&connection.pending).clear();
@@ -306,11 +317,11 @@ impl Capabilities {
 /// concurrently; every object the table holds is released when the connection
 /// ends.
 pub async fn serve_connected(
-    stream: tokio::net::UnixStream,
+    stream: tilo_socket::tokio::Stream,
     root: Arc<dyn ServeObject>,
 ) -> io::Result<()> {
     let capabilities = Capabilities::new(root);
-    let (read, mut write) = stream.into_split();
+    let (read, mut write) = tokio::io::split(stream);
     let (outgoing, mut frames) = tokio::sync::mpsc::unbounded_channel::<Frame>();
     let writer = tokio::spawn(async move {
         while let Some(frame) = frames.recv().await {
@@ -357,5 +368,141 @@ pub async fn serve_connected(
     match ending {
         Some(error) => Err(error.into()),
         None => written,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test fixtures")]
+mod tests {
+    use super::*;
+    use crate::{FsClient, OpenMode};
+    use std::time::Duration;
+
+    /// A connected pair, both ends here: a socket pair on Unix, a pipe on Windows.
+    fn pair() -> (Stream, Stream) {
+        #[cfg(unix)]
+        {
+            Stream::pair().unwrap()
+        }
+        #[cfg(windows)]
+        {
+            tilo_socket::link::pair().unwrap()
+        }
+    }
+
+    /// A workspace holding one file, `notes.md`, which says it was let go when its last holder
+    /// releases it.
+    struct Root(Arc<AtomicBool>);
+    struct File(Arc<AtomicBool>);
+
+    impl Drop for File {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl ServeObject for Root {
+        fn dispatch(
+            self: Arc<Self>,
+            capabilities: &Capabilities,
+            request: FsRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+            let reply = match request {
+                FsRequest::Open { path, .. } if path == "notes.md" => {
+                    let file = Arc::new(File(Arc::clone(&self.0)));
+                    Ok(FsReply::Handle(Some(capabilities.register(file))))
+                }
+                _ => Err("no such file".to_owned()),
+            };
+            Box::pin(std::future::ready(reply))
+        }
+    }
+
+    impl ServeObject for File {
+        fn dispatch(
+            self: Arc<Self>,
+            _: &Capabilities,
+            request: FsRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+            let reply = match request {
+                FsRequest::Read { offset: 0, .. } => Ok(FsReply::Bytes(Some(b"hello".to_vec()))),
+                FsRequest::Read { .. } => Ok(FsReply::Bytes(Some(Vec::new()))),
+                _ => Err("a file only reads here".to_owned()),
+            };
+            Box::pin(std::future::ready(reply))
+        }
+    }
+
+    fn serve(
+        stream: Stream,
+        released: &Arc<AtomicBool>,
+    ) -> tokio::task::JoinHandle<io::Result<()>> {
+        let stream = tilo_socket::tokio::from_std(stream).unwrap();
+        tokio::spawn(serve_connected(
+            stream,
+            Arc::new(Root(Arc::clone(released))),
+        ))
+    }
+
+    /// The serving side ended as a peer that left ends it: the end of the stream, which a pipe's
+    /// server may read as its client's broken pipe.
+    fn ended(served: &io::Result<()>) {
+        assert!(
+            served
+                .as_ref()
+                .err()
+                .is_none_or(|error| error.kind() == io::ErrorKind::BrokenPipe),
+            "{served:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_a_file_and_its_last_handle_ends_the_connection() {
+        let (served, client) = pair();
+        let released = Arc::new(AtomicBool::new(false));
+        let serving = serve(served, &released);
+        let fs = FsClient::from_object(Object::root(
+            Connection::connect("test-fs", client).unwrap(),
+        ));
+        let file = fs.open("notes.md", OpenMode::Read).await.unwrap();
+        assert_eq!(file.read_all().await.unwrap(), b"hello");
+        assert!(
+            matches!(
+                fs.open("missing.md", OpenMode::Read).await,
+                Err(NotAvailable::Refused(message)) if message == "no such file"
+            ),
+            "a refusal arrives as the serving side's words"
+        );
+        drop((file, fs));
+        let served = tokio::time::timeout(Duration::from_secs(10), serving)
+            .await
+            .expect("the serving side reads the end once the client's last handle goes")
+            .unwrap();
+        ended(&served);
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the open file is let go with the connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_ends_the_connection_while_handles_are_still_held() {
+        let (served, client) = pair();
+        let released = Arc::new(AtomicBool::new(false));
+        let serving = serve(served, &released);
+        let connection = Connection::connect("test-fs", client).unwrap();
+        let fs = FsClient::from_object(Object::root(Arc::clone(&connection)));
+        let file = fs.open("notes.md", OpenMode::Read).await.unwrap();
+        connection.close();
+        let served = tokio::time::timeout(Duration::from_secs(10), serving)
+            .await
+            .expect("the serving side reads the end of a closed connection")
+            .unwrap();
+        ended(&served);
+        assert!(!connection.live());
+        assert!(
+            file.read_all().await.is_err(),
+            "a handle of a closed connection reads nothing"
+        );
     }
 }

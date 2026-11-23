@@ -11,17 +11,18 @@ description = "Capability clients and wire types for Tilo filesystem services."
 [dependencies]
 blake3.workspace = true
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
-tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "net", "sync", "time"] }
+# The connection a client drives: a local socket on Unix, a named pipe on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket", features = ["tokio"] }
 serde.workspace = true
 serde_json.workspace = true
 wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 
 [target.'cfg(unix)'.dependencies]
-# The daemon's socket is bound and reached by path.
+# The storage and cloud services' sockets, reached by path.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 libc.workspace = true
-tokio = { workspace = true, features = ["net"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

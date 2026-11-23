@@ -18720,6 +18720,7 @@ dependencies = [
  "serde_json",
  "tilo-files",
  "tilo-paths",
+ "tilo-socket",
  "tilo-test-env",
  "tokio",
  "wire-frame",

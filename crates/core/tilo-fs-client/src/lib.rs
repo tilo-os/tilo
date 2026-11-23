@@ -3,6 +3,11 @@
 //! A client drives its connection on a thread of its own, so it needs no
 //! runtime context and calls from any thread share one transport.
 //!
+//! The capability clients and the wire build on every host: the connection is a local socket on
+//! Unix and a named pipe on Windows (`tilo_socket`). What serves a FUSE mount or a native
+//! directory's raw names (the bridge, the directory and selected-file clients) and the cloud
+//! accounts' mounts are Unix's own.
+//!
 //! ```compile_fail
 //! use tilo_fs_client::NativeGrantAuthority;
 //! ```
@@ -16,44 +21,32 @@
     )
 )]
 
-#[cfg(unix)]
 use std::sync::Arc;
 
 use runtime_portal::NotAvailable;
 
-#[cfg(unix)]
 use crate::connection::{Connection, Object};
-#[cfg(unix)]
 use crate::wire::{FsReply, FsRequest};
 
 #[cfg(unix)]
 mod bridge;
-#[cfg(unix)]
 pub mod connection;
 #[cfg(unix)]
 pub mod directory_client;
 #[cfg(unix)]
 pub mod directory_connection;
-#[cfg(unix)]
 pub mod directory_types;
-#[cfg(unix)]
 pub mod grants;
-#[cfg(unix)]
 pub use grants::{FsOwner, FsRight};
-#[cfg(unix)]
 mod entry_name;
 #[cfg(unix)]
-#[cfg(unix)]
 pub mod selected_client;
-#[cfg(unix)]
 pub use entry_name::{EntryName, InvalidEntryName};
-#[cfg(unix)]
 pub mod blobs;
 #[cfg(unix)]
 pub mod cloud;
 pub mod native_reply;
 pub mod storage;
-#[cfg(unix)]
 pub mod wire;
 
 pub const SELECTED_FILE: &str = "file";
@@ -95,15 +88,13 @@ pub fn try_connect() -> Result<FsClient, NotAvailable> {
 /// # Errors
 ///
 /// Returns [`NotAvailable::ConnectionFailed`] when nothing serves `socket`.
-#[cfg(unix)]
 pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
-    connect_stream(tilo_files::native::socket::connect(socket)?)
+    connect_stream(tilo_socket::connect(socket)?)
 }
 
 /// Connect the existing filesystem protocol over an already-admitted stream.
 /// The trusted host supplies the live endpoint; this function does not mint a grant.
-#[cfg(unix)]
-pub fn connect_stream(stream: std::os::unix::net::UnixStream) -> Result<FsClient, NotAvailable> {
+pub fn connect_stream(stream: tilo_socket::Stream) -> Result<FsClient, NotAvailable> {
     let connection =
         Connection::connect("workspace-fs", stream).map_err(NotAvailable::ConnectionFailed)?;
     Ok(FsClient {
@@ -111,7 +102,6 @@ pub fn connect_stream(stream: std::os::unix::net::UnixStream) -> Result<FsClient
     })
 }
 
-#[cfg(unix)]
 /// File open mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OpenMode {
@@ -127,7 +117,6 @@ pub enum OpenMode {
     WriteExisting,
 }
 
-#[cfg(unix)]
 /// Directory-entry kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntryKind {
@@ -138,7 +127,6 @@ pub enum EntryKind {
     Other,
 }
 
-#[cfg(unix)]
 /// A path's metadata snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Metadata {
@@ -151,7 +139,6 @@ pub struct Metadata {
     pub needs_hydration: bool,
 }
 
-#[cfg(unix)]
 /// A directory row — `name` is the last path component, metadata pre-fetched.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirEntry {
@@ -159,7 +146,6 @@ pub struct DirEntry {
     pub metadata: Metadata,
 }
 
-#[cfg(unix)]
 /// A workspace filesystem capability.
 #[derive(Clone)]
 pub struct FsClient {
@@ -173,6 +159,7 @@ impl FsClient {
     }
 
     /// Open independently admitted native directory ownership, preserving raw names.
+    #[cfg(unix)]
     /// # Errors
     /// Refuses backends without a directory grant and lost or revoked connections.
     pub async fn directory(&self) -> Result<directory_client::DirectoryClient, NotAvailable> {
@@ -290,7 +277,6 @@ impl FsClient {
     }
 }
 
-#[cfg(unix)]
 /// An open file; dropping the last handle closes it on the server.
 #[derive(Clone)]
 pub struct FileHandle {
@@ -421,7 +407,6 @@ impl FileHandle {
 }
 
 /// A capability reply named an object this end may hold.
-#[cfg(unix)]
 pub(crate) fn handle_reply(
     handle: Option<u64>,
     served_by: &Arc<Object>,
@@ -434,7 +419,6 @@ pub(crate) fn handle_reply(
 
 /// The reply is not the one this request answers with: the peer is not the
 /// filesystem protocol this client speaks.
-#[cfg(unix)]
 pub(crate) fn unexpected() -> NotAvailable {
     NotAvailable::Refused("unexpected filesystem reply".into())
 }

@@ -33,8 +33,18 @@ pub async fn connect(path: &Path) -> io::Result<Stream> {
     Stream::from_std(stream)
 }
 
+/// Drive `stream`, connected by [`crate::connect`] or handed over, on the current tokio runtime.
+///
+/// # Errors
+/// The stream could not be registered with the runtime.
+#[cfg(unix)]
+pub fn from_std(stream: crate::Stream) -> io::Result<Stream> {
+    stream.set_nonblocking(true)?;
+    Stream::from_std(stream)
+}
+
 #[cfg(windows)]
-pub use self::pipe::{Listener, Stream, connect, listener};
+pub use self::pipe::{Listener, Stream, connect, from_std, listener};
 
 /// Whether `stream`'s peer is a program of this login: this account, and not
 /// one a sandbox confined. On Linux the peer's uid must be this process's and it
@@ -151,6 +161,24 @@ mod pipe {
                 }
                 server.disconnect()?;
             }
+        }
+    }
+
+    /// Drive `stream`, connected by [`crate::connect`] or handed over, on the current runtime:
+    /// its end of the pipe, server or client, is taken over by the runtime.
+    ///
+    /// # Errors
+    /// The runtime could not take the pipe.
+    pub fn from_std(stream: crate::Stream) -> io::Result<Stream> {
+        let (pipe, server_end) = stream.into_end();
+        let raw = pipe.into_raw_handle();
+        // SAFETY: an overlapped pipe handle `stream` owned, handed over once.
+        unsafe {
+            Ok(if server_end {
+                Stream::Server(NamedPipeServer::from_raw_handle(raw)?)
+            } else {
+                Stream::Client(NamedPipeClient::from_raw_handle(raw)?)
+            })
         }
     }
 

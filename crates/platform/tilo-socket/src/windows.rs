@@ -311,6 +311,12 @@ impl Stream {
         })
     }
 
+    /// The handle to this end of the pipe, and whether it is the server's end: what a runtime
+    /// that drives the pipe itself takes over. Its timeouts and shutdown stay behind.
+    pub(crate) fn into_end(self) -> (OwnedHandle, bool) {
+        (self.pipe, self.connection.server_end)
+    }
+
     /// Another handle to the same connection, sharing its timeouts and its
     /// shutdown.
     ///

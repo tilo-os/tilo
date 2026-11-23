@@ -25,7 +25,6 @@ pub(crate) fn refused() -> NotAvailable {
     ))
 }
 
-#[cfg(unix)]
 pub(crate) fn check(status: crate::wire::NativeEntryStatus) -> Result<(), NotAvailable> {
     match status {
         crate::wire::NativeEntryStatus::Ok => Ok(()),
