@@ -552,117 +552,13 @@ mod tests {
     fn r(ext: &str) -> ResourceKind {
         ResourceKind::extension(ext).unwrap()
     }
+
     fn app(id: &str, name: &str, ext: &str) -> AppCandidate {
         AppCandidate {
             package_id: id.into(),
             display_name: name.into(),
             resources: [r(ext)].into(),
             secondary: false,
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn default_selection_follows_exact_precedence_and_falls_through_safely() {
-        {
-            let pdf = r("pdf");
-            let apps = [
-                app("so.tilo.a", "A", "pdf"),
-                app("so.tilo.b", "B", "pdf"),
-                app("so.tilo.c", "C", "pdf"),
-            ];
-            let resolver = DefaultAppResolver::new(&apps);
-            let personal = PersonalDefaults {
-                handlers: [(pdf.clone(), "so.tilo.a".into())].into(),
-            };
-            let mut ws = WorkspaceDefaults::default();
-
-            assert_eq!(
-                resolver
-                    .resolve(&pdf, "ada", &personal, Some(&ws))
-                    .unwrap()
-                    .package_id,
-                "so.tilo.a"
-            );
-            ws.policy
-                .insert(pdf.clone(), WorkspaceDefaultPolicy::App("so.tilo.b".into()));
-            assert_eq!(
-                resolver
-                    .resolve(&pdf, "ada", &personal, Some(&ws))
-                    .unwrap()
-                    .package_id,
-                "so.tilo.b"
-            );
-            ws.user_choices
-                .entry("ada".into())
-                .or_default()
-                .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
-            assert_eq!(
-                resolver
-                    .resolve(&pdf, "ada", &personal, Some(&ws))
-                    .unwrap()
-                    .package_id,
-                "so.tilo.a"
-            );
-            ws.user_choices
-                .get_mut("ada")
-                .unwrap()
-                .insert(pdf.clone(), UserWorkspaceChoice::App("so.tilo.c".into()));
-            assert_eq!(
-                resolver
-                    .resolve(&pdf, "ada", &personal, Some(&ws))
-                    .unwrap()
-                    .package_id,
-                "so.tilo.c"
-            );
-            ws.policy
-                .insert(pdf.clone(), WorkspaceDefaultPolicy::FollowPersonal);
-            ws.user_choices
-                .get_mut("ada")
-                .unwrap()
-                .insert(pdf.clone(), UserWorkspaceChoice::FollowWorkspace);
-            assert_eq!(
-                resolver
-                    .resolve(&pdf, "ada", &personal, Some(&ws))
-                    .unwrap()
-                    .package_id,
-                "so.tilo.a"
-            );
-        }
-        {
-            let pdf = r("pdf");
-            let apps = [app("so.tilo.viewer", "Viewer", "pdf")];
-            let resolver = DefaultAppResolver::new(&apps);
-            let personal = PersonalDefaults {
-                handlers: [(pdf.clone(), "so.tilo.removed".into())].into(),
-            };
-            let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
-            assert_eq!(selected.package_id, "so.tilo.viewer");
-            assert_eq!(selected.source, SelectionSource::DeterministicFallback);
-        }
-        {
-            let pdf = r("pdf");
-            let apps = [
-                app("so.tilo.a", "A", "pdf"),
-                app("so.tilo.workspace", "Workspace", "pdf"),
-            ];
-            let resolver = DefaultAppResolver::new(&apps);
-            let personal = PersonalDefaults::default();
-            let mut ws = WorkspaceDefaults::default();
-            ws.policy.insert(
-                pdf.clone(),
-                WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
-            );
-            ws.user_choices
-                .entry("ada".into())
-                .or_default()
-                .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
-            let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
-            assert_eq!(selected.package_id, "so.tilo.a");
-            assert_eq!(selected.source, SelectionSource::DeterministicFallback);
         }
     }
 
@@ -675,140 +571,116 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tilo_packages_outrank_host_apps_and_the_host_default_orders_host_apps() {
-        let pdf = ResourceKind::mime("application/pdf").unwrap();
-        let chain =
-            crate::mimeapps::MimeAppsChain::new(vec![crate::mimeapps::MimeAppsList::parse(
-                "[Default Applications]\napplication/pdf=gone.desktop;org.gnome.Evince.desktop;\n",
-            )]);
-        let hosts = [
-            host("okular", "Aardvark PDF", &pdf),
-            host("org.gnome.Evince", "Evince", &pdf),
-        ];
-        let selected = DefaultAppResolver::new(&hosts)
-            .with_system_defaults(&chain)
-            .resolve(&pdf, "ada", &PersonalDefaults::default(), None)
-            .unwrap();
-        assert_eq!(selected.package_id, "org.gnome.Evince.desktop");
-        assert_eq!(selected.source, SelectionSource::SystemDefault);
-
-        let mut with_package = hosts.to_vec();
-        with_package.push(AppCandidate {
-            package_id: "so.tilo.pdf-viewer".into(),
-            display_name: "PDF Viewer".into(),
-            resources: [pdf.clone()].into(),
-            secondary: false,
-        });
-        let selected = DefaultAppResolver::new(&with_package)
-            .with_system_defaults(&chain)
-            .resolve(&pdf, "ada", &PersonalDefaults::default(), None)
-            .unwrap();
-        assert_eq!(selected.package_id, "so.tilo.pdf-viewer");
-
-        let personal = PersonalDefaults {
-            handlers: [(pdf.clone(), "okular.desktop".into())].into(),
-        };
-        let selected = DefaultAppResolver::new(&with_package)
-            .with_system_defaults(&chain)
-            .resolve(&pdf, "ada", &personal, None)
-            .unwrap();
-        assert_eq!(
-            selected.package_id, "okular.desktop",
-            "a personal choice of a host app wins over a package"
-        );
+    fn chosen(pairs: &[(ResourceKind, &str)]) -> PersonalDefaults {
+        PersonalDefaults {
+            handlers: pairs
+                .iter()
+                .map(|(kind, id)| (kind.clone(), (*id).to_string()))
+                .collect(),
+        }
     }
 
-    #[test]
-    fn a_secondary_claimant_is_the_default_only_when_nothing_else_claims() {
-        let mp4 = r("mp4");
-        let mov = r("mov");
-        let editor = AppCandidate {
-            resources: [mp4.clone(), mov.clone()].into(),
-            secondary: true,
-            ..app("so.tilo.video-editor", "Video Editor", "mp4")
-        };
-        let apps = [editor, app("so.tilo.video-player", "Video Player", "mp4")];
-        let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults::default();
-        assert_eq!(
-            resolver
-                .resolve(&mp4, "ada", &personal, None)
-                .unwrap()
-                .package_id,
-            "so.tilo.video-player",
-            "the player opens video ahead of the editor whose name sorts first"
-        );
-        assert_eq!(
-            resolver
-                .resolve(&mov, "ada", &personal, None)
-                .unwrap()
-                .package_id,
-            "so.tilo.video-editor"
-        );
-        let chosen = PersonalDefaults {
-            handlers: [(mp4.clone(), "so.tilo.video-editor".into())].into(),
-        };
-        assert_eq!(
-            resolver
-                .resolve(&mp4, "ada", &chosen, None)
-                .unwrap()
-                .package_id,
-            "so.tilo.video-editor",
-            "choosing the editor still makes it the default"
-        );
-    }
-
-    #[test]
-    fn a_choice_opens_a_kind_the_app_claims_nothing_of() {
-        let txt = ResourceKind::extension("txt").unwrap();
-        // Notes names Markdown only, and the person still picked it for `.txt` files.
-        let notes = AppCandidate::package(
-            "so.tilo.notes".into(),
-            "Notes".into(),
-            &["md".into()],
-            &[],
-            &[],
-            false,
-        );
-        let editor = AppCandidate::host(
-            "org.gnome.TextEditor",
-            "Text Editor".into(),
-            &["text/plain".into()],
-        )
-        .expect("an entry that claims a type");
-        let apps = [editor, notes];
-        let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults {
-            handlers: [(txt.clone(), "so.tilo.notes".into())].into(),
-        };
+    fn opens(
+        resolver: &DefaultAppResolver<'_>,
+        kinds: &[ResourceKind],
+        personal: &PersonalDefaults,
+        workspace: Option<&WorkspaceDefaults>,
+    ) -> (String, SelectionSource) {
         let selected = resolver
-            .resolve_document(std::slice::from_ref(&txt), "ada", &personal, None)
+            .resolve_document(kinds, "ada", personal, workspace)
             .expect("a selection");
-        assert_eq!(selected.package_id, "so.tilo.notes");
-        assert_eq!(selected.source, SelectionSource::PersonalDefault);
+        (selected.package_id, selected.source)
+    }
 
-        // An app this device does not have is no answer: the open would reach nothing.
-        let gone = PersonalDefaults {
-            handlers: [(txt.clone(), "so.tilo.gone".into())].into(),
+    /// A person opens a PDF in someone else's workspace: the workspace's rule applies,
+    /// the person may escape it, and a choice naming an app this device no longer has
+    /// never becomes a denied open.
+    #[test]
+    fn a_document_opens_by_workspace_rule_then_person_then_first_app() {
+        let pdf = r("pdf");
+        let apps = [
+            app("so.tilo.a", "A", "pdf"),
+            app("so.tilo.b", "B", "pdf"),
+            app("so.tilo.c", "C", "pdf"),
+        ];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = chosen(&[(pdf.clone(), "so.tilo.a")]);
+        let mut ws = WorkspaceDefaults::default();
+        let id = |resolver: &DefaultAppResolver<'_>,
+                  personal: &PersonalDefaults,
+                  ws: &WorkspaceDefaults| {
+            opens(resolver, std::slice::from_ref(&pdf), personal, Some(ws)).0
         };
-        let kinds = [txt, ResourceKind::mime("text/plain").expect("a type")];
+
+        assert_eq!(id(&resolver, &personal, &ws), "so.tilo.a");
+        ws.policy
+            .insert(pdf.clone(), WorkspaceDefaultPolicy::App("so.tilo.b".into()));
+        assert_eq!(id(&resolver, &personal, &ws), "so.tilo.b");
+        ws.user_choices
+            .entry("ada".into())
+            .or_default()
+            .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
+        assert_eq!(id(&resolver, &personal, &ws), "so.tilo.a");
+        ws.user_choices
+            .get_mut("ada")
+            .unwrap()
+            .insert(pdf.clone(), UserWorkspaceChoice::App("so.tilo.c".into()));
+        assert_eq!(id(&resolver, &personal, &ws), "so.tilo.c");
+        ws.policy
+            .insert(pdf.clone(), WorkspaceDefaultPolicy::FollowPersonal);
+        ws.user_choices
+            .get_mut("ada")
+            .unwrap()
+            .insert(pdf.clone(), UserWorkspaceChoice::FollowWorkspace);
+        assert_eq!(id(&resolver, &personal, &ws), "so.tilo.a");
+
+        let viewer = [app("so.tilo.viewer", "Viewer", "pdf")];
+        let gone = chosen(&[(pdf.clone(), "so.tilo.removed")]);
         assert_eq!(
-            resolver
-                .resolve_document(&kinds, "ada", &gone, None)
-                .expect("the machine's own app")
-                .package_id,
-            "org.gnome.TextEditor.desktop"
+            DefaultAppResolver::new(&viewer).resolve(&pdf, "ada", &gone, None),
+            Some(DefaultAppSelection {
+                package_id: "so.tilo.viewer".into(),
+                source: SelectionSource::DeterministicFallback,
+            }),
+            "a default naming an app this device no longer has is skipped"
+        );
+
+        let mut ws = WorkspaceDefaults::default();
+        ws.policy.insert(
+            pdf.clone(),
+            WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
+        );
+        ws.user_choices
+            .entry("ada".into())
+            .or_default()
+            .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
+        let apps = [
+            app("so.tilo.a", "A", "pdf"),
+            app("so.tilo.workspace", "Workspace", "pdf"),
+        ];
+        assert_eq!(
+            opens(
+                &DefaultAppResolver::new(&apps),
+                std::slice::from_ref(&pdf),
+                &PersonalDefaults::default(),
+                Some(&ws)
+            ),
+            ("so.tilo.a".into(), SelectionSource::DeterministicFallback),
+            "an escape from workspace policy stays an escape when the personal app is gone"
         );
     }
 
+    /// A document has the kinds it has — its extension and the type it names — and one
+    /// file opens the same way whichever of them an app claims.
     #[test]
-    fn a_document_falls_through_the_layers_the_same_way_whatever_kind_claims_it() {
-        let kinds = [
-            ResourceKind::extension("txt").unwrap(),
-            ResourceKind::mime("text/plain").unwrap(),
-        ];
-        // The extension is claimed by a Tilo app, the type only by the machine's own editor.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow through every layer the resolver composes, with each former test's assertions kept"
+    )]
+    fn a_document_opens_by_any_of_its_kinds_and_a_package_beats_a_host_app() {
+        let txt = r("txt");
+        let plain = ResourceKind::mime("text/plain").unwrap();
+        let kinds = [txt.clone(), plain.clone()];
         let notes = AppCandidate::package(
             "so.tilo.notes".into(),
             "Notes".into(),
@@ -829,42 +701,68 @@ mod tests {
             )]);
         let personal = PersonalDefaults::default();
 
-        let apps = [editor, notes];
-        let selected = DefaultAppResolver::new(&apps)
-            .with_system_defaults(&chain)
-            .resolve_document(&kinds, "ada", &personal, None)
-            .expect("a claimant");
+        let first = [editor.clone(), notes];
         assert_eq!(
-            selected.package_id, "so.tilo.notes",
+            opens(
+                &DefaultAppResolver::new(&first).with_system_defaults(&chain),
+                &kinds,
+                &personal,
+                None
+            )
+            .0,
+            "so.tilo.notes",
             "a Tilo app claiming any of the document's kinds opens it, before the machine's own"
         );
-
-        let hosts = [AppCandidate::host(
-            "org.gnome.TextEditor",
-            "Text Editor".into(),
-            &["text/plain".into()],
-        )
-        .expect("an entry that claims a type")];
-        let selected = DefaultAppResolver::new(&hosts)
-            .with_system_defaults(&chain)
-            .resolve_document(&kinds, "ada", &personal, None)
-            .expect("a claimant");
-        assert_eq!(selected.package_id, "org.gnome.TextEditor.desktop");
         assert_eq!(
-            selected.source,
-            SelectionSource::SystemDefault,
+            opens(
+                &DefaultAppResolver::new(std::slice::from_ref(&editor))
+                    .with_system_defaults(&chain),
+                &kinds,
+                &personal,
+                None
+            ),
+            (
+                "org.gnome.TextEditor.desktop".into(),
+                SelectionSource::SystemDefault
+            ),
             "the machine's own default decides between its apps"
         );
-
         assert_eq!(
             DefaultAppResolver::new(&[]).resolve_document(&kinds, "ada", &personal, None),
             None,
             "nothing claims it: the person is asked"
         );
-    }
 
-    #[test]
-    fn a_documents_choice_is_the_workspaces_or_the_persons_for_any_of_its_kinds() {
+        // Notes names Markdown only, and the person still picked it for `.txt` files.
+        let notes = AppCandidate::package(
+            "so.tilo.notes".into(),
+            "Notes".into(),
+            &["md".into()],
+            &[],
+            &[],
+            false,
+        );
+        let apps = [editor, notes];
+        let resolver = DefaultAppResolver::new(&apps);
+        assert_eq!(
+            opens(
+                &resolver,
+                std::slice::from_ref(&txt),
+                &chosen(&[(txt.clone(), "so.tilo.notes")]),
+                None
+            ),
+            ("so.tilo.notes".into(), SelectionSource::PersonalDefault),
+            "a choice is the person's, not a claim"
+        );
+        let gone = chosen(&[(txt.clone(), "so.tilo.gone")]);
+        assert_eq!(
+            opens(&resolver, &kinds, &gone, None).0,
+            "org.gnome.TextEditor.desktop",
+            "an app this device does not have is no answer: the open would reach nothing"
+        );
+
+        // A workspace rule for the type and a person's choice for the extension, on one
+        // document.
         let notes = AppCandidate::package(
             "so.tilo.notes".into(),
             "Notes".into(),
@@ -873,116 +771,177 @@ mod tests {
             &[],
             false,
         );
-        let writer = AppCandidate::package(
-            "so.tilo.word-processor".into(),
-            "Word Processor".into(),
-            &["txt".into()],
-            &[],
-            &[],
-            false,
-        );
+        let writer = app("so.tilo.word-processor", "Word Processor", "txt");
         let apps = [notes, writer];
         let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults::default();
-        let kinds = [
-            ResourceKind::extension("txt").unwrap(),
-            ResourceKind::mime("text/plain").unwrap(),
-        ];
         let mut ws = WorkspaceDefaults::default();
-        ws.policy.insert(
-            kinds[1].clone(),
-            WorkspaceDefaultPolicy::App("so.tilo.notes".into()),
-        );
+        ws.policy
+            .insert(plain, WorkspaceDefaultPolicy::App("so.tilo.notes".into()));
         assert_eq!(
-            resolver
-                .resolve_document(&kinds, "ada", &personal, Some(&ws))
-                .expect("a selection")
-                .package_id,
-            "so.tilo.notes",
+            opens(&resolver, &kinds, &personal, Some(&ws)),
+            ("so.tilo.notes".into(), SelectionSource::WorkspacePolicy),
             "the workspace's choice names the type, and the document is of that type"
         );
-
         ws.user_choices.entry("ada".into()).or_default().insert(
-            kinds[0].clone(),
+            txt.clone(),
             UserWorkspaceChoice::App("so.tilo.word-processor".into()),
         );
         assert_eq!(
-            resolver
-                .resolve_document(&kinds, "ada", &personal, Some(&ws))
-                .expect("a selection")
-                .package_id,
-            "so.tilo.word-processor",
+            opens(&resolver, &kinds, &personal, Some(&ws)),
+            (
+                "so.tilo.word-processor".into(),
+                SelectionSource::UserWorkspaceOverride
+            ),
             "the person's own choice, made for the narrower kind, is theirs"
         );
-
-        let mut theirs = PersonalDefaults::default();
-        theirs
-            .handlers
-            .insert(kinds[0].clone(), "so.tilo.word-processor".into());
         assert_eq!(
-            resolver
-                .resolve_document(&kinds, "ada", &theirs, None)
-                .expect("a selection")
-                .package_id,
+            opens(
+                &resolver,
+                &kinds,
+                &chosen(&[(txt, "so.tilo.word-processor")]),
+                None
+            )
+            .0,
             "so.tilo.word-processor",
             "the person's own default opens it outside any workspace"
         );
+
+        // PDF: the machine's own apps, and the host's own default between them.
+        let pdf = ResourceKind::mime("application/pdf").unwrap();
+        let chain =
+            crate::mimeapps::MimeAppsChain::new(vec![crate::mimeapps::MimeAppsList::parse(
+                "[Default Applications]\napplication/pdf=gone.desktop;org.gnome.Evince.desktop;\n",
+            )]);
+        let hosts = [
+            host("okular", "Aardvark PDF", &pdf),
+            host("org.gnome.Evince", "Evince", &pdf),
+        ];
+        assert_eq!(
+            opens(
+                &DefaultAppResolver::new(&hosts).with_system_defaults(&chain),
+                std::slice::from_ref(&pdf),
+                &personal,
+                None
+            ),
+            (
+                "org.gnome.Evince.desktop".into(),
+                SelectionSource::SystemDefault
+            )
+        );
+        let mut with_package = hosts.to_vec();
+        with_package.push(AppCandidate {
+            package_id: "so.tilo.pdf-viewer".into(),
+            display_name: "PDF Viewer".into(),
+            resources: [pdf.clone()].into(),
+            secondary: false,
+        });
+        assert_eq!(
+            opens(
+                &DefaultAppResolver::new(&with_package).with_system_defaults(&chain),
+                std::slice::from_ref(&pdf),
+                &personal,
+                None
+            )
+            .0,
+            "so.tilo.pdf-viewer"
+        );
+        assert_eq!(
+            opens(
+                &DefaultAppResolver::new(&with_package).with_system_defaults(&chain),
+                std::slice::from_ref(&pdf),
+                &chosen(&[(pdf.clone(), "okular.desktop")]),
+                None
+            )
+            .0,
+            "okular.desktop",
+            "a personal choice of a host app wins over a package"
+        );
     }
 
+    /// An editor that imports video claims it on purpose rather than opening it by
+    /// default: another app claiming the resource wins until the person picks it.
     #[test]
-    fn scheme_handlers_use_the_x_scheme_handler_spelling() {
+    fn a_secondary_claimant_is_the_default_only_when_nothing_else_claims() {
+        let mp4 = r("mp4");
+        let mov = r("mov");
+        let editor = AppCandidate {
+            resources: [mp4.clone(), mov.clone()].into(),
+            secondary: true,
+            ..app("so.tilo.video-editor", "Video Editor", "mp4")
+        };
+        let apps = [editor, app("so.tilo.video-player", "Video Player", "mp4")];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = PersonalDefaults::default();
+        assert_eq!(
+            opens(&resolver, std::slice::from_ref(&mp4), &personal, None).0,
+            "so.tilo.video-player",
+            "the player opens video ahead of the editor whose name sorts first"
+        );
+        assert_eq!(
+            opens(&resolver, std::slice::from_ref(&mov), &personal, None).0,
+            "so.tilo.video-editor"
+        );
+        assert_eq!(
+            opens(
+                &resolver,
+                std::slice::from_ref(&mp4),
+                &chosen(&[(mp4.clone(), "so.tilo.video-editor")]),
+                None
+            )
+            .0,
+            "so.tilo.video-editor",
+            "choosing the editor still makes it the default"
+        );
+    }
+
+    /// Identifiers are normalized before they are compared, so a choice made by any
+    /// spelling reaches the file; and a default the person saved comes back on their
+    /// next device.
+    #[test]
+    fn a_default_persists_and_resource_identifiers_are_normalized() {
+        let defaults = PersonalDefaults {
+            handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
+        };
+        let serde_json::Value::Object(section) = serde_json::to_value(&defaults).unwrap() else {
+            panic!("defaults are an object");
+        };
+        assert_eq!(PersonalDefaults::from_section(&section), defaults);
+        assert_eq!(
+            PersonalDefaults::from_section(&serde_json::Map::new()),
+            PersonalDefaults::default()
+        );
+        assert!(validate_package_id(&crate::mimeapps::host_app_id("kde-okular")).is_ok());
+
+        assert_eq!(
+            ResourceKind::mime(" Text/HTML ").unwrap().as_str(),
+            "mime:text/html"
+        );
+        assert_eq!(
+            ResourceKind::scheme("HTTPS:").unwrap().as_str(),
+            "scheme:https"
+        );
+        for mime in [
+            "text",
+            "text/*",
+            "text/html; charset=utf-8",
+            "text/html/extra",
+        ] {
+            assert!(ResourceKind::mime(mime).is_err(), "accepted {mime:?}");
+        }
+        for scheme in ["file", "data", "javascript", "1https", "bad scheme"] {
+            assert!(ResourceKind::scheme(scheme).is_err(), "accepted {scheme:?}");
+        }
+
         let https = ResourceKind::scheme("https").unwrap();
         assert_eq!(
             https.mimeapps_type().as_deref(),
-            Some("x-scheme-handler/https")
+            Some("x-scheme-handler/https"),
+            "the spelling host tools read"
         );
         assert_eq!(
             ResourceKind::from_mimeapps_type("x-scheme-handler/HTTPS"),
             Some(https)
         );
-        assert_eq!(
-            ResourceKind::from_mimeapps_type("text/plain"),
-            ResourceKind::mime("text/plain").ok()
-        );
         assert_eq!(r("pdf").mimeapps_type(), None);
-    }
-
-    #[test]
-    fn defaults_persist_atomically_and_normalize_resource_identifiers() {
-        {
-            let defaults = PersonalDefaults {
-                handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
-            };
-            let serde_json::Value::Object(section) = serde_json::to_value(&defaults).unwrap()
-            else {
-                panic!("defaults are an object");
-            };
-            assert_eq!(PersonalDefaults::from_section(&section), defaults);
-            assert_eq!(
-                PersonalDefaults::from_section(&serde_json::Map::new()),
-                PersonalDefaults::default()
-            );
-        }
-        {
-            assert_eq!(
-                ResourceKind::mime(" Text/HTML ").unwrap().as_str(),
-                "mime:text/html"
-            );
-            assert_eq!(
-                ResourceKind::scheme("HTTPS:").unwrap().as_str(),
-                "scheme:https"
-            );
-            for mime in [
-                "text",
-                "text/*",
-                "text/html; charset=utf-8",
-                "text/html/extra",
-            ] {
-                assert!(ResourceKind::mime(mime).is_err(), "accepted {mime:?}");
-            }
-            for scheme in ["file", "data", "javascript", "1https", "bad scheme"] {
-                assert!(ResourceKind::scheme(scheme).is_err(), "accepted {scheme:?}");
-            }
-        }
     }
 }
