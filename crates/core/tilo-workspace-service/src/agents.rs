@@ -1795,7 +1795,7 @@ impl TurnScope {
             ask: turn.ask.clone(),
             turn: turn.invocation.clone().unwrap_or_default(),
             message: Arc::default(),
-            said: Arc::default(),
+            written: Written::default(),
             claim: None,
         }
     }
@@ -1909,11 +1909,91 @@ struct Reply {
     turn: String,
     /// The reply's message once Chat made it, by its published id.
     message: Arc<Mutex<Option<String>>>,
-    /// What the model wrote of the answer so far, and when the reply last took it.
-    said: Arc<Mutex<(String, Option<Instant>)>>,
+    /// What the model wrote into the reply so far ([`Written`]).
+    written: Written,
     /// This device's claim on the turn, with the turn's stop: renewed with each write, and the
     /// turn stops once another device has it ([`Self::kept`]).
     claim: Option<(Arc<crate::work::Claim>, Arc<std::sync::atomic::AtomicBool>)>,
+}
+
+/// What a model wrote into a reply while its turn went on: what it wrote in the rounds that
+/// ended, and this round's words so far.
+///
+/// A round ends when its answer calls tools, or its call breaks off and is asked again. What it
+/// wrote stays in the reply, and what the next round writes stands a paragraph below it.
+#[derive(Clone, Default)]
+struct Written {
+    /// What the model wrote in the rounds that ended.
+    before: Arc<Mutex<String>>,
+    /// This round's words so far, and when the reply last took them.
+    now: Arc<Mutex<(String, Option<Instant>)>>,
+}
+
+impl Written {
+    /// Take `piece`, more of what the model writes: the reply's body to write, once a moment
+    /// passed since it last took any, and nothing before then.
+    fn take(&self, piece: &str) -> Option<String> {
+        let before = self.before.lock_recover();
+        let mut now = self.now.lock_recover();
+        now.0.push_str(piece);
+        if !now.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY) {
+            return None;
+        }
+        let body = joined(before.trim(), now.0.trim());
+        if body.is_empty() {
+            return None;
+        }
+        now.1 = Some(tilo_clock::now());
+        Some(body)
+    }
+
+    /// The round it writes in ended: what it wrote stays, below what came before it.
+    fn ended(&self) {
+        let mut before = self.before.lock_recover();
+        let mut now = self.now.lock_recover();
+        let said = now.0.trim();
+        if !said.is_empty() {
+            *before = joined(before.trim(), said);
+        }
+        now.0.clear();
+        now.1 = None;
+    }
+
+    /// Everything the model wrote into the reply so far.
+    fn wrote(&self) -> String {
+        let before = self.before.lock_recover();
+        let now = self.now.lock_recover();
+        joined(before.trim(), now.0.trim())
+    }
+
+    /// What a finished answer says: the answer, below what its model wrote before it.
+    fn answered(&self, answer: &str) -> String {
+        let before = self.before.lock_recover();
+        joined(before.trim(), answer.trim())
+    }
+
+    /// What a reply that ended before its answer says: what came, and below it why it ended.
+    /// `why` is left out where the model already wrote it itself.
+    fn kept(&self, why: &str) -> String {
+        let wrote = self.wrote();
+        let why = why.trim();
+        if why.is_empty() || wrote.ends_with(why) {
+            wrote
+        } else if wrote.is_empty() {
+            why.to_owned()
+        } else {
+            format!("{wrote}\n\n{why}")
+        }
+    }
+}
+
+/// `a` and `b` as one body, a blank line between them where both say something.
+fn joined(a: &str, b: &str) -> String {
+    match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.to_owned(),
+        (_, true) => a.to_owned(),
+        _ => format!("{a}\n\n{b}"),
+    }
 }
 
 impl Reply {
@@ -2014,25 +2094,18 @@ impl Reply {
         if self.ask.message().is_none() {
             return;
         }
-        let words = {
-            let mut said = self.said.lock_recover();
-            said.0.push_str(piece);
-            let due = said.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY);
-            if !due || said.0.trim().is_empty() {
-                return;
-            }
-            said.1 = Some(tilo_clock::now());
-            said.0.clone()
+        let Some(words) = self.written.take(piece) else {
+            return;
         };
-        if let Err(error) = self.say(words.trim()).await {
+        if let Err(error) = self.say(&words).await {
             tracing::debug!(workspace = %self.workspace, %error, "the reply did not take what its model wrote");
         }
     }
 
-    /// The model's call broke off and may be asked again: what it wrote so far is dropped, and
-    /// what comes then stands in its place.
+    /// The model's call broke off and may be asked again: what it wrote stays in the reply, and
+    /// what the next ask writes stands below it.
     fn broke_off(&self) {
-        self.said.lock_recover().0.clear();
+        self.written.ended();
     }
 
     /// Leave this ask for what its person wrote next: its reply says the answer follows below,
@@ -2044,7 +2117,7 @@ impl Reply {
         if self.ask.message().is_none() {
             return Ok(());
         }
-        let said = self.said.lock_recover().0.trim().to_owned();
+        let said = self.written.wrote();
         if said.is_empty() {
             self.say(WENT_ON).await
         } else {
@@ -2052,28 +2125,29 @@ impl Reply {
         }
     }
 
-    /// Give the person the turn's answer: in its reply, or as a comment on its task.
+    /// Give the person the turn's answer: in its reply, or as a comment on its task. A reply
+    /// that was stopped or broke off keeps what came and says below it why it ended; a finished
+    /// answer stands below what its model wrote before it.
     ///
     /// # Errors
     /// Chat or Tasks did not take it.
     async fn finished(&self, outcome: &Outcome) -> Result<(), String> {
         let words = match outcome {
-            Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => {
-                words.trim()
-            }
-            Outcome::Cancelled => "I was stopped.",
+            Outcome::Answered(answer) => self.written.answered(answer),
+            Outcome::Stopped(why) | Outcome::Failed(why) => self.written.kept(why),
+            Outcome::Cancelled => self.written.kept("I was stopped."),
         };
-        let words = if words.is_empty() {
-            "I finished without saying what I did; look at the history for my changes."
+        let words = if words.trim().is_empty() {
+            "I finished without saying what I did; look at the history for my changes.".to_owned()
         } else {
             words
         };
         let Ask::Triggered(place) = &self.ask;
         if self.ask.message().is_some() {
-            return self.say(words).await;
+            return self.say(&words).await;
         }
         self.kept().await?;
-        triggered::write_answer(&self.provider, &self.caller, &self.workspace, place, words).await
+        triggered::write_answer(&self.provider, &self.caller, &self.workspace, place, &words).await
     }
 
     /// Send the view `source`, called `title`, into the reply's conversation through Chat's own
@@ -2485,11 +2559,13 @@ async fn work(
         usage: Arc::clone(&usage),
         turns: asking::again(turns, going.stop_flag()),
     }));
+    let written = reply.written.clone();
     let answering = Answering {
         scope,
         going,
         keeping,
         at: tokio::sync::Mutex::new((turn, reply)),
+        written,
         server: &server,
         web: &web,
     };
@@ -2557,6 +2633,9 @@ struct Answering<'a> {
     keeping: Option<&'a learned::Keeping>,
     /// The ask the turn answers now, and where its answer is written.
     at: tokio::sync::Mutex<(&'a mut Turn, &'a mut Reply)>,
+    /// What the model wrote into the reply, kept as the reply's own: a round that calls tools
+    /// leaves what it wrote in the reply, and the answer stands below it.
+    written: Written,
     /// The turn's agent tools, which a document it answers with is read through.
     server: &'a McpServer<WorkspaceActionProvider>,
     /// The public web the turn may look up in ([`web_search`]).
@@ -2579,6 +2658,9 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
     where
         W: Future<Output = tilo_agent_turn::Answer> + Send,
     {
+        // The round its answer calls tools in ended: what it wrote stays in the reply, and the
+        // answer that follows stands below it.
+        self.written.ended();
         let timed = steps::Step::begin(&call.name, (step.nth, step.of));
         let answer = Box::pin(timed.carried_out(work)).await;
         timed.say(answer.text.len(), answer.is_error);
