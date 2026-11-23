@@ -46,7 +46,7 @@ uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../install-profile-model", features = ["model"] }
 # The destination side (`destination`).
-os-actions = { path = "../../system/os-actions", optional = true }
+os-actions = { path = "../os-actions", optional = true }
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 console-control = { path = "../console-control", optional = true }
 tilo-lock = { path = "../../platform/tilo-lock", optional = true }

@@ -174,7 +174,7 @@ pub fn started_variant(bin: &str, profile: &str, features: &str) -> Option<PathB
 /// Give `command` the environment a launcher gives the app it starts: none of
 /// the `TILO_*` or `QUICK_*` choices this test process was started with, and
 /// the prepared fonts the run draws with, which a launch hands on
-/// (`crates/session/app-launch/src/env.rs` names them). A test that starts an
+/// (`crates/desktop/app-launch/src/env.rs` names them). A test that starts an
 /// app as a process of its own calls this instead of clearing the variables
 /// itself, so an app that draws text finds the catalog under nextest too.
 pub fn launch_env(command: &mut std::process::Command) {

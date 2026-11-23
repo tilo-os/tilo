@@ -24,9 +24,9 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
-tilo-service = { path = "../../session/service" }
+tilo-service = { path = "../../desktop/service" }
 # The person's layout as a shell reads it, which the shell's hosts write into its `Layout` root.
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The patch protocol an instance sends its window over.
@@ -74,7 +74,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }
 # The palette, a native app whose actions it lists beside a tilolang app's, and the content
 # index a paragraph of a rich text is found in.
-tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
+tilo-desktop-search = { path = "../../desktop/desktop-search", features = ["indexes"] }
 passwords = { path = "../../../apps/passwords" }
 # The YouTube connector's service, faked at the boundary where the app hands its effects over:
 # the real origin writes a test's own answers into the client's records. No network, no client.

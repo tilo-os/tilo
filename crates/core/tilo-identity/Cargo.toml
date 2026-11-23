@@ -47,7 +47,7 @@ sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
 # The `tracing` target the session log keeps whatever `RUST_LOG` says, under
 # which every certificate renewal a join depends on is reported.

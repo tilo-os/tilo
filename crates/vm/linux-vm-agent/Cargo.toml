@@ -25,7 +25,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 linux-vm-protocol = { path = "../linux-vm-protocol" }
 libc.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-desktop-entry = { path = "../../system/desktop-entry" }
+tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

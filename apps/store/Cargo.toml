@@ -49,7 +49,7 @@ app-registry = { path = "../../crates/core/app-registry" }
 # list comes through `ui::registry`.
 app-catalogue = { path = "../../crates/core/app-catalogue" }
 # The machine's own desktop entries, which name the Flatpak apps it has installed.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/desktop/desktop-entry" }
 tilo-app-id.workspace = true
 blake3.workspace = true
 getrandom.workspace = true

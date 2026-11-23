@@ -510,8 +510,5 @@ fn the_addresses_route_through_the_sessions_one_catalogue() {
     else {
         panic!("describe answers at once");
     };
-    assert_eq!(
-        output.value.expect("a value"),
-        serde_json::json!("A dog")
-    );
+    assert_eq!(output.value.expect("a value"), serde_json::json!("A dog"));
 }

@@ -62,8 +62,8 @@ SCOPES = (
     Path("crates/core/collab-types"),
     Path("crates/core/workspace-join"),
     Path("crates/core/tilo-workspace-service/src/apps"),
-    Path("crates/session/client"),
-    Path("crates/session/session/src/sync"),
+    Path("crates/core/session-client"),
+    Path("crates/desktop/session/src/sync"),
     Path("crates/core/tilo-workspace-service"),
 )
 

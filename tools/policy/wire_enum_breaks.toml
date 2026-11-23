@@ -94,7 +94,7 @@ enum = "Reply"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any reply is decoded"
 
 [[break]]
-file = "crates/session/liveness/src/lib.rs"
+file = "crates/desktop/liveness/src/lib.rs"
 enum = "Answer"
 reason = "one line of JSON per answer between the compositor and its liveness prober (`serde_json::from_str`, `rename_all = snake_case`), both in the same binary, so a variant is named and its place carries no bytes"
 
@@ -224,12 +224,12 @@ enum = "JoinReply"
 reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"
 
 [[break]]
-file = "crates/session/client/src/way_in.rs"
+file = "crates/core/session-client/src/way_in.rs"
 enum = "Way"
 reason = "the page and its runtime, one build, pass it as a kebab-case name within one call (wayIn/wayInAfter return it to the page that asked, which switches on it at once); it is never stored or sent: `busy` goes because a browser is one device of the person and nothing is busy any more"
 
 [[break]]
-file = "crates/session/client/src/way_in.rs"
+file = "crates/core/session-client/src/way_in.rs"
 enum = "Failed"
 reason = "the page names the way that failed to its own runtime, one build, as a kebab-case string within one call (wayInAfter); it is never stored or sent: `member-busy` and `reconnect-busy` go because a tab waits for the person's one device key instead of failing on it"
 
@@ -294,7 +294,7 @@ enum = "PointerSpace"
 reason = "a rename in place: the variant keeps its position, so the postcard bytes of a presence key are unchanged; presence is never stored"
 
 [[break]]
-file = "crates/session/client/src/way_in.rs"
+file = "crates/core/session-client/src/way_in.rs"
 enum = "Scope"
 reason = "`Room` is renamed `Workspace` at the same index: the browser page writes the scope it hands `wayIn` and ships in the same bundle as the runtime that reads it, so no other build's bytes are read"
 
@@ -309,7 +309,7 @@ enum = "TaskRunUpdate"
 reason = "each update travels as JSON, named by its `kind`, on the authenticated task channel between a session and the agent app it hands the run to, and both ship together; the variant named a steering page nothing writes or reads now, so no bytes name it"
 
 [[break]]
-file = "crates/session/desktop-model/src/commands.rs"
+file = "crates/desktop/desktop-model/src/commands.rs"
 enum = "DesktopCommand"
 reason = "`SetLayout` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"
 
@@ -393,7 +393,7 @@ enum = "ContextUpdate"
 reason = "renames RecordsArrived to ResourcesArrived in place: the runtime interface version is bumped with it"
 
 [[break]]
-file = "crates/session/network-actor/src/lib.rs"
+file = "crates/desktop/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
 reason = "frames between two of one person's devices are never kept and both speak one build's format: the RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
 
@@ -487,7 +487,7 @@ enum = "Mode"
 reason = "the picture slot served only the planner's own reads of pictures, which went with it once agent members work through the MCP tools; a mode travels on the pipe between a host and the worker processes it starts from its own binary, and nothing keeps it"
 
 [[break]]
-file = "crates/session/desktop-model/src/capability.rs"
+file = "crates/desktop/desktop-model/src/capability.rs"
 enum = "Capability"
 reason = "desktop control is an action grant naming the app on the desktop's own actions, no longer a sandbox capability; a `Capability` is what an app asks for and no byte of one is kept, and a stored sandbox grant of the old desktop-control device reads as nothing"
 
@@ -586,12 +586,12 @@ enum = "FsRequest"
 reason = "the app's half of the same file calls: runtime interface 34, same build at both ends, never stored"
 
 [[break]]
-file = "crates/session/core/src/layout/mod.rs"
+file = "crates/desktop/session-core/src/layout/mod.rs"
 enum = "LayoutAction"
 reason = "tagged by name, not position: the remaining actions read as before, and an action written with the removed name was refused already and now fails to read"
 
 [[break]]
-file = "crates/session/network-actor/src/fabric/model.rs"
+file = "crates/desktop/network-actor/src/fabric/model.rs"
 enum = "PersonalFabricAction"
 reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"
 

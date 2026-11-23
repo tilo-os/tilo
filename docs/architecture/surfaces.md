@@ -190,7 +190,7 @@ none.
 
 ## Sheets are apps
 
-A sheet over the desktop is an ordinary framework app (`crates/session/sheets`):
+A sheet over the desktop is an ordinary framework app (`crates/desktop/sheets`):
 a resource whose actions are published, a view built from toolkit widgets, and
 scenarios that render it headless. The shell mounts its component in its own
 process and hosts it as a layer (`overlay_host/sheet_apps.rs`, `SheetHost`): the

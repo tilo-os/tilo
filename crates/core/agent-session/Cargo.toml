@@ -70,7 +70,7 @@ weather = { path = "../../../apps/weather" }
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
 # live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
-tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
+tilo-session-client = { path = "../session-client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
 tilo-server-client = { path = "../tilo-server-client" }
 # A device on the live session is named by its endpoint id.
@@ -88,7 +88,7 @@ postcard = { workspace = true, features = ["use-std"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # The shared desktop an agent puts the views it works in on.
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The workspace's canvas on its front page: the shell's package, run and written as HTML as
 # a page shows an app.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }

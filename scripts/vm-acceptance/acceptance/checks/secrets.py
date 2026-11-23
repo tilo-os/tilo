@@ -4,7 +4,7 @@ The compositor loads the device key, which makes it non-dumpable: no other proce
 the store included, can read its `/proc/<pid>/exe`. It proves on each bus connection
 that it holds the device key instead (`so.tilo.Secrets1.CallerChallenge`/`ProveCaller`,
 docs/identity-security.md, "Callers the store cannot examine"), and the store then
-answers it as `binary:/usr/bin/tilo-session`. `crates/system/secret-service/tests/identity_ownership.rs`
+answers it as `binary:/usr/bin/tilo-session`. `crates/desktop/secret-service/tests/identity_ownership.rs`
 proves that protocol with the production client code; these checks prove it with the
 real compositor on the installed image.
 

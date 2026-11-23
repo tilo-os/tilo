@@ -53,9 +53,9 @@ runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # library does not export.
 provider-settings-ui = { path = "../../../integrations/provider-settings-ui", optional = true }
 tilo-ntfs-mount = { path = "../../../os/ntfs-mount", default-features = false, optional = true }
-tilo-wallpapers = { path = "../../../platform/tilo-wallpapers", optional = true }
-tilo-accessibility-settings = { path = "../../../platform/tilo-accessibility-settings", features = ["model"], optional = true }
-tilo-pc-keyboard-geometry = { path = "../../../platform/pc-keyboard-geometry", optional = true }
+tilo-wallpapers = { path = "../../../desktop/tilo-wallpapers", optional = true }
+tilo-accessibility-settings = { path = "../../../desktop/tilo-accessibility-settings", features = ["model"], optional = true }
+tilo-pc-keyboard-geometry = { path = "../../../desktop/pc-keyboard-geometry", optional = true }
 tilo-zone-globe = { path = "../../../sdk/zone-globe", optional = true }
 settings-sections = { path = "../../../system/settings-sections", optional = true }
 # Settings' library: the window, its effects and every pane. The app's

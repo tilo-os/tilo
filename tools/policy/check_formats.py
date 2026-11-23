@@ -45,6 +45,64 @@ ROOT = Path(__file__).resolve().parents[2]
 SCOPES = (Path("apps"), Path("crates/session"), Path("crates/sdk"))
 # Crates of the same kind that live in other groups.
 SCOPES += (
+    Path("crates/services/media-controls"),
+)
+# Crates of the same kind that live in other groups.
+SCOPES += (
+    Path("crates/desktop/app-keeper"),
+    Path("crates/desktop/app-launch"),
+    Path("crates/desktop/capture-studio"),
+    Path("crates/desktop/color-params"),
+    Path("crates/desktop/color-pipeline"),
+    Path("crates/desktop/compositor"),
+    Path("crates/desktop/control-cli"),
+    Path("crates/desktop/session-core"),
+    Path("crates/desktop/desktop-model"),
+    Path("crates/desktop/window-placement"),
+    Path("crates/desktop/desktop-search"),
+    Path("crates/desktop/dictation"),
+    Path("crates/desktop/flight-log"),
+    Path("crates/desktop/frame-metrics"),
+    Path("crates/desktop/liveness"),
+    Path("crates/desktop/lock-screen"),
+    Path("crates/desktop/native-media"),
+    Path("crates/desktop/network-actor"),
+    Path("crates/desktop/notifications-service"),
+    Path("crates/desktop/onboarding"),
+    Path("crates/desktop/onboarding-session"),
+    Path("crates/desktop/onboarding-walk"),
+    Path("crates/desktop/portal"),
+    Path("crates/desktop/render-service"),
+    Path("crates/desktop/service"),
+    Path("crates/desktop/session"),
+    Path("crates/desktop/session-logging"),
+    Path("crates/desktop/sheets"),
+    Path("crates/desktop/tilo-unlock-helper"),
+    Path("crates/desktop/tray"),
+    Path("crates/desktop/wayland-ext"),
+    Path("crates/desktop/window-share"),
+    Path("crates/desktop/x11-transfer"),
+)
+# Crates of the same kind that live in other groups.
+SCOPES += (
+    Path("crates/desktop"),
+    Path("crates/os/audio-service"),
+    Path("crates/os/bluetooth-agent"),
+    Path("crates/core/session-client"),
+    Path("crates/os/connectivity-service"),
+    Path("crates/services/crash-reports"),
+    Path("crates/core/identity-authority"),
+    Path("crates/os/network-secret-agent"),
+    Path("crates/os/polkit-agent"),
+    Path("crates/os/power-service"),
+    Path("crates/os/prepared-setup-model"),
+    Path("crates/core/session-actions"),
+    Path("crates/os/system-service"),
+    Path("crates/services/vision-service"),
+    Path("crates/core/workspace-directory"),
+)
+# Crates of the same kind that live in other groups.
+SCOPES += (
     Path("crates/core/tilo-resource"),
     Path("crates/core/tilo-resource-macros"),
 )

@@ -159,14 +159,14 @@ class AppCopyTests(unittest.TestCase):
             (root / "crates/session/desktop-surface/Cargo.toml").write_text(
                 '[package]\nname = "tilo-desktop-surface"\n')
             own = "session-x = X\n"
-            self.crate(root, "crates/session/session", {"en-US": own, "de-DE": own},
+            self.crate(root, "crates/desktop/session", {"en-US": own, "de-DE": own},
                        'use tilo_desktop_surface::i18n::{t, t_args};\n'
                        'fn pane() { t("settings-title"); t_args("settings-gone", &[]); '
                        'crate::i18n::t("session-x"); }\n')
             self.assertEqual(copy.missing_copy(root), [
-                "crates/session/session/src/view.rs:2: de-DE lacks settings-gone "
+                "crates/desktop/session/src/view.rs:2: de-DE lacks settings-gone "
                 "(crates/session/desktop-surface)",
-                "crates/session/session/src/view.rs:2: en-US lacks settings-gone "
+                "crates/desktop/session/src/view.rs:2: en-US lacks settings-gone "
                 "(crates/session/desktop-surface)",
             ])
 

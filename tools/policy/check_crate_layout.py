@@ -45,7 +45,7 @@ GROUPS = {
 }
 # Groups the layout no longer names whose crates are still being moved out; each leaves this
 # list when it is empty.
-LEAVING = {"session", "system", "packaging"}
+LEAVING = {"session", "system"}
 
 # What each group may link besides itself.
 ALLOWED = {

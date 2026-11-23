@@ -124,7 +124,7 @@ names are stable even when directories move.
 | Identity, MLS groups, action policy, collaboration state | `crates/core/` (`tilo-user-identity`, `tilo-device-identity`, `key-group`, `action-policy`, `tilo-peer-state`) |
 | Automerge (vendored fork) | `vendor/automerge`, used through `crates/core/tilo-automerge` |
 | Files and storage | `crates/core/fs`, `crates/core/fs-native` |
-| Compositor and shell | `crates/session/session` |
+| Compositor and shell | `crates/desktop/session` |
 | Web runtime (the page a browser enters a workspace with) | `crates/core/tilo-browser-runtime` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
 | Packages, sandboxed launch, the registry | `crates/packaging/` |

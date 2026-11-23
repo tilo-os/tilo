@@ -83,7 +83,7 @@ class Boundary:
 BOUNDARIES = (
     Boundary(
         package="tilo-desktop-model",
-        manifest="crates/session/desktop-model/Cargo.toml",
+        manifest="crates/desktop/desktop-model/Cargo.toml",
         forbidden=frozenset(
             {
                 "dirs",

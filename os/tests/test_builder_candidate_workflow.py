@@ -112,11 +112,11 @@ class BuilderCandidates(unittest.TestCase):
         self.assertEqual(peer[:2], ('tilo-session-client', 'it'))
         modules = ('carriers', 'node_workspace', 'voice_browsers')
         self.assertEqual(filterset_terms(peer[2]), {('test', f'{module}::') for module in modules})
-        binary = (ROOT / 'crates/session/client/tests/it.rs').read_text()
+        binary = (ROOT / 'crates/core/session-client/tests/it.rs').read_text()
         for module in modules:
             with self.subTest(module=module):
                 self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
-                tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
+                tests = (ROOT / f'crates/core/session-client/tests/{module}.rs').read_text()
                 self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
         # Execute the canary's own shell, intercepting only the browser itself, node and the
         # expensive wrapper. A peer failure may not pass.

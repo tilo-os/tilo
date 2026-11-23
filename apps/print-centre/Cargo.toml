@@ -30,7 +30,7 @@ hex.workspace = true
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/engines/loadable/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-os-actions = { path = "../../crates/system/os-actions" }
+os-actions = { path = "../../crates/os/os-actions" }
 tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"] }
 tilo-ocr = { path = "../../crates/engines/ocr" }
 tilo-doc-pdf = { path = "../../crates/engines/tilo-doc-pdf" }

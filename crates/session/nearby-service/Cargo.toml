@@ -32,7 +32,7 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 iroh.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
-tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+tilo-network-actor = { path = "../../desktop/network-actor", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["full"] }
 

@@ -13,7 +13,7 @@ name = "tilo_system_info"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-system-stats = { path = "../../system/system-stats" }
+tilo-system-stats = { path = "../../os/system-stats" }
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 tracing.workspace = true
 

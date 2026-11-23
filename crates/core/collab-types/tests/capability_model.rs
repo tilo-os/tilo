@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
 
         // Case: a role names its holders through the workspace's policy, which is
         // not what a published list knows: the list names its members (see
-        // `crates/session/session/src/fs_authority.rs`).
+        // `crates/desktop/session/src/fs_authority.rs`).
         let caps = vec![CapOverride::grant(
             Grantee::Role(Role::Viewer),
             Scope::FsPath("/var/workspace/design".into()),

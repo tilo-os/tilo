@@ -50,6 +50,64 @@ SAMPLES = ("templates", "examples")
 UNREAD = ("crates/session",)
 # Crates of the same kind that live in other groups.
 UNREAD += (
+    "crates/services/media-controls",
+)
+# Crates of the same kind that live in other groups.
+UNREAD += (
+    "crates/desktop/app-keeper",
+    "crates/desktop/app-launch",
+    "crates/desktop/capture-studio",
+    "crates/desktop/color-params",
+    "crates/desktop/color-pipeline",
+    "crates/desktop/compositor",
+    "crates/desktop/control-cli",
+    "crates/desktop/session-core",
+    "crates/desktop/desktop-model",
+    "crates/desktop/window-placement",
+    "crates/desktop/desktop-search",
+    "crates/desktop/dictation",
+    "crates/desktop/flight-log",
+    "crates/desktop/frame-metrics",
+    "crates/desktop/liveness",
+    "crates/desktop/lock-screen",
+    "crates/desktop/native-media",
+    "crates/desktop/network-actor",
+    "crates/desktop/notifications-service",
+    "crates/desktop/onboarding",
+    "crates/desktop/onboarding-session",
+    "crates/desktop/onboarding-walk",
+    "crates/desktop/portal",
+    "crates/desktop/render-service",
+    "crates/desktop/service",
+    "crates/desktop/session",
+    "crates/desktop/session-logging",
+    "crates/desktop/sheets",
+    "crates/desktop/tilo-unlock-helper",
+    "crates/desktop/tray",
+    "crates/desktop/wayland-ext",
+    "crates/desktop/window-share",
+    "crates/desktop/x11-transfer",
+)
+# Crates of the same kind that live in other groups.
+UNREAD += (
+    "crates/desktop",
+    "crates/os/audio-service",
+    "crates/os/bluetooth-agent",
+    "crates/core/session-client",
+    "crates/os/connectivity-service",
+    "crates/services/crash-reports",
+    "crates/core/identity-authority",
+    "crates/os/network-secret-agent",
+    "crates/os/polkit-agent",
+    "crates/os/power-service",
+    "crates/os/prepared-setup-model",
+    "crates/core/session-actions",
+    "crates/os/system-service",
+    "crates/services/vision-service",
+    "crates/core/workspace-directory",
+)
+# Crates of the same kind that live in other groups.
+UNREAD += (
     "crates/os/console-control",
     "crates/os/greetd-client",
     "crates/os/greeter",

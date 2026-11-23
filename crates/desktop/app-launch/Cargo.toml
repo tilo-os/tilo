@@ -1,0 +1,96 @@
+[package]
+name = "tilo-app-launch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Starting an application from the desktop: the launch vocabulary, each app's environment, host entry kinds, document and link routing, and crash reporting."
+
+# What the desktop starts and how: a Tilo package through `tilo-launcher`, the
+# machine's own applications through their desktop entries, and the workspace and
+# environment either is given. Nothing here draws; the session owns the loop
+# and hands over what this crate plans and spawns.
+
+[features]
+# The boundary a session's tests report an ending through, for the apps it did
+# not start itself.
+test-support = ["tilo-app-keeper/test-support"]
+
+[dependencies]
+# The machine's own applications: their entries, entry kinds and launch plans.
+# Reading a downloaded `AppImage`'s own name and artwork needs its image.
+desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../desktop-entry", features = ["appimage"] }
+# An installed app read through the signed manifest it was admitted with.
+app-catalogue = { path = "../../core/app-catalogue" }
+# The workspace's grants, as the launcher's capability file carries them, and
+# the policy the person's authority in it is projected from.
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+# Publishing the projection the launcher binds, and holding it for as long as
+# the session vouches for it.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
+blake3.workspace = true
+# A record's id: what one is, and the URI that asks an app to open it.
+# The extended attributes a workspace mount answers a record's path on.
+host-fs = { path = "../../core/host-fs" }
+fs-protocol = { path = "../../core/fs-protocol" }
+# The downloaded programs' registry: the session resource, its actions and
+# the worker they run on.
+tilo-actions = { path = "../../core/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-service = { path = "../service" }
+# The log target an app's own output is relayed under, which the session log
+# always keeps.
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+# Bounded line cutting for what an app writes to its standard streams.
+wire-frame = { path = "../../platform/wire-frame" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+# Whether a process the session met is still that process, and still running.
+tilo-process = { path = "../../platform/tilo-process" }
+tilo-paths.workspace = true
+# The type a document's path names, for the app that claims it.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
+# Which app opens a document or a link: the workspace's and the person's default apps, and the
+# machine's own, resolved in that order.
+desktop-policy = { path = "../default-apps", default-features = false }
+# The signed manifest an installed app was admitted with.
+tilo-app-package = { path = "../../core/tilo-app-package" }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+# The window link an app's later windows are asked for on, and the release a
+# launch takes it with.
+runtime-portal = { path = "../../core/runtime-portal", default-features = false }
+launcher = { path = "../../core/launcher" }
+# The window request the channel carries, as the app reads it.
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The control interface of the keeper an app that is not Tilo's runs behind.
+tilo-app-keeper = { path = "../app-keeper" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# A record a window kept, written as its own process writes it, read back
+# where its host keeps it.
+# The subscriber a test reads what an app wrote back through.
+tracing-subscriber = { workspace = true }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The desktop a kept app's keeper is attached to in its tests.
+tilo-compositor = { path = "../compositor" }
+# A keeper of an older build, in the tests of what a session does with one.
+tilo-app-keeper = { path = "../app-keeper", features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -31,7 +31,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 # names.
 package-actions = { path = "../package-actions" }
 # The workspace's trust list, read through the desktop's action API.
-tilo-control = { path = "../../session/control-cli" }
+tilo-control = { path = "../../desktop/control-cli" }
 clap.workspace = true
 hex.workspace = true
 serde_json.workspace = true

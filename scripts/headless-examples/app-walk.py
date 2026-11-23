@@ -743,7 +743,7 @@ def session_args_of(spec: dict, variant: str, device: str | None = None) -> list
 
 # Where a walk's devices hear each other: the sessions are beside each other on this host's
 # loopback, and the network a check's machine has carries no multicast between them (as the
-# session's own multi-device tests start their devices, crates/session/session/tests/common).
+# session's own multi-device tests start their devices, crates/desktop/session/tests/common).
 LAN_NETWORKS_ENV = "TILO_LAN_NETWORKS"
 # What a walk of several devices' sessions say: why a join or a sync did not land is the finding.
 DEVICES_LOG = ("warn,tilo::launch_latency=info,tilo::join_flow=debug,tilo_session::layout=info,"

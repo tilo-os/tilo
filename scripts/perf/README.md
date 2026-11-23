@@ -22,7 +22,7 @@ executable stand-alone; the higher-level flow is described below.
   tree's headless desktop, from the session's own `KEY-LATENCY` lines
   (key -> client commit -> compositor submit -> the vblank that shows it).
   It types into the synthetic client that answers each key with one commit
-  (`crates/session/session/examples/latency_client.rs`), or into an installed
+  (`crates/desktop/session/examples/latency_client.rs`), or into an installed
   app with `--app so.tilo.tasks` / a tilolang app's id, opens the session
   through `scripts/headless-examples/real_apps.py`, and reports p50/p90/p99
   per leg. It leaves out the kernel input stack and the panel, so it measures

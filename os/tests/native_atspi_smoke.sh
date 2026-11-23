@@ -405,7 +405,7 @@ oobe_to_connect_field() {
 # tree. It catches a provider that advertises controls but drops
 # ActionRequest messages before the compositor's widget dispatcher.
 # The backup step's acknowledgement, as the shell says it
-# (onboarding-backup-skip-acknowledgement in crates/session/onboarding/locales/en-US.ftl).
+# (onboarding-backup-skip-acknowledgement in crates/desktop/onboarding/locales/en-US.ftl).
 skip_backup_acknowledgement="I understand that without a recovery key or backup, losing this device means losing this identity."
 oobe_to_backup() {
   if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then

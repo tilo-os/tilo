@@ -1,0 +1,52 @@
+[package]
+name = "tilo-system-stats"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The typed system information service: machine load, running apps and a limited process list, pushed to subscribed apps by the session."
+
+# The session (the compositor) hosts the service and reads the kernel's
+# reporting interfaces; apps hold a connection the launcher authenticated and
+# never see /proc of anything outside their sandbox.
+
+[lib]
+name = "tilo_system_stats"
+path = "src/lib.rs"
+
+[features]
+# Drive health from UDisks2 over the system bus, read by the session (the
+# compositor enables it). Apps speak the protocol and never need it.
+udisks = ["dep:zbus", "block-devices/udisks"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+wire-frame = { path = "../../platform/wire-frame" }
+# The clock that also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+
+# The session lists the machine's block devices with lsblk.
+[target.'cfg(target_os = "linux")'.dependencies]
+block-devices = { path = "../block-devices" }
+# Matches the zbus the disk tools resolve, so one copy stays in the lock.
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+
+[target.'cfg(unix)'.dependencies]
+# The service's socket is bound and reached by path.
+tilo-files = { path = "../../platform/tilo-files" }
+libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "process"] }
+
+# The workspace-hack's native feature set does not build for wasm32, and the
+# browser builds the desktop, and so this service, for it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

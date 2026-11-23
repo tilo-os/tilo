@@ -62,13 +62,13 @@ ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-cod
 # nothing.
 SHELL_PACKAGES = (
     "crates/session/desktop",
-    "crates/session/desktop-model",
-    "crates/session/desktop-policy",
+    "crates/desktop/desktop-model",
+    "crates/desktop/window-placement",
     "crates/session/desktop-surface",
-    "crates/session/core",
+    "crates/desktop/session-core",
 )
 DESKTOP_CHECK_PACKAGE = "tilo-session"
-DESKTOP_CHECK_MANIFEST = "crates/session/session/Cargo.toml"
+DESKTOP_CHECK_MANIFEST = "crates/desktop/session/Cargo.toml"
 # The shell's integration tests, by the file each is written in. They are modules
 # of the package's one test binary (`tests/it.rs` includes each file), so the
 # check names that binary once and picks the modules out by the name each test

@@ -6,7 +6,7 @@
 //!
 //! The devices here are the two sides of the peer network on a loopback relay:
 //! what the answering device does with the request is the session's
-//! (`crates/session/session/tests/network_unlock_enrolment.rs` proves that).
+//! (`crates/desktop/session/tests/network_unlock_enrolment.rs` proves that).
 
 #![cfg(target_os = "linux")]
 #![allow(

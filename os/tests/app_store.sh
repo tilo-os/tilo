@@ -314,7 +314,7 @@ else
       # hold is that exactly one file of the crate defines it, that this file
       # binds the launcher's socket, and that another file of the crate calls
       # it.
-      session_src="$REPO/crates/session/session/src"
+      session_src="$REPO/crates/desktop/session/src"
       native="$(grep -rlF 'pub(crate) fn start_app_wire(' "$session_src" || true)"
       defined="$(printf '%s\n' "$native" | grep -c . || true)"
       if [ "$defined" -ne 1 ]; then

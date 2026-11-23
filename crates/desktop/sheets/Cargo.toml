@@ -1,0 +1,47 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-sheets"
+description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory, workspace settings, the file chooser and the questions the shell asks on an app's or a service's behalf (portal, authentication and network-secret sheets)."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# One test binary for the integration tests, whose files it includes as
+# modules: a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+settings-store = { path = "../../system/settings-store" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+zeroize = { workspace = true }
+# The directory sheet's store: the sites it reads and the joins it asks for, on one app task.
+tilo-workspace-directory = { path = "../../core/workspace-directory" }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+tilo-workspace-join = { path = "../../core/workspace-join" }
+tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
+tilo-rt = { path = "../../platform/tilo-rt" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+url.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

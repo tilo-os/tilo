@@ -497,7 +497,6 @@ atspi-common = { path = "../../vendor/atspi-common", default-features = false, f
 atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
-futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -534,7 +533,6 @@ atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false,
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
-futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -570,7 +568,6 @@ atspi-common = { path = "../../vendor/atspi-common", default-features = false, f
 atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
-futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -607,7 +604,6 @@ atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false,
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
-futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }

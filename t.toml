@@ -244,7 +244,7 @@ on = ["dispatch"]
 #
 # A flow whose tests another package holds adds a matrix entry with its own `-p` and filter, and a
 # run names what it starts the way that package's family does. The flows in
-# crates/session/client/tests start the server's workspace service as a deployment does: the ci
+# crates/core/session-client/tests start the server's workspace service as a deployment does: the ci
 # profile's `lounge-siblings` setup builds it for the tests its filter matches, so a flow module it
 # should build goes in that filter (.config/nextest.toml) and the entry is `-p tilo-session-client
 # --test it -E 'test(flow_<name>::)'`. The VM-only steps of flow 1 (a hosted Browser and a command
@@ -3230,7 +3230,7 @@ default = false
 
 # Pictures of the shell the session's own tests take (SHELL_UI_SHOTS_OUT): the protected sheet a
 # person types a password into for an agent's account sign-in
-# (crates/session/session/tests/network_agent_questions.rs). Only when named.
+# (crates/desktop/session/tests/network_agent_questions.rs). Only when named.
 [[check]]
 name = "shell-ui-shots"
 egress = { to = ["code.tilo.so:443"], pinned = true }

@@ -1116,7 +1116,7 @@ def mem(ctx, res):
 
 
 # The compositor trims at most every 10 s, and up to 5 s after the closes that asked
-# (crates/session/session/src/heap_trim.rs).
+# (crates/desktop/session/src/heap_trim.rs).
 AFTER_CLOSE_TRIM_S = 20
 
 # The account user's per-user runtime builds and app store, in bytes: what downloaded

@@ -417,7 +417,7 @@ name = "app-store"
 inputs = [
   "os/", "apps/", "Cargo.toml", "*Cargo.toml",
   "crates/core/install/", "crates/core/launcher/", "crates/core/runtime-bundle/",
-  "crates/session/session/",
+  "crates/desktop/session/",
 ]
 suites = ["os/tests/app_store.sh"]
 
@@ -449,7 +449,7 @@ suites = [
 name = "printing"
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/core/launcher/",
-  "crates/system/os-actions/", "crates/platform/sandbox-core/",
+  "crates/os/os-actions/", "crates/platform/sandbox-core/",
   "crates/engines/tilo-capture/src/scanner.rs",
 ]
 suites = ["os/tests/printing_isolation.sh"]
@@ -799,7 +799,7 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
-  "crates/session/session/device-surface.json",
+  "crates/desktop/session/device-surface.json",
   "apps/contacts/surface.toml",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
@@ -921,8 +921,8 @@ readers = ["crates/core/tilo-peer-state/src/state/leases.rs"]
 [[cargo]]
 package = "onboarding-walk"
 # The names test reads the onboarding app whose controls it walks.
-inputs = ["crates/session/onboarding/src/"]
-readers = ["crates/session/onboarding-walk/tests/names.rs"]
+inputs = ["crates/desktop/onboarding/src/"]
+readers = ["crates/desktop/onboarding-walk/tests/names.rs"]
 
 [[cargo]]
 package = "provider-settings-ui"
@@ -1195,6 +1195,12 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  "crates/desktop/pc-keyboard-geometry/",
+  "crates/desktop/tilo-accessibility-settings/",
+  "crates/desktop/tilo-input-context/",
+  "crates/desktop/tilo-keyboard-map/",
+  "crates/desktop/tilo-system-resources/",
+  "crates/desktop/tilo-wallpapers/",
   "crates/core/tilo-resource/",
   "crates/core/tilo-resource-macros/",
   "crates/core/tilo-app-id/",
@@ -1338,7 +1344,7 @@ readers = ["crates/compat/compat-service/src/plan.rs"]
 [[cargo]]
 package = "os-actions"
 inputs = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
-readers = ["crates/system/os-actions/src/windows_compat.rs"]
+readers = ["crates/os/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "linux-vm"
@@ -1439,7 +1445,7 @@ inputs = [
   "crates/ui/ui-core/assets/fonts/",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
-  "crates/session/client/tests/support/",
+  "crates/core/session-client/tests/support/",
   "docs/tilo-sh/pages.toml",
   "tools/with-test-environment.sh",
 ]
@@ -1500,7 +1506,7 @@ readers = ["crates/core/collab-types/src/surface.rs"]
 package = "tilo-projector"
 # The CI target compiles the exact production TLS source, including its tests.
 inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]
-readers = ["crates/system/projector/tests/cast_tls.rs", "crates/system/projector/tests/cast_auth.rs"]
+readers = ["crates/services/projector/tests/cast_tls.rs", "crates/services/projector/tests/cast_auth.rs"]
 scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/"], test = "cast_tls", filter = "binary(cast_tls)" }
 
 [[cargo]]
@@ -1533,7 +1539,7 @@ inputs = [
   "crates/core/launcher/src/services.rs",
   "crates/core/launcher/src/main.rs",
   "crates/core/launcher/src/system_stats.rs",
-  "crates/system/system-stats/src/protocol.rs",
+  "crates/os/system-stats/src/protocol.rs",
   "crates/ui/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
   # Every app's manifest, which the mount's service tests read the declared
@@ -1548,19 +1554,19 @@ inputs = [
   "crates/engines/paint-stream/tests/fixtures/layers.top.json",
 ]
 readers = [
-  "crates/session/session/tests/no_locale_leaks.rs",
-  "crates/session/session/src/page_track.rs",
-  "crates/session/session/src/window_share/tests/page.rs",
-  "crates/session/session/src/window_share/tests/watching.rs",
-  "crates/session/session/src/services/mod.rs",
-  "crates/session/session/src/nearby_transfer.rs",
-  "crates/session/session/src/app_wire.rs",
-  "crates/session/session/src/shell/mod.rs",
-  "crates/session/session/tests/common/dev_apps.rs",
-  "crates/session/session/tests/common/mod.rs",
-  "crates/session/session/tests/common/people.rs",
-  "crates/session/session/tests/firstboot.rs",
-  "crates/session/session/tests/session_package.rs",
+  "crates/desktop/session/tests/no_locale_leaks.rs",
+  "crates/desktop/session/src/page_track.rs",
+  "crates/desktop/session/src/window_share/tests/page.rs",
+  "crates/desktop/session/src/window_share/tests/watching.rs",
+  "crates/desktop/session/src/services/mod.rs",
+  "crates/desktop/session/src/nearby_transfer.rs",
+  "crates/desktop/session/src/app_wire.rs",
+  "crates/desktop/session/src/shell/mod.rs",
+  "crates/desktop/session/tests/common/dev_apps.rs",
+  "crates/desktop/session/tests/common/mod.rs",
+  "crates/desktop/session/tests/common/people.rs",
+  "crates/desktop/session/tests/firstboot.rs",
+  "crates/desktop/session/tests/session_package.rs",
 ]
 
 [[cargo]]
@@ -1576,7 +1582,7 @@ package = "tilo-session-client"
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
 inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "apps/feeds/surface.toml", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
+readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/tests/surface_by_hash.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]

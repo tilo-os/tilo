@@ -296,7 +296,7 @@ RUN --network=none \
 # flavour marker; then proof that every piece above is really in place.
 #
 # The session this image ships is the one it built: a release dev-overrides
-# build, which stamps the dev image's marker (crates/session/session). The
+# build, which stamps the dev image's marker (crates/desktop/session). The
 # developer entry's marker is a debug build's and a release build never carries
 # it, so this check asks for the dev image's own.
 ARG BASE_IMAGE

@@ -133,7 +133,7 @@
   },
   "so.tilo.session notifications.banners#open": {
     "to": "so.tilo.session notifications.banners#open-banner",
-    "test": "crates/session/session/src/notifications/tests.rs:1666"
+    "test": "crates/desktop/session/src/notifications/tests.rs:1666"
   },
   "so.tilo.settings settings.mcp-server#apply": {
     "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
@@ -153,7 +153,7 @@
   },
   "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
     "to": "an agent with its own key is let in by the grant its person's device made with that key, on every device of the person; the person lists, stops and revokes it",
-    "test": "crates/session/client/tests/mcp_server.rs:213"
+    "test": "crates/core/session-client/tests/mcp_server.rs:213"
   },
   "so.tilo.settings settings.mcp-server#set-act-without-asking": {
     "to": "an agent's ask on the person's device: an answer to always allow stands for that agent, that action and that workspace, listed with the person's permissions and taken back there",
@@ -165,15 +165,15 @@
   },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
-    "test": "crates/session/session/tests/youtube_client.rs:57"
+    "test": "crates/desktop/session/tests/youtube_client.rs:57"
   },
   "so.tilo.tube tube.library#open-playlist": {
     "to": "so.tilo.tube tl.so.tilo.tube.Playlist#open",
-    "test": "crates/session/session/tests/youtube_client.rs:225"
+    "test": "crates/desktop/session/tests/youtube_client.rs:225"
   },
   "so.tilo.tube tube.library#open-video": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#open",
-    "test": "crates/session/session/tests/youtube_client.rs:145"
+    "test": "crates/desktop/session/tests/youtube_client.rs:145"
   },
   "so.tilo.tube tube.library#search": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#search",
@@ -189,11 +189,11 @@
   },
   "so.tilo.tube tube.watch-history#clear": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#delete_history",
-    "test": "crates/session/session/tests/youtube_client.rs:225"
+    "test": "crates/desktop/session/tests/youtube_client.rs:225"
   },
   "so.tilo.tube tube.watch-history#forget": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#forget",
-    "test": "crates/session/session/tests/youtube_client.rs:225"
+    "test": "crates/desktop/session/tests/youtube_client.rs:225"
   },
   "so.tilo.tube tube.watch-history#import-previous": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#carry_native_tube",
@@ -201,6 +201,6 @@
   },
   "so.tilo.tube tube.watch-history#progress": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#progress",
-    "test": "crates/session/session/tests/youtube_client.rs:225"
+    "test": "crates/desktop/session/tests/youtube_client.rs:225"
   }
 }

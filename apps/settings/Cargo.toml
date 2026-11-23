@@ -44,14 +44,14 @@ jiff.workspace = true
 provider-settings-ui = { version = "0.1.0", path = "../../crates/integrations/provider-settings-ui" }
 # Shared platform layout data keeps Settings independent of the OSK app. Reading the layouts a
 # device has installed needs libxkbcommon, so only the device panes (`tilo-os`) turn that on.
-tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map", default-features = false }
+tilo-keyboard-map = { version = "0.1.0", path = "../../crates/desktop/tilo-keyboard-map", default-features = false }
 # The outlines the keyboard preview draws.
-tilo-pc-keyboard-geometry = { path = "../../crates/platform/pc-keyboard-geometry" }
+tilo-pc-keyboard-geometry = { path = "../../crates/desktop/pc-keyboard-geometry" }
 # The Date & Time pane's globe.
 tilo-zone-globe = { path = "../../crates/sdk/zone-globe" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
 # The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
-tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
+tilo-wallpapers = { version = "0.1.0", path = "../../crates/desktop/tilo-wallpapers" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-process = { path = "../../crates/platform/tilo-process" }
@@ -59,18 +59,18 @@ tilo-rt = { path = "../../crates/platform/tilo-rt" }
 bounded-command = { path = "../../crates/platform/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 # The sections Settings edits, which the session keeps as resources too.
 settings-sections = { path = "../../crates/system/settings-sections" }
-tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
-desktop-policy = { path = "../../crates/system/desktop-policy" }
+tilo-accessibility-settings = { path = "../../crates/desktop/tilo-accessibility-settings", features = ["model"] }
+desktop-policy = { path = "../../crates/desktop/default-apps" }
 package-store = { path = "../../crates/core/package-store" }
 # Installed manifests are read through the package format's one decoder,
 # not the sandbox launcher's library.
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry", optional = true }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/desktop/desktop-entry", optional = true }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
 # deserialise the per-workspace grants the shell writes to
@@ -88,10 +88,10 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # network, bluetooth). The crate lives at the workspace root so both
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
-os-actions = { path = "../../crates/system/os-actions", optional = true }
+os-actions = { path = "../../crates/os/os-actions", optional = true }
 # The session's `system-update` resource: the reading the Updates pane shows and the names of
 # its actions.
-tilo-system-resources = { path = "../../crates/platform/tilo-system-resources", optional = true }
+tilo-system-resources = { path = "../../crates/desktop/tilo-system-resources", optional = true }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
 tilo-ntfs-mount = { path = "../../crates/os/ntfs-mount", default-features = false, optional = true }
 # Public identity summaries, as the host's identity actions answer them. The
@@ -119,7 +119,7 @@ media = { package = "tilo-media", path = "../../crates/engines/tilo-media", opti
 # The session's `sound` resource: the reading the Sound pane shows and the
 # actions its controls take. Without the `service` feature: the pane needs
 # the resource's spec and types, the session runs the service.
-tilo-audio-service = { path = "../../crates/session/audio-service", default-features = false, optional = true }
+tilo-audio-service = { path = "../../crates/os/audio-service", default-features = false, optional = true }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.

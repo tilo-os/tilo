@@ -195,9 +195,9 @@ CASES = (
     ),
     Case(
         check="check_swallowed_failures",
-        files={"crates/session/session/src/lib.rs": "pub fn run() {}\n"},
+        files={"crates/desktop/session/src/lib.rs": "pub fn run() {}\n"},
         violation={
-            "crates/session/session/src/store.rs": (
+            "crates/desktop/session/src/store.rs": (
                 "pub fn load(bytes: &[u8]) { let _ = Frame::decode(bytes); }\n"
             ),
         },

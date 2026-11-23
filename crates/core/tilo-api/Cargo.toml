@@ -32,10 +32,10 @@ tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 neighbour-wire = { path = "../neighbour-wire" }
 collab-types = { path = "../collab-types" }
 tilo-actions = { path = "../actions" }
-tilo-session-client = { path = "../../session/client" }
+tilo-session-client = { path = "../session-client" }
 # The worker that decides a workspace's governance: the sessions here admit it.
 tilo-automerge-isolate.workspace = true
-tilo-session-actions = { path = "../../session/session-actions" }
+tilo-session-actions = { path = "../session-actions" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
 # HTTPS to the server and the site, as every client of the server makes its requests.
 tilo-server-client = { path = "../tilo-server-client" }

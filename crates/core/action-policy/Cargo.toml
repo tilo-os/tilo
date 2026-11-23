@@ -25,7 +25,7 @@ serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The record kinds the apps' manifests declare private (`[resources] private`).
-app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
+app-fleet = { version = "0.1.0", path = "../../desktop/app-fleet" }
 uuid.workspace = true
 
 [dev-dependencies]

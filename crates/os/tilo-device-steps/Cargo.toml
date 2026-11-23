@@ -16,7 +16,7 @@ name = "tilo-device-step"
 path = "src/main.rs"
 
 [dependencies]
-os-actions = { path = "../../system/os-actions" }
+os-actions = { path = "../os-actions" }
 launcher = { path = "../../core/launcher" }
 package-store = { path = "../../core/package-store" }
 runtime-bundle = { path = "../../core/runtime-bundle" }
@@ -45,7 +45,7 @@ toml.workspace = true
 tilo-actions = { path = "../../core/actions" }
 tilo-device-protocol = { path = "../tilo-device-protocol" }
 # Onboarding's controls and the walk through them, shared with the legacy stream.
-onboarding-walk = { path = "../../session/onboarding-walk" }
+onboarding-walk = { path = "../../desktop/onboarding-walk" }
 tilo-identity = { path = "../../core/tilo-identity" }
 uuid.workspace = true
 zeroize.workspace = true

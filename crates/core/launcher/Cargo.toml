@@ -74,7 +74,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 # sandbox reads exactly what the registry and the installer read.
 tilo-app-package = { path = "../tilo-app-package" }
 # The publisher keys the workspace refuses, read through the desktop's action API.
-tilo-control = { path = "../../session/control-cli" }
+tilo-control = { path = "../../desktop/control-cli" }
 # Which packages are installed and where: the one registry, read-only, and
 # the lease a launch holds on its payload tree until its sandbox exits.
 package-store = { path = "../package-store", features = ["lease"] }
@@ -87,12 +87,12 @@ wire-frame = { path = "../../platform/wire-frame" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
 # the connection (`system_stats`).
-tilo-system-stats = { path = "../../system/system-stats" }
+tilo-system-stats = { path = "../../os/system-stats" }
 # Host applications: the `.desktop` entries already installed on the
 # machine. Kept in its own crate because nothing about it is Tilo
 # packaging — it is the freedesktop format, and the compositor's search
 # providers read it directly too.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../desktop/desktop-entry" }
 # The interface language a host entry is named in: the person's, as every
 # surface resolves it, not the machine's locale.
 settings-store = { path = "../../system/settings-store" }

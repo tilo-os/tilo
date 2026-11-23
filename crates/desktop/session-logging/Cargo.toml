@@ -1,0 +1,27 @@
+[package]
+name = "tilo-session-logging"
+description = "Where the session's log goes: its stderr, filtered as RUST_LOG says, and a crash record with its backtrace for every panic."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The launch-timing lines the log always keeps.
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+# Every panic's record.
+tilo-crash-reports = { path = "../../services/crash-reports" }
+# The filter `RUST_LOG` sets, written to stderr.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+# Lines written through the session's own filter, to read what it keeps.
+tracing.workspace = true
+
+[lints]
+workspace = true

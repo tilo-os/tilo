@@ -18,7 +18,7 @@ component exists yet.
 | `own-scroll` | a scroll position the surface keeps and clamps itself | `Scrollable` (a body), `Scroll` (a list's rows), `ScrollRegion` (a painted host) |
 | `own-draw` | a `Decorator` whose `draw` paints into the scene around the widget it wraps | the shared widget draws it; a wrapper only reads input or forwards `draw` |
 
-`crates/session/compositor/` is outside them: the compositor shapes a
+`crates/desktop/compositor/` is outside them: the compositor shapes a
 client's buffer (a foreign window's corners and shadow) and has no toolkit
 tree to compose from.
 
@@ -42,11 +42,11 @@ file with one visible surface and several helpers is one row.
 | 4 | **Top bar: strips and workspace name** | `topbar/strips.rs`, `topbar.rs` | — (`BarChipFace` for the strip's name, `TextInput` for the naming field, `paint_bar_body` for the bar's own body) | `BarChip`, `TextInput`, `paint_bar_body` | yes |
 | 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs`, `notifications/reader.rs` | — (`ToastCard`/`paint_card` for the cards' ground, `TextLineFace` for their labels, `TextBlockFace` for the reader's page) | `ToastCard`, `TextLineFace`, `TextBlockFace` | yes |
 | 6 | **Notification centre (the retained list)** | `desktop-surface/src/notifications/center.rs` | — (`paint_control_row` for a row, a group's band and the cleared band; `paint_severity_rail` for the rail; `TextLineFace`/`TextBlockFace` for every line; `paint_focus_ring` for the selection; `ButtonFace` for every button) | `paint_control_row`, `TextLineFace`, `paint_severity_rail` | yes |
-| 7 | **Lock screen** | `crates/session/sheets/src/lock.rs` | — (the one `RoundedRect` is a clip mask for the refusal shake and the idle fade, not a panel; the screen is `Text`, `TextInput`, `Button` and `PasscodeKeyboard` on `ui::auth_backdrop`) | — | yes |
-| 8 | **"Join a workspace…" sheet** | `crates/session/sheets/src/directory.rs` | — (converted: `ModalDialog`, `ListRow`, `TextInput`; the decorator only reads Enter/Escape) | — | yes |
+| 7 | **Lock screen** | `crates/desktop/sheets/src/lock.rs` | — (the one `RoundedRect` is a clip mask for the refusal shake and the idle fade, not a panel; the screen is `Text`, `TextInput`, `Button` and `PasscodeKeyboard` on `ui::auth_backdrop`) | — | yes |
+| 8 | **"Join a workspace…" sheet** | `crates/desktop/sheets/src/directory.rs` | — (converted: `ModalDialog`, `ListRow`, `TextInput`; the decorator only reads Enter/Escape) | — | yes |
 | 9 | **Sheets built on `ModalDialog`** | `sheets/src/{add_app,uninstall,portal/view,displays,shortcut_guide,workspace_settings/*}.rs` | — | — | yes |
 | 10 | **Consent and question panels** | `sheets/src/display_confirm.rs`, `sheets/src/dictation.rs` | — (`FloatingPanel` + `Button`; the decorators read input only) | — | yes |
-| 11 | **File chooser sheet** | `crates/session/sheets/src/file_picker/mod.rs` | — (`ui::widget::FilePicker`; the decorator reads input only) | — | yes |
+| 11 | **File chooser sheet** | `crates/desktop/sheets/src/file_picker/mod.rs` | — (`ui::widget::FilePicker`; the decorator reads input only) | — | yes |
 | 12 | **Quick settings panel and its pages** | `crates/session/quick-settings/src/view/*.rs`, `faces.rs` | — (`FloatingPanel`, `QuickTile`, `ListRow`, `Section`, `Slider`, `Button`; `faces.rs` is plain data) | — | yes |
 | 13 | **Power menu, window menu, workspace menu, About sheet** | `sheets/src/power.rs`, `window-menu/src/surface.rs`, `desktop/src/workspace_menu.rs`, `desktop/src/about.rs` | — (`ContextMenu`, `MenuItem`, `ModalDialog`) | — | yes |
 | 17 | **Workspace overview (Super+Tab panel) and its picture** | `desktop/src/overview_panel.rs`, `overview_panel/layout.rs`, `overview_panel/input.rs`, `overview_panel/paint.rs`, `desktop/src/overview_picture.rs` | the panel's ground, edge and shadow, the "where you are" block, share rows, the go-to list, workspace rows and list rows, each tile and its strip label, the naming field, the face stack and app marks; and the shared picture's strip names, window titles and empty-strip words | `paint_surface`/`FloatingPanelFace` for the panel, `ListRowFace` for its rows, `TileHost`/`WindowPreview` for the pictured windows, `FaceStack` for the faces, `ScrollRegion` for its scroll (it clamps `scroll_y` by hand), `SearchField`/`TextInput` for the naming field | largely: `FloatingPanelFace`, `ListRowFace`, `TileHost`, `WindowPreview`, `ScrollRegion` exist; a **workspace-overview panel** (workspaces, each with pictured windows, one shared scroll) does not |
@@ -64,9 +64,9 @@ file with one visible surface and several helpers is one row.
 | 31 | **Hung-app card** | `desktop-surface/src/surface/hung.rs` | its heading and body text (the card ground already comes from `floating_surface::paint_card`) | `TextStack` and `Text`; the two buttons already use `ButtonFace` | yes |
 | 32 | **Strip paging and the desktop surface's own scroll** | `desktop-surface/src/surface/paging.rs`, `surface.rs` | the strip's pan position, clamped itself | `ScrollRegion` (a horizontal region) or `ui::motion` for the pan | yes: `ScrollRegion` |
 | 33 | **Workspace title and panel geometry** | `desktop/src/composition.rs` | a `with_gap(0.0)` on a column that should name its rhythm | `Rhythm`/`Spacing` | yes |
-| 34 | **Onboarding pages** | `crates/session/onboarding/src/compose.rs` | two written-out gaps in otherwise-composed pages | `Rhythm`/`Spacing` | yes |
-| 35 | **Onboarding ceremony backdrop** | `crates/session/onboarding/src/ceremony.rs` | the dim and the two blooms are the backdrop itself, not chrome | `ui::backdrop` if it gains a ceremony backdrop; `auth_backdrop` covers the authentication screens | partly |
-| 36 | **Capture bar** | `crates/session/capture-studio/src/surface.rs` | one label on the see-through material | `Text` on `paint_see_through` (already used for the ground) | yes |
+| 34 | **Onboarding pages** | `crates/desktop/onboarding/src/compose.rs` | two written-out gaps in otherwise-composed pages | `Rhythm`/`Spacing` | yes |
+| 35 | **Onboarding ceremony backdrop** | `crates/desktop/onboarding/src/ceremony.rs` | the dim and the two blooms are the backdrop itself, not chrome | `ui::backdrop` if it gains a ceremony backdrop; `auth_backdrop` covers the authentication screens | partly |
+| 36 | **Capture bar** | `crates/desktop/capture-studio/src/surface.rs` | one label on the see-through material | `Text` on `paint_see_through` (already used for the ground) | yes |
 
 ## Converted (no count against them)
 
@@ -102,7 +102,7 @@ component serves both.
 2. **Settings lens** — `SettingsLens::new(tabs) -> Element`, `SettingsLens::page(tab, sections)`,
    `SettingsLens::footer(actions)`: a sheet with a sidebar of tabs, scrolling
    panes of `Section`s and one footer, on `FloatingPanelFace`. The workspace
-   settings sheet (`crates/session/sheets/src/workspace_settings/`) draws the
+   settings sheet (`crates/desktop/sheets/src/workspace_settings/`) draws the
    same shape composed. API: `SettingsLensTab { id, icon, label, count }`.
 3. **Bar chip** — **built:** `BarChipFace::new(name, faces).label(..).icons(&[..]).tone(..).hovered(..).paint(..)`,
    one bar control that holds a face stack, a label and a press, on

@@ -31,8 +31,8 @@ taffy = { workspace = true, features = ["content_size"] }
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["test-support"] }
 # The surface a shot draws: the portable desktop surface, its model, and another device's window.
 tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
-tilo-session-core = { path = "../../crates/session/core" }
-tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-session-core = { path = "../../crates/desktop/session-core" }
+tilo-desktop-model = { path = "../../crates/desktop/desktop-model" }
 tilo-ui = { path = "../../crates/ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true

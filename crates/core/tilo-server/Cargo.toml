@@ -175,13 +175,13 @@ linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = fal
 tilo-server-account = { path = "../tilo-server-account", optional = true }
 # Who may close, move or rename what is on a workspace's shared desktop, and the
 # strips a persistent workspace's shared desktop starts with.
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # A persistent public workspace keeps its owner and spectator roots in the host's
 # secret store.
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # The shared question sheet's words and pictures: a page draws an agent's
 # question in the same words a native session's sheet does.
-tilo-sheets = { path = "../../session/sheets", optional = true }
+tilo-sheets = { path = "../../desktop/sheets", optional = true }
 # A persistent public workspace's chat opens with the operator's channels.
 discord = { path = "../../../apps/discord", optional = true }
 tilo-connector = { path = "../../integrations/connector", optional = true }
@@ -204,7 +204,7 @@ tilo-mcp = { path = "../tilo-mcp", optional = true }
 # The workspace's default resource identity, permissions and the collaboration wire's types.
 collaboration = { version = "0.1.0", path = "../collaboration", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
-tilo-session-client = { path = "../../session/client", optional = true }
+tilo-session-client = { path = "../session-client", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 
@@ -289,7 +289,7 @@ rcgen.workspace = true
 # same build turns it on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents", "session-pages"] }
 install-plan = { path = "../../os/install-plan" }
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # Text a test lays out uses the pinned catalog, never the fonts the machine

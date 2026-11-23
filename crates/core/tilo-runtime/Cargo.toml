@@ -86,7 +86,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../actions" }
 tilo-automerge-isolate.workspace = true
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The document-media capability over the content store, and the workspace
 # files mirrored into a folder where nothing mounts them.
 tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
@@ -118,7 +118,7 @@ rand.workspace = true
 tilo-content-device = { path = "../content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
-tilo-session-actions = { path = "../../session/session-actions" }
+tilo-session-actions = { path = "../session-actions" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
@@ -126,7 +126,7 @@ tilo-rt.workspace = true
 # The errors a compute job fails with.
 thiserror.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
-tilo-session-client = { path = "../../session/client" }
+tilo-session-client = { path = "../session-client" }
 tilo-mcp = { path = "../tilo-mcp" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-user-identity = { path = "../tilo-user-identity" }
@@ -175,7 +175,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
+app-fleet = { path = "../../desktop/app-fleet", features = ["surfaces"] }
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
 # in process, and Linux programs in the local hosted-VM service.
@@ -184,7 +184,7 @@ ush = { path = "../../vm/ush", features = ["quic"] }
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 # The workspace's trust list, read through the desktop's action API.
-tilo-control = { path = "../../session/control-cli" }
+tilo-control = { path = "../../desktop/control-cli" }
 launcher-macos = { path = "../launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }

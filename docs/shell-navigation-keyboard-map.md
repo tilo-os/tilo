@@ -1,10 +1,10 @@
 # Tilo shell navigation and keyboard map
 
 Every chord the desktop answers lives in one table,
-`crates/session/session/src/keys.rs`, rendered below under "Fixed shell
+`crates/desktop/session/src/keys.rs`, rendered below under "Fixed shell
 chords". Editable bindings default to what this page shows and follow the
 user's Settings. Overlay-specific behavior lives in
-`crates/session/session/src/overlays.rs`.
+`crates/desktop/session/src/overlays.rs`.
 
 ## Containment and focus
 

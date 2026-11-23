@@ -38,13 +38,13 @@ collab-types = { path = "../../core/collab-types" }
 tilo-actions = { path = "../../core/actions" }
 tilo-action-policy = { path = "../../core/action-policy" }
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
-tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 # Where each person here stands, as following reads them.
-tilo-session-core = { path = "../core" }
-tilo-desktop-search = { path = "../desktop-search" }
+tilo-session-core = { path = "../../desktop/session-core" }
+tilo-desktop-search = { path = "../../desktop/desktop-search" }
 tilo-resource = { path = "../../core/tilo-resource" }
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+desktop-policy = { path = "../../desktop/default-apps", default-features = false }
 tilo-app-id = { path = "../../core/tilo-app-id" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-failure = { path = "../../platform/tilo-failure" }
@@ -54,7 +54,7 @@ ed25519-dalek.workspace = true
 # The bar's clock reads the weekday of the local time.
 jiff.workspace = true
 # The system monitor widget shows the session's own readings of the machine.
-tilo-system-stats = { path = "../../system/system-stats" }
+tilo-system-stats = { path = "../../os/system-stats" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
@@ -72,7 +72,7 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false,
 # host of a widget tree, with the pixels it drew.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-shell-surface = { path = "../shell-surface" }
-tilo-compositor = { path = "../compositor" }
+tilo-compositor = { path = "../../desktop/compositor" }
 
 [lints]
 workspace = true

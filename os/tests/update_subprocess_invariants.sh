@@ -7,7 +7,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 SETTINGS="$ROOT/apps/settings/src/panes/updates.rs"
-SYSTEM_UPDATE="$ROOT/crates/session/system-service/src/update.rs"
+SYSTEM_UPDATE="$ROOT/crates/os/system-service/src/update.rs"
 
 fails=0
 checks=0

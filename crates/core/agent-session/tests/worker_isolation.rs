@@ -99,10 +99,7 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// record, its package primary.
 #[test]
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
-    assert_seed_route(
-        DOCUMENT,
-        ui::resource::DocumentId::workspace_default(),
-    );
+    assert_seed_route(DOCUMENT, ui::resource::DocumentId::workspace_default());
 }
 
 #[test]

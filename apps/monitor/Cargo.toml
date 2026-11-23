@@ -29,7 +29,7 @@ test-support = ["ui/test-support"]
 monitor-model = { path = "../monitor-model" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -51,7 +51,7 @@ workspace-hack = { version = "0.1" }
 monitor-samples = { package = "monitor", path = ".", features = ["samples"] }
 tilo-test-env = { path = "../../tools/test-env" }
 # The tests serve the session's service themselves.
-tilo-system-stats = { path = "../../crates/system/system-stats" }
+tilo-system-stats = { path = "../../crates/os/system-stats" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

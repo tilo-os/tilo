@@ -1,0 +1,32 @@
+[package]
+name = "tilo-bluetooth-agent"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Bluetooth pairing agent: asks the person through the session's questions"
+
+[dependencies]
+# Follows a device showing a code until it reports it is paired.
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-bluez = { path = "../tilo-bluez" }
+tilo-service = { path = "../../desktop/service" }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+zbus = { workspace = true, features = ["tokio"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
+tilo-test-env = { path = "../../../tools/test-env" }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+zbus = { workspace = true, features = ["p2p", "tokio"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

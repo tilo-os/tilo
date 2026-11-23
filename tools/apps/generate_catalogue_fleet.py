@@ -31,7 +31,7 @@ server that runs no app of its own (the API server, serving a hosted
 workspace's programs) still compiles a program against the app's real
 declarations, and `tilo sdk gen` writes types for every one of them.
 
-Writes `crates/packaging/app-fleet/src/generated.rs`. With `--check`
+Writes `crates/desktop/app-fleet/src/generated.rs`. With `--check`
 it fails when that file is out of date instead.
 """
 
@@ -47,7 +47,7 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / "crates/packaging/app-fleet/src/generated.rs"
+OUTPUT = ROOT / "crates/desktop/app-fleet/src/generated.rs"
 # Where an app runs when its manifest names no `platforms`.
 DEFAULT_PLATFORMS = ("linux", "macos", "web")
 

@@ -261,7 +261,7 @@ def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 
 
     The reply's one key names its shape (`ok`, `state`, `answer`, ...); an `err`
     reply raises. `payload` is a dict or its JSON text. See
-    crates/session/session/src/test_control.rs for the ops. `wait_ms` holds the
+    crates/desktop/session/src/test_control.rs for the ops. `wait_ms` holds the
     reply until the invocation settles, and the socket timeout outlasts it."""
     if isinstance(payload, str):
         payload = json.loads(payload)

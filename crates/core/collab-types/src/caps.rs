@@ -378,7 +378,7 @@ impl CapOverride {
     ///
     /// A role entry reaches nobody here: the workspace's policy is what knows who holds a role, so
     /// the list a mount enforces is written with its members
-    /// (`crates/session/session/src/fs_authority.rs`).
+    /// (`crates/desktop/session/src/fs_authority.rs`).
     #[must_use]
     pub fn reaches(&self, acting: &Acting) -> bool {
         if let Some(app) = &self.app

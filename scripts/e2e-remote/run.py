@@ -112,7 +112,7 @@ ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
 # The choice only the server's own sheet offers: a sheet with "Allow once" and without it asks
-# about one step of an agent that is in already (crates/session/session/src/step_questions.rs).
+# about one step of an agent that is in already (crates/desktop/session/src/step_questions.rs).
 ALLOW_SESSION = "Allow for this session"
 # The Browser, as the shell names the app.
 BROWSER = "so.tilo.browser"
@@ -455,7 +455,7 @@ class Run:
 
     def answer_sheet(self, box: Box, res: Result) -> None:
         """The person at `box` allows the agent once, as their clicks would: the sheet's
-        "Allow once" choice, then its "Allow" button (crates/session/session/src/questions.rs,
+        "Allow once" choice, then its "Allow" button (crates/desktop/session/src/questions.rs,
         `admitted`)."""
         targets = self.targets(box)
         self.write(f"targets-{box.letter}-{int(time.time())}.json", targets)
@@ -479,7 +479,7 @@ class Run:
 
     def allow_step_once(self, box: Box, res: Result) -> None:
         """The person at `box` allows the step a run asks about once: the run's sheet has its
-        "Allow once" as a button of its own (crates/session/session/src/questions.rs,
+        "Allow once" as a button of its own (crates/desktop/session/src/questions.rs,
         `step_question`)."""
         targets = self.targets(box)
         self.write(f"targets-{box.letter}-step-{int(time.time())}.json", targets)

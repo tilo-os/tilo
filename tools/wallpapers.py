@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make, publish and stage the wallpapers Tilo ships.
 
-crates/platform/tilo-wallpapers/catalog.toml lists every wallpaper: its
+crates/desktop/tilo-wallpapers/catalog.toml lists every wallpaper: its
 author, licence and source page, the original file (by URL and SHA-256), and
 the two files the OS image installs for it, a picture at the laptop panel's
 resolution and a thumbnail for the Settings picker. Those files are binaries,
@@ -35,7 +35,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG = REPO / "crates/platform/tilo-wallpapers/catalog.toml"
+CATALOG = REPO / "crates/desktop/tilo-wallpapers/catalog.toml"
 STORE = "https://code.tilo.so/api/packages/tilo/generic/source-evidence"
 USER_AGENT = "TiloWallpapers/1.0 (https://code.tilo.so/tilo/tilo)"
 # The encoder settings the catalog's files were made with.

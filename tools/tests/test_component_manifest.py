@@ -63,7 +63,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.edit(root / "os/components.toml",
                       '  { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },\n', "")
             errors = "\n".join(check.audit(root))
-            self.assertIn("crates/session/session/src/main.rs:", errors)
+            self.assertIn("crates/desktop/session/src/main.rs:", errors)
             self.assertIn("starts 'tilo-lock-screen' beside itself", errors)
             self.assertIn('to = "/usr/bin/tilo-lock-screen"', errors)
         with self.subTest(phase='a surface app installed where the session does not look fails'):

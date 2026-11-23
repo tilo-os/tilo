@@ -237,7 +237,7 @@ const PUBLISHED: &[Published] = &[
         title: "Device",
         kinds: &[],
         roots: DEVICE_ROOTS,
-        files: &[include_str!("../../../session/session/device-surface.json")],
+        files: &[include_str!("../../../desktop/session/device-surface.json")],
         described: false,
     },
     Published {
@@ -298,7 +298,7 @@ const PUBLISHED: &[Published] = &[
 ///
 /// A surface the file holds that does not read.
 pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> {
-    surfaces_of(include_str!("../../../session/session/device-surface.json"))
+    surfaces_of(include_str!("../../../desktop/session/device-surface.json"))
 }
 
 /// The platform's resources a view reads, each as the session publishes it (`power:battery`)

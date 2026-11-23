@@ -19,7 +19,7 @@ pub use collaboration::history_source::authors::{
 /// row with the struck-through summary, suppresses the `[Revert]` chip,
 /// and exposes the redactor + reason on hover.
 ///
-/// Source: the broker's `RedactionRecord` (`crates/session/session/src/app_wire.rs`).
+/// Source: the broker's `RedactionRecord` (`crates/desktop/session/src/app_wire.rs`).
 /// The producer projects the redactor's identity to a short display
 /// string; the widget never sees the ciphertext or pubkey.
 #[derive(Clone, Debug, PartialEq)]

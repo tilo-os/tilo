@@ -58,11 +58,11 @@ tilo-app = { path = "../tilo-app" }
 # Desktop policy and control-surface vocabulary shared by the toolkit and the
 # apps that configure the desktop.
 settings-store = { path = "../../system/settings-store" }
-desktop-policy = { path = "../../system/desktop-policy" }
-tilo-desktop-entry = { path = "../../system/desktop-entry" }
+desktop-policy = { path = "../../desktop/default-apps" }
+tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 collab-types = { path = "../../core/collab-types" }
 tilo-actions = { path = "../../core/actions" }
-os-actions = { path = "../../system/os-actions" }
+os-actions = { path = "../../os/os-actions" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../../core/tilo-fs-client" }

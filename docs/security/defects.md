@@ -36,7 +36,7 @@ Compounding: `crates/core/tilo-identity/src/store/unix.rs` detects the pubkey/se
 mismatch and **deliberately does not fail** — the only signal is a
 `#[cfg(debug_assertions)] eprintln!`. In a release build the failure is silent.
 
-`crates/session/session/src/mount/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
+`crates/desktop/session/src/mount/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
 `ThresholdIdentity::bootstrap_single_device_seed`. So firstboot-minted identities are valid and
 ceremony-minted identities are not, with the same on-disk format and no way to tell them apart.
 
@@ -490,7 +490,7 @@ tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
 file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
 `crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
-`crates/session/client/src/workspace_keys/vault.rs`). Its document
+`crates/core/session-client/src/workspace_keys/vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
@@ -519,12 +519,12 @@ Provisioning and recovery UX were not assessed by this reconciliation.
 
 The 8-step (extended to 9) validation pipeline in
 `crates/core/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
-broker's default state is correctly fail-closed (`crates/session/session/src/app_wire.rs:797-800`: an
+broker's default state is correctly fail-closed (`crates/desktop/session/src/app_wire.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
-in `crates/session/session/`, `crates/ui/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
+in `crates/desktop/session/`, `crates/ui/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/core/collab-types/src/space.rs`) has zero consumers outside its own crate and
 tests. A channel-browser widget with no shell call site has since been removed.
@@ -544,7 +544,7 @@ bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
 `crates/core/tilo-workspace-service/src/apps/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
-and `crates/session/session/src/app_wire.rs`, plus
+and `crates/desktop/session/src/app_wire.rs`, plus
 `crates/core/collab-types/tests/validator.rs`.
 
 ---
@@ -556,18 +556,18 @@ Nothing locks the session before sleep or on resume, so suspend-then-open-lid la
 session. `crates/os/power/src/logind.rs:19-20` documents this as working — *"so the compositor
 can lock before the machine sleeps"* — which is not implemented.
 
-`crates/session/compositor/src/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
+`crates/desktop/compositor/src/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** The power service maps `PrepareForSleep(true)` to
 `PowerSignal::PreparingForSleep` (`crates/os/power/src/service.rs`), and the compositor
 answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
-`crates/session/compositor/src/idle.rs`); the resume edge resets idle state. The compositor
+`crates/desktop/compositor/src/idle.rs`); the resume edge resets idle state. The compositor
 defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
 documented opt-out for idle locking only. Unit coverage pins the sleep-edge mapping and secure
-default. `locking_requires_authentication_to_clear` in `crates/session/compositor/src/idle.rs`
+default. `locking_requires_authentication_to_clear` in `crates/desktop/compositor/src/idle.rs`
 covers the idle, requested and resumed lock transitions, and
-`the_policy_is_the_idle_timer_the_session_runs_on` in `crates/session/session/tests/power.rs`
+`the_policy_is_the_idle_timer_the_session_runs_on` in `crates/desktop/session/tests/power.rs`
 covers the policy the live session runs on; the lock screen's own keyboard, a refused
 control-socket snapshot and a touch unlock need a display, so that journey runs in the VM
 acceptance suite (W21) and not in default CI.
@@ -693,8 +693,8 @@ Two adjacent holes in the same guarantee were found alongside it:
 
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
-`crates/ui/ui-core/src/warmup.rs:191`, `crates/session/session/src/run.rs:707`,
-`crates/session/compositor/src/backend/headless.rs:77` (line numbers as found; now fixed)
+`crates/ui/ui-core/src/warmup.rs:191`, `crates/desktop/session/src/run.rs:707`,
+`crates/desktop/compositor/src/backend/headless.rs:77` (line numbers as found; now fixed)
 
 Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
 degrade gracefully when wgpu finds no adapter. `[profile.release]` sets `panic = "abort"`
@@ -704,7 +704,7 @@ catching, ever begins. All three guards were inert in exactly the configuration 
 `OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
 
 The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
-(`crates/session/session/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
+(`crates/desktop/session/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
 adapter isn't fatal to the session — the compositor's real backend surfaces its own adapter error
 later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
 adapter enumeration fails the session aborts before it ever reaches the backend that was supposed to
@@ -725,11 +725,11 @@ dies by signal rather than exiting. It first asserts no adapter is reachable, so
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
 **Current source.** The fallible constructor is taken in
-`crates/session/session/src/run.rs` and
-`crates/session/compositor/src/backend/headless.rs`; the startup warmup no longer builds an
+`crates/desktop/session/src/run.rs` and
+`crates/desktop/compositor/src/backend/headless.rs`; the startup warmup no longer builds an
 offscreen renderer at all — it only shapes on the shared font system — so
 `warmup_degrades_silently_when_no_wgpu_adapter_exists` went with the stage it pinned. The
-compositor reaches `ui::warmup::spawn_warmup` from `crates/session/session/src/main.rs`. `[profile.release]` has
+compositor reaches `ui::warmup::spawn_warmup` from `crates/desktop/session/src/main.rs`. `[profile.release]` has
 since changed to `panic = "unwind"` so the compositor can restart its collaboration broker, but
 `tilo-rt` installs a hook that aborts every panic outside
 `tilo_rt::panic_boundary::isolate` (`crates/platform/tilo-rt/src/panic_boundary.rs`), so a bare
@@ -795,9 +795,9 @@ a snapshot whose session is not the invite's workspace and record. Held by
 
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
-`crates/session/network-actor/src/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
+`crates/desktop/network-actor/src/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
 public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-findable. Note the
-newer `PeerOrigin` (`crates/session/session/src/:109-127`) correctly carries the full base58 peer id —
+newer `PeerOrigin` (`crates/desktop/session/src/:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
 
 **Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
@@ -805,15 +805,15 @@ the fold is the older path.
 actor and the session instead of two copies of `DefaultHasher` — whose output std does not promise
 across Rust releases, so two peers on different toolchains would have stopped recognising each
 other's publishes. Held by
-`crates/session/session/src/network/identity.rs::tests::identity_store_keys_entries_per_peer_and_rejects_invalid_ones`
+`crates/desktop/session/src/network/identity.rs::tests::identity_store_keys_entries_per_peer_and_rejects_invalid_ones`
 (phase `distinct_peers_never_share_an_entry`),
-`crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+`crates/desktop/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `liveness_and_salt_are_stable`) and
 `crates/core/neighbour-wire/src/lib.rs::tests::peer_handle_is_fnv1a_of_the_device_key`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
-`crates/session/network-actor/src/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
+`crates/desktop/network-actor/src/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
@@ -823,7 +823,7 @@ compositor leaves peer sync off rather than syncing an unsalted id space. The ke
 machine's one device key, so the compositor no longer keeps a network identity of its own.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. The key now lives at
 `/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
-`crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+`crates/desktop/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
 `crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 
@@ -856,7 +856,7 @@ ends is a place in each document, never a time.
 **As built.** Before this entry every replica refused every change a removed device had ever
 signed, at whatever time: a device added later, or one that came back, could read no document the
 removed device had written into (four of the five scenarios of
-`crates/session/client/tests/revoked_device_history.rs` failed, for each of the four reasons
+`crates/core/session-client/tests/revoked_device_history.rs` failed, for each of the four reasons
 alike). Now the device that writes a removal into a workspace's governance writes its cut beside it
 (`crates/core/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
 taken in and when it is handed to an app, by that cut
@@ -893,7 +893,7 @@ checks that server's acknowledgement and stops with `device-revoked`
 (`crates/core/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
 browser was removed from your devices". A device built before reads the refusal as it did, and a
 server built before sends none, which reads as it did too. Held by
-`crates/session/client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
+`crates/core/session-client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
 (a real server, a page removed as Settings removes it, over each carrier),
 that handshake's own tests (`a_removed_device_is_told_so_before_its_hello_is_closed`,
 `a_hello_refused_for_anything_else_is_closed_with_nothing_said`,
@@ -1220,14 +1220,14 @@ carries after "Can't sign in" still go through Plymouth's password request.
 
 These are load-bearing and correct. Changing them requires understanding why they are as they are.
 
-- `crates/session/session/src/` (`apply_changes`) — merges into a **copy** first, because
+- `crates/desktop/session/src/` (`apply_changes`) — merges into a **copy** first, because
   *"a check that runs after the merge has already happened is not a check."* Whole batches are
   refused rather than partially applied.
-- `crates/session/session/src/` (`PeerOrigin`) — `PeerOrigin` is *"named as the transport authenticated it —
+- `crates/desktop/session/src/` (`PeerOrigin`) — `PeerOrigin` is *"named as the transport authenticated it —
   not as the message claims."*
-- `crates/session/session/src/:1750-1753` — re-pinning workspace authority is refused, because otherwise
+- `crates/desktop/session/src/:1750-1753` — re-pinning workspace authority is refused, because otherwise
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
-- `crates/session/session/src/:1078-1084` — a role **is** the verb on the membership capability, not a
+- `crates/desktop/session/src/:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
 - `crates/core/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
   launch is refused, not downgraded.

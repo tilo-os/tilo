@@ -11,7 +11,7 @@ description = "One agent turn over the workspace's MCP tools: the tools listed a
 agent-provider-config = { path = "../provider-config" }
 # The provider an agent's process reaches the session's actions by, carried over whatever link
 # the process has to its host.
-tilo-session-actions = { path = "../../session/session-actions" }
+tilo-session-actions = { path = "../../core/session-actions" }
 tilo-actions = { path = "../../core/actions" }
 collab-types = { path = "../../core/collab-types" }
 tilo-lock = { path = "../../platform/tilo-lock" }

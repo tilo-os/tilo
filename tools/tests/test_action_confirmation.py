@@ -168,7 +168,7 @@ class ActionConfirmationTests(unittest.TestCase):
             chrome("tab.close", "label", "subtitle", "keywords", |_, _| Ok(())),
         ];
         """
-        errors = check.check_source("crates/session/session/src/actions/all.rs", source)
+        errors = check.check_source("crates/desktop/session/src/actions/all.rs", source)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`app.uninstall`, a deletion", errors[0])
 
@@ -185,7 +185,7 @@ class ActionConfirmationTests(unittest.TestCase):
             .destructive(),
         ];
         """
-        errors = check.check_source("crates/session/session/src/actions/all.rs", source)
+        errors = check.check_source("crates/desktop/session/src/actions/all.rs", source)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`app.uninstall`, a deletion", errors[0])
 

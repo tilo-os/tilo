@@ -77,8 +77,8 @@ form_urlencoded.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 thiserror.workspace = true
 tracing.workspace = true
-tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-session-client = { path = "../../session/client", optional = true }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
+tilo-session-client = { path = "../session-client", optional = true }
 # The toolkit-free Fluent catalogue the name it gives a workspace is read from.
 tilo-history = { path = "../../sdk/tilo-history" }
 collab-types = { path = "../collab-types" }
@@ -156,7 +156,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 # image carries another release's.
 app-cli = { path = "../../os/app-cli" }
 # The default collection's app ids, compiled in: the apps a workspace made here starts with.
-app-fleet = { path = "../../packaging/app-fleet" }
+app-fleet = { path = "../../desktop/app-fleet" }
 # The releases this device's package cache already holds: a default app no registry answered for.
 package-store = { path = "../package-store" }
 # A host's workspaces keep their content in directories.

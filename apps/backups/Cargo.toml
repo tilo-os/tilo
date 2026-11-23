@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 host-fs = { path = "../../crates/core/host-fs" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 # The resource the app draws: its type and verb, shared with the device that applies it.
 backups-model = { path = "../backups-model" }
 # The Tilo action model: every document-mutating operation is a serializable,

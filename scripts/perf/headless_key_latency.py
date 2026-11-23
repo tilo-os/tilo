@@ -3,7 +3,7 @@
 
 The session times every key from the instant it hands it to the window's client
 until the frame that shows the client's answer reaches the display
-(`crates/session/frame-metrics/src/key_latency.rs`): each answered key is one
+(`crates/desktop/frame-metrics/src/key_latency.rs`): each answered key is one
 `KEY-LATENCY app=<id> key_to_commit_us=... key_to_submit_us=...
 key_to_present_us=...` line in the session log. This script types into a window,
 reads those lines, and reports the distribution. The legs are the same three the
@@ -24,7 +24,7 @@ Two windows to type into:
   "New issue"), clicks into the window
   (`--click-at`) so the editor has the caret, and refuses to type when a key
   changes nothing the app draws.
-- **the synthetic client** (the default): `crates/session/session/examples/
+- **the synthetic client** (the default): `crates/desktop/session/examples/
   latency_client.rs`, a window that answers every key with exactly one commit
   and draws nothing else, so the compositor's share of the latency stands alone.
 

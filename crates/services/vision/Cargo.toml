@@ -9,7 +9,7 @@ description = "The device's image model: bounds and encodes a picture, calls the
 [dependencies]
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
-tilo-service = { path = "../../session/service" }
+tilo-service = { path = "../../desktop/service" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-content = { path = "../../core/content" }
 tilo-content-device = { path = "../../core/content-device" }
@@ -17,7 +17,7 @@ tilo-image-codec = { path = "../../engines/tilo-image-codec" }
 tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }
 # The system index a picture's words are written back into.
-tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
+tilo-desktop-search = { path = "../../desktop/desktop-search", features = ["indexes"] }
 agent-provider-config = { path = "../../integrations/provider-config" }
 base64.workspace = true
 hex.workspace = true

@@ -1,0 +1,561 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-session"
+description = "The native Tilo session: the compositor hosting the desktop every host shows (the shell under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-session"
+path = "src/main.rs"
+
+# A surface app the tests start the way the session starts a panel: it reads
+# what the session publishes and changes it, and reports both in a file. Never
+# installed — the image names the binaries it carries.
+[[bin]]
+name = "tilo-surface-probe"
+path = "tests/bin/surface_probe.rs"
+test = false
+
+# The session's integration tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole crate once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# The session's loop walks no path after startup. The audit watches the
+# process's main thread, and `libtest` runs every test on a thread of its own,
+# so this target is the process's `main` driving the session itself.
+[[test]]
+name = "main_thread_reads"
+path = "tests/main_thread_reads.rs"
+harness = false
+
+[features]
+# Stamps the developer-entry build marker into the binary so the package's
+# developer session entry can tell a session someone deliberately built from
+# any other executable before logging into it. Inert unless this is a debug
+# build, so a `--release --features dev-session` never carries it: the marker
+# is the entire content of the feature.
+dev-session = []
+# Lets a release binary of a dev image open the test-control socket
+# `$TILO_TEST_CONTROL` names, which `tilo-vm` and the capture harnesses drive a
+# desktop through. A production image never builds it (tools/policy/
+# check_dev_overrides_contract.py). Its `provision_test_identity` op mints the
+# throwaway identity, so the feature carries the identity crate's minting too: a
+# session built on its own (a component swap) mints as a dev image's does.
+dev-overrides = ["tilo-identity/throwaway-test-identity"]
+
+[dependencies]
+anyhow.workspace = true
+# A branch of a workspace takes an app's own copy of a record into the
+# workspace's, as every incoming change is taken in; a record read again takes
+# in what was appended to it since.
+tilo-automerge = { path = "../../core/tilo-automerge" }
+# A window's page reaches this session as the paint stream its app encoded.
+base64.workspace = true
+# The MLS vault's master key: the Secret Service, the Keychain, the page's
+# IndexedDB, or the store a headless machine names with `TILO_SECRETS_DIR`.
+tilo-secrets.workspace = true
+# The surface apps' sockets are handed to their children as descriptors.
+# The certificate a device was approved with, kept where the identity helper
+# reads it once and taken away after.
+# A joined workspace's records are untrusted bytes: a worker process of this
+# executable decodes them, and `main` serves that worker.
+tilo-resource = { path = "../../core/tilo-resource" }
+# The records' framework as an app window opens one: the workspace's emoji is
+# Chat's record, and the settings tab reads and changes it the same way; a
+# page reads each record it holds for what its app tells search
+# (`record_index::hosted_entries`).
+tilo-app = { path = "../../sdk/tilo-app" }
+tilo-desktop = { path = "../../session/desktop" }
+# The member's own client of the peer network: the boards of who is here and this
+# device's own word, which this session hosts with its own endpoint.
+tilo-session-client = { path = "../../core/session-client" }
+tilo-session-actions = { path = "../../core/session-actions" }
+# The roles every host runs: the shell's document and the layout it holds.
+tilo-session-core = { path = "../session-core" }
+tilo-desktop-model = { path = "../desktop-model" }
+# The shell's window policy, whose tab calls an app's asks are answered with.
+tilo-desktop-policy = { path = "../window-placement" }
+# This device's identity: the certificate it presents and the key it signs with, from the store its
+# host keeps them in.
+tilo-identity = { path = "../../core/tilo-identity" }
+tilo-identity-client = { path = "../../core/tilo-identity-client" }
+# The action broker's half every host runs: what a step is taken by, the step service, the route.
+tilo-broker-core = { path = "../../core/broker-core" }
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
+# Settings' pages are every desktop's own, the page's included: its search offers them wherever
+# the session runs.
+tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
+settings-store = { path = "../../system/settings-store" }
+settings-model = { path = "../../sdk/settings-model" }
+# Following the directories search's lists are read from.
+tilo-files = { path = "../../platform/tilo-files" }
+durable-store = { path = "../../system/durable-store" }
+automerge.workspace = true
+tilo-paths.workspace = true
+# This process's id and kernel start time, which the desktop's ready record names.
+tilo-process = { path = "../../platform/tilo-process" }
+tilo-action-policy = { path = "../../core/action-policy" }
+tilo-actions = { path = "../../core/actions" }
+# The directory of public workspaces a site serves: what joins list and
+# what a site's entry and directory answer.
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+# A browser environment's session asks its server to enter the workspace it was handed, the way a
+# member device does.
+tilo-clock = { path = "../../platform/tilo-clock" }
+toml.workspace = true
+url.workspace = true
+# The key this device signs its own changes of a workspace with, as the
+# broker's owner commits ask for it.
+ed25519-dalek.workspace = true
+# This device's workspaces: the state of every one it joined, held beside
+# the shell, the enrollment a join redeems its invitation with, and who saved
+# a shortcut by the proof of a device of theirs.
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+# What a message sent from a window's box carries beside its words: the
+# references and files the window attached, as the app that keeps them reads
+# them.
+tilo-reference = { path = "../../core/reference" }
+neighbour-wire = { path = "../../core/neighbour-wire" }
+collab-types = { path = "../../core/collab-types" }
+# The workspace's folder, as the record its files' versions are: the history
+# reads it wherever the session runs, a page included.
+fs-protocol = { path = "../../core/fs-protocol" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
+# The prefix hash of a transfer that starts at the top of its object.
+blake3.workspace = true
+tilo-service = { path = "../service" }
+# The content a record references, kept under this session's state and served
+# to the apps that read the record.
+tilo-content = { path = "../../core/content" }
+# The MLS vault's master key: the Secret Service on Linux, the Keychain on
+# macOS, or the store a headless machine names with `TILO_SECRETS_DIR`.
+# A fresh vault master key is drawn from getrandom's `SysRng`.
+getrandom.workspace = true
+# This device's channels: the groups its records are sealed in, and the keys an endpoint reads one
+# with. Every host runs the engine; where its state is kept is the host's.
+tilo-workspace-keys = { path = "../../core/workspace-keys" }
+key-group = { path = "../../core/key-group" }
+# A schedule's fire time is claimed by one of the person's devices, ranked by
+# the same hash everywhere, and the vault derives its channel state key.
+sha2.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+# The workspaces' live session: a sealed `moq-lite` session per workspace over
+# this session's own endpoint, and the relay role a member serves for the
+# others.
+tilo-live = { path = "../../core/tilo-live", features = ["live_session"] }
+# The endpoint every device dials: presence names a publisher and where it is reached with it, on
+# every host.
+
+zeroize.workspace = true
+jiff.workspace = true
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+# The sheets the desktop shows over everything: the offers an action
+# publishes and the effects a person answers with.
+# The records the workspaces on this device hold: the workspace indexes
+# search reads them from, as the apps that write them keep them.
+tilo-app-state = { path = "../../system/app-state" }
+tilo-sheets = { path = "../sheets" }
+# The shortcuts a person saved and the triggers that start them without
+# anyone invoking them.
+tilo-automation = { path = "../../core/automation" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+# The public workspaces sites list, their entries, and where a join stands.
+tilo-workspace-directory = { path = "../../core/workspace-directory" }
+# The models a session's own questions run on, and the person's provider settings: the same
+# gateway an app asks, reached on every host.
+agent-provider-config = { path = "../../integrations/provider-config" }
+tilo-rt = { workspace = true }
+# The system's media controls: one board over every Playback the apps here play.
+tilo-media-controls = { path = "../../services/media-controls" }
+tokio = { workspace = true, features = ["sync"] }
+# The shell's chooser protocol: the socket the launcher hands an app, and what the session
+# answers on it.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# Asking the person a question blocks a thread of the chooser's own until they answer.
+pollster.workspace = true
+tracing.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The device's image model as the session's actions: its model gateway connection and the
+# library analysis search reads, which only a Linux desktop session hosts.
+tilo-vision-service = { path = "../../services/vision" }
+# The apps the session runs itself keep their resources in the workspace's store, whose
+# commands are answered by this device's own workspace service.
+tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
+# The toolkit's native half: the winit runner, the host services and the
+# broker transport, which only a desktop host runs.
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+# The live session over this session's own iroh endpoint: native only.
+tilo-live = { path = "../../core/tilo-live", features = ["relay", "iroh"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }
+# Tilo's API, which the session serves its own person's programs on this computer.
+tilo-api = { path = "../../core/tilo-api" }
+# Which app opens a file or a link: the workspace's and the person's default apps, and this
+# machine's own `mimeapps.list`, resolved in that order.
+desktop-policy = { path = "../default-apps" }
+tilo-dictation = { path = "../dictation" }
+# What the session binary's search reads of the device: the installed apps,
+# the machine's own, the person's search choices.
+# The session's own app store, read as the launcher reads it: a development session seeds the
+# tilolang apps it installed (`crate::seeded_apps`), and a style a person owns is installed
+# into it from their workspace (`crate::style_packages`), which needs the store's writer.
+package-store = { path = "../../core/package-store", features = ["store"] }
+desktop-entry = { package = "tilo-desktop-entry", path = "../desktop-entry" }
+# Where a login's time went, when `TILO_STARTUP_METRICS_PATH` asks
+# (`tools/perf/startup_marks.py` reads it).
+# The person's accessibility settings: the assists, the colour filter and
+# the magnifier the compositor applies.
+tilo-accessibility-settings = { path = "../tilo-accessibility-settings" }
+tilo-quick-settings = { path = "../../session/quick-settings" }
+tilo-activities = { path = "../../session/activities" }
+tilo-notification-banners = { path = "../../session/notification-banners" }
+tilo-onboarding-session = { path = "../onboarding-session" }
+# What an entry's invitation is verified as before a workspace is joined: only
+# a grant signed for this person's key joins it.
+tilo-workspace-join = { path = "../../core/workspace-join" }
+# The address an invitation names, signed: this device's own endpoint, for a
+# link it makes into a workspace it holds.
+tilo-delivery-protocol = { path = "../../core/tilo-delivery-protocol" }
+# The person's account with the host the session runs on, read live.
+tilo-server-account = { path = "../../core/tilo-server-account" }
+# The session asks the model gateway as Activity, the way an app it starts
+# does, for the history's descriptions and group names.
+tilo-model-client = { path = "../../sdk/model-client", features = ["runtime-client"] }
+# Who is here: the session's own membership of each workspace, on the
+# peer network's peer actor.
+tilo-network-actor = { path = "../network-actor" }
+# This device's own workspace service: the one a server runs, holding the workspaces this
+# device founds.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["agents", "apps", "files"] }
+# A host's own questions to a member, asked on the collaboration endpoint:
+# what an agent asks before it acts on a workspace, answered by the person.
+tilo-server-client = { path = "../../core/tilo-server-client" }
+# The person's workspace list, as their keys read it and the hosts of their
+# workspaces keep it.
+# This device's relays wait in the collaboration endpoint until a workspace
+# it shows has someone else in it, and its key is published only then.
+tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
+# The device's certificate authority the broker admits a join with: the
+# identity store's selected identity and the devices it certifies now.
+tilo-identity-authority = { path = "../../core/identity-authority" }
+# The person's accounts and the vault their secrets are sealed in: the session
+# is the only holder of either, and answers Browser, Settings and Mail from
+# them on the apps' own routes.
+accounts = { path = "../../integrations/accounts", features = ["person"] }
+account-credentials = { path = "../../integrations/account-credentials" }
+# The workspace's contact directory, which Contacts keeps and the session publishes as
+# `contacts:tilo.contacts.identities`, one record every member reads and changes (contacts.rs).
+tilo-contact-directory = { path = "../../integrations/tilo-contact-directory" }
+# The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
+# sandbox has no network (services::accounts).
+tilo-account-probe = { path = "../../integrations/account-probe" }
+# The website session a selected ownership entry holds, and what it opens.
+browser-continuity = { path = "../../import/browser-continuity" }
+# The machine's readings, served to the apps the launcher connects at the
+# socket they dial.
+tilo-system-stats = { path = "../../os/system-stats" }
+# The broker that serves the socket this session's apps speak on, and the
+# provider service it asks for what the services publish. Its channel encryption
+# service governs the sealed channels a workspace's content is carried in.
+# The person's other devices: what was copied here is shared through
+# the same fabric as everything else that follows them.
+# The fabric's portable vocabulary: who a device is, the stamp a fact carries, fresh ids.
+# A sibling device's half of this device's disk key: the unlock exchange an
+# early-boot client speaks, and the sealed halves each device holds of the
+# other.
+tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
+# The sealed envelope a sibling half is carried in.
+tilo-seal = { path = "../../core/tilo-seal" }
+# The desktop's event sounds (a notification's ring, a screenshot's click), and the decoder a
+# tilolang app's window plays its song or video on: the window is drawn here from the app's
+# patches, so the decode a native media app used to enable for itself is enabled here once.
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["voice", "pipewire", "realtime", "decode"] }
+tilo-compositor = { path = "../compositor" }
+# The clipboard an app's process reaches over its connection to this session.
+tilo-clipboard = { path = "../../platform/tilo-clipboard" }
+# The session's own profiler: what its frame went on, recorded on the owner's
+# request and read from the same socket.
+tilo-frame-metrics = { path = "../frame-metrics" }
+# Each display's colour, as the compositor reads it from the sink.
+tilo-color-pipeline = { path = "../color-pipeline" }
+image = { workspace = true, features = ["png"] }
+# An application's themed icon is an SVG as often as a PNG.
+resvg = { version = "0.47", default-features = false }
+tilo-shell-surface = { path = "../../session/shell-surface" }
+# The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
+# action vocabulary.
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# The outside origins the session's own services keep records in step with: the mail, YouTube,
+# music and calendar connectors' clients, and the registry that makes an origin's connector
+# reachable (`tilolang_tilo::origin::remote`).
+tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
+tilolang-youtube = { path = "../../integrations/tilolang-youtube" }
+tilolang-music = { path = "../../integrations/tilolang-music" }
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-features = false }
+# The toolkit's words, which what a package the session runs publishes reads through.
+tilo-app-window = { path = "../../sdk/tilo-app-window" }
+# `tilolang check` and build as the session's own commands over a package in the person's
+# workspace: a style is written, checked and installed as any app is (`shell.md` §6).
+tilolang-cli = { path = "../../lang/tilolang-cli" }
+app-catalogue = { path = "../../core/app-catalogue" }
+# The pictures the shell shows: the image's own, and the person's.
+tilo-wallpapers = { path = "../tilo-wallpapers" }
+# The registries' listing as this device last accepted it, for the apps a
+# person can get.
+app-cli = { path = "../../os/app-cli" }
+# The login's own password check, when the machine's unlock helper is not
+# installed: the conversation greetd admitted this session through.
+greetd-client = { path = "../../os/greetd-client" }
+# The host's own filesystem moves a paste depends on: a rename that never
+# overwrites a name, and the Trash a replaced name goes to.
+host-fs = { path = "../../core/host-fs" }
+# Where this device keeps its state: the root the record indexes are under.
+tilo-cli-kit = { path = "../../sdk/cli" }
+# The capture studio the session shows over the desktop, and the recorder
+# that feeds it the compositor's frames.
+tilo-capture-studio = { path = "../capture-studio" }
+# The wireless display sheet speaks the projector service's control socket; the
+# sender stacks themselves (Miracast, GStreamer) stay in the service.
+tilo-projector = { path = "../../services/projector", default-features = false }
+# A projection's frames are the share streams' encode: the desktop as the
+# compositor draws it, through the one real-time encoder.
+tilo-window-share = { path = "../window-share" }
+# The sanctioned blocking HTTP client, which installs the crypto provider.
+# The identity record the launcher bound and the person's own: the directories
+# whose changes a worker follows.
+os-actions = { path = "../../os/os-actions" }
+# The person's `network-usage` section, which this device's traffic totals are
+# counted into, and the readings its verb takes.
+settings-sections = { path = "../../system/settings-sections" }
+# The calls an app joins: which channel, who is in it, and this device's
+# own call as presence carries it.
+tilo-native-media = { path = "../native-media" }
+# The MCP projection of the action host, which the MCP server serves a
+# program of this login through once the person admits it.
+tilo-runtime = { path = "../../core/tilo-runtime" }
+tilo-mcp = { path = "../../core/tilo-mcp" }
+# The files daemon's link to the network: the session answers and dials for it
+# on the device's endpoint (`fs::net`).
+fs = { package = "tilo-fs", path = "../../core/fs", default-features = false, features = ["filesystem"] }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
+# The render service an app hands its frames to, started by this session as
+# a mode of its own binary.
+tilo-render-service = { path = "../render-service" }
+# The kernel-attested ownership of an executing app process a launch is
+# admitted by.
+runtime-portal = { path = "../../core/runtime-portal" }
+# The wire the apps speak to the session's services, and where the launcher
+# hands out its socket.
+runtime-collab = { path = "../../core/runtime-collab" }
+launcher = { path = "../../core/launcher" }
+# The machine's power: the idle, lid, key and battery policy and the service
+# over logind that acts on it.
+tilo-session-power = { path = "../../os/power-service" }
+tilo-power-mgmt = { path = "../../os/power" }
+# The records of a session that stopped, and the news of one that did.
+tilo-crash-reports = { path = "../../services/crash-reports" }
+# The session's own log: its stderr, filtered as `RUST_LOG` says, and a crash
+# record for every panic.
+tilo-session-logging = { path = "../session-logging" }
+# The runs of what people ask this session's agents to do: what the agent
+# composer and a run's window follow, and what the broker delivers a run on.
+# The watchdog that ends a session whose main loop stopped for good.
+tilo-liveness = { path = "../liveness" }
+# The room left on the person's filesystems, for the storage notice.
+rustix = { workspace = true, features = ["fs", "process"] }
+# Planning and starting the apps the person opens.
+tilo-app-launch = { path = "../app-launch" }
+# The Windows compatibility service the Windows Apps manager reaches.
+compat-service = { path = "../../compat/compat-service" }
+# The udisks2 names the removable media are read and ejected by. The
+# blocking client is left out: this session speaks to the bus itself.
+block-devices = { path = "../../os/block-devices" }
+tilo-connectivity-service = { path = "../../os/connectivity-service" }
+tilo-system-service = { path = "../../os/system-service" }
+tilo-settings-service = { path = "../../session/settings-service" }
+# The sound resource's specs and system sound cues, for the audio service the session starts.
+tilo-audio-service = { path = "../../os/audio-service", default-features = false, features = ["sounds"] }
+# The desktop services the session starts on the buses; screen shares
+# stream the frames the session captured.
+tilo-portal = { path = "../portal", features = ["pipewire"] }
+# The files a person chooses for apps: the session mounts the store the
+# portal grants through, so every launcher finds an app's view to bind.
+tilo-documents = { path = "../../core/documents", features = ["mount"] }
+tilo-notifications-service = { path = "../notifications-service" }
+tilo-polkit-agent = { path = "../../os/polkit-agent" }
+tilo-network-secret-agent = { path = "../../os/network-secret-agent" }
+# What a screenshot sent to another device is staged into: the same private
+# spool, and the same resumable transfer, Files uses.
+tilo-nearby-service = { path = "../../session/nearby-service" }
+# The speaker groups and remote audio those devices carry: the session pumps
+# them on the fabric's pass and answers Settings from them.
+tilo-speaker-service = { path = "../../session/speaker-service" }
+# The person's VPN profiles: a kill-switch profile that drops blocks this
+# device's traffic, decided here and carried out by the root helper.
+tilo-device-vpn = { path = "../../os/device-vpn", default-features = false, features = ["session"] }
+tilo-bluetooth-agent = { path = "../../os/bluetooth-agent" }
+# The session's own surfaces (the shell, the bar, the switcher, the panels and
+# the sheets) published over AT-SPI2: one AccessKit Unix adapter per surface,
+# carrying the semantic tree the toolkit already builds. The tokio feature
+# keeps its D-Bus executor on the workspace's single async runtime.
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
+tilo-tray = { path = "../tray" }
+tilo-bluez = { path = "../../os/tilo-bluez" }
+# The login screens' comforts go to tilo-authd over its socket protocol.
+tilo-auth = { path = "../../os/tilo-auth", default-features = false }
+# Checks a password for the lock screen, through the unlock helper.
+bounded-command = { path = "../../platform/bounded-command" }
+# The line framing an app's shell-ui connection speaks.
+wire-frame = { path = "../../platform/wire-frame" }
+xkeysym = "0.2.1"
+zbus = { workspace = true, features = ["tokio"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# The surface apps' sockets are handed to their children as descriptors.
+libc.workspace = true
+# The certificate a device was approved with, kept where the identity helper
+# reads it once and taken away after.
+tempfile.workspace = true
+# A joined workspace's records are untrusted bytes: a worker process of this
+# executable decodes them, and `main` serves that worker.
+tilo-automerge-isolate.workspace = true
+# Search reads the device's installed apps and the person's choices, and
+# follows the directories its lists name.
+tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
+# What an installed app's signed manifest offers while it is closed, which search finds.
+tilo-app-package = { path = "../../core/tilo-app-package" }
+settings-store = { path = "../../system/settings-store", features = ["watch"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+
+[dev-dependencies]
+# A Tasks window in the tests, as the app's process runs one over the workspace's store.
+tilolang-process = { path = "../../lang/tilolang-process" }
+# The page track and window-share tests drive a synchronous web engine.
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
+# A check that answers a sheet as the person does asks the questions service the
+# sheets show, and reads its answer back.
+tilo-service = { path = "../service" }
+# The manager an app's window joins its workspace's record with: a test speaks as the window.
+collaboration = { path = "../../core/collaboration" }
+# A notebook as a page's store holds it, read for what Notes tells search it holds: the page's
+# search finds a note by its title and its words.
+# A development session's tilolang apps, built into signed `.tapp`s the tests install into
+# their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
+# `package-store`'s writer are normal dependencies of the session (a person's own style is
+# written, checked and installed the same way), so a test needs nothing extra here.
+tilo-app-package = { path = "../../core/tilo-app-package" }
+# The events the actor hands the session, which its own tests hand the sync
+# directly: the membership epoch on them is the actor's to mint.
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+# What a person types at their desktop: `tilo do` lists the catalogue and runs one
+# action over the control socket the session serves here.
+tilo-control = { path = "../control-cli" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The runtimes a device runs tilolang apps' windows on, signed and installed as a device's own
+# store holds them: Chat's windows run on them as they do on a person's computer.
+runtime-bundle = { path = "../../core/runtime-bundle" }
+# A Windows program that shows through X11, as a Proton program does: the stand-in draws its
+# window on the X11 display its keeper serves.
+x11rb = { version = "0.13", default-features = false }
+# A paste killed mid-transfer: the crash test's child process ends on a
+# signal, as a power cut ends a machine.
+libc.workspace = true
+# A call's tone and played samples with no device stack: a test hears the
+# same encoder, stream and playout a device's call uses.
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["voice", "test-support"] }
+# Reporting an ending to a session's apps as its spawner would, with the
+# memory cause a launcher remembers.
+tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
+# A Windows program's launch planned on a computer without the Windows payloads,
+# and the catalogue that routes it.
+compat-service = { path = "../../compat/compat-service", features = ["test-support"] }
+compat-catalogue = { path = "../../compat/compat-catalogue" }
+windows-vm = { path = "../../compat/windows-vm" }
+# The stand-in logind and UPower a power test serves over a socket pair.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+# A packet relay on this machine's loopback, for two of the person's devices
+# enrolling a machine in one process.
+iroh-relay = { version = "1.0.3", features = ["server"] }
+zbus = { workspace = true, features = ["tokio", "p2p"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+# The log a test's people write while it runs.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# A site's entry and directory served over loopback, for what joins list.
+test-http = { path = "../../../tools/test-http" }
+# The broker's certified-connection context, for driving a service the way
+# the broker admits Files.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "test-support"] }
+# A site's workspace as a site runs it: the host on this machine that
+# governs the workspace a join enrolls into, folding what its pages write,
+# and the page of its person that recorded there first.
+tilo-server = { path = "../../core/tilo-server", features = ["web"] }
+# What `NetworkManager` says, fed in rather than read from a bus.
+tilo-nm = { path = "../../os/tilo-nm" }
+# The other device's tunnel and this one's, in memory, for what a route
+# carries.
+tilo-device-vpn = { path = "../../os/device-vpn", default-features = false, features = ["test-support"] }
+tilo-endpoint-reachability = { path = "../../core/endpoint-reachability", features = ["test-support"] }
+# A server host on this machine's loopback, which is what a test's devices relay through.
+test-server = { path = "../../../tools/test-server", features = ["questions"] }
+futures-util.workspace = true
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
+tilo-audio-service = { path = "../../os/audio-service" }
+tilo-onboarding = { path = "../onboarding" }
+tilo-quick-settings = { path = "../../session/quick-settings", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
+# The sheets' apps mounted for a person, so a test presses a control of one
+# as the person's own gesture.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+wayland-client.workspace = true
+# What a scanner reads from a code the session draws: the invite sheet's
+# test decodes the invitation back out of its QR.
+rqrr = { workspace = true, default-features = true }
+# The text a field asks a keyboard for, as an app's toolkit speaks it.
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
+# A display tool speaking `wlr-output-management` to the session's compositor.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# The document a tree record is read as: a test runs the files daemon's writer
+# against a session, as a mount does.
+fs-protocol = { path = "../../core/fs-protocol" }
+# The input method a text field's client runs for the seat, as the person's
+# on-screen keyboard does.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# The action host a test's answering device runs its actions through, and the
+# certified workspace two of one person's devices ask each other in.
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+tilo-peer-state = { path = "../../core/tilo-peer-state", features = ["test-support"] }
+# A change another device's app wrote, read back into a record: a receiver's
+# way of taking changes, which the session's own code uses too.
+tilo-automerge = { path = "../../core/tilo-automerge" }
+# A `wl_shm` client that commits once per key and times each key on its own
+# clock: the app side of the key-latency measurement, which a compositor
+# without a GPU import can still show.
+smithay-client-toolkit = "0.20.0"
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web has no system random source; the page supplies the browser's.
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[lints]
+workspace = true
+
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true

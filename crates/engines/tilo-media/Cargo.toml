@@ -115,7 +115,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # The projector service a cast output asks, over its control socket. Optional so
 # a build that never casts links none of the four protocol stacks.
-tilo-projector = { version = "0.1.0", path = "../../system/projector", optional = true, default-features = false }
+tilo-projector = { version = "0.1.0", path = "../../services/projector", optional = true, default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Decode stack — only linked under `--features decode`. Same pins as

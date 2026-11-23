@@ -1,0 +1,45 @@
+[package]
+name = "tilo-session-power"
+description = "The session's power policy: the idle timeouts, the lid, the power key, the battery and suspend, over logind and UPower, published as resources whose actions hold the machine awake."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_session_power"
+
+[features]
+# The service over logind and UPower. Consumers that only read the published
+# battery and sleep readings depend on this crate without it.
+default = ["service"]
+service = [
+    "dep:os-actions",
+    "dep:tilo-actions",
+    "dep:tilo-lock",
+    "dep:tilo-service",
+    "dep:tokio",
+    "dep:tracing",
+    "dep:zbus",
+    "tilo-power-mgmt/service",
+]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-power-mgmt = { path = "../power", default-features = false, features = ["serde"] }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-actions = { path = "../../core/actions", optional = true }
+tilo-lock = { path = "../../platform/tilo-lock", optional = true }
+os-actions = { path = "../os-actions", optional = true }
+tilo-service = { path = "../../desktop/service", optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }
+tracing = { workspace = true, optional = true }
+zbus = { workspace = true, features = ["tokio"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

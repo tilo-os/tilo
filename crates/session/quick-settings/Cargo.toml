@@ -38,23 +38,23 @@ test-support = []
 [dependencies]
 # The sound the audio service reads and publishes, and the client side of
 # its lines for what plays.
-audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
+audio = { package = "tilo-audio-service", path = "../../os/audio-service", default-features = false }
 # What the radios, the links and the networks are, as the connectivity
 # service publishes them.
-connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
-os-actions = { path = "../../system/os-actions" }
+connectivity = { package = "tilo-connectivity-service", path = "../../os/connectivity-service" }
+os-actions = { path = "../../os/os-actions" }
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 # What the battery and the sleep policy are, as the power service publishes them.
-power = { package = "tilo-session-power", path = "../power-service", default-features = false }
+power = { package = "tilo-session-power", path = "../../os/power-service", default-features = false }
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # Battery snapshot, state and time-remaining types shown by the panel.
 tilo-power-mgmt = { path = "../../os/power", default-features = false }
 # What the system update is, as the system service publishes it.
-tilo-system-resources = { path = "../../platform/tilo-system-resources" }
+tilo-system-resources = { path = "../../desktop/tilo-system-resources" }
 # The one now-playing reading, which the shell's music widget, the lock
 # screen's card and the bar's pill show as this panel does.
-tilo-session-core = { path = "../core" }
+tilo-session-core = { path = "../../desktop/session-core" }
 tracing.workspace = true
 # A framework app: the panel's resource, effects and views.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
@@ -65,16 +65,16 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The audio service the session hosts, as a test's own: a card in memory.
-audio = { package = "tilo-audio-service", path = "../audio-service", features = ["service"] }
+audio = { package = "tilo-audio-service", path = "../../os/audio-service", features = ["service"] }
 image = { workspace = true, features = ["png"] }
 serde_json.workspace = true
 tilo-actions = { path = "../../core/actions" }
-tilo-color-pipeline = { path = "../color-pipeline" }
-tilo-compositor = { path = "../compositor" }
+tilo-color-pipeline = { path = "../../desktop/color-pipeline" }
+tilo-compositor = { path = "../../desktop/compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
-tilo-service = { path = "../service" }
+tilo-service = { path = "../../desktop/service" }
 # The session that starts the panel, and the headless presentation it runs.
-tilo-session = { path = "../session" }
+tilo-session = { path = "../../desktop/session" }
 tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 # What an external reader asks the panel's accessibility tree over AT-SPI2,

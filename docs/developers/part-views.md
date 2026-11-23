@@ -164,7 +164,7 @@ part: the session draws the view it ships with again rather than leaving the
 part blank.
 
 The window menu is the part with a tilolang process today
-([`parts::surface`](../../crates/session/session/src/parts.rs)).
+([`parts::surface`](../../crates/desktop/session/src/parts.rs)).
 
 ## What you cannot bind
 

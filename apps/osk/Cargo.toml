@@ -31,12 +31,12 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 
 [dependencies]
-tilo-input-context = { path = "../../crates/platform/tilo-input-context", features = ["client"] }
-tilo-keyboard-map = { path = "../../crates/platform/tilo-keyboard-map" }
+tilo-input-context = { path = "../../crates/desktop/tilo-input-context", features = ["client"] }
+tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 tilo-actions = { path = "../../crates/core/actions" }
 # FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
 # the FUTO libraries are not linked.

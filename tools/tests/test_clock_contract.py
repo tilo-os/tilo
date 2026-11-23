@@ -13,7 +13,7 @@ sys.modules[SPEC.name] = contract
 SPEC.loader.exec_module(contract)
 
 OWNER = "crates/core/tilo-peer-state"
-SYNC = "crates/session/session/src/sync"
+SYNC = "crates/desktop/session/src/sync"
 
 
 class ClockContractTests(unittest.TestCase):
@@ -176,7 +176,7 @@ class ClockContractTests(unittest.TestCase):
         root = self.fixture(
             {
                 f"{SYNC}/client/adopt.rs": "fn at() { std::time::SystemTime::now(); }\n",
-                "crates/session/session/src/other.rs": "fn at() { std::time::SystemTime::now(); }\n",
+                "crates/desktop/session/src/other.rs": "fn at() { std::time::SystemTime::now(); }\n",
                 "crates/core/collaboration/src/broker.rs": "fn at() { SystemTime::now(); }\n",
             }
         )

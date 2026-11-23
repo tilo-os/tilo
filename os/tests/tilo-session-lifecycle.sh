@@ -18,7 +18,7 @@ wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
-session_main="$repo/crates/session/session/src/main.rs"
+session_main="$repo/crates/desktop/session/src/main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
 grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES' "$wrapper"

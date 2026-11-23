@@ -64,9 +64,9 @@ SCANNED = (
     Path("crates/core/tilo-peer-state"),
     Path("crates/core/collaboration"),
     Path("crates/sdk/tilo-app"),
-    Path("crates/session/session"),
-    Path("crates/session/capture-studio"),
-    Path("crates/session/desktop-search"),
+    Path("crates/desktop/session"),
+    Path("crates/desktop/capture-studio"),
+    Path("crates/desktop/desktop-search"),
 )
 # Where only the decode rule holds: the app-hosting code that reads stored
 # surfaces and messages.

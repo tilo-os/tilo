@@ -32,7 +32,7 @@
 
 #[path = "common/mod.rs"]
 mod common;
-#[path = "../../../session/client/tests/support/mod.rs"]
+#[path = "../../session-client/tests/support/mod.rs"]
 mod support;
 
 // Agents hold each record in a confined app worker (this binary, started

@@ -293,7 +293,7 @@ and its width-change tests.
 
 Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
-pointer tests in `crates/session/session/tests/`.
+pointer tests in `crates/desktop/session/tests/`.
 
 **Why it kept regressing.** Border ownership used to be nobody's decision. The
 border handle was keyed to its left neighbour (its drag set "left width + dx"),

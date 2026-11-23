@@ -748,7 +748,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     # its note with in the person's language.
     finished = 2
     note = app_word("today", "morning_cleanup", "w-morning-done", n=finished)
-    allow, deny = (say("crates/session/sheets", key) for key in ("portal-allow-once", "portal-deny"))
+    allow, deny = (say("crates/desktop/sheets", key) for key in ("portal-allow-once", "portal-deny"))
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
     # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.

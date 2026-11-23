@@ -72,14 +72,14 @@ class WindowWaitsTest(unittest.TestCase):
         self.assertTrue(found[0].startswith("apps/settings/src/panes/mesh.rs:12:"), found)
 
     def test_a_surface_of_the_session_is_window_code(self) -> None:
-        found = audit({"crates/session/lock-screen/src/lock.rs": READ_IN_PLACE})
+        found = audit({"crates/desktop/lock-screen/src/lock.rs": READ_IN_PLACE})
         self.assertEqual(len(found), 1, found)
 
     def test_an_open_marked_off_the_window_a_follow_and_a_test_pass(self) -> None:
         self.assertEqual(audit({"apps/osk/src/session.rs": OFF_THE_WINDOW}), [])
 
     def test_the_session_loop_still_never_blocks_on(self) -> None:
-        found = audit({"crates/session/session/src/loop.rs": "fn f() { pollster::block_on(x) }\n"})
+        found = audit({"crates/desktop/session/src/loop.rs": "fn f() { pollster::block_on(x) }\n"})
         self.assertEqual(len(found), 1, found)
 
 

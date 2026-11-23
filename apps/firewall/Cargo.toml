@@ -26,7 +26,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 # The resources the app draws: their types, verbs and typed action arguments.
 firewall-model = { path = "../firewall-model" }
 # The Tilo action model: every document-mutating operation is a serializable,

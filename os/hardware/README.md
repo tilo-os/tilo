@@ -514,7 +514,7 @@ at runtime.
 The compositor takes the kernel's orientation at face value — a native-portrait
 panel therefore needs no second rotation and no copy pass. It only turns the
 panel further when the accelerometer reports the device was rotated
-(`crates/session/session/src/rotation.rs`), and that path already refuses to
+(`crates/desktop/session/src/rotation.rs`), and that path already refuses to
 touch an external monitor.
 
 ### Controls

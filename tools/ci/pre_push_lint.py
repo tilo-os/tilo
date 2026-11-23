@@ -611,7 +611,7 @@ def surface_checks(root: Path, push: Push) -> list[str]:
             named = set(scoped.stdout.split())
             return [name for name in wanted if name in named]
     # t could not tell: an app's surface alone still moves the generated catalogue and types.
-    if any(path.startswith(("apps/", "crates/packaging/app-fleet/")) for path in push.files):
+    if any(path.startswith(("apps/", "crates/desktop/app-fleet/")) for path in push.files):
         return list(wanted)
     return []
 

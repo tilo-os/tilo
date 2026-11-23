@@ -230,7 +230,7 @@ stays a saved resource, synced and undoable like any app's.
 
 ## 8. On the native session
 
-The native session (`crates/session/session`) is already thin: the compositor
+The native session (`crates/desktop/session`) is already thin: the compositor
 (`tilo-compositor`) shows buffers and routes input and draws no interface; a `WindowPolicy`
 decides placement and focus; surface apps reach the screen as `ShellSurface` layers through
 `tilo-shell-surface`; the shell and chrome are the Rust widgets of `tilo-desktop`

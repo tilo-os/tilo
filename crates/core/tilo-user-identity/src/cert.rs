@@ -320,7 +320,7 @@ impl<'de> Deserialize<'de> for AgentScope {
 /// What a device may do on behalf of its user.
 ///
 /// The flags map directly to enforceable policy checks in
-/// `crates/session/session/` and `crates/core/fs/`. A user's *primary* device (the one
+/// `crates/desktop/session/` and `crates/core/fs/`. A user's *primary* device (the one
 /// that holds the root private key) gets `can_own_workspaces:
 /// true, can_admit_devices: true`, their other devices get
 /// `can_own_workspaces: true` but `can_admit_devices: false`. Whether a

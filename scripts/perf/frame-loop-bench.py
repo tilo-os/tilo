@@ -3,7 +3,7 @@
 
 Spawns `tilo-session --backend headless` with the frame-loop instrumentation
 enabled (`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
-`crates/session/frame-metrics/src/lib.rs`), optionally drives input through the
+`crates/desktop/frame-metrics/src/lib.rs`), optionally drives input through the
 `TILO_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
 client against it, then reports the frame-time distribution. A window's frames
 come from the session's `windows` rows: `frames` is how many frames that

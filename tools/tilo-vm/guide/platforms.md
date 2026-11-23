@@ -56,7 +56,7 @@ A guest with virgl prints `EGL driver name: virtio_gpu` and an
 Wayland-only image may not run XWayland.
 
 Apps do not connect to the desktop compositor itself: each runs behind an app
-keeper (`crates/session/app-keeper`), which offers `zwp_linux_dmabuf_v1` at
+keeper (`crates/desktop/app-keeper`), which offers `zwp_linux_dmabuf_v1` at
 version 4 (the version that carries feedback) built from the desktop's own
 feedback. So `wayland-info` on the desktop's socket lists no dma-buf global,
 while a client inside an app gets one.

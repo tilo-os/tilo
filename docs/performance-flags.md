@@ -140,7 +140,7 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path                                                | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result.                                                                                                                                                             |
 
 Sources: [ui-core startup](../crates/ui/ui-core/src),
-[session startup](../crates/session/session/src/main.rs),
+[session startup](../crates/desktop/session/src/main.rs),
 [startup metrics](../crates/core/tilo-startup-metrics/src/lib.rs).
 
 ## UI dashboard benchmark
@@ -307,9 +307,9 @@ results are not native-4K redraw evidence.
 defaulting to `video.sock` in the projector runtime directory
 (`TILO_PROJECTOR_RUNTIME_DIR`, else `XDG_RUNTIME_DIR/tilo-projector`). It routes
 output, not rendering speed. Sources:
-[capture](../crates/session/session/src/capture.rs),
-[profile schema and defaults](../crates/system/projector/src/lib.rs),
-[native-loop diagnostics](../crates/session/session/src/run.rs).
+[capture](../crates/desktop/session/src/capture.rs),
+[profile schema and defaults](../crates/services/projector/src/lib.rs),
+[native-loop diagnostics](../crates/desktop/session/src/run.rs).
 
 ## Build and dependency controls
 
@@ -387,7 +387,7 @@ application can enable them through dependency feature unification):
 | `tilo-session/dev-overrides` | Off                       | The test-control socket `tilo-vm` and the capture harnesses drive a desktop through, and the deterministic boundaries `shots` and the integration tests need. A dev image builds it; a production image never does. Not a frame-rate optimization. |
 
 See [UI features](../crates/ui/ui-core/Cargo.toml) and
-[session features](../crates/session/session/Cargo.toml). `--no-default-features`
+[session features](../crates/desktop/session/Cargo.toml). `--no-default-features`
 changes the workload/capability set; document it in any benchmark recipe rather
 than silently comparing different feature sets.
 

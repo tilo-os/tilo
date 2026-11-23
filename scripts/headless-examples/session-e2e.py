@@ -138,7 +138,7 @@ TOOL_TURNS = [
 # (apps/tl/agent app.tl `Agents.replies`): what Chat shows under the message the person wrote.
 ASKED = "agent.agents.replies.map(r -> [r.ask.said, r.body])"
 # What the session and its apps log when the ask or the run's own steps are refused
-# (crates/session/session/src/send_to.rs, apps.rs, apps/agent/src/session).
+# (crates/desktop/session/src/send_to.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
     "an app action was not delivered",
     "a send did not land",

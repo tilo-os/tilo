@@ -738,7 +738,7 @@ happens to the one beyond it.
   session is judged by its grant, wherever it waited. The device that was
   told busy asks again after a second, then two, four and eight, and every
   fifteen from then on, each wait up to a quarter shorter by the device's
-  own key (`retry_wait` in `crates/session/session/src/live.rs`), so that
+  own key (`retry_wait` in `crates/desktop/session/src/live.rs`), so that
   the devices a relay turned back in one moment do not come back in one
   moment, and is taken in once the relay has room. Until then its live session
   reads as told busy by the relay, by name (`relay-busy`), never as

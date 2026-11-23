@@ -43,7 +43,10 @@ pub struct Readout;
 
 /// What shows a readout: one declared effect, answered by the slab that draws it.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "tilo.desktop.osd", catalogue = "../core/locales")]
+#[effect(
+    operation = "tilo.desktop.osd",
+    catalogue = "../../desktop/session-core/locales"
+)]
 pub enum OsdShow {
     /// Show a readout
     #[effect(kind = "undoable", label = "desktop-action-show-osd")]

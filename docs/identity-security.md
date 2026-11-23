@@ -162,7 +162,7 @@ duplicate imports, shared-secret removal, active/final record protections, and
 prevention of migration/chmod outside the canonical identity store.
 
 `tilo_identity::store`'s own test builds always use the file store. The store a
-real session chooses is proven by `crates/system/secret-service/tests/identity_ownership.rs`,
+real session chooses is proven by `crates/desktop/secret-service/tests/identity_ownership.rs`,
 which runs the production identity and vault code against the built
 `tilo-secret-service` on a private session bus. With no Secret Service on the
 bus, a new key goes to the 0600 file, the record names `broker-file-v1`,

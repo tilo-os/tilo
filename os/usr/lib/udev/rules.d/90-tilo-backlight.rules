@@ -6,7 +6,7 @@
 # the session user is in — and Tilo carries its own copy of that rule
 # rather than pulling in `brightnessctl` for the rule it happens to ship
 # alongside a binary we do not otherwise need. See the design note at the
-# top of crates/system/os-actions/src/display.rs.
+# top of crates/os/os-actions/src/display.rs.
 #
 # The session user joins `video` in tilo-firstboot-user. `greetd` is
 # already in it (see os/Containerfile), so the greeter can dim too.

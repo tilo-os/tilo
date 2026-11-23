@@ -26,10 +26,10 @@ PUBLIC_COPY_FILES = (
     "crates/session/desktop/src/workspace_settings.rs",
     "crates/session/desktop/src/workspace_settings/people.rs",
     "crates/session/desktop/src/topbar/sharing.rs",
-    "crates/session/session/src/device_lists.rs",
-    "crates/session/session/src/people.rs",
-    "crates/session/session/src/workspace_settings.rs",
-    "crates/session/sheets/src/workspace_settings/people.rs",
+    "crates/desktop/session/src/device_lists.rs",
+    "crates/desktop/session/src/people.rs",
+    "crates/desktop/session/src/workspace_settings.rs",
+    "crates/desktop/sheets/src/workspace_settings/people.rs",
 )
 
 FORBIDDEN = re.compile(

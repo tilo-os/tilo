@@ -11,6 +11,7 @@ description = "Brush presets and stroke geometry worked out from points alone: t
 vello.workspace = true
 # Dabs are laid along the same evenly spaced samples the wet-media simulation reads.
 tilo-wet-media = { path = "../wet-media" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Scenarios build their fixtures and report which phase failed.

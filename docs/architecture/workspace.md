@@ -703,7 +703,7 @@ it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, each device up to a quarter sooner by its own key so that the
 devices a relay missed together do not come back together (`retry_wait` in
-`crates/session/session/src/live.rs`), since a device that comes back tells
+`crates/desktop/session/src/live.rs`), since a device that comes back tells
 nobody. The relaying device takes sixteen sessions through admission at
 once, at most four of them of one endpoint, and four more of endpoints that
 none of its workspaces names as a device, which therefore cannot keep a

@@ -20,8 +20,9 @@ applications; `core/fs/` owns the collaborative filesystem service, and
 | `vm/` | VMs and sandboxes: Linux VMs, ush environments and their images, tinker layers |
 | `compat/` | Running Windows programs: the compatibility catalogue, its broker and the managed Windows VM |
 | `integrations/` | Other services Tilo connects to: mail, calendars and DAV, cloud drives, messaging bridges and model providers |
+| `desktop/` | The compositor, the session that is a client of the core, the portal and the seat-bound providers |
 | `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
-| `session/`, `system/`, `packaging/` | The desktop session and the crates still leaving these groups for `desktop/`, `os/` and `services/` |
+| `session/`, `system/` | Crates on their way out: the Rust shell and the per-app state and settings stores, which their replacements delete |
 
 ## Developer tools and fixtures
 

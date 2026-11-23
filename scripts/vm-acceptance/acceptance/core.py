@@ -625,7 +625,7 @@ def display_snapshot(ctx) -> dict:
 def monitor_key(identity: dict | None) -> str | None:
     """An output's monitor as the display partition keys it: its EDID identity, else None
     for a sink that names none (the partition then uses the connector name). The same
-    `make model serial` the compositor builds (crates/session/compositor/src/output.rs
+    `make model serial` the compositor builds (crates/desktop/compositor/src/output.rs
     `monitor_of`)."""
     if not isinstance(identity, dict):
         return None
@@ -681,7 +681,7 @@ TRACE_FLUSH_S = 1.05
 SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 
 # The compositor's own timing of each workspace switch
-# (crates/session/compositor/src/switch_latency.rs), one session-log line each.
+# (crates/desktop/compositor/src/switch_latency.rs), one session-log line each.
 SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
                  "frames", "dropped", "interval_us")
 SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")

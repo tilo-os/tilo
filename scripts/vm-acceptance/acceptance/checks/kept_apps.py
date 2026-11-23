@@ -2,7 +2,7 @@
 
 A desktop update restarts the compositor without logging the person out (the session wrapper's
 SIGUSR1, as the device steps and a live update ask for it). Every host app runs behind an app keeper
-(crates/session/app-keeper), which keeps its Wayland state while no desktop is there. This check
+(crates/desktop/app-keeper), which keeps its Wayland state while no desktop is there. This check
 opens a GPU-rendered app (alacritty, OpenGL), a shared-memory one (foot) and an X11 one (xterm),
 the last in a workspace of its own so the others stand in one behind it, gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in
 place, and then requires the same processes, their windows back in their own tabs and workspaces

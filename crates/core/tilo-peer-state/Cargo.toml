@@ -41,7 +41,7 @@ web-time = { version = "1", features = ["serde"] }
 collab-types = { path = "../collab-types" }
 # A record is published under an app id, in the one spelling apps use.
 tilo-app-id = { path = "../tilo-app-id" }
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilo-action-policy = { path = "../action-policy" }
 # The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).
 neighbour-wire = { path = "../neighbour-wire" }

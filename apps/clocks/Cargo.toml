@@ -22,7 +22,7 @@ serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 # The resources the app draws: their types, verbs and typed action arguments.
 clocks-model = { path = "../clocks-model" }
 taffy.workspace = true

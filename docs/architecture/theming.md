@@ -17,7 +17,7 @@ The rules:
 2. **Two levels.** Most people stay at the **token level**: data
    (`ThemeDocument`, `THEME_SCHEMA_VERSION` in
    `crates/sdk/ui-core/src/theme_document.rs`, the presets' names and the
-   density scale in `crates/system/settings-model/src/theme.rs`): roles,
+   density scale in `crates/sdk/settings-model/src/theme.rs`): roles,
    density, motion presets, built-in painter sets (Default, Glass, Block). The **full level**
    adds programs: part painters, state transitions, scroll feel and assets
    (§ "Part painters").
@@ -563,7 +563,7 @@ theme's presence lightness and chroma (one tone for everybody).
 ## Trusted UI
 
 A themable OS gives an attacker a palette. Permission prompts, the identity
-ceremony (`crates/session/onboarding/src/ceremony.rs`), the capability
+ceremony (`crates/desktop/onboarding/src/ceremony.rs`), the capability
 indicators of `distribution.md` §5 and the lock screen must carry a marker
 that **no theme and no app can reproduce**:
 

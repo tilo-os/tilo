@@ -1,0 +1,130 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-compositor"
+description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# One test binary for the integration tests, whose files it includes as modules:
+# a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[features]
+# Lets a test read a window's dma-buf on the CPU and have the headless backend
+# advertise dma-bufs with feedback where the machine has no GPU, and hold an
+# image description's `ready` until the test lets it go. Production builds
+# never enable it.
+test-support = ["tilo-wayland-ext/test-support"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The protocol server, the desktop element model and the renderers: pixman
+# composites headless outputs on the CPU, GLES real ones; the TTY backend's
+# session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
+# does the window of the nested development backend. renderer_multi lets the
+# primary GPU render for displays on other GPUs.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+    "renderer_pixman",
+    "renderer_gl",
+    "renderer_multi",
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_winit",
+    "xwayland",
+] }
+# The window of the nested development backend: the toolkit's winit fork, the
+# same one smithay's backend builds; it opens a Wayland window where the
+# desktop is Wayland and an X11 one otherwise (X11 comes with smithay's own
+# winit dependency).
+winit.workspace = true
+# The nested window's EGL surface on its Wayland surface, made by the
+# compositor itself so a lost one can be made again on the same window.
+wayland-egl = "0.32"
+# Turns an output's ICC profile into the lookup table its colour pass reads.
+qcms.workspace = true
+tracing.workspace = true
+# Percentiles of the frame pacing it logs.
+tilo-frame-metrics = { path = "../frame-metrics" }
+# When a launched app's window mapped and its first frame reached a display:
+# the compositor's share of opening an app, logged with the launch's others.
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+# Where the session says which GPU it renders on: the record
+# `tilo system health --gpu` reads.
+serde.workspace = true
+serde_json.workspace = true
+tilo-paths.workspace = true
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# How long a risky display change waits for the person: read through the
+# clock a test can hold, so the wait ends when the person answers and not
+# when the machine was slow.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# Monitors are known by their EDID identity, which a layout follows
+# between ports.
+settings-store = { path = "../../system/settings-store" }
+tilo-wayland-ext = { path = "../wayland-ext" }
+# What a surface is, and the shapes, key claims and outputs it is told of: the session's
+# own vocabulary, so a surface app is written once for the compositor and the page.
+tilo-session-core = { path = "../session-core" }
+# The liveness socket beside the control socket: whether the loop still turns,
+# and where every thread is when it does not.
+tilo-liveness = { path = "../liveness" }
+# A surface's HDR signal and the tone-mapped SDR rendition the scene draws:
+# the plane and the layer compositing it, shared with the colour passes.
+tilo-color-pipeline = { path = "../color-pipeline" }
+# The names text goes by for X11 and Wayland programs, shared with the app keeper.
+tilo-x11-transfer = { path = "../x11-transfer" }
+# What a window's content is in and what an output displays, in the
+# vocabulary a share stream and the colour pass speak.
+neighbour-wire = { path = "../../core/neighbour-wire" }
+# `wp_color_management_v1`'s objects, which `tilo-wayland-ext` dispatches.
+wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
+# Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
+# smithay's window manager speaks selections but not XDND. The resource
+# extension counts a display's clients, which tells whether any app is left
+# on it.
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
+# Named pointer shapes from the XCursor theme.
+xcursor = "0.3"
+# A kept copy is known by its bytes.
+blake3.workspace = true
+# Reading a selection takes its pipe non-blocking, so an app that is slow to
+# answer holds up no frame; a surface app's own display recognises the program
+# that connected to it by the kernel's record of who it is.
+rustix = { workspace = true, features = ["fs", "mm", "net"] }
+# The process's own memory: `mincore` for the mapping breakdown, `mallinfo2`
+# and `malloc_trim` for the heap.
+libc.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
+wayland-client = { workspace = true, features = ["system"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
+# A real GL client in a test: the machine's EGL drawing into a Wayland window, choosing its buffer
+# format from what the compositor offers, as every GL app does.
+khronos-egl = { version = "6", features = ["dynamic"] }
+wayland-egl = "0.32"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# A test holds the displays' clock still, so a frame is due at the instant its
+# grid says rather than at the instant the machine got round to drawing it.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
+# A share of a window as the session keeps it, to prove the colour a client
+# commits is what the stream carrying the window's frames announces.
+tilo-window-share = { path = "../window-share" }
+# A subject's cases are the phases of one test (`scenario!`).
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

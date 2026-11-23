@@ -1,0 +1,62 @@
+# Written by `python3 tools/policy/check_interfaces.py write` from the code;
+# review a change here like an API change (docs/architecture/compatibility.md).
+# Everything above [schema] is authored; [schema] and `version` are written.
+
+# Session ↔ app keeper: the control socket a keeper serves in its private
+# directory. The session hands it a desktop connection, reads its windows and
+# their placements back after a restart, and hears how its app ended. A
+# running keeper outlives the session build that started it, so a session
+# after an update meets keepers of an older build: a hello at another version
+# is answered with the keeper's, then "holding", and the connection holds the
+# app while it stays open. That handshake and the `app` file in the keeper's
+# directory are not versioned (wire.rs, "The part that never changes").
+name = "app-keeper"
+version = 1
+version_const = "crates/desktop/app-keeper/src/wire.rs:INTERFACE_VERSION"
+encoding = "json"
+sources = ["crates/desktop/app-keeper/src/wire.rs"]
+roots = ["ToKeeper", "FromKeeper"]
+
+[schema]
+"Description" = "struct"
+"Description.app_pid" = "Option<u32> optional"
+"Description.attached" = "bool"
+"Description.ended" = "Option<End> optional"
+"Description.fault" = "Option<String> optional"
+"Description.launch" = "String"
+"Description.started_at" = "Option<u64> optional"
+"Description.windows" = "Vec<Window>"
+"End" = "enum external"
+"End::exited" = "struct"
+"End::exited.code" = "i32"
+"End::signalled" = "struct"
+"End::signalled.memory" = "bool optional"
+"End::signalled.signal" = "i32"
+"FromKeeper" = "enum external"
+"FromKeeper::described" = "tuple(Description)"
+"FromKeeper::ended" = "struct"
+"FromKeeper::ended.end" = "End"
+"FromKeeper::fault" = "struct"
+"FromKeeper::fault.fault" = "String"
+"FromKeeper::hello" = "struct"
+"FromKeeper::hello.version" = "u32"
+"FromKeeper::version-mismatch" = "struct"
+"FromKeeper::version-mismatch.version" = "u32"
+"FromKeeper::windows" = "struct"
+"FromKeeper::windows.windows" = "Vec<Window>"
+"ToKeeper" = "enum external"
+"ToKeeper::attach" = "unit"
+"ToKeeper::describe" = "unit"
+"ToKeeper::detach" = "unit"
+"ToKeeper::end" = "struct"
+"ToKeeper::end.signal" = "i32"
+"ToKeeper::hello" = "struct"
+"ToKeeper::hello.version" = "u32"
+"ToKeeper::set-placement" = "struct"
+"ToKeeper::set-placement.placement" = "String"
+"ToKeeper::set-placement.tag" = "String"
+"Window" = "struct"
+"Window.app_id" = "Option<String> optional"
+"Window.placement" = "Option<String> optional"
+"Window.tag" = "String"
+"Window.title" = "Option<String> optional"

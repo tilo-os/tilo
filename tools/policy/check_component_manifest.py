@@ -63,7 +63,7 @@ SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
 
 # The session starts its surface apps (the lock screen, the on-screen keyboard,
 # the window menu) as programs of its own: `program_path` looks beside the
-# session's executable first and then on PATH (crates/session/session/src/
+# session's executable first and then on PATH (crates/desktop/session/src/
 # surfaces.rs), so each one has to be installed there by a component.
 SESSION_CRATES = "crates/session"
 SESSION_BINARY = "tilo-session"

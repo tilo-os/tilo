@@ -29,7 +29,7 @@ fnv.workspace = true
 blake3.workspace = true
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/system/settings-model" }
+settings-model = { path = "../../crates/sdk/settings-model" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

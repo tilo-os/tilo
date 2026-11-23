@@ -4,10 +4,10 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-PROCESS="$ROOT/crates/system/os-actions/src/process.rs"
-FIRMWARE="$ROOT/crates/system/os-actions/src/firmware.rs"
-PRIVACY="$ROOT/crates/system/os-actions/src/privacy.rs"
-OS_ACTIONS_SRC="$ROOT/crates/system/os-actions/src"
+PROCESS="$ROOT/crates/os/os-actions/src/process.rs"
+FIRMWARE="$ROOT/crates/os/os-actions/src/firmware.rs"
+PRIVACY="$ROOT/crates/os/os-actions/src/privacy.rs"
+OS_ACTIONS_SRC="$ROOT/crates/os/os-actions/src"
 NM_CONTROL="$ROOT/crates/os/tilo-nm/src/control.rs"
 
 fails=0

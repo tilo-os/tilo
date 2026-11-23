@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # own AppStream update); this crate only reads what they leave on disk.
 [dependencies]
 # What each Tilo app's manifest says, for apps not on this device.
-app-fleet = { path = "../../packaging/app-fleet" }
+app-fleet = { path = "../../desktop/app-fleet" }
 # The installed half: the registry of installed packages, each read through
 # the signed manifest it was admitted with.
 package-store = { path = "../package-store" }
@@ -29,7 +29,7 @@ tilo-action-policy = { path = "../action-policy" }
 tilo-app-id.workspace = true
 # File types, MIME types and URI schemes as the installed manifest claims
 # them, in the one vocabulary the desktop resolves opens with.
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+desktop-policy = { path = "../../desktop/default-apps", default-features = false }
 # `CatalogueApp`, the `app list --json` row a Tilo entry is made from.
 registry-types = { path = "../registry-types" }
 tilo-paths.workspace = true

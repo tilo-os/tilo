@@ -9,7 +9,7 @@ Four layers, each useful on its own:
 3. **`scripts/headless-examples/`** — short Python harnesses that spawn a session, drive it and put it down.
 4. **`tilo-app dev` and `scripts/agent-loop/session.py`** — an app rebuilt on every source change, in a session of its own.
 
-The session binary is `tilo-session` (`crates/session/session`); its scenarios are `crates/session/session/tests/`.
+The session binary is `tilo-session` (`crates/desktop/session`); its scenarios are `crates/desktop/session/tests/`.
 
 ## What a session publishes
 
@@ -35,7 +35,7 @@ TILO_TEST_CONTROL=/run/user/1000/tilo-session/test-control.sock
 TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 ```
 
-A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/session/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`real_apps.ScriptedSession` does), so a test session never repoints that desktop's user manager at its own socket.
+A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/desktop/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`real_apps.ScriptedSession` does), so a test session never repoints that desktop's user manager at its own socket.
 
 ## A session that owns no machine
 
@@ -232,7 +232,7 @@ echo '{"op":"process_memory"}' | nc -U "$TILO_TEST_CONTROL"
 echo '{"op":"provision_test_identity"}' | nc -U "$TILO_TEST_CONTROL"
 ```
 
-The full set is `Op::ALL` in `crates/session/session/src/test_control.rs`, where the
+The full set is `Op::ALL` in `crates/desktop/session/src/test_control.rs`, where the
 `Op` enum and its comments are the source of truth.
 
 ### Response shapes
@@ -541,7 +541,7 @@ An idle desktop should leave the CPU asleep and hold little memory.
 
 Headless covers what headless runs. Services and out-of-process apps are held by per-thread probes in their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}` for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for a process tree, and `sample_process` with `Wakeups::between` for a stretch the test drives itself. `Wakeups::blocking_per_second` counts only voluntary switches, one per wakeup, together with a CPU bound that catches a thread spinning without blocking; `assert_stays_asleep` counts the times the thread was scheduled in, not its context switches.
 
-The session's memory is read from its own socket: `raw '{"op":"process_memory"}'` sums `mincore` over `/proc/self/maps` per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …), with glibc's in-use and free bytes and the threads by name (`crates/session/compositor/src/memory_report.rs`). It is the one that works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so vm-acceptance R01 records the same report. Where a test runs on a kernel with smaps, `/proc/<pid>/smaps` beside it gives RSS, PSS and private dirty pages per mapping.
+The session's memory is read from its own socket: `raw '{"op":"process_memory"}'` sums `mincore` over `/proc/self/maps` per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …), with glibc's in-use and free bytes and the threads by name (`crates/desktop/compositor/src/memory_report.rs`). It is the one that works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so vm-acceptance R01 records the same report. Where a test runs on a kernel with smaps, `/proc/<pid>/smaps` beside it gives RSS, PSS and private dirty pages per mapping.
 
 ### Correlating app startup attempts
 
@@ -561,20 +561,20 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a wake. One it does not acknowledge within the budget is a stall, and the answer carries every thread's state and kernel wait channel; when the main thread is blocked it also carries the backtraces of the threads blocked in a system call. A main thread still working is not interrupted, and neither is a thread that is running, faulting in a page or inside the allocator, because a backtrace is captured by a signal handler that allocates.
 
-Every build, release included, also runs the main-loop watchdog (`crates/session/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/session/session/tests/main_thread_reads.rs`) keeps the loop's own threads off paths that read the layout.
+Every build, release included, also runs the main-loop watchdog (`crates/desktop/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/desktop/session/tests/main_thread_reads.rs`) keeps the loop's own threads off paths that read the layout.
 
 ## Where to look in source
 
 | What | Where |
 |---|---|
-| Session binary and its flags | `crates/session/session/src/main.rs` |
-| What the session publishes | `crates/session/compositor/src/lib.rs` (`listen`), `crates/session/session/src/published_workspace.rs`, `crates/session/session/src/env.rs` |
-| `TILO_TEST_CONTROL` protocol | `crates/session/session/src/test_control.rs` |
-| `tilo-control` | `crates/session/control-cli/` |
-| Liveness socket and watchdog | `crates/session/liveness/src/` |
-| Headless backend | `crates/session/compositor/src/backend/headless.rs` |
-| Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
-| Memory report | `crates/session/compositor/src/memory_report.rs` |
+| Session binary and its flags | `crates/desktop/session/src/main.rs` |
+| What the session publishes | `crates/desktop/compositor/src/lib.rs` (`listen`), `crates/desktop/session/src/published_workspace.rs`, `crates/desktop/session/src/env.rs` |
+| `TILO_TEST_CONTROL` protocol | `crates/desktop/session/src/test_control.rs` |
+| `tilo-control` | `crates/desktop/control-cli/` |
+| Liveness socket and watchdog | `crates/desktop/liveness/src/` |
+| Headless backend | `crates/desktop/compositor/src/backend/headless.rs` |
+| Frame-loop metrics | `crates/desktop/frame-metrics/src/lib.rs` |
+| Memory report | `crates/desktop/compositor/src/memory_report.rs` |
 | App headless drive | `crates/ui/ui-core/src/headless/` |
 | Offscreen renderer | `crates/ui/ui-core/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

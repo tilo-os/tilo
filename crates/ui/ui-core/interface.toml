@@ -23,7 +23,7 @@ sources = [
     "crates/ui/ui-core/src/action_locus.rs",
     "crates/ui/ui-core/src/shared_selection.rs",
     "crates/ui/ui-core/src/theme_document.rs",
-    "crates/system/settings-model/src/theme.rs",
+    "crates/sdk/settings-model/src/theme.rs",
     "crates/ui/ui-core/src/tokens/palette.rs",
     "crates/ui/ui-core/src/tokens/finish.rs",
     "crates/ui/ui-core/src/tokens/selector.rs",

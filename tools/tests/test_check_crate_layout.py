@@ -87,10 +87,10 @@ class CrateLayoutTests(unittest.TestCase):
 
     def test_a_crate_in_a_group_the_layout_does_not_name_fails(self) -> None:
         root = self.repository('core = ["tilo-runtime -> tilo-ui-paint", "tilo-runtime -> tilo-compositor"]\n')
-        crate(root, "crates/core/actions", "tilo-actions")
+        crate(root, "crates/collab/actions", "tilo-actions")
         problems = checker.check(root)
         self.assertEqual(len(problems), 1, problems)
-        self.assertTrue(problems[0].startswith("crates/core/actions: crates/collab/ is not a group"))
+        self.assertTrue(problems[0].startswith("crates/collab/actions: crates/collab/ is not a group"))
 
     def test_the_repository_keeps_its_layout(self) -> None:
         self.assertEqual(checker.check(), [])
