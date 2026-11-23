@@ -2909,13 +2909,15 @@ fn the_first_presented_frame_is_logged_on_the_monotonic_clock() {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut compositor = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-compositor"))
         .args(["--backend", "headless", "--", "/bin/sh", "-c", "sleep 5"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("run the compositor");
     let stderr = compositor.stderr.take().expect("the compositor's stderr");
     let (lines, heard) = mpsc::channel();

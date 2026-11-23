@@ -20402,6 +20402,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-rt",
  "tilo-sandbox-core",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-vello",
  "tracing",

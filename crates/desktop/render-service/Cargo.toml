@@ -37,6 +37,8 @@ runtime-bundle = { path = "../../core/runtime-bundle" }
 
 [dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
+# The service starts as a process of its own, outside every other test's environment scope.
+tilo-test-env = { path = "../../../tools/test-env" }
 
 # The service runs as a process of its own, started the way the session starts it: this target's
 # `main` is that process too, which `libtest` would not let it be.

@@ -14,6 +14,7 @@ fn main() -> std::process::ExitCode {
 
     use tilo_render_protocol::channel::Channel;
     use tilo_render_service::broker::{FromService, MODE};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = tilo_render_service::dispatch(&args) {
@@ -50,7 +51,7 @@ fn main() -> std::process::ExitCode {
         .stdin(std::process::Stdio::from(
             service.as_fd().try_clone_to_owned().unwrap(),
         ))
-        .spawn()
+        .spawn_locked()
         .unwrap();
     drop(service);
 
