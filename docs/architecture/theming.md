@@ -682,22 +682,11 @@ theme should supply.
 | File | Sites | Content | Chrome | Notes |
 |---|---:|---:|---:|---|
 | `crates/ui/tilo-rich-edit/src/reading/` | 4 | 4 | 0 | the reading page's paper and ink, picked by its reader |
-| `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from `intent.you` and `danger`, made legible on paper |
-| `word-processor/src/review_overlay.rs` | 14 | 0 | 14 | comment and change cards, accept/reject buttons, insertion/deletion ink |
-| `word-processor/src/widget/tests.rs`, `style_color_picker.rs` | 4 | 4 | 0 | fixtures; seed from a stored style |
 | `feeds/src/reader_theme.rs` | 14 | 14 | 0 | page palettes |
-| `pdf-viewer/src/render.rs` | 9 | 8 | 1 | page ink and thumbnails are content; the page-card outline is chrome (`ui::surface::edge_on`) |
-| `pdf-viewer/src/app.rs` | 1 | 1 | 0 | shots harness clear colour |
-| `tube/src/contrast.rs`, `util.rs` | 9 | 9 | 0 | colour-math helpers and their tests |
-| `tube/src/widgets/thumbnail.rs` | 2 | 0 | 2 | LIVE badge and watch-progress bar |
-| `tube/src/screens.rs` | 2 | 2 | 0 | segment-category identity colours |
 | `terminal/src/main_body.rs`, `tests.rs` | 10 | 10 | 0 | ANSI/truecolor conversion; fixtures |
 | `camera/src/app.rs` | 6 | 5 | 1 | white controls and dark washes over the viewfinder, document paper are content; the settings-sheet scrim is chrome (`surfaces.scrim`) |
 | `video-editor/src/**` | 8 | 8 | 0 | title colours rendered into the video, stored swatches, blend helpers, test |
 | `themes/src/**` | 5 | 4 | 1 | spec conversion and tests are content; the customizer's seed colour should be the active accent |
-| `mail/src/draw.rs` | 2 | 0 | 2 | avatar palette entries outside the theme (`Colors::categorical`) |
-| `chat/src/**` | 3 | 3 | 0 | member colour (made legible downstream), blend helper, scrim derivation over video |
 | `slides/src/model.rs` | 1 | 1 | 0 | the authored "Deep" slide treatment |
-| `music/src/art.rs` | 1 | 1 | 0 | generated cover art |
 | `db-client`, `remote`, `osk` | 3 | 3 | 0 | blend helper; test fixtures |
 | **Total** | **155** | **122** | **33** | |
