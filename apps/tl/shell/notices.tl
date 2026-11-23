@@ -82,40 +82,6 @@ fn unread() -> Int {
     return device.notifications.notices.count(n -> not n.seen)
 }
 
-/// Two notices a sender left and the person has not seen: what a screen shows before the
-/// person has caught up, so the bar's bell has something to count.
-fn waiting() -> device.Notifications {
-    return device.Notifications(notices: [mia_mention(), threads_filed()])
-}
-
-/// A notice: Mia asking about the launch date.
-fn mia_mention() -> device.Notice {
-    return device.Notice(
-        number: 1,
-        title: "Mia mentioned you in Release planning",
-        body: "Can you check the launch date?",
-        from: "Notes",
-        kind: "info",
-        seen: false,
-        actions: [
-            device.NoticeAction(key: "open", label: "Reply"),
-            device.NoticeAction(key: "later", label: "Later"),
-        ],
-    )
-}
-
-/// A notice: Fieldwork done filing.
-fn threads_filed() -> device.Notice {
-    return device.Notice(
-        number: 2,
-        title: "Three threads filed",
-        body: "Fieldwork filed 3 threads into Receipts.",
-        from: "Fieldwork",
-        kind: "success",
-        seen: false,
-    )
-}
-
 /// What the centre says of them: how many are waiting, or that none is.
 fn unread_line() -> Text {
     let waiting = unread()

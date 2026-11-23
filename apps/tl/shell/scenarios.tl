@@ -1565,7 +1565,6 @@ scenario "the bar's status" {
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
-    stage(device.notifications, waiting())
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
 }
@@ -2244,7 +2243,6 @@ scenario "the traditional desktop" {
     let d = root Layout
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
@@ -2486,6 +2484,34 @@ fn release_moved() -> device.Notice {
         from: "Tasks",
         kind: "info",
         seen: true,
+    )
+}
+
+/// A notice: Mia asking about the launch date.
+fn mia_mention() -> device.Notice {
+    return device.Notice(
+        number: 1,
+        title: "Mia mentioned you in Release planning",
+        body: "Can you check the launch date?",
+        from: "Notes",
+        kind: "info",
+        seen: false,
+        actions: [
+            device.NoticeAction(key: "open", label: "Reply"),
+            device.NoticeAction(key: "later", label: "Later"),
+        ],
+    )
+}
+
+/// A notice: Fieldwork done filing.
+fn threads_filed() -> device.Notice {
+    return device.Notice(
+        number: 2,
+        title: "Three threads filed",
+        body: "Fieldwork filed 3 threads into Receipts.",
+        from: "Fieldwork",
+        kind: "success",
+        seen: false,
     )
 }
 
