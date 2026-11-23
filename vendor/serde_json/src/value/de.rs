@@ -462,8 +462,9 @@ impl<'de> serde::Deserializer<'de> for Value {
     where
         V: Visitor<'de>,
     {
+        // Tilo: a struct is read from an object, the form serde_json writes it
+        // in, so no struct compiles a reader of arrays (TILO-PATCH.md).
         match self {
-            Value::Array(v) => visit_array(v, visitor),
             Value::Object(v) => v.deserialize_any(visitor),
             _ => Err(self.invalid_type(&visitor)),
         }
@@ -1012,8 +1013,9 @@ impl<'de> serde::Deserializer<'de> for &'de Value {
     where
         V: Visitor<'de>,
     {
+        // Tilo: a struct is read from an object, the form serde_json writes it
+        // in, so no struct compiles a reader of arrays (TILO-PATCH.md).
         match self {
-            Value::Array(v) => visit_array_ref(v, visitor),
             Value::Object(v) => v.deserialize_any(visitor),
             _ => Err(self.invalid_type(&visitor)),
         }

@@ -45,7 +45,15 @@ serde_json, where the runtime holds it once and every app calls it:
   the same way and its text read back there, so no field type compiles a
   serializer that only accepts a raw value's text.
 
-Behaviour is unchanged. A crate's own generic code still compiles what it
+- **A struct is read out of a `Value` from an object only.** Upstream also
+  reads a struct from an array of its fields in order, so every struct read
+  from a `Value` compiled its visitor's sequence reader too (32 KB in Chat,
+  about 150 KB over the default collection), for a form serde_json never writes
+  a struct in. An array where a struct is expected is now the same
+  "invalid type" error any other mismatch is. Reading text with `from_slice`
+  or `from_str` still accepts both, and so do tuple structs.
+
+Behaviour is otherwise unchanged. A crate's own generic code still compiles what it
 instantiates: a `T: Deserialize` read from a `Value` is the crate's, and so is
 a lookup by a key type the map is generic over (`get`, `remove`).
 
