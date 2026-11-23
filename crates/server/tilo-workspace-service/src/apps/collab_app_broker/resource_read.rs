@@ -59,17 +59,22 @@ impl AppBrokerState {
 /// What a call made from a resource its caller may not read is refused with.
 pub const MADE_FROM_UNREADABLE: &str =
     "This was asked about something you may not read, so it did not run";
+/// What a call made from a resource it names without its app is refused with: nobody can say
+/// who may read it.
+pub const MADE_FROM_UNNAMED: &str =
+    "This was asked about something it does not say the app of, so it did not run";
 
 impl AppBrokerState {
     /// Whether `caller` may make `request` from the resource it names as made from
     /// ([`InvokeRequest::made_from`]): only a caller who may read that resource, decided at its
-    /// node as every read of it is ([`Self::may_read_resource`]). A call made from nothing, or
-    /// from a resource whose kind names no app, has nothing to decide here.
+    /// node as every read of it is ([`Self::may_read_resource`]). A call made from nothing has
+    /// nothing to decide here.
     ///
     /// # Errors
     ///
     /// [`ActionCallError::Refused`] with [`MADE_FROM_UNREADABLE`] when the workspace does not
-    /// let the caller read it, and [`ActionCallError::NotPermitted`] when the caller may not act
+    /// let the caller read it, with [`MADE_FROM_UNNAMED`] when its kind names no app
+    /// (`tl.<app>.<Type>`), and [`ActionCallError::NotPermitted`] when the caller may not act
     /// in a workspace at all.
     pub(super) fn may_make_from(
         &self,
@@ -80,7 +85,9 @@ impl AppBrokerState {
             return Ok(());
         };
         let Some(app) = from.app() else {
-            return Ok(());
+            return Err(ActionCallError::Refused {
+                reason: MADE_FROM_UNNAMED.into(),
+            });
         };
         let workspace = caller.workspace().ok_or(ActionCallError::NotPermitted)?;
         self.may_read_resource(caller, workspace, (app, &from.kind, &from.resource))

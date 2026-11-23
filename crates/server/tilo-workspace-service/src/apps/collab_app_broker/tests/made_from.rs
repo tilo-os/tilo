@@ -48,7 +48,8 @@ fn made_from(fixture: &LocalDirectoryFixture, kind: &str, resource: &str) -> Inv
 }
 
 /// Bo may read the workspace's tasks but not its conversations: a call made from a message is
-/// refused before it reaches any app, saying why, and one made from a task is admitted past it.
+/// refused before it reaches any app, saying why, one made from a task is admitted past it, and
+/// one whose kind names no app is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn a_call_made_from_what_its_caller_may_not_read_is_refused() {
     tokio::task::LocalSet::new()
@@ -97,6 +98,15 @@ async fn a_call_made_from_what_its_caller_may_not_read_is_refused() {
                         if reason == super::super::resource_read::MADE_FROM_UNREADABLE
                 ),
                 "{admitted:?}"
+            );
+
+            let unnamed = made_from(&fixture, "a1b2c3", "m1");
+            assert_eq!(
+                fixture.state.may_make_from(&bo, &unnamed),
+                Err(ActionCallError::Refused {
+                    reason: super::super::resource_read::MADE_FROM_UNNAMED.into()
+                }),
+                "a resource named without its app is no one's to decide, so nothing runs"
             );
         })
         .await;
