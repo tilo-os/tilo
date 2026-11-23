@@ -35,6 +35,9 @@ type Document (untitled: "Untitled Document") {
     /// Who reacted to the document, by emoji: the person and agent each pill in the window's bar
     /// stands for, and whose own reaction a press on it takes back.
     reactions: Map<Set<Actor>>
+    /// Why the last thing asked of the document did not happen, such as a file no codec reads;
+    /// empty while nothing went wrong. The page shows it over the writing until it is dismissed.
+    notice: Text = ""
 }
 
 root Document
@@ -52,6 +55,7 @@ primary action new_document(d: Document, template: Text = "blank") -> Document (
     d.title = ""
     d.body = RichText.from_markdown(template_body(template))
     d.started = template
+    d
 }
 
 /// The Markdown each template starts from: the pages a person starting a letter, a report, a
@@ -68,6 +72,11 @@ fn template_body(kind: Text) -> Text {
     } else {
         ""
     }
+}
+
+/// Takes away the reason the page shows over the writing: the person read it.
+action dismiss_notice(d: Document) {
+    d.notice = ""
 }
 
 /// Adds a paragraph of `text` at the end of the document, as Markdown says it.
@@ -252,8 +261,8 @@ action set_paper(d: Document, paper: Text) (label: "Set paper") {
 /// Writes a table of contents at the head of the document, each heading a line of it. A
 /// document without headings is refused: there is nothing to list.
 action generate_toc(d: Document) (icon: .list, label: "Generate table of contents") {
+    require not headings_of(d).is_empty() "Add headings first"
     let heads = headings_of(d)
-    require not heads.is_empty() "Add headings first"
     let listed = heads.map(h -> "- {h}").join("\n")
     d.body = RichText.from_markdown("## Contents\n\n{listed}\n\n" + markdown_of(d))
 }
@@ -283,8 +292,8 @@ action insert_page_break(d: Document) (label: "Insert page break") {
 action paste(d: Document, text: Text = "", markdown: Text = "") (
     label: "Paste",
 ) {
+    require text != "" or markdown != "" "Nothing to paste"
     let said = if markdown == "" { text } else { markdown }
-    require said != "" "Nothing to paste"
     d.body = RichText(d.body, RichText.from_markdown(said))
 }
 
@@ -310,8 +319,8 @@ action keep_image(d: Document, picture: List<Text>) (did: "added an image") {
 
 /// The first picture the document shows, as content another app can take.
 action share_image(d: Document) -> File (label: "Share image") {
+    require first_picture(markdown_of(d)) != "" "The document shows no picture"
     let address = first_picture(markdown_of(d))
-    require address != "" "The document shows no picture"
     File.at("image.png", address)
 }
 
@@ -343,7 +352,7 @@ action react(d: Document, emoji: Text) (icon: .smile_plus, label: "React") {
 }
 
 /// Says something about the document, in the thread under its page.
-action comment_on(d: Document, text: RichText) (
+action comment_on(d: Document, text: RichText) -> discussion.Comment (
     icon: .message_square,
     label: "Comment",
     did: "commented",
@@ -386,10 +395,11 @@ action open_document(d: Document, file: File) -> Document (
             d.body = RichText.from_markdown(markdown)
             d.title = stem_of(file.name)
             d.started = "blank"
+            d.notice = ""
             d
         }
         .err(why) => {
-            require false why
+            d.notice = why
             d
         }
     }

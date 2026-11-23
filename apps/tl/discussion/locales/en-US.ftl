@@ -44,6 +44,12 @@ d-kj3aantt = Comment
 
 d-5q4mbecw = Text
 
+d-ng7oourf = Reply to
+    .doc = The comment it answers, if it answers one: a reply stands under the remark it answers.
+
+d-lz4a7tbk = Resolved
+    .doc = Whether what was asked for is done: a remark taken care of folds away, and its author or anyone reading it may open it again.
+
 d-c3oavkxa = By agent
     .doc = Whether an agent wrote it: its author is the agent, and a reader says so.
 
@@ -58,6 +64,10 @@ d-hqpdw4ih = Lookup
 
 d-tovzcpp5 = Incorporated
     .doc = Whether a later session's words folded it into the resource's note.
+
+d-kj3aantt-filter-reply_to = Reply to
+
+d-kj3aantt-filter-resolved = Resolved
 
 d-kj3aantt-filter-by_agent = By agent
 
@@ -96,6 +106,20 @@ d-iae4o5k3 = Edit
 
 d-iae4o5k3-text = Text
 
+d-l7w5vz3v = Reply
+    .doc = Answers a comment: the reply stands under the remark it answers, as a conversation's answer does, and what it is about is what the remark is about.
+    .did = replied
+    .w-write-a-reply-first = Write a reply first
+
+d-l7w5vz3v-text = Text
+
+d-5i4uizbb = Resolve
+    .doc = Marks a comment as taken care of, or opens it again.
+    .w-resolve = Resolve
+    .w-open-again = Open again
+
+d-5i4uizbb-resolved = Resolved
+
 d-l3wyj42h = Delete
     .doc = Deletes a comment.
     .w-only-its-author-can-delete-a = Only its author can delete a comment
@@ -106,6 +130,10 @@ d-vzn4frig = Comment~present
 
 d-4mzlhyvw = Edit~present
 
+d-cr62rvlw = Reply~present
+
+d-5fveadpi = Resolve~present
+
 d-kflwfuct = Delete~present
 
 d-upy33rnt = Thread
@@ -114,8 +142,12 @@ d-upy33rnt = Thread
     .w-cancel = Cancel
     .w-save = Save
     .w-edit = Edit
-    .w-add-a-comment = Add a comment
+    .w-reply = Reply
+    .w-open-again = Open again
+    .w-resolve = Resolve
+    .w-write-a-reply = Write a reply
     .w-send = Send
+    .w-add-a-comment = Add a comment
 
 d-nsv2jvpu = Written
     .w-edited = edited

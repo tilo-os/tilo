@@ -121,3 +121,31 @@ d-vp5uwkal = Kürzlich
 d-3666szuv = Kommentarseite
 
 d-jxt3set4 = Bemerkung
+
+d-ng7oourf = Antwort auf
+    .doc = Der Kommentar, den er beantwortet, wenn er einen beantwortet: eine Antwort steht unter der Bemerkung, die sie beantwortet.
+
+d-lz4a7tbk = Erledigt
+    .doc = Ob das Verlangte getan ist: eine erledigte Bemerkung klappt zusammen, und ihr Autor oder wer sie liest kann sie wieder öffnen.
+
+d-kj3aantt-filter-reply_to = Antwort auf
+
+d-kj3aantt-filter-resolved = Erledigt
+
+d-l7w5vz3v = Antworten
+    .doc = Beantwortet einen Kommentar: die Antwort steht unter der Bemerkung, die sie beantwortet, wie die Antwort eines Gesprächs, und worum es geht, ist das, worum es in der Bemerkung geht.
+    .did = hat geantwortet
+    .w-write-a-reply-first = Schreiben Sie zuerst eine Antwort
+
+d-l7w5vz3v-text = Text
+
+d-5i4uizbb = Erledigen
+    .doc = Markiert einen Kommentar als erledigt oder öffnet ihn wieder.
+    .w-resolve = Erledigen
+    .w-open-again = Wieder öffnen
+
+d-5i4uizbb-resolved = Erledigt
+
+d-cr62rvlw = Antworten~present
+
+d-5fveadpi = Erledigen~present

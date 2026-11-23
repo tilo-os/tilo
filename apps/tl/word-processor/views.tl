@@ -41,6 +41,15 @@ view writer(d: Document) {
                 if ruler {
                     ruler_band(d, format_ask, asked)
                 }
+                if d.notice != "" {
+                    ui.Banner(
+                        "The document could not be opened",
+                        message: d.notice,
+                        kind: .warning,
+                    ) {
+                        on dismiss: dismiss_notice(d)
+                    }
+                }
                 ui.Scroll {
                     page {
                         stack(gap: .group) {
@@ -102,51 +111,51 @@ template view toolbar(
             on press: set(asked, asked + 1).then(set(format_ask, "strike:{asked + 1}"))
         }
         ui.ToolbarSeparator()
-        ui.ToolbarButton("Bulleted list", icon: .list, priority: 5) {
+        ui.ToolbarButton("Bulleted list", icon: .list, priority: 7) {
             on press: set(asked, asked + 1).then(set(format_ask, "bullets:{asked + 1}"))
         }
-        ui.ToolbarButton("Numbered list", icon: .list_ordered, priority: 6) {
+        ui.ToolbarButton("Numbered list", icon: .list_ordered, priority: 8) {
             on press: set(asked, asked + 1).then(set(format_ask, "numbers:{asked + 1}"))
         }
-        ui.ToolbarButton("Heading 1", icon: .heading_1, priority: 7) {
+        ui.ToolbarButton("Heading 1", icon: .heading_1, priority: 9) {
             on press: set(asked, asked + 1).then(set(format_ask, "heading:1:{asked + 1}"))
         }
-        ui.ToolbarButton("Heading 2", icon: .heading_2, priority: 8) {
+        ui.ToolbarButton("Heading 2", icon: .heading_2, priority: 10) {
             on press: set(asked, asked + 1).then(set(format_ask, "heading:2:{asked + 1}"))
         }
-        ui.ToolbarButton("Heading 3", priority: 9) {
+        ui.ToolbarButton("Heading 3", priority: 11) {
             on press: set(asked, asked + 1).then(set(format_ask, "heading:3:{asked + 1}"))
         }
-        ui.ToolbarButton("Body text", icon: .type, priority: 10) {
+        ui.ToolbarButton("Body text", icon: .text_cursor, priority: 12) {
             on press: set(asked, asked + 1).then(set(format_ask, "heading:0:{asked + 1}"))
         }
         ui.ToolbarSeparator()
-        ui.ToolbarButton("Insert table", icon: .table, priority: 11) {
+        ui.ToolbarButton("Insert table", icon: .table, priority: 14) {
             on press: insert_table(d)
         }
-        ui.ToolbarButton("Insert image", icon: .image, priority: 12) {
+        ui.ToolbarButton("Insert image", icon: .image, priority: 15) {
             on press: file.choose(
                 place_image(d),
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
         }
-        ui.ToolbarButton("Insert page break", priority: 13) {
+        ui.ToolbarButton("Insert page break", priority: 16) {
             on press: insert_page_break(d)
         }
-        ui.ToolbarButton("Table of contents", icon: .list_tree, priority: 14) {
+        ui.ToolbarButton("Table of contents", icon: .list_tree, priority: 17) {
             on press: generate_toc(d)
         }
         ui.ToolbarSeparator()
-        ui.ToolbarButton("Styles", icon: .panel_right, toggled: panel == "styles", priority: 15) {
+        ui.ToolbarButton("Styles", icon: .panel_right, toggled: panel == "styles", priority: 18) {
             on press: set(panel, if panel == "styles" { "" } else { "styles" })
         }
-        ui.ToolbarButton("Review", icon: .message_square, toggled: panel == "review", priority: 16) {
+        ui.ToolbarButton("Review", icon: .message_square, toggled: panel == "review", priority: 19) {
             on press: set(panel, if panel == "review" { "" } else { "review" })
         }
-        ui.ToolbarButton("Ruler", icon: .ruler, toggled: ruler, priority: 17) {
+        ui.ToolbarButton("Ruler", icon: .ruler, toggled: ruler, priority: 20) {
             on press: set(ruler, not ruler)
         }
-        ui.ToolbarButton("Outline", icon: .list_tree, toggled: outline, priority: 18) {
+        ui.ToolbarButton("Outline", icon: .list_tree, toggled: outline, priority: 21) {
             on press: set(outline, not outline)
         }
         ui.ToolbarSpacer()
@@ -172,7 +181,6 @@ view file_menu(d: Document) {
         ui.MenuItem("Export as HTML…", icon: .download) {
             on choose: file.save(export_html(d), name: "{file_name(d)}.html")
         }
-        ui.MenuSeparator()
         ui.MenuItem("Save as Word (.docx)…", icon: .download) {
             on choose: file.save(export_document(d, "docx"), name: "{file_name(d)}.docx")
         }
@@ -188,7 +196,6 @@ view file_menu(d: Document) {
         ui.MenuItem("Export as PDF…", icon: .download) {
             on choose: file.save(export_document(d, "pdf"), name: "{file_name(d)}.pdf")
         }
-        ui.MenuSeparator()
         ui.MenuItem("Start from a letter", icon: .file_text) {
             on choose: new_document(d, "letter")
         }
@@ -263,7 +270,7 @@ template view side_panel(d: Document, panel: State<Text>) {
     ui.Scroll {
         stack(gap: .group, padding: .related) {
             row(gap: .tight, align: .center) {
-                text(if panel == "styles" { "Page setup" } else { "Review" }, role: .heading)
+                text(panel_name(panel), role: .heading)
                 spacer()
                 ui.Button("Close", icon: .x, icon_only: true, role: .plain) {
                     on press: set(panel, "")
@@ -276,6 +283,11 @@ template view side_panel(d: Document, panel: State<Text>) {
             }
         }
     }
+}
+
+/// What the panel beside the page is called.
+fn panel_name(panel: Text) -> Text {
+    if panel == "styles" { "Page setup" } else { "Review" }
 }
 
 /// How the page is set up: its paper, its margins, the paragraph styles a person may give a
@@ -347,8 +359,7 @@ fn words_place(d: Document, words: Text, asked: Int) -> Option<Text> {
     } else {
         let lines = markdown_of(d).split("\n")
         if let line = lines.find(l -> l.lower().contains(words.lower())) {
-            let place = "¶{lines.index_of(line) ?? 0}:{asked + 1}"
-            .some(place)
+            .some("¶{lines.index_of(line) ?? 0}:{asked + 1}")
         } else {
             .none
         }
