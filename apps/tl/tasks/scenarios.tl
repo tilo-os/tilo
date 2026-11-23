@@ -1,6 +1,8 @@
 scenario "a busy week" -> Task {
     let mia = person("Mia")
-    let flat = invoke(new_project(tasks))
+    let flat = invoke(
+        new_project(tasks, notes: RichText("Keys on the 15th. The van is booked for the morning.")),
+    )
     invoke(rename(flat, "Move flat"))
     let launch = invoke(new_project(tasks))
     invoke(rename(launch, "Website launch"))
@@ -23,6 +25,7 @@ scenario "a busy week" -> Task {
             title: "Call the landlord about the boiler",
             due: 2026-06-30,
             at: 2026-06-30T09:00,
+            notes: RichText("Ask whether Tuesday morning works for the engineer."),
         ),
     )
     invoke(set_priority_high(call))
@@ -55,6 +58,7 @@ scenario "a busy week" -> Task {
             title: "Write the launch post",
             due: 2026-07-06,
             assignee: mia,
+            notes: RichText("Lead with the offline editor, then sharing."),
         ),
     )
     invoke(set_priority_urgent(copy))

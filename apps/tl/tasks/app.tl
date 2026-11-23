@@ -316,12 +316,14 @@ primary action new_task(
     assignee: Option<Actor> = .none,
     title: Text = "",
     remind: Option<Time> = .none,
+    notes: RichText = RichText(""),
 ) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.numbers += 1
     tasks.items.insert(
         Task(
             number: tasks.numbers,
             title: title,
+            notes: notes,
             due: due,
             at: at,
             remind: remind,
@@ -350,9 +352,12 @@ action new_tasks(titles: List<Text>, p: Option<Project> = .none) -> List<Task> (
     made
 }
 
-/// Starts a project.
-action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New project") {
-    tasks.projects.insert(Project(name: std.say("New project")))
+/// Starts a project, with what it is for when the caller says.
+action new_project(tasks: Tasks, notes: RichText = RichText("")) -> Project (
+    icon: .folder_plus,
+    label: "New project",
+) {
+    tasks.projects.insert(Project(name: std.say("New project"), notes: notes))
 }
 
 /// Sets whether a project is one with an end, or an ongoing responsibility.
