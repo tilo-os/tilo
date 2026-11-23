@@ -261,7 +261,7 @@ fn file_actions_of(verb: &str) -> &'static [&'static str] {
 }
 
 impl Worker {
-    /// Answer one of Files' verbs on the folder of the workspace `named`
+    /// Answer one of Files' verbs on the folder of the workspace
     /// ([`fs_protocol::tree::TREE_VERBS`]): change the tree as it asks, and answer what changed.
     ///
     /// # Errors
@@ -278,7 +278,6 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let verb = request.target.address.action.as_str();
         if !self.may_on_tree(workspace_id, caller, file_actions_of(verb)) {

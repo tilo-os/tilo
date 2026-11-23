@@ -288,7 +288,7 @@ impl Worker {
         })
     }
 
-    /// Answer one of Files' verbs on the folder of the workspace `named`, its `write-file`
+    /// Answer one of Files' verbs on the folder of the workspace, its `write-file`
     /// there, or one of its reads of that folder ([`acts_on_tree`]).
     ///
     /// # Errors
@@ -321,7 +321,6 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        named: &str,
     ) -> Result<
         (
             tilo_actions::ActionOutput,
@@ -331,12 +330,12 @@ impl Worker {
     > {
         let action = request.target.address.action.as_str();
         if tree::is_tree_read(action) {
-            return self.read_tree(workspace_id, caller, request, named);
+            return self.read_tree(workspace_id, caller, request);
         }
         if action == tree::WRITE_FILE {
-            return self.write_tree_file(workspace_id, caller, request, named);
+            return self.write_tree_file(workspace_id, caller, request);
         }
-        self.change_tree(workspace_id, caller, request, named)
+        self.change_tree(workspace_id, caller, request)
     }
 
     /// Each file of `puttings` with the manifest the tree names its content by and its length:
@@ -396,7 +395,6 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        _named: &str,
     ) -> Result<
         (
             tilo_actions::ActionOutput,

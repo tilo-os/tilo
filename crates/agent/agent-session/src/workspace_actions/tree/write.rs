@@ -166,7 +166,7 @@ fn answer(written: &Written, size: u64, invocation: tilo_actions::InvocationId) 
 }
 
 impl Worker {
-    /// Answer Files' `write-file` on the folder of the workspace `named`: write the file into
+    /// Answer Files' `write-file` on the folder of the workspace: write the file into
     /// its tree from the text or the content it names, and answer where it now is.
     ///
     /// # Errors
@@ -184,7 +184,6 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         use fs_protocol::file_action::verbs;
         if !self.may_on_tree(

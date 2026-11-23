@@ -351,6 +351,9 @@ impl Worker {
     /// session is in: for the host's own person as its owner, and for anyone
     /// else, a member or an agent of anyone's, within their member access there
     /// now.
+    ///
+    /// Called only from [`Self::open_in_workspace`], which has already checked
+    /// that `named` parses to `workspace_id`.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt answered"
@@ -362,9 +365,6 @@ impl Worker {
         named: &str,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Result<ActionOutput, Outcome> {
-        if WorkspaceId::parse(named) != Some(workspace_id) {
-            return Err(unknown_action());
-        }
         let who = if self.serves_as_owner(caller) {
             None
         } else {

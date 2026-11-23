@@ -167,18 +167,21 @@ impl Worker {
         request: &InvokeRequest,
         (named, state): (&str, &WorkspaceState),
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
+        if WorkspaceId::parse(named) != Some(workspace_id) {
+            return Err(super::unknown_action());
+        }
         let target = &request.target;
         // Files' verbs on the workspace's own folder change its tree, and its reads answer
         // what that tree holds, each by a path in it.
         if super::tree::acts_on_tree(target) {
-            return self.in_tree(workspace_id, caller, request, named);
+            return self.in_tree(workspace_id, caller, request);
         }
         // Many files at once (`files`) go into the workspace's folder, which
         // is Files, in one change of its tree.
         let arguments = super::invoke_arguments(&request.argument);
         if arguments.contains_key("files") {
             if self.asked_app(target).as_deref() == Some(fs_protocol::tree::FILES_APP) {
-                return self.put_in_workspace(workspace_id, caller, request, named);
+                return self.put_in_workspace(workspace_id, caller, request);
             }
             return Err(refused(
                 "`files` puts many files into Files' folder: open them with `files#open`"
@@ -193,7 +196,7 @@ impl Worker {
                 // A workspace has one folder, and Files is it: a file opened
                 // in it is written into the tree, not into an app's record.
                 if app == fs_protocol::tree::FILES_APP {
-                    return self.put_in_workspace(workspace_id, caller, request, named);
+                    return self.put_in_workspace(workspace_id, caller, request);
                 }
                 Some(self.landing_of(workspace_id, &app, file)?)
             }
