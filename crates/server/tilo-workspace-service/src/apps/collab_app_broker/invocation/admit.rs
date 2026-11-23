@@ -65,7 +65,13 @@ impl AppBrokerState {
         owner.validate()?;
         let session = self.agent_session_of(caller, &offered.0.route.cluster_id);
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        let context = invoker::host_set_invoker(
+            context,
+            original_request,
+            actor,
+            caller,
+            execution.as_ref(),
+        )?;
         // Where an agent works from is what the host verified of its
         // connection: an envelope names no device.
         let context = invoker::working_from(
