@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use package_store::installer::{self, Error, data_home_root, decode_hex_32, store_error};
 use package_store::{Admission, Catalog, InstalledPackage, PackageStore, shim};
 use serde::{Deserialize, Serialize};
-use tilo_app_package::trust::{RevokedKey, TrustedAttestor};
+use tilo_app_package::trust::{RevocationList, RevokedKey, TrustedAttestor};
 use tilo_app_package::{BlobFetcher, PackageId};
 
 pub mod catalogue;
@@ -571,7 +571,7 @@ fn run(
             flatpak::Flatpak::from_env()
                 .flathub_add()
                 .map_err(Error::Flatpak)?;
-            said.line("flatpak: Flathub is a remote now".into());
+            said.line("flatpak: Flathub is a remote now");
             Ok(())
         }
         Change::FlatpakRemoteSetEnabled { name, enabled } => {
@@ -1235,7 +1235,9 @@ pub fn image_store(root: &Path, trust: &Trust) -> Result<package_store::Store, E
     let trust = package_store::ImageTrust::from_env(system.as_ref())
         .map_err(store_error)?
         .with_attestors(&trust.attestors)
-        .with_revoked(trust.revocation());
+        .with_revoked(RevocationList {
+            revoked: trust.revoked.clone(),
+        });
     Ok(store.with_trust(trust))
 }
 

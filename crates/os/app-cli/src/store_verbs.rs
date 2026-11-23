@@ -4,7 +4,6 @@
 //! program that owns it (`tilo-install`, the launcher). So there is one
 //! implementation and `app` is only the way in.
 
-use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus};
 
 use app_cli::install::tilo_install_bin;

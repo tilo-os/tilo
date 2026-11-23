@@ -765,7 +765,6 @@ pub fn sweep_abandoned_downloads(staging: &Path) -> u64 {
 #[derive(Debug)]
 pub struct StagedPackage {
     file: StagingFile,
-    bytes: u64,
 }
 
 impl StagedPackage {
@@ -802,8 +801,8 @@ pub fn stage(
     let file = StagingFile::claim(&staging, &stem).map_err(|error| InstallError::Download {
         detail: format!("{}: {error}", staging.display()),
     })?;
-    let bytes = fetch_verified(app, file.path(), on_progress)?;
-    Ok(StagedPackage { file, bytes })
+    fetch_verified(app, file.path(), on_progress)?;
+    Ok(StagedPackage { file })
 }
 
 pub const PARALLEL_DOWNLOADS: usize = 8;
