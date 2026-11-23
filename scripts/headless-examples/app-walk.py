@@ -424,6 +424,38 @@ def session_env(state: Path) -> dict:
     return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector")}
 
 
+def resolved(served: dict, value):
+    """`value` with every `{"served": "name.path"}` in it replaced by what the
+    run answered under `name`: a provider's id, a stand-in's address, which no
+    step file can know before the run makes them."""
+    if isinstance(value, dict) and "served" in value:
+        at = served
+        for key in str(value["served"]).split("."):
+            at = at.get(key) if isinstance(at, dict) else None
+        if at is None:
+            raise Failed(f"nothing the run served is called {value['served']!r}")
+        return at
+    if isinstance(value, dict):
+        return {key: resolved(served, inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [resolved(served, inner) for inner in value]
+    return value
+
+
+def posed(dump: dict, path: str):
+    """Where `path` stands in what the desktop published: a dotted path of keys,
+    a number for a place in a list (`workspace_tree.workspaces.0.strips`), and
+    `#len` after it for how many the list or the map there holds."""
+    path, _, measure = path.partition("#")
+    at = dump
+    for key in path.split("."):
+        if isinstance(at, list) and key.isdigit():
+            at = at[int(key)] if int(key) < len(at) else None
+        else:
+            at = at.get(key) if isinstance(at, dict) else None
+    return len(at) if measure == "len" and isinstance(at, (list, dict)) else at
+
+
 def drawn(target: dict) -> bool:
     """Whether `target` is drawn anywhere: a control a window holds open but does
     not show — a menu's items while its menu is closed — stands nowhere, and a
@@ -498,6 +530,9 @@ class Walk:
         # The stand-in services this walk started beside the session (op `serve`),
         # stopped when its session goes.
         self.services: list = []
+        # What the run answered and a later step may name: a stand-in's address,
+        # a provider's id (`{"served": "provider.id"}`).
+        self.served: dict = {}
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -1085,9 +1120,17 @@ class Walk:
         answer kept as the step found it. For a workspace's own actions, whose
         provider id is the workspace's and not the same on the next run. A
         refusal fails the step, as a person's own press that does nothing is
-        the finding."""
-        resource, action = (pick(item, self.variant) for item in value[:2])
-        args = pick(value[2], self.variant) if len(value) > 2 else None
+        the finding.
+
+        `{"do": [...], "as": "provider"}` keeps what it answered under that
+        name, for a later step to name with `{"served": "provider.id"}`: a
+        provider's id, and a stand-in's address, are the run's own, never the
+        step file's."""
+        named = isinstance(value, dict)
+        parts = value["do"] if named else value
+        as_name = value.get("as") if named else None
+        resource, action = (pick(item, self.variant) for item in parts[:2])
+        args = self.resolve(pick(parts[2], self.variant) if len(parts) > 2 else None)
         row = until_value(f"the action {resource}#{action}",
                           lambda: row_for(self.session.actions(""), resource, action), 30)
         answer = self.session.invoke_row(row, args)
@@ -1097,8 +1140,17 @@ class Walk:
             found = value_of(answer)
         except Failed:
             found = None
+        if as_name and found is not None:
+            self.served[as_name] = found
         return {"acted": f"{resource}#{action}", "provider": row.get("provider"),
                 **({"value": found} if found is not None else {})}
+
+    def resolve(self, value):
+        """A value only the run knows: `{"served": "provider.id"}` is what the
+        step that ran `as` `provider` answered, by the path under it, so a step
+        can name an id or an address the desktop made up rather than one the
+        file wrote."""
+        return resolved(self.served, value)
 
     def op_serve(self, value) -> dict:
         """Start the stand-in service the capability under test speaks to, for a
@@ -1111,10 +1163,13 @@ class Walk:
         if value.get("projector"):
             socket = self.state / "projector" / "control.sock"
             self.service("projector-stand-in", ["--socket", str(socket)], wait=lambda: socket.exists())
+            self.served["projector"] = str(socket)
             return {"projector": str(socket)}
         if value.get("model-providers"):
             out = self.service("fake-model-providers", ["--listen", "127.0.0.1:0"], lines=4)
-            return provider_addresses(out)
+            addresses = provider_addresses(out)
+            self.served.update(addresses)
+            return addresses
         raise Failed(f"the step names a stand-in this walk does not know: {json.dumps(value)}")
 
     def service(self, binary: str, args: list[str], wait=None, lines: int = 0) -> str:
@@ -1278,11 +1333,7 @@ class Walk:
         deadline = float(value.get("within", 10))
 
         def read(dump: dict, path: str):
-            path, _, measure = path.partition("#")
-            at = dump
-            for key in path.split("."):
-                at = at.get(key) if isinstance(at, dict) else None
-            return len(at) if measure == "len" and isinstance(at, (list, dict)) else at
+            return posed(dump, path)
 
         def differs() -> dict:
             dump = self.session.state_dump()

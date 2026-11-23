@@ -19,7 +19,8 @@
       "said": "Sign in: one strip, no shortcut saved",
       "ops": [
         {"theme": false},
-        {"state": {"chrome.session_locked": false}},
+        {"state": {"chrome.session_locked": false,
+                   "workspace_tree.workspaces.0.strips#len": 1}},
         {"windows": 0},
         {"act": ["shortcuts", "list"]},
         {"targets": true}
@@ -70,7 +71,8 @@
       "said": "Run it: a strip named Walk strip appears",
       "ops": [
         {"act": ["shortcuts.shortcut:walk-strip", "run", {}]},
-        {"must": [{"rust": "Show strips, now on Walk strip", "tl": "Walk strip"}]}
+        {"must": [{"rust": "Show strips, now on Walk strip", "tl": "Walk strip"}]},
+        {"state": {"workspace_tree.workspaces.0.strips#len": 2}}
       ],
       "budget_ms": 8000
     },
@@ -79,6 +81,7 @@
       "said": "Press its chord: the strip is made again",
       "ops": [
         {"chord": ["Super", "Shift", "F12"]},
+        {"state": {"workspace_tree.workspaces.0.strips#len": 3}},
         {"act": ["shortcuts", "list"]}
       ],
       "budget_ms": 8000
