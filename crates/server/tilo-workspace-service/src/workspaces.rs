@@ -834,7 +834,7 @@ impl GovernedWorkspace {
         } else {
             let diffing = crate::timing::start();
             record.outgoing.extend(self.published_since(replica)?);
-            let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
+            let messages = durable_messages(&candidate, replica, (key, now), generation);
             for message in &messages {
                 if change == Change::Other && withdraws(message) {
                     since_base = SinceBase::Withdrew;

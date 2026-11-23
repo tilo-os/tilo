@@ -1382,7 +1382,7 @@ impl Workspaces {
         envelope: &SignedOp,
     ) -> Result<NeighbourMsg, String> {
         let message =
-            self.local_document_message(workspace_id, author, app, document, readers, envelope)?;
+            Self::local_document_message(workspace_id, author, app, document, readers, envelope)?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         self.inner
             .records
