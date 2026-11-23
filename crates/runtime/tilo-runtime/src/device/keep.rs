@@ -300,6 +300,7 @@ mod tests {
         let address = named[0]
             .strip_prefix("http://")
             .expect("a plain packet relay URL")
+            .trim_end_matches('/')
             .parse::<SocketAddr>()
             .expect("the relay URL's address");
         let answered = keeping.runtime.block_on(async {

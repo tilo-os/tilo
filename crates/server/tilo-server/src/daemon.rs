@@ -705,11 +705,7 @@ impl Server {
                 // Its entry names the packet relay it is reached through, beside the address
                 // it is dialled at, as its endpoint advertises it: a page has no UDP socket
                 // and reaches it only through one.
-                let relay = endpoint
-                    .addr()
-                    .relay_urls()
-                    .next()
-                    .map(ToString::to_string);
+                let relay = endpoint.addr().relay_urls().next().map(ToString::to_string);
                 crate::servers::enroll(&governed, &endpoint.addr(), relay.as_deref())
                     .await
                     .map_err(|error| {
@@ -793,9 +789,7 @@ impl Server {
         #[cfg(feature = "web")]
         let web_ui = {
             let control = Arc::new(crate::web::control::Control::default());
-            governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(
-                &control,
-            ))));
+            governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(&control))));
             control
         };
         Ok((
@@ -1247,9 +1241,10 @@ fn dialled_at(serving: std::net::SocketAddr) -> std::net::SocketAddr {
             socket.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?;
             socket.local_addr()
         })
-        .map_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |local| {
-            local.ip()
-        });
+        .map_or(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            |local| local.ip(),
+        );
     std::net::SocketAddr::new(ip, serving.port())
 }
 
@@ -1876,7 +1871,10 @@ mod tests {
             .expect("the server names its packet relay")
             .to_string();
         // It serves it: something answers on the address the URL names.
-        let listening = relay.strip_prefix("http://").expect("a plain URL");
+        let listening = relay
+            .strip_prefix("http://")
+            .expect("a plain URL")
+            .trim_end_matches('/');
         let front = tokio::net::TcpStream::connect(
             listening
                 .parse::<std::net::SocketAddr>()

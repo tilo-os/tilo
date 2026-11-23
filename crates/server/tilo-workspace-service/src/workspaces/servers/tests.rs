@@ -91,7 +91,8 @@ fn a_servers_configuration_is_typed_actions_with_history() {
 #[test]
 fn an_entry_names_its_relay_and_whether_it_serves_web() {
     let mut replica = enrolled();
-    let relay = "http://10.0.0.5:9782";
+    // A URL keeps the form its parser gives it: a bare host ends in its root path.
+    let relay = "http://10.0.0.5:9782/";
     replica
         .apply(Servers::SET_RELAY_URL.with((device(), relay.into())))
         .unwrap();
