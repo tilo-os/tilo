@@ -394,6 +394,183 @@ fn a_pass_that_moves_the_readings_wakes_the_follows() {
     );
 }
 
+/// A device list the session publishes changes on its own pass, and the record read a program
+/// follows shows the new reading: the pass that moved what the services publish wakes the follow,
+/// which reads again, rather than a timer asking.
+#[test]
+fn a_live_reading_that_changes_reaches_its_follower() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceCopy, read_resources};
+
+    /// A device list whose reading the test moves, as its device would on its own pass.
+    struct LiveStyles {
+        offered: Arc<std::sync::Mutex<serde_json::Value>>,
+        moved: Arc<AtomicBool>,
+    }
+
+    impl tilo_service::Service for LiveStyles {
+        fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+            vec![tilo_actions::ResourceSpec::new(
+                crate::device_lists::STYLES_RESOURCE,
+                "session.styles",
+                "Styles",
+            )]
+        }
+
+        fn read(&self, resource: &str) -> Option<serde_json::Value> {
+            (resource == crate::device_lists::STYLES_RESOURCE)
+                .then(|| self.offered.lock().unwrap().clone())
+        }
+
+        fn invoke(
+            &mut self,
+            resource: &str,
+            action: &str,
+            _: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+            Err(tilo_actions::ApiError::Unknown(
+                tilo_actions::ActionAddress::new(resource, action),
+            ))
+        }
+
+        fn poll(&mut self) -> bool {
+            self.moved.swap(false, Ordering::SeqCst)
+        }
+    }
+
+    /// One of the loop's passes, where the services are: what moved wakes the follows waiting on
+    /// it, and every reading a connection asks for is answered from the services as it stands.
+    fn pass(services: &mut tilo_service::Services, session: &SessionServices) {
+        if services.poll() {
+            session.readings_moved(services.revision());
+        }
+        let asked = std::mem::take(&mut *session.asks.lock_recover());
+        for ask in asked {
+            if let ApiAsk::Reading {
+                app,
+                resource,
+                done,
+            } = ask
+            {
+                done.complete(published_reading(services, &app, &resource).map(|reading| {
+                    Published {
+                        kind: published_kind(services, &resource),
+                        reading,
+                    }
+                }));
+            }
+        }
+    }
+
+    let offered = Arc::new(std::sync::Mutex::new(serde_json::json!({"offered": []})));
+    let moved = Arc::new(AtomicBool::new(false));
+    let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(LiveStyles {
+        offered: Arc::clone(&offered),
+        moved: Arc::clone(&moved),
+    }));
+    let records = Arc::new(super::records::ServiceRecords {
+        state: None,
+        session: Arc::clone(&session),
+        agent_session: None,
+    });
+    let caller = Caller::local_person("person");
+    let asks = [ResourceAsk {
+        address: ResourceAddress {
+            workspace: "studio".to_owned(),
+            app: tilolang_tilo::platform_apps::DEVICE_APP.to_owned(),
+            record: crate::device_lists::STYLES_RESOURCE.to_owned(),
+        },
+        joined: false,
+    }];
+    let first = {
+        let records = Arc::clone(&records);
+        let caller = caller.clone();
+        let asks = asks.clone();
+        let reading = std::thread::spawn(move || {
+            read_resources(&*records, &caller, &asks, None, tilo_clock::now())
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        while !reading.is_finished() {
+            pass(&mut services, &session);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first read did not answer"
+            );
+            std::thread::yield_now();
+        }
+        reading
+            .join()
+            .expect("the reader")
+            .expect("the reading the device publishes")
+    };
+    assert_eq!(
+        first.records.first().and_then(|(_, copy)| copy.clone()),
+        Some(ResourceCopy::reading(
+            serde_json::json!({"offered": []}),
+            None
+        )),
+        "a program reads the device's styles"
+    );
+    // Only the follow's watch is woken from here on, never the first read's.
+    session.readings_woken.lock_recover().clear();
+    let follower = {
+        let records = Arc::clone(&records);
+        let caller = caller.clone();
+        let asks = asks.clone();
+        let after = first.revision.clone();
+        std::thread::spawn(move || {
+            read_resources(
+                &*records,
+                &caller,
+                &asks,
+                Some(&after),
+                tilo_clock::now().checked_add(WAIT).expect("a deadline"),
+            )
+        })
+    };
+    // The loop's pass, where the services are: what moved wakes the follows waiting on it, and
+    // every reading a connection asks for is answered from the services as this pass reads them.
+    // The device moves its list once the follow watches, and the pass that takes the move in
+    // wakes it.
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut moved_device = false;
+    while !follower.is_finished() {
+        pass(&mut services, &session);
+        if !moved_device
+            && session
+                .readings_woken
+                .lock_recover()
+                .iter()
+                .any(tilo_actions::remote::ResourceWake::waiting)
+        {
+            *offered.lock().unwrap() = serde_json::json!({"offered": ["warm"]});
+            moved.store(true, Ordering::SeqCst);
+            moved_device = true;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follow did not read the changed device"
+        );
+        std::thread::yield_now();
+    }
+    assert!(moved_device, "the follow watched its reading");
+    let changed = follower
+        .join()
+        .expect("the follower")
+        .expect("the changed reading");
+    assert_eq!(
+        changed.records.first().and_then(|(_, copy)| copy.clone()),
+        Some(ResourceCopy::reading(
+            serde_json::json!({"offered": ["warm"]}),
+            None
+        )),
+        "the changed reading reached the follower"
+    );
+    assert_ne!(changed.revision, first.revision);
+}
+
 /// A program's reading of a resource the session publishes is decided for its caller, as every
 /// read of a record is: the person reads their own device, and an agent reads it only where the
 /// broker lets it read the resource. With no broker to decide it, an agent reads none of it.
