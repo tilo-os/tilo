@@ -70,6 +70,15 @@ d-gfmzi3qr = Frames snap
 d-6bamt22e = Canvas asked
     .doc = The canvas: whether the person has asked on it yet.
 
+d-dpb7af4j = Reporting
+    .doc = Whether the report picker stands over the windows: the person is choosing the window a report about a problem is about (`feedback.tl`).
+
+d-7bxopjro = Report picks
+    .doc = The windows the report being made is about, in the order they were picked: the shell's own record of what the person pointed at, so a report is about something they can read back.
+
+d-r6satdro = Report area
+    .doc = The outline of the rectangle the person dragged over the picker, as `x, y, width, height` in canvas pixels: empty while no drag stands.
+
 d-cejnvssb-filter-preset = Preset
 
 d-cejnvssb-filter-based_on = Based on
@@ -113,6 +122,8 @@ d-cejnvssb-filter-strips_tabs = Strips tabs
 d-cejnvssb-filter-frames_snap = Frames snap
 
 d-cejnvssb-filter-canvas_asked = Canvas asked
+
+d-cejnvssb-filter-reporting = Reporting
 
 d-sfhd6wko = Bar part
     .doc = One part of the top bar, in the person's order.
@@ -166,6 +177,19 @@ d-bnfk7mx5-filter-running = Running
 d-bnfk7mx5-filter-badge = Badge
 
 d-bnfk7mx5-filter-attention = Attention
+
+d-66jw6ezz = Report pick
+    .doc = Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in front stands as a card with its own live picture, and the person chooses the window the report is about — a click on its card, or a rectangle dragged over it.
+    .noun = { $count ->
+        [one] report pick
+       *[other] report picks
+    }
+
+d-hb2dxuji = Key
+
+d-hu4bokd4 = Title
+
+d-abe7lbj4 = App name
 
 d-oomdh5mi = Layout
     .doc = The person's layout: what is open where.
@@ -688,6 +712,22 @@ d-aitkuflo = Open item
 
 d-aitkuflo-key = App
 
+d-2cmvxqpt = Report a problem
+    .doc = Start a pick: what a report about a problem is about, chosen on the whole screen.
+
+d-fipjigt5 = Pick report window
+    .doc = The window `key` is what the report is about: it joins the report, the picker closes, and the report's box opens about the window, the person free to point at the part of it that is wrong.
+
+d-fipjigt5-key = Window
+
+d-y6cjt65t = Pick the window a report is about
+    .doc = The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas pixels — picks the window it covers first, as a click on that card does.
+
+d-y6cjt65t-area = Area
+
+d-zek2dnmp = Cancel
+    .doc = Leave the pick with nothing attached: no window, no report.
+
 d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 
@@ -950,6 +990,14 @@ d-fr6w4hgp = Dock running tiles
 
 d-lwt7iwsj = Dock tile
     .w-new = { $title }, { $badge } new
+
+d-7ugeomrq = Report picker
+    .w-what-the-report-is-about = What the report is about
+    .w-nothing-is-open-to-report-about = Nothing is open to report about
+    .w-click-the-window-that-isn-t = Click the window that isn't working
+    .w-nothing-is-open-to-report-about-2 = Nothing is open to report about.
+    .w-click-the-window-that-isn-t-2 = Click the window that isn't working, or drag over it.
+    .w-cancel = Cancel
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files

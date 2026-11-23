@@ -158,10 +158,10 @@ type Shell {
     reporting: Bool = false
     /// The windows the report being made is about, in the order they were picked: the shell's own
     /// record of what the person pointed at, so a report is about something they can read back.
-    report_picks: List<ReportPick> = []
+    report_picks: List<ReportPick>
     /// The outline of the rectangle the person dragged over the picker, as `x, y, width, height`
     /// in canvas pixels: empty while no drag stands.
-    report_area: List<Int> = []
+    report_area: List<Int>
 }
 
 /// One part of the top bar, in the person's order.
