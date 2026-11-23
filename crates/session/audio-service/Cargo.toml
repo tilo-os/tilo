@@ -39,7 +39,7 @@ base64.workspace = true
 blake3.workspace = true
 # The person's focus schedule is in local time.
 jiff.workspace = true
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true

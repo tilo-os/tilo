@@ -19,7 +19,7 @@ fn grammars() -> Option<&'static dyn Grammars> {
         std::sync::OnceLock::new();
     *GRAMMARS.get_or_init(|| {
         // SAFETY: the engine's entry is checked against `GrammarsEntry`
-        // where it is defined (crates/runtime/engines/highlight), in the
+        // where it is defined (crates/engines/loadable/highlight), in the
         // same build.
         let entry = unsafe {
             tilo_engine_loader::entry::<tilo_highlight::GrammarsEntry>(

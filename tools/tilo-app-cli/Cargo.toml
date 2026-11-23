@@ -46,7 +46,7 @@ app-registry = { path = "../../crates/packaging/app-registry" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-canonical-json = { path = "../../crates/platform/tilo-canonical-json" }
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
-bounded-command = { path = "../../crates/system/bounded-command" }
+bounded-command = { path = "../../crates/platform/bounded-command" }
 # The capability evidence table deserializes into typed entries.
 serde.workspace = true
 serde_json.workspace = true
@@ -72,7 +72,7 @@ serde_yaml = "0.9"
 tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
 # The journey's checkout-external directory is held under an advisory lock.
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/platform/advisory-lock" }
 # The outside-repository journey publishes into a real registry on loopback.
 registry-server = { path = "../../crates/packaging/registry-server" }
 # A framework app's surface, reported in process as its binary's `--surface`.

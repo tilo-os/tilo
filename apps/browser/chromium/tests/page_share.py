@@ -323,7 +323,7 @@ MEASURED = {}
 
 # Set to have the suite print what it compared, whole: every item that arrived, what each
 # page measured, the engine's own layout snapshot of the form with every control (what
-# the converter's tests keep as a fixture, `crates/browser/paint-stream/tests/fixtures`)
+# the converter's tests keep as a fixture, `crates/engines/paint-stream/tests/fixtures`)
 # and the faces the machine has. Each is printed deflated and base64 encoded, in lines
 # of `RECORD name part/parts data`.
 RECORD = bool(os.environ.get("TILO_PAGE_SHARE_RECORD"))

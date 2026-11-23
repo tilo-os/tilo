@@ -17,8 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # The encoder and the muxer are the shared media stack's: a recording is the
 # same encode a share stream uses, written to a file instead of a peer.
-tilo-callstream = { path = "../../collab/tilo-callstream", features = ["recording"] }
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+tilo-callstream = { path = "../../engines/tilo-callstream", features = ["recording"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime"] }
 # The studio is an overlay app the session opens and closes: it shares that
 # presentation with the session the way every sheet does.
 tilo-sheets = { path = "../sheets" }

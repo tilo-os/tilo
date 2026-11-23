@@ -39,7 +39,7 @@ tilo-service = { version = "0.1.0", path = "../service" }
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", default-features = false }
+tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", default-features = false }
 hex.workspace = true
 tilo-automerge.workspace = true
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }

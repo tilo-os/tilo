@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 blake3.workspace = true
 getrandom.workspace = true
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime", "voice", "pipewire"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime", "voice", "pipewire"] }
 rand_core.workspace = true
 runtime-collab = { path = "../../runtime/runtime-collab" }
 serde_json.workspace = true
@@ -29,7 +29,7 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["test-support"] }
 postcard = { workspace = true, features = ["alloc"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 

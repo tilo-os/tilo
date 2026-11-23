@@ -24,7 +24,7 @@ through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
 and records them in the `.tilo.lazy_needed` section; the check reports those.
 
 Engines a few apps use live in libraries of their own beside the runtime
-(crates/runtime/engines/). `measure --engine FILE` reports each one's
+(crates/engines/loadable/). `measure --engine FILE` reports each one's
 numbers, fails when one does not link the runtime, and fails when an app of
 `apps_without_media` loads one at exec: an engine is loaded only by its apps,
 and an app of that list that uses one is named in `[engine_users]`. Each

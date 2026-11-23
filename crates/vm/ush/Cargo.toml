@@ -32,7 +32,7 @@ getrandom.workspace = true
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time"], optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 sha2.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
@@ -45,7 +45,7 @@ ush-tilo = { path = "../ush-tilo" }
 # The environment record a guest is built from, and the tool builder boundary.
 tilo-environment = { path = "../environment" }
 # Two sessions of one environment never carry the same file action out twice.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # Atomic writes of the host-shell decisions.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Builds the tool images `pkg install` adds.
@@ -73,7 +73,7 @@ hex.workspace = true
 tilo-secrets.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
-tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../../runtime/egress" }
@@ -102,7 +102,7 @@ tilo-actions = { path = "../../collab/actions" }
 # A held command follows the host's plans file as its account answer does.
 tilo-server-account = { path = "../../server/tilo-server-account" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

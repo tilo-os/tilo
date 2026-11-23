@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 os-actions = { path = "../../system/os-actions" }
 serde.workspace = true
 serde_json.workspace = true

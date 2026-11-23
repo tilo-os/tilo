@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep Cisco's OpenH264 out of every image Tilo ships.
 
-GStreamer (through `crates/platform/tilo-media`) is the one media stack; it
+GStreamer (through `crates/engines/tilo-media`) is the one media stack; it
 reaches H.264 in software only through Cisco's openh264 binary, which the
 system's `openh264` GStreamer plugin loads at runtime. deny.toml keeps codec
 crates (openh264, ffmpeg-next) out of the Rust graph.

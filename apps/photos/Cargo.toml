@@ -35,8 +35,8 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
 # The shared preview pipeline behind the library grid.
-tilo-thumbnail = { path = "../../crates/media/thumbnail" }
-tilo-vision = { path = "../../crates/media/vision" }
+tilo-thumbnail = { path = "../../crates/engines/thumbnail" }
+tilo-vision = { path = "../../crates/engines/vision" }
 agent-provider-config = { path = "../../crates/integrations/provider-config" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
@@ -47,7 +47,7 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-tilo-ocr = { path = "../../crates/media/ocr" }
+tilo-ocr = { path = "../../crates/engines/ocr" }
 kamadak-exif = "0.6.1"
 
 [dev-dependencies]

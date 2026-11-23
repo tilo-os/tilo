@@ -34,7 +34,7 @@ jiff.workspace = true
 # What is booted, staged and rolled back to, asked of the status socket (`tilo status`).
 tilo-deployment-status = { path = "../../os/deployment-status" }
 # `tilo cleanup` takes its record's lock.
-tilo-advisory-lock = { path = "../advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-formats = { path = "../../sdk/tilo-formats" }

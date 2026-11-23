@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Verifiers run with bounded output and a deadline, killed with their tree.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # sigaction for SIGTERM/SIGINT, so a stopped service kills its verifier.
 libc.workspace = true
 regex.workspace = true

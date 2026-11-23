@@ -41,7 +41,7 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 hex.workspace = true
 # Print jobs go to `lp` as argv, bounded in time and output.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 rand.workspace = true
 zeroize.workspace = true
 rustix = { workspace = true, features = ["process"] }

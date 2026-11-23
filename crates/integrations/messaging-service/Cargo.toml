@@ -68,7 +68,7 @@ tilo-paths = { workspace = true, optional = true }
 tilo-rt = { workspace = true, optional = true }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 tilo-secret-vault = { path = "../../system/secret-vault", optional = true }
-bounded-command = { path = "../../system/bounded-command", optional = true }
+bounded-command = { path = "../../platform/bounded-command", optional = true }
 hex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
 blake3 = { workspace = true, optional = true }

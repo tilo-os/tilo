@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENGINE_OWNERS = (
     "crates/doc/tilo-automerge/src/lib.rs",
     "crates/doc/tilo-doc/",
-    "crates/doc/tilo-doc-codecs/",
+    "crates/engines/tilo-doc-codecs/",
     # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,
     # which places changes by tilo-doc's storage keys.
     "crates/doc/tilo-document/",

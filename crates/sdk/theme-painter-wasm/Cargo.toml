@@ -9,7 +9,7 @@ license = "MIT"
 description = "The interpreter (wasmi) a theme's painter set loaded from wasm runs on: fuel-bounded, memory-capped, no imports."
 
 # The code the runtime leaves out. The toolkit names it in every build but
-# the thin one; there the painter engine (crates/runtime/engines/theme-painter)
+# the thin one; there the painter engine (crates/engines/loadable/theme-painter)
 # links it into its own library, which the toolkit opens the first time a
 # theme names a painter set.
 [dependencies]

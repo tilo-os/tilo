@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-platform-caps = { version = "0.1.0", path = "../../platform/tilo-platform-caps" }

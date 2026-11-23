@@ -320,7 +320,7 @@ name = "pipewire-echo-cancel"
 # name the session uses for it, and the image COPY that installs it.
 inputs = [
   "os/usr/share/pipewire/", "os/Containerfile",
-  "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
+  "crates/engines/tilo-media/src/audio.rs", "crates/engines/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
@@ -442,14 +442,14 @@ suites = [
 name = "printing"
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
-  "crates/system/os-actions/", "crates/system/sandbox-core/",
-  "crates/platform/tilo-capture/src/scanner.rs",
+  "crates/system/os-actions/", "crates/platform/sandbox-core/",
+  "crates/engines/tilo-capture/src/scanner.rs",
 ]
 suites = ["os/tests/printing_isolation.sh"]
 
 [[group]]
 name = "remote-capture"
-inputs = ["os/", "crates/platform/tilo-capture/", "crates/platform/tilo-media/"]
+inputs = ["os/", "crates/engines/tilo-capture/", "crates/engines/tilo-media/"]
 suites = ["os/tests/remote_capture_image_contract.sh"]
 
 [[group]]
@@ -526,7 +526,7 @@ inputs = [
   "os/external-assets/github-assets.tsv",
   "apps/browser/tilo-app.toml",
   "apps/browser/src/browser_widget/engine_runtime.rs",
-  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
+  "crates/engines/tilo-webview/src/chromium/runtime.rs",
 ]
 suites = [
   "scripts/browser/test_build_host.py",
@@ -592,7 +592,7 @@ inputs = [
   "crates/platform/tilo-clipboard/web/",
   "crates/platform/tilo-dialogs/web/",
   "crates/platform/tilo-location/web/",
-  "crates/platform/tilo-media/web/",
+  "crates/engines/tilo-media/web/",
   "crates/platform/tilo-notify/web/",
   "crates/platform/tilo-secrets/web/",
 ]
@@ -600,7 +600,7 @@ suites = [
   "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
   "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
   "crates/platform/tilo-location/web/location.test.mjs",
-  "crates/platform/tilo-media/web/tilo-media.test.mjs",
+  "crates/engines/tilo-media/web/tilo-media.test.mjs",
   "crates/platform/tilo-notify/web/notify.test.mjs",
   "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
@@ -610,7 +610,7 @@ suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
 check = "web-node-tests"
 
 [[covered]]
-suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
+suite = "crates/engines/tilo-media/web/tilo-media-edit.test.mjs"
 check = "web-page-tests"
 
 [[group]]
@@ -683,7 +683,7 @@ package = "tilo-ui"
 # for tilo-paint-stream.
 inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
-  "crates/browser/paint-stream/tests/fixtures/",
+  "crates/engines/paint-stream/tests/fixtures/",
   # The theme bundle's test loads a theme written only against the theme SDK.
   "crates/sdk/themes/bauhaus/theme.json",
   "tools/test-assets.py",
@@ -805,45 +805,45 @@ inputs = [
   "crates/session/settings-service/agent-models-surface.json",
 ]
 readers = [
-  "crates/platform/tilolang-tilo/examples/write_rate.rs",
-  "crates/platform/tilolang-tilo/src/native.rs",
-  "crates/platform/tilolang-tilo/src/platform_apps.rs",
-  "crates/platform/tilolang-tilo/src/task.rs",
-  "crates/platform/tilolang-tilo/tests/agent_queries.rs",
-  "crates/platform/tilolang-tilo/tests/bundle.rs",
-  "crates/platform/tilolang-tilo/tests/capture.rs",
-  "crates/platform/tilolang-tilo/tests/chat.rs",
-  "crates/platform/tilolang-tilo/tests/discussion.rs",
-  "crates/platform/tilolang-tilo/tests/done_days.rs",
-  "crates/platform/tilolang-tilo/tests/fixtures.rs",
-  "crates/platform/tilolang-tilo/tests/gallery.rs",
-  "crates/platform/tilolang-tilo/tests/headings.rs",
-  "crates/platform/tilolang-tilo/tests/legibility.rs",
-  "crates/platform/tilolang-tilo/tests/link_editor.rs",
-  "crates/platform/tilolang-tilo/tests/links.rs",
-  "crates/platform/tilolang-tilo/tests/make_from.rs",
-  "crates/platform/tilolang-tilo/tests/mention_asks.rs",
-  "crates/platform/tilolang-tilo/tests/naming.rs",
-  "crates/platform/tilolang-tilo/tests/native_chat.rs",
-  "crates/platform/tilolang-tilo/tests/native_mail.rs",
-  "crates/platform/tilolang-tilo/tests/native_notes.rs",
-  "crates/platform/tilolang-tilo/tests/note_import.rs",
-  "crates/platform/tilolang-tilo/tests/notebook_order.rs",
-  "crates/platform/tilolang-tilo/tests/notes.rs",
-  "crates/platform/tilolang-tilo/tests/notes_checklist.rs",
-  "crates/platform/tilolang-tilo/tests/notices.rs",
-  "crates/platform/tilolang-tilo/tests/outbox.rs",
-  "crates/platform/tilolang-tilo/tests/outcomes.rs",
-  "crates/platform/tilolang-tilo/tests/policy.rs",
-  "crates/platform/tilolang-tilo/tests/resource_service.rs",
-  "crates/platform/tilolang-tilo/tests/resource_store.rs",
-  "crates/platform/tilolang-tilo/tests/rich_text.rs",
-  "crates/platform/tilolang-tilo/tests/scenarios.rs",
-  "crates/platform/tilolang-tilo/tests/suggest.rs",
-  "crates/platform/tilolang-tilo/tests/surface.rs",
-  "crates/platform/tilolang-tilo/tests/task.rs",
-  "crates/platform/tilolang-tilo/tests/tasks.rs",
-  "crates/platform/tilolang-tilo/tests/words.rs",
+  "crates/lang/tilolang-tilo/examples/write_rate.rs",
+  "crates/lang/tilolang-tilo/src/native.rs",
+  "crates/lang/tilolang-tilo/src/platform_apps.rs",
+  "crates/lang/tilolang-tilo/src/task.rs",
+  "crates/lang/tilolang-tilo/tests/agent_queries.rs",
+  "crates/lang/tilolang-tilo/tests/bundle.rs",
+  "crates/lang/tilolang-tilo/tests/capture.rs",
+  "crates/lang/tilolang-tilo/tests/chat.rs",
+  "crates/lang/tilolang-tilo/tests/discussion.rs",
+  "crates/lang/tilolang-tilo/tests/done_days.rs",
+  "crates/lang/tilolang-tilo/tests/fixtures.rs",
+  "crates/lang/tilolang-tilo/tests/gallery.rs",
+  "crates/lang/tilolang-tilo/tests/headings.rs",
+  "crates/lang/tilolang-tilo/tests/legibility.rs",
+  "crates/lang/tilolang-tilo/tests/link_editor.rs",
+  "crates/lang/tilolang-tilo/tests/links.rs",
+  "crates/lang/tilolang-tilo/tests/make_from.rs",
+  "crates/lang/tilolang-tilo/tests/mention_asks.rs",
+  "crates/lang/tilolang-tilo/tests/naming.rs",
+  "crates/lang/tilolang-tilo/tests/native_chat.rs",
+  "crates/lang/tilolang-tilo/tests/native_mail.rs",
+  "crates/lang/tilolang-tilo/tests/native_notes.rs",
+  "crates/lang/tilolang-tilo/tests/note_import.rs",
+  "crates/lang/tilolang-tilo/tests/notebook_order.rs",
+  "crates/lang/tilolang-tilo/tests/notes.rs",
+  "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
+  "crates/lang/tilolang-tilo/tests/notices.rs",
+  "crates/lang/tilolang-tilo/tests/outbox.rs",
+  "crates/lang/tilolang-tilo/tests/outcomes.rs",
+  "crates/lang/tilolang-tilo/tests/policy.rs",
+  "crates/lang/tilolang-tilo/tests/resource_service.rs",
+  "crates/lang/tilolang-tilo/tests/resource_store.rs",
+  "crates/lang/tilolang-tilo/tests/rich_text.rs",
+  "crates/lang/tilolang-tilo/tests/scenarios.rs",
+  "crates/lang/tilolang-tilo/tests/suggest.rs",
+  "crates/lang/tilolang-tilo/tests/surface.rs",
+  "crates/lang/tilolang-tilo/tests/task.rs",
+  "crates/lang/tilolang-tilo/tests/tasks.rs",
+  "crates/lang/tilolang-tilo/tests/words.rs",
 ]
 
 [[cargo]]
@@ -873,16 +873,16 @@ inputs = [
   "apps/chat/",
   "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",
-  "crates/platform/tilolang-tilo/tests/legacy/rust_notes.hex",
+  "crates/lang/tilolang-tilo/tests/legacy/rust_notes.hex",
   "crates/sdk/ui-core/locales/",
 ]
 readers = [
-  "crates/platform/tilolang-process/examples/process_cost.rs",
-  "crates/platform/tilolang-process/src/task.rs",
-  "crates/platform/tilolang-process/src/phrases.rs",
-  "crates/platform/tilolang-process/tests/process.rs",
-  "crates/platform/tilolang-process/tests/process/native_notes.rs",
-  "crates/platform/tilolang-process/tests/workspace_mail.rs",
+  "crates/lang/tilolang-process/examples/process_cost.rs",
+  "crates/lang/tilolang-process/src/task.rs",
+  "crates/lang/tilolang-process/src/phrases.rs",
+  "crates/lang/tilolang-process/tests/process.rs",
+  "crates/lang/tilolang-process/tests/process/native_notes.rs",
+  "crates/lang/tilolang-process/tests/workspace_mail.rs",
 ]
 
 
@@ -1232,6 +1232,20 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  "crates/engines/search/",
+  "crates/engines/tilo-page-raster/",
+  "crates/engines/tilo-recurrence/",
+  "crates/engines/tilo-webview/",
+  "crates/lang/tilo-app-module/",
+  "crates/engines/tilo-archive/",
+  "crates/engines/tilo-capture/",
+  "crates/engines/tilo-image-codec/",
+  "crates/engines/tilo-media/",
+  "crates/engines/tilo-pdf/",
+  "crates/engines/tilo-subject/",
+  "crates/engines/tilo-typst-fonts/",
+  "crates/lang/tilolang-process/",
+  "crates/lang/tilolang-tilo/",
   "crates/integrations/provider-settings-ui/",
   "crates/integrations/account-probe/",
   "crates/os/imager-backend/",
@@ -1410,7 +1424,7 @@ readers = ["apps/disks/src/probe.rs"]
 [[cargo]]
 package = "tilo-doc-codecs"
 inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
-readers = ["crates/doc/tilo-doc-codecs/build.rs"]
+readers = ["crates/engines/tilo-doc-codecs/build.rs"]
 
 [[cargo]]
 package = "ush"
@@ -1425,7 +1439,7 @@ inputs = [
   "os/usr/share/tilo/system-extensions/local-model-catalog.json",
   "os/usr/share/tilo/system-extensions/local-model-keys.json",
 ]
-readers = ["crates/agent/local-model-service/src/main.rs"]
+readers = ["crates/engines/local-model-service/src/main.rs"]
 
 [[cargo]]
 package = "tilo-font-catalog"
@@ -1441,7 +1455,7 @@ readers = ["apps/word-processor/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
-inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+inputs = ["crates/engines/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["apps/pdf-viewer/build.rs"]
 
 [[cargo]]
@@ -1493,8 +1507,8 @@ package = "tilo-video-render"
 # generates, so a change to that generator runs them.
 inputs = ["apps/video-editor/tests/support/"]
 readers = [
-  "crates/media/video-render/tests/render_helper.rs",
-  "crates/media/video-render/tests/support/media_stack.rs",
+  "crates/engines/video-render/tests/render_helper.rs",
+  "crates/engines/video-render/tests/support/media_stack.rs",
 ]
 
 [[cargo]]
@@ -1551,7 +1565,7 @@ inputs = [
   "crates/system/settings-store/locales/en-US.ftl",
   "crates/system/settings-store/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
-  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
+  "crates/engines/paint-stream/tests/fixtures/layers.top.json",
 ]
 readers = [
   "crates/session/session/tests/no_locale_leaks.rs",
@@ -1588,8 +1602,8 @@ scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrom
 package = "tilo-desktop-surface"
 # The pages the peer page test's engine shows: snapshots the paint stream's own tests keep.
 inputs = [
-  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
-  "crates/browser/paint-stream/tests/fixtures/controls.json",
+  "crates/engines/paint-stream/tests/fixtures/layers.top.json",
+  "crates/engines/paint-stream/tests/fixtures/controls.json",
 ]
 readers = ["crates/session/desktop-surface/tests/peer_page.rs"]
 
@@ -1597,8 +1611,8 @@ readers = ["crates/session/desktop-surface/tests/peer_page.rs"]
 package = "ui-examples"
 # The pages the page view shots' publisher draws: the same snapshots of the paint stream's tests.
 inputs = [
-  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
-  "crates/browser/paint-stream/tests/fixtures/controls.json",
+  "crates/engines/paint-stream/tests/fixtures/layers.top.json",
+  "crates/engines/paint-stream/tests/fixtures/controls.json",
 ]
 readers = ["tools/ui-examples/examples/page_view_shots.rs"]
 
@@ -2116,7 +2130,7 @@ inputs = [
   "os/dev/assert-native-arch.sh",
   "os/scripts/verify-elf-hardening.sh",
   "apps/browser/tilo-app.toml",
-  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
+  "crates/engines/tilo-webview/src/chromium/runtime.rs",
   "os/Containerfile",
 ]
 readers = [
@@ -2142,7 +2156,7 @@ readers = ["apps/store/build.rs"]
 [[cargo]]
 package = "tilo-pdf"
 inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
-readers = ["crates/platform/tilo-pdf/build.rs"]
+readers = ["crates/engines/tilo-pdf/build.rs"]
 
 [[group]]
 name = "browser-fixture-assets"

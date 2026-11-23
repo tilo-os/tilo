@@ -17,7 +17,7 @@ path = "src/main.rs"
 [features]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
-# (libtilo_settings_engine.so, crates/runtime/engines/settings), which
+# (libtilo_settings_engine.so, crates/engines/loadable/settings), which
 # carries this package's library: the binary is one call into it
 # (src/main.rs). The release collection enables it
 # (dist/apps/app-collections.toml).

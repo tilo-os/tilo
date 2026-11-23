@@ -27,7 +27,7 @@ tilo-app-state = { path = "../../system/app-state" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true

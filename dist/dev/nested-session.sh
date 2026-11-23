@@ -367,7 +367,7 @@ runtime_id=tilo-runtime/$runtime_version
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
-# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances: built without the toolkit, it runs on the app runtime's
 # loader and libraries alone.
 tilolang_process_bin=$bin/tilolang-process
@@ -575,7 +575,7 @@ done
 engine_tree=$build_out/chromium-engine
 if [[ -x $engine_tree/tilo-chromium-host ]]; then
     engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
-        "$repo_root/crates/sdk/tilo-webview/src/chromium/runtime.rs")
+        "$repo_root/crates/engines/tilo-webview/src/chromium/runtime.rs")
     [[ -n $engine_version ]] || die "the Chromium runtime names no RUNTIME_VERSION"
     engine_key=$( { printf '%s\n' "$engine_version" "$pubkey"; find "$engine_tree" -type f -print0 \
         | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-64)

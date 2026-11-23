@@ -55,7 +55,7 @@ samples = ["desktop"]
 thin = ["dep:runtime-dylib"]
 # Reach the PDF and archive engines through their engine libraries in the
 # runtime bundle (libtilo_pdf_engine.so, libtilo_archive_engine.so under
-# crates/runtime/engines) instead of linking them.
+# crates/engines/loadable) instead of linking them.
 # The release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links tilo-pdf statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -90,8 +90,8 @@ uuid.workspace = true
 
 tilo-clock = { path = "../../crates/platform/tilo-clock", optional = true }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
-tilo-archive-engine = { path = "../../crates/runtime/engines/archive", optional = true }
+tilo-pdf-engine = { path = "../../crates/engines/loadable/pdf", optional = true }
+tilo-archive-engine = { path = "../../crates/engines/loadable/archive", optional = true }
 tilo-automation = { path = "../../crates/collab/automation", optional = true }
 accounts = { path = "../../crates/integrations/accounts", features = ["person"], optional = true }
 # Remote account folders are named exactly as the storage daemon's cloud
@@ -109,7 +109,7 @@ tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true
 sha2 = { workspace = true, optional = true }
 # Shared thumbnail generator and cache. PDF previews come from the PDF engine
 # (tilo-pdf), which Files hands to it; video remains a badge in this crate.
-tilo-thumbnail = { path = "../../crates/media/thumbnail", optional = true }
+tilo-thumbnail = { path = "../../crates/engines/thumbnail", optional = true }
 tilo-mime = { path = "../../crates/platform/tilo-mime", optional = true }
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state, and performs
@@ -117,10 +117,10 @@ tilo-mime = { path = "../../crates/platform/tilo-mime", optional = true }
 host-fs = { path = "../../crates/system/host-fs", optional = true }
 # Reading a PDF's text, through the portable engine. Document formats are
 # Writer's: it links the codecs and converts files.
-tilo-pdf = { path = "../../crates/platform/tilo-pdf", optional = true }
+tilo-pdf = { path = "../../crates/engines/tilo-pdf", optional = true }
 # Archives: browsing into, extracting and packing them. A thin release build
 # loads it from libtilo_archive_engine.so (`runtime-engine`).
-tilo-archive = { path = "../../crates/platform/tilo-archive", optional = true }
+tilo-archive = { path = "../../crates/engines/tilo-archive", optional = true }
 # The `--shots` demo seeds write a zip.
 zip = { workspace = true, optional = true }
 # Home, config, cache and the localized user folders.

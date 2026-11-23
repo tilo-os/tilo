@@ -63,6 +63,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("crates/sdk"), Path("crates/session"), Path("apps"))
 # Crates of the same kind that live in other groups.
 SCANNED += (
+    Path("crates/engines/search"),
+    Path("crates/engines/tilo-page-raster"),
+    Path("crates/engines/tilo-recurrence"),
+    Path("crates/engines/tilo-webview"),
+)
+# Crates of the same kind that live in other groups.
+SCANNED += (
     Path("crates/integrations/provider-settings-ui"),
     Path("crates/os/console-control"),
     Path("crates/os/greetd-client"),
@@ -85,7 +92,12 @@ LIBRARY = (
 # entry says why.
 EXEMPT = {
     "apps/video-editor/": "keyframe interpolation and transitions are the video's own content",
-    "crates/media/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/ocr/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/segment/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/thumbnail/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/video-render/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/vision/": "paint, brush and media physics simulate the medium, not UI motion",
+    "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
     "apps/canvas/src/brushes.rs": "brush dynamics are part of the stroke the person paints",
     "crates/sdk/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/session/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",

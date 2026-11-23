@@ -52,7 +52,7 @@ use crate::session::{self, Peer};
 /// The sources of the tilolang runtime binary: what a rebuild of it is watched on.
 const RUNTIME_SOURCES: [&str; 4] = [
     "apps/tilolang",
-    "crates/platform/tilolang-tilo",
+    "crates/lang/tilolang-tilo",
     "crates/lang/tilolang-runtime",
     "crates/lang/tilolang",
 ];
@@ -125,7 +125,7 @@ const MISSING_WAIT: Duration = Duration::from_secs(2);
 const TOOL_SOURCES: [&str; 4] = [
     "crates/lang/tilolang/src",
     "crates/lang/tilolang-runtime/src",
-    "crates/platform/tilolang-tilo/src",
+    "crates/lang/tilolang-tilo/src",
     "apps/tilolang/src",
 ];
 

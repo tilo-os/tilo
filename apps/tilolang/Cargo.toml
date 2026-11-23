@@ -30,7 +30,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../crates/lang/tilolang-tilo" }
 tilo-failure = { path = "../../crates/platform/tilo-failure" }
 # The app window's half of the window, and the patch protocol between it and the instance.
 tilo-app-window = { path = "../../crates/platform/tilo-app-window" }
@@ -43,7 +43,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
-tilolang-tilo = { path = "../../crates/platform/tilolang-tilo", features = ["test-support"] }
+tilolang-tilo = { path = "../../crates/lang/tilolang-tilo", features = ["test-support"] }
 # Mail's engine, the stand-in IMAP and SMTP servers Mail's tests run against, and the engine's
 # content store.
 mail-engine = { path = "../../crates/integrations/mail-engine", features = ["test-support"] }
@@ -52,7 +52,7 @@ tilo-content = { path = "../../crates/system/content" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
 # whose tests play the broker over the host's own fake (`testing`).
-tilolang-process = { path = "../../crates/platform/tilolang-process", features = ["test-support"] }
+tilolang-process = { path = "../../crates/lang/tilolang-process", features = ["test-support"] }
 collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 # A later build as a development session hands it over the host's socket.
@@ -70,7 +70,7 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Without a session, a window runs its instance in a tilolang host in its own process.
-tilolang-process = { path = "../../crates/platform/tilolang-process" }
+tilolang-process = { path = "../../crates/lang/tilolang-process" }
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -82,7 +82,7 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-sta
 # Waiting on the hosted window's patch connection.
 libc.workspace = true
 # The directory protocol a running app takes later builds of its package through (`src/updates.rs`).
-tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-module" }
+tilo-app-module = { version = "0.1.0", path = "../../crates/lang/tilo-app-module" }
 
 [target.'cfg(not(any(target_arch = "wasm32", windows)))'.dependencies]
 # The mail origin: in the window's process outside a host, and the connector process the

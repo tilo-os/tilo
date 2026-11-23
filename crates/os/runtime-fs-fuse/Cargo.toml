@@ -11,7 +11,7 @@ description = "FUSE presentation of the workspace filesystem's directory and sel
 # They are an OS-side presentation, not app runtime: with them inside
 # runtime-fs, which the shared runtime carries, every app process mapped
 # `fuser`. Imager's projection worker links this crate (from
-# libtilo_fuse_engine.so in the release, crates/runtime/engines/fuse).
+# libtilo_fuse_engine.so in the release, crates/engines/loadable/fuse).
 
 [lib]
 name = "runtime_fs_fuse"

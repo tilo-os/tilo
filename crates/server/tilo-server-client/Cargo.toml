@@ -32,7 +32,7 @@ base64.workspace = true
 uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 # The browser-safe clock: the HTTPS calls a device makes before it holds a
 # session sign with it too, with or without the iroh dialers.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

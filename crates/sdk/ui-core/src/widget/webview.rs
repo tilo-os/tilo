@@ -2794,9 +2794,9 @@ mod shared_page_tests {
     use tilo_webview::test_engine::TestEngine;
 
     const TOP: &str =
-        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");
+        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.top.json");
     const SCROLLED: &str =
-        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.scrolled.json");
+        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.scrolled.json");
 
     fn draw(view: &mut WebView) {
         let mut scene = Scene::new();

@@ -30,7 +30,7 @@ default = ["tilo-os"]
 tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-credentials", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture", "dep:tilo-system-resources", "tilo-keyboard-map/native"]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
-# (libtilo_settings_engine.so, crates/runtime/engines/settings), which carries
+# (libtilo_settings_engine.so, crates/engines/loadable/settings), which carries
 # this package's library and links account credentials and the IMAP client from
 # their own engine library: the binary is one call into it (src/main.rs). The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
@@ -56,7 +56,7 @@ hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-process = { path = "../../crates/platform/tilo-process" }
 tilo-rt = { path = "../../crates/platform/tilo-rt" }
-bounded-command = { path = "../../crates/system/bounded-command", optional = true }
+bounded-command = { path = "../../crates/platform/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
 # The sections Settings edits, which the session keeps as resources too.
@@ -114,7 +114,7 @@ account-credentials = { path = "../../crates/integrations/account-credentials", 
 agent-provider-config = { path = "../../crates/integrations/provider-config", features = ["model"] }
 # The bounded audio diagnostics the Sound pane starts (a channel test, a
 # microphone and an output meter), and the event-sound themes it lists.
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media", optional = true }
+media = { package = "tilo-media", path = "../../crates/engines/tilo-media", optional = true }
 # The session's `sound` resource: the reading the Sound pane shows and the
 # actions its controls take. Without the `service` feature: the pane needs
 # the resource's spec and types, the session runs the service.
@@ -146,7 +146,7 @@ uuid.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The installer service's client, for the language packs Region & formats offers.
 package-service = { path = "../../crates/packaging/package-service", default-features = false }
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"], optional = true }
+tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -176,7 +176,7 @@ tilo-oauth = { path = "../../crates/integrations/tilo-oauth", features = ["fake"
 launcher = { path = "../../crates/packaging/launcher" }
 provider-settings-ui = { version = "0.1.0", path = "../../crates/integrations/provider-settings-ui", features = ["test-support"] }
 tilo-ntfs-mount = { path = "../../crates/os/ntfs-mount" }
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
+tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"] }
 
 [[test]]
 name = "it"

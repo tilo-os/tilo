@@ -24,7 +24,7 @@ path = "src/main.rs"
 samples = []
 thin = ["dep:runtime-dylib"]
 # Reach the PDF engine through its engine library in the runtime bundle
-# (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
+# (libtilo_pdf_engine.so, crates/engines/loadable/pdf) instead of linking it.
 # The release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links tilo-pdf statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -34,7 +34,7 @@ runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
+tilo-pdf-engine = { path = "../../crates/engines/loadable/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -55,10 +55,10 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 # Rendering, text layer, forms and export through Tilo's sandboxed PDF engine.
-tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
+tilo-pdf = { path = "../../crates/engines/tilo-pdf" }
 # The page pipeline every page viewer draws through: render queue, bitmap
 # cache, tiles.
-tilo-page-raster = { path = "../../crates/sdk/tilo-page-raster" }
+tilo-page-raster = { path = "../../crates/engines/tilo-page-raster" }
 tempfile.workspace = true
 # Documents the user opens and saves.
 tilo-files = { path = "../../crates/platform/tilo-files" }

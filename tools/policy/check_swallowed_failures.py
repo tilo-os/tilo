@@ -71,8 +71,8 @@ SCANNED = (
 # Where only the decode rule holds: the app-hosting code that reads stored
 # surfaces and messages.
 DECODE_ONLY = (
-    Path("crates/platform/tilolang-process"),
-    Path("crates/platform/tilolang-tilo"),
+    Path("crates/lang/tilolang-process"),
+    Path("crates/lang/tilolang-tilo"),
     Path("crates/platform/tilo-app-window"),
     Path("crates/server/tilo-workspace-service"),
     Path("crates/runtime/runtime-portal"),

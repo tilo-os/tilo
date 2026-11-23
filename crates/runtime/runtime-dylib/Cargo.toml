@@ -22,7 +22,7 @@ crate-type = ["dylib"]
 # What never does: OS daemons and other OS-internal crates (the FUSE
 # filesystem, the sandbox launcher, the app host, the install CLI), light
 # crates only one app uses, and engines a few apps use, which have their own
-# library under crates/runtime/engines/ (Typst, Spotify playback, Canvas's
+# library under crates/engines/loadable/ (Typst, Spotify playback, Canvas's
 # painting engines, the YouTube client of Music and Tube, account credentials,
 # IMAP and WebDAV for Mail, Settings and Calendar, the time-zone database for
 # Calendar and Clocks, the contact directory for Contacts, Mail and Messages,
@@ -51,7 +51,7 @@ tilo-cli-kit = { path = "../cli" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"], default-features = false }
 # The web engine client the toolkit's WebView displays: code that talks to a web engine
 # names it through the runtime instead of linking its own copy.
-tilo-webview = { path = "../../sdk/tilo-webview" }
+tilo-webview = { path = "../../engines/tilo-webview" }
 # Apps bind resources, actions and native presentation through this public SDK.
 # Keep its dispatcher and runner in the runtime alongside the internal toolkit.
 tilo-app = { path = "../../sdk/tilo-app" }
@@ -73,7 +73,7 @@ agent-provider-config = { path = "../../integrations/provider-config" }
 # Only the gateway's client: its daemon (`service`) runs the models and the
 # provider clients, and no app process maps them.
 tilo-model-client = { path = "../../agent/model-client", default-features = false }
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The async runtime the toolkit runs on, and the HTTP client the model client
 # asks: both are linked here already, and re-exported so an app that uses them
@@ -93,10 +93,10 @@ vte = "0.15.0"
 # codec features; the union is built here once. The WebDAV client is not here:
 # its calendar sign-in reaches account credentials, so Calendar and Settings load
 # it from the accounts engine.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
-# Without PDF pages: those come from the PDF engine (crates/runtime/engines/pdf),
+tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false }
+# Without PDF pages: those come from the PDF engine (crates/engines/loadable/pdf),
 # which the apps that read PDFs hand to the thumbnailer.
-tilo-thumbnail = { path = "../../media/thumbnail" }
+tilo-thumbnail = { path = "../../engines/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"
 # The SSH client's curve: Remote and Git Client verify P-384 host keys through

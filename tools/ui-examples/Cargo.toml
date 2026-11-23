@@ -18,7 +18,7 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 
 [dependencies]
 # The page-view shots run against a synchronous web engine.
-tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../crates/engines/tilo-webview" }
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
 automerge.workspace = true

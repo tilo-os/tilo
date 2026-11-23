@@ -19,12 +19,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 tilo-rt = { workspace = true, optional = true }
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["tokio"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # A page checks a model service's URL with the browser's own parser.

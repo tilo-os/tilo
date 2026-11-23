@@ -97,7 +97,7 @@ texts come along in `/usr/share/licenses`.
 Every media entry point (playback engines, the next `open()` of an existing
 engine, real-time encoders and decoders for calls and screen sharing, encoder
 selection) reads a stamp of `/usr/lib/extension-release.d/` (names and
-modification times; `crates/platform/tilo-media/src/extensions.rs`). When it differs
+modification times; `crates/engines/tilo-media/src/extensions.rs`). When it differs
 from what the process last saw, or on a process's first look from the stamp
 saved per user in `$XDG_CACHE_HOME/tilo/media-extensions.stamp`, the process
 drops every GStreamer plugin it has not loaded from the registry and rescans.

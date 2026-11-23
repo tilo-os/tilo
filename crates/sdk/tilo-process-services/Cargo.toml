@@ -52,7 +52,7 @@ tokio = { workspace = true, optional = true, features = ["full"] }
 # The `time` module: the clock types and reads on every target.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tracing.workspace = true
-tilo-tts = { version = "0.1.0", path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../engines/tts" }
 # The process inputs (`process::environment`): who the process is and where its
 # files live, kept with the current process.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
@@ -65,7 +65,7 @@ tilo-notify.workspace = true
 # Device location, with each target's backend.
 tilo-location.workspace = true
 # The system's now-playing controls where the platform has its own (macOS).
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", optional = true }
+tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", optional = true }
 # App-scoped secrets, with each target's store.
 tilo-secrets.workspace = true
 

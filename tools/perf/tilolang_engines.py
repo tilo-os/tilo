@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH = ROOT / "target/release/examples/bench"
-LIBRARY_DIR = ROOT / "crates/platform/tilolang-tilo/bench/imagefilter"
+LIBRARY_DIR = ROOT / "crates/lang/tilolang-tilo/bench/imagefilter"
 LIBRARY = ROOT / "target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm"
 APPS = ROOT / "apps/tl"
 

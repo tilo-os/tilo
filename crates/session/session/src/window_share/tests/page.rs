@@ -26,7 +26,7 @@ mod never_pictures;
 
 /// The engine's page: a snapshot with a header, a sidebar and a button.
 const TOP: &str =
-    include_str!("../../../../../browser/paint-stream/tests/fixtures/layers.top.json");
+    include_str!("../../../../../engines/paint-stream/tests/fixtures/layers.top.json");
 
 /// How long one link of the page's way may take on a machine busy with the rest of the suite.
 const LINK: Duration = Duration::from_secs(120);

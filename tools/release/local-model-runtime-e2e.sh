@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The signed llama.cpp runtime end to end (crates/agent/local-model-service/tests/runtime_e2e.rs):
+# The signed llama.cpp runtime end to end (crates/engines/local-model-service/tests/runtime_e2e.rs):
 # a tiny GGUF model, pinned by hash, installed through the service with the CPU runtime archive
 # RUNTIME (a local-model-runtime build's OUT) and answering a chat completion through the model
 # gateway built here.

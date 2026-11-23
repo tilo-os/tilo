@@ -23,7 +23,7 @@ path = "src/main.rs"
 samples = []
 thin = ["dep:runtime-dylib"]
 # Reach the formula engine through its engine library in the runtime bundle
-# (libtilo_spreadsheet_engine.so, crates/runtime/engines/spreadsheet) instead of
+# (libtilo_spreadsheet_engine.so, crates/engines/loadable/spreadsheet) instead of
 # linking it. The release collection enables it (dist/apps/app-collections.toml);
 # a `thin` build without it (`tilo-app dev`) links ironcalc_base statically,
 # because an engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -47,17 +47,17 @@ tracing.workspace = true
 # Spreadsheet interchange (.xlsx/.ods) through tilo-doc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
-tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
+tilo-doc-codecs = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 # The comment-thread model the document apps share.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # A Notion export arrives as an archive; it is read through the same bounded
 # zip reader as every other untrusted archive.
 uuid.workspace = true
 # The formula engine: evaluated in the engine library a release ships
-# (crates/runtime/engines/spreadsheet), and linked here only by a build that
+# (crates/engines/loadable/spreadsheet), and linked here only by a build that
 # has no runtime engine to load.
 ironcalc_base.workspace = true
-tilo-spreadsheet-engine = { path = "../../crates/runtime/engines/spreadsheet", optional = true }
+tilo-spreadsheet-engine = { path = "../../crates/engines/loadable/spreadsheet", optional = true }
 iana-time-zone.workspace = true
 
 [dev-dependencies]

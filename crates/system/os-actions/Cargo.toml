@@ -23,9 +23,9 @@ tilo-paths.workspace = true
 # Change watches on the extension status and brightness memory directories.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true
-bounded-command = { path = "../bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # The default audio device controls the dispatcher drives.
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process"] }
 tracing.workspace = true

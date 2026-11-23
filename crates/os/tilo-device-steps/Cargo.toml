@@ -22,7 +22,7 @@ package-store = { path = "../../packaging/package-store" }
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
 # The content store names a step's bytes by blake3; tree-sync compares files by it.

@@ -1584,9 +1584,9 @@ mod tests {
     use tilo_webview::test_engine::TestEngine;
 
     const TOP: &str =
-        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");
+        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.top.json");
     const SCROLLED: &str =
-        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.scrolled.json");
+        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.scrolled.json");
     const TOP_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layers.top.png"));
 
     fn paint_engine(snapshot: &str) -> (Arc<TestEngine>, Arc<PaintEngine>) {
@@ -2128,7 +2128,7 @@ mod tests {
 
     /// The engine suite's form with every common control, as its engine laid it out.
     const CONTROLS: &str =
-        include_str!("../../../../browser/paint-stream/tests/fixtures/controls.json");
+        include_str!("../../../../engines/paint-stream/tests/fixtures/controls.json");
 
     /// The engine's number for the element of the form whose `id` is `id`.
     fn control(id: &str) -> u64 {

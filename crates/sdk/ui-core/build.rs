@@ -200,7 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for source in [
         "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex",
         "tests/fixtures/test_image.png.hex",
-        "../../browser/paint-stream/tests/fixtures/layers.top.png.hex",
+        "../../engines/paint-stream/tests/fixtures/layers.top.png.hex",
     ] {
         println!("cargo::rerun-if-changed={source}");
     }
@@ -213,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "test_image.png",
     )?;
     emit_hex_fixture(
-        include_str!("../../browser/paint-stream/tests/fixtures/layers.top.png.hex"),
+        include_str!("../../engines/paint-stream/tests/fixtures/layers.top.png.hex"),
         "layers.top.png",
     )?;
     Ok(())

@@ -18,7 +18,7 @@ INPUTS = (
     "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
 )
-PACKAGES = ("crates/collab/collab-types", "crates/platform/tilo-clock", "crates/system/wire-frame")
+PACKAGES = ("crates/collab/collab-types", "crates/platform/tilo-clock", "crates/platform/wire-frame")
 
 
 def fingerprint(root: Path) -> str:

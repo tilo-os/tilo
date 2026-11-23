@@ -2,11 +2,11 @@
 //! this app wrote: the documents of a chat made with this app's own actions, its record and
 //! every part of its messages, as a workspace keeps them.
 //!
-//! The fixture is `crates/platform/tilolang-tilo/tests/legacy/rust_chat.hex`, one document a
+//! The fixture is `crates/lang/tilolang-tilo/tests/legacy/rust_chat.hex`, one document a
 //! line: its document id, a tab, the saved Automerge document as hex. Write it again with
 //!
 //! ```text
-//! t exec --fetch crates/platform/tilolang-tilo/tests/legacy/rust_chat.hex -- \
+//! t exec --fetch crates/lang/tilolang-tilo/tests/legacy/rust_chat.hex -- \
 //!     cargo test --locked -p chat --test it native_chat_fixture -- --ignored
 //! ```
 
@@ -20,7 +20,7 @@ use ui::resource::DocumentId;
 use ui::tilo_resource::{Id, Invoke, MemberId};
 
 /// Where the fixture is written, from this crate.
-const FIXTURE: &str = "../../crates/platform/tilolang-tilo/tests/legacy/rust_chat.hex";
+const FIXTURE: &str = "../../crates/lang/tilolang-tilo/tests/legacy/rust_chat.hex";
 
 fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));

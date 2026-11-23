@@ -70,7 +70,7 @@ sheets = { path = "../../../apps/sheets" }
 calendar = { path = "../../../apps/calendar" }
 calculator = { path = "../../../apps/calculator" }
 slides = { path = "../../../apps/slides" }
-tilo-tts = { path = "../../system/tts" }
+tilo-tts = { path = "../../engines/tts" }
 tilo-activities = { path = "../activities" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 

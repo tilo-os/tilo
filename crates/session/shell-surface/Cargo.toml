@@ -28,7 +28,7 @@ serde_json.workspace = true
 tracing.workspace = true
 # A tilolang shell's parts: its views run in an instance, drawn through the app window's half
 # of a window, over a record of the shell's own (`shell_part`).
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # The render node a GPU is named by, as the compositor names it.
 tilo-presentation = { path = "../../platform/tilo-presentation" }
 tilo-app-window = { path = "../../platform/tilo-app-window" }
@@ -45,7 +45,7 @@ url.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["test-support"] }
+tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 # What a tab holds, as the shell's own tree keeps it.
 tilo-desktop-model = { path = "../desktop-model" }

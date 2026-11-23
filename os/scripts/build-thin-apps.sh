@@ -132,14 +132,14 @@ done
 
 [ "${#packages[@]}" -gt 0 ] || { echo "no tapp applications selected" >&2; exit 1; }
 
-# Runtime engines (crates/runtime/engines/*): Rust dylibs chained on
+# Runtime engines (crates/engines/loadable/*): Rust dylibs chained on
 # the runtime, each mapped only by the app that uses it, and shipped beside
 # libruntime_dylib.so in the runtime bundle. The bundle must not depend on
 # which apps this run selects, so every engine is built every time, through
 # its `<package>-check` binary: Cargo builds a library only for a target that
 # needs it, and `--lib` would build every app's library too.
 engines=()
-for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
+for manifest in "$REPO"/crates/engines/loadable/*/Cargo.toml; do
     [ -f "$manifest" ] || continue
     engine="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
     [ -n "$engine" ] || { echo "could not read the package name of $manifest" >&2; exit 1; }
@@ -165,7 +165,7 @@ entry_graph=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-versio
     | python3 -c '
 import json, sys
 packages = json.load(sys.stdin)["packages"]
-engines = {p["name"] for p in packages if "/crates/runtime/engines/" in p["manifest_path"].replace("\\", "/")}
+engines = {p["name"] for p in packages if "/crates/engines/loadable/" in p["manifest_path"].replace("\\", "/")}
 named = {d["name"] for p in packages for d in p["dependencies"] if p["name"] != d["name"]}
 entry = engines - named
 carried = {d["name"] for p in packages if p["name"] in entry for d in p["dependencies"]}

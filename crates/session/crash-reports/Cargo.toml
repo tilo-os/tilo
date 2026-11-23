@@ -14,7 +14,7 @@ tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # `journalctl` for the reports the kernel kept across a reset.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # The fact shape Settings, an agent and a script read a report as.
 tilo-actions = { path = "../../collab/actions" }
 # The reports a session service publishes.

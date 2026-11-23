@@ -101,7 +101,7 @@ COPY os/ /build/os/
 COPY apps/browser/ /build/apps/browser/
 COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
 COPY crates/sdk/ui-core/assets/fonts/ /build/crates/sdk/ui-core/assets/fonts/
-COPY crates/sdk/tilo-webview/src/chromium/runtime.rs /build/crates/sdk/tilo-webview/src/chromium/runtime.rs
+COPY crates/engines/tilo-webview/src/chromium/runtime.rs /build/crates/engines/tilo-webview/src/chromium/runtime.rs
 COPY tools/ /build/tools/
 COPY --from=compiled / /out/
 COPY --from=chromium-engine / /run/tilo-chromium/
@@ -140,7 +140,7 @@ RUN set -eu; \
 # when the two disagree.
 RUN set -eu; \
     pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
-        /build/crates/sdk/tilo-webview/src/chromium/runtime.rs)"; \
+        /build/crates/engines/tilo-webview/src/chromium/runtime.rs)"; \
     test -n "$pinned"; \
     test "$pinned" = "$CHROMIUM_RUNTIME_VERSION"; \
     test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host; \

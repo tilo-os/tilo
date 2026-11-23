@@ -29,7 +29,7 @@ thin = ["dep:runtime-dylib"]
 # Reach the import from another browser's profile (browser-continuity's
 # capture and the SQLite it reads Chromium's and Firefox's databases with)
 # through its engine library in the runtime bundle
-# (libtilo_browser_import_engine.so, crates/runtime/engines/browser-import)
+# (libtilo_browser_import_engine.so, crates/engines/loadable/browser-import)
 # instead of linking it. The release collection enables it
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
 # links them statically, because an engine library links only through
@@ -43,7 +43,7 @@ runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engi
 
 [dependencies]
 # The web engine client: the Chromium helper, the page protocol and their commands.
-tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../crates/engines/tilo-webview" }
 tilo-browser-sessions = { path = "../../crates/import/tilo-browser-sessions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
@@ -67,8 +67,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["we
 # The resource the app draws: its types, verbs and typed action arguments.
 browser-model = { path = "../browser-model" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-browser-import-engine = { path = "../../crates/runtime/engines/browser-import", optional = true }
-tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
+tilo-browser-import-engine = { path = "../../crates/engines/loadable/browser-import", optional = true }
+tilo-accounts-engine = { path = "../../crates/engines/loadable/accounts", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
@@ -79,7 +79,7 @@ url.workspace = true
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
 # (.crx behind a small binary header); manifest.json describes them. Read
 # under the shared zip-bomb bounds before anything is extracted.
-bounded-zip = { path = "../../crates/doc/bounded-zip" }
+bounded-zip = { path = "../../crates/engines/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

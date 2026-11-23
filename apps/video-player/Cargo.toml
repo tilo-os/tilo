@@ -34,7 +34,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+media = { package = "tilo-media", path = "../../crates/engines/tilo-media" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

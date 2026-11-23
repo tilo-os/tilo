@@ -18,7 +18,7 @@ path = "src/main.rs"
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-paths.workspace = true
 anyhow = { workspace = true }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 clap = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }

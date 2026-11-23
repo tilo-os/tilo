@@ -21,7 +21,7 @@ getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 iroh.workspace = true
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime"] }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 os-actions = { path = "../../system/os-actions" }
 postcard = { workspace = true, features = ["alloc"] }
@@ -56,7 +56,7 @@ tracing.workspace = true
 # Workspace sync states, as apps are told them.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

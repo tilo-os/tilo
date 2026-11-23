@@ -18,7 +18,7 @@ tilolang = { path = "../tilolang" }
 tilolang-lex = { path = "../tilolang-lex" }
 tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
 # The app instance a window talks to, the platform's packages and the native apps' surfaces.
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../tilolang-tilo" }
 # The window's half: the toolkit's widgets, built from the component patches the instance sends.
 tilo-app-window = { version = "0.1.0", path = "../../platform/tilo-app-window" }
 tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
@@ -36,7 +36,7 @@ wasm-bindgen = "=0.2.108"
 [dev-dependencies]
 # The person's layout, as a host hands the shell's canvas page a reading of it.
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["test-support"] }
+tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 
 [lints]
 workspace = true

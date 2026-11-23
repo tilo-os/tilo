@@ -44,7 +44,7 @@ ALLOWED = (
     Path("crates/system/content"),
     Path("crates/system/content-device"),
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
-    Path("crates/platform/tilolang-process/src/lib.rs"),
+    Path("crates/lang/tilolang-process/src/lib.rs"),
     Path("crates/system/fs/src/main.rs"),
     Path("crates/runtime/tilo-runtime/src/cli.rs"),
     Path("crates/runtime/tilo-runtime/src/device/services.rs"),

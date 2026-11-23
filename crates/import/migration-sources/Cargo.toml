@@ -32,7 +32,7 @@ cap-std = "3.4.6"
 hex.workspace = true
 mail-parser = "0.11.4"
 # RFC 5545/6350 content lines for the vCard and iCalendar Thunderbird keeps.
-pim-lines = { path = "../../text/pim-lines" }
+pim-lines = { path = "../../engines/pim-lines" }
 reqwest = { workspace = true, features = ["blocking"] }
 # Thunderbird's address books and local calendars are SQLite; the bundled
 # engine keeps a laptop build from needing the system library.
@@ -46,7 +46,7 @@ tilo-seal = { path = "../../system/tilo-seal" }
 tempfile.workspace = true
 tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.
-tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
+tilo-recurrence = { version = "0.1.0", path = "../../engines/tilo-recurrence" }
 # Whole-or-not-at-all writes of the entries the inbox keeps.
 tilo-files = { path = "../../platform/tilo-files" }
 url.workspace = true
@@ -55,7 +55,7 @@ zeroize.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 # The system's own lookup of the familiar folders (`xdg-user-dir`, the Windows shell).
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-paths.workspace = true

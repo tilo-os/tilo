@@ -291,7 +291,7 @@ tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
 # The sealed envelope a sibling half is carried in.
 tilo-seal = { path = "../../system/tilo-seal" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["voice", "pipewire", "realtime"] }
 tilo-compositor = { path = "../compositor" }
 # The clipboard an app's process reaches over its connection to this session.
 tilo-clipboard = { path = "../../platform/tilo-clipboard" }
@@ -306,7 +306,7 @@ resvg = { version = "0.47", default-features = false }
 tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # The outside origins the session's own services keep records in step with: the mail and
 # YouTube connectors' clients, and the registry that makes an origin's connector reachable
 # (`tilolang_tilo::origin::remote`).
@@ -424,9 +424,9 @@ tilo-bluez = { path = "../../os/tilo-bluez" }
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../os/tilo-auth", default-features = false }
 # Checks a password for the lock screen, through the unlock helper.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # The line framing an app's shell-ui connection speaks.
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
@@ -449,9 +449,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
 # A Tasks window in the tests, as the app's process runs one over the workspace's store.
-tilolang-process = { path = "../../platform/tilolang-process" }
+tilolang-process = { path = "../../lang/tilolang-process" }
 # The page track and window-share tests drive a synchronous web engine.
-tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # A check that answers a sheet as the person does asks the questions service the
 # sheets show, and reads its answer back.
 tilo-service = { path = "../service" }
@@ -483,7 +483,7 @@ x11rb = { version = "0.13", default-features = false }
 libc.workspace = true
 # A call's tone and played samples with no device stack: a test hears the
 # same encoder, stream and playout a device's call uses.
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "test-support"] }
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["voice", "test-support"] }
 # Reporting an ending to a session's apps as its spawner would, with the
 # memory cause a launcher remembers.
 tilo-app-launch = { path = "../app-launch", features = ["test-support"] }

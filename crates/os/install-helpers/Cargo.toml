@@ -74,13 +74,13 @@ path = "../firstboot-files/src/main.rs"
 [dependencies]
 account-credentials = { path = "../../integrations/account-credentials" }
 # The code refresh daemon's hold on the backend's lock.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-seal = { path = "../../system/tilo-seal" }
 zeroize.workspace = true
 tilo-firstboot-files = { path = "../firstboot-files" }
 libc.workspace = true
 uuid.workspace = true
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # Strict base64 of SSH public keys, as base64.b64decode(validate=True).
 hex.workspace = true
 # No-follow opens of the copied handoff files and the effective user, without

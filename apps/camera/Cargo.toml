@@ -51,15 +51,15 @@ taffy.workspace = true
 anyhow.workspace = true
 
 # The shared preview pipeline (recent-capture peek) and bounded image decoder.
-tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/engines/thumbnail" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-tilo-ocr = { path = "../../crates/media/ocr" }
-tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
+tilo-ocr = { path = "../../crates/engines/ocr" }
+tilo-doc-pdf = { path = "../../crates/engines/tilo-doc-pdf" }
 # Cameras (live-capture) and SANE document scanners.
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
+tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"] }
 # Clip recording: Motion-JPEG/AVI on the desktop, the browser's encoder and WebM
 # on the page, behind one API.
-tilo-media = { path = "../../crates/platform/tilo-media" }
+tilo-media = { path = "../../crates/engines/tilo-media" }
 
 # Pure-Rust QR/barcode fixtures and detection for scanner flows.
 qrcode.workspace = true
@@ -71,7 +71,7 @@ rqrr.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A brokered camera whose permission prompt a test answers.
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner", "test-support"] }
+tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner", "test-support"] }
 tilo-test-env = { path = "../../tools/test-env" }
 # A record's content route, whose content a page holds or waits for.
 uuid = { workspace = true }

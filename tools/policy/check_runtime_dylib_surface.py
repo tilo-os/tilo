@@ -14,7 +14,7 @@ downloads it. Two rules hold for its dependency graph:
 - **No dead weight.** Every crate in the runtime is reached by at least one
   app of the default collection without going through the runtime.
 - **No moved engine.** An engine that has a library of its own beside the
-  runtime (crates/runtime/engines/) is loaded by its apps, or opened by the
+  runtime (crates/engines/loadable/) is loaded by its apps, or opened by the
   toolkit on first use; its crates never re-enter the runtime, through any
   dependency or app's feature. The workspace-hack's own edges do not count:
   its library names no crate, so they put nothing on the runtime's link
@@ -81,7 +81,7 @@ DENIED = {
                        "runtime daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
-# (crates/runtime/engines/): only its app maps them.
+# (crates/engines/loadable/): only its app maps them.
 ENGINES = {
     "tilo-typst-engine": "Typst's engine library (libtilo_typst_engine.so)",
     "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
@@ -281,7 +281,7 @@ TABLES = {
 def engines() -> list[str]:
     """Every runtime engine's package, as build-thin-apps.sh finds them."""
     names = []
-    for manifest in sorted((ROOT / "crates/runtime/engines").glob("*/Cargo.toml")):
+    for manifest in sorted((ROOT / "crates/engines/loadable").glob("*/Cargo.toml")):
         match = re.search(r'^name = "([^"]+)"', manifest.read_text(), re.M)
         if match:
             names.append(match.group(1))

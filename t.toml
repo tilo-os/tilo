@@ -615,7 +615,7 @@ heavy = true
 [[check]]
 name = "bench-imagefilter"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "crates/platform/tilolang-tilo/bench/imagefilter/build.sh"
+run = "crates/lang/tilolang-tilo/bench/imagefilter/build.sh"
 outputs = ["/target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm"]
 default = false
 
@@ -921,7 +921,7 @@ requires = ["arch=x86_64"]
 # image's Chromium (CHROME), serving its page on loopback only.
 [[check]]
 name = "web-page-tests"
-run = "node --test crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
+run = "node --test crates/engines/tilo-media/web/tilo-media-edit.test.mjs"
 requires = ["arch=x86_64"]
 timeout_secs = 900
 
@@ -5669,7 +5669,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

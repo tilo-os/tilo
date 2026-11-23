@@ -49,7 +49,7 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
-media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media", optional = true }
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media", optional = true }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 serde.workspace = true

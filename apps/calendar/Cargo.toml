@@ -22,10 +22,10 @@ web-features = []
 [dependencies]
 fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optional = true }
+tilo-timezone-engine = { path = "../../crates/engines/loadable/timezone", optional = true }
 # The CalDAV client and the account credentials its sign-in reaches.
-tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
-tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+tilo-accounts-engine = { path = "../../crates/engines/loadable/accounts", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 # Read-only address-book hints, offered as attendees; choosing one confirms no
 # identity and sends nothing.
 tilo-contact-directory = { path = "../../crates/integrations/tilo-contact-directory" }
@@ -69,7 +69,7 @@ thin = ["dep:runtime-dylib"]
 # credentials its sign-in reaches) and the contact directory through their
 # engine libraries in the runtime bundle (libtilo_timezone_engine.so,
 # libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
-# crates/runtime/engines/) instead of the runtime. The release collection
+# crates/engines/loadable/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
 # (`tilo-app dev`) links their crates statically, because an engine library
 # links only through tools/ci/rustc-thin-app-wrapper.sh.

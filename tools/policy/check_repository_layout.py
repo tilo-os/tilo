@@ -24,6 +24,7 @@ RETIRED_SOURCE_ROOTS = {
     "crates/app/": "crates/sdk/",
     "crates/format/": "crates/doc/",
     "crates/identity/": "crates/collab/",
+    "crates/media/": "crates/engines/",
     "crates/packaging/hello/": "examples/packaging/hello/",
     "crates/packaging/notes-cli/": "examples/packaging/notes-cli/",
     "crates/sdk/rt/": "crates/platform/tilo-rt/",

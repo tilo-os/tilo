@@ -10,7 +10,7 @@ description = "The YouTube queries Music and Tube make, each compiled once besid
 # the query's whole request and response path into its own binary, although
 # rustypipe itself is in libtilo_youtube_engine.so. Each function here is one
 # query with its types fixed, returned boxed: its code is compiled in this
-# crate, which the engine library re-exports (crates/runtime/engines/youtube),
+# crate, which the engine library re-exports (crates/engines/loadable/youtube),
 # and the app keeps a call through the future's vtable.
 
 [lib]

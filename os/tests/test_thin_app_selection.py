@@ -39,7 +39,7 @@ class ThinAppSelectionTests(unittest.TestCase):
             self.write(name, (ROOT / name).read_text())
         self.write("Cargo.toml", """[workspace]
 members = ["apps/calculator", "apps/other", "apps/extra", "runtime", "shared", "app_sdk",
-           "crates/runtime/engines/fixture", "crates/runtime/engine-parts/fixture-deep"]
+           "crates/engines/loadable/fixture", "crates/runtime/engine-parts/fixture-deep"]
 resolver = "2"
 [profile.thin-app]
 inherits = "dev"
@@ -120,7 +120,7 @@ pub fn deep_value() -> usize { runtime_dylib::value() + 2 }
 """)
         # A runtime engine: a dylib chained on the runtime, built
         # with it whichever apps are selected, and linked only by `other`.
-        self.write("crates/runtime/engines/fixture/Cargo.toml", """[package]
+        self.write("crates/engines/loadable/fixture/Cargo.toml", """[package]
 name = "tilo-fixture-engine"
 version = "0.1.0"
 edition = "2024"
@@ -143,19 +143,19 @@ thin = ["dep:runtime-dylib", "dep:tilo-fixture-deep-engine", "tilo-fixture-deep-
 runtime-dylib = { path = "../../../../runtime", optional = true }
 tilo-fixture-deep-engine = { path = "../../engine-parts/fixture-deep", optional = true }
 """)
-        self.write("crates/runtime/engines/fixture/src/lib.rs", """#[cfg(feature = "thin")]
+        self.write("crates/engines/loadable/fixture/src/lib.rs", """#[cfg(feature = "thin")]
 pub fn engine_value() -> usize { runtime_dylib::value() + tilo_fixture_deep_engine::deep_value() + 40 }
 """)
-        self.write("crates/runtime/engines/fixture/src/probe.rs",
+        self.write("crates/engines/loadable/fixture/src/probe.rs",
                    'fn main() { println!("{}", tilo_fixture_engine::engine_value()); }\n')
-        self.write("crates/runtime/engines/fixture/src/check.rs",
+        self.write("crates/engines/loadable/fixture/src/check.rs",
                    'fn main() { assert_eq!(tilo_fixture_engine::engine_value() & 1, 0); '
                    'println!("engine-runs-against-runtime"); }\n')
         for name in ("calculator", "other"):
             extra = ', features = ["extra"]' if name == "other" else ""
             engine = ('runtime-engine = ["thin", "tilo-fixture-engine/thin"]\n'
                       if name == "other" else "")
-            engine_dependency = ('tilo-fixture-engine = { path = "../../crates/runtime/engines/fixture", '
+            engine_dependency = ('tilo-fixture-engine = { path = "../../crates/engines/loadable/fixture", '
                                  'optional = true }\n' if name == "other" else "")
             self.write(f"apps/{name}/Cargo.toml", f"""[package]
 name = "{name}"

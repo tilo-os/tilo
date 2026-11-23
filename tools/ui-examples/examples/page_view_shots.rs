@@ -27,12 +27,12 @@ use tilo_webview::{WebViewCommand, WebViewEngine};
 
 /// The page the publisher's engine drew: a header, a sidebar and a button.
 const PAGE: &str =
-    include_str!("../../../crates/browser/paint-stream/tests/fixtures/layers.top.json");
+    include_str!("../../../crates/engines/paint-stream/tests/fixtures/layers.top.json");
 /// A form with every common control, its first field being edited, as an engine laid it out
 /// in a window of 1280 by 800: what the engine's theme paints of each control is drawn by the
 /// publisher from the layout.
 const FORM: &str =
-    include_str!("../../../crates/browser/paint-stream/tests/fixtures/controls.json");
+    include_str!("../../../crates/engines/paint-stream/tests/fixtures/controls.json");
 /// What the engine says the form's date and time show.
 const FORM_SHOWN: [(&str, &str); 3] = [
     ("date", "03/01/2027"),

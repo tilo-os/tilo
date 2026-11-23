@@ -16,7 +16,7 @@ path = "src/lib.rs"
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 # The canonical check and the single-writer guard around the actor sidecar.
-tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Path resolution is NOT re-invented here: `app_id` and

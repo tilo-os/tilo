@@ -25,7 +25,7 @@ path = "examples/staging-reclaim-fixture.rs"
 # No-follow opens of the record and the record directory's fsync.
 rustix = { workspace = true, features = ["fs", "std"] }
 # The disk's exclusive lock, as the partitioning tools take it.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 serde_json.workspace = true
 # Python's int(), str(), repr() and ==, as the reclaim decisions were defined.
 tilo-pycompat = { path = "../tilo-pycompat" }

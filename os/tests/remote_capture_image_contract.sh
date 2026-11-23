@@ -34,8 +34,8 @@ done
 # proving that an unrelated scanner package happens to be installed.
 # The scanner runs scanimage through the bounded-command helper, so the source
 # offers scanning only when the packaged binary answers.
-scanner_source="$repo/crates/platform/tilo-capture/src/scanner.rs"
-capture_probe="$repo/crates/platform/tilo-media/src/realtime/capture.rs"
+scanner_source="$repo/crates/engines/tilo-capture/src/scanner.rs"
+capture_probe="$repo/crates/engines/tilo-media/src/realtime/capture.rs"
 if grep -Fq 'bounded_command::run("scanimage", &["-L"]' "$scanner_source" \
     && grep -Fq '!name.trim().starts_with("Tilo Remote Camera")' "$capture_probe" \
     && grep -q '^    sane-backends \\$' "$containerfile"; then

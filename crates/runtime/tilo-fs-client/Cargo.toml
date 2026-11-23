@@ -14,7 +14,7 @@ runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync", "time"] }
 serde.workspace = true
 serde_json.workspace = true
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 # The daemon's socket is bound and reached by path.

@@ -39,7 +39,7 @@ default = ["video"]
 thin = ["dep:runtime-dylib"]
 # Reach the emoji catalogue (emoji, with its names and keywords in every
 # locale) through its engine library in the runtime bundle
-# (libtilo_emoji_engine.so, crates/runtime/engines/emoji) instead of linking
+# (libtilo_emoji_engine.so, crates/engines/loadable/emoji) instead of linking
 # it. The release collection enables it (dist/apps/app-collections.toml); a
 # `thin` build without it (`tilo-app dev`) links it statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -56,7 +56,7 @@ fnv.workspace = true
 emoji = { path = "../../crates/text/emoji" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }
+tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 # A channel's page as a described-components view, drawn by the shell like any app's
 # (one-app-model.md §2).
 tilo-view = { path = "../../crates/platform/tilo-view" }

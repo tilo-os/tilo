@@ -22,7 +22,7 @@ native-current-device-qualification = []
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
@@ -57,7 +57,7 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-me
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
-wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

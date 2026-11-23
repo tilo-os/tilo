@@ -14,7 +14,7 @@ path = "src/lib.rs"
 libc.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
 
 [target.'cfg(unix)'.dependencies]
 # The hybrid control socket is reached by path.

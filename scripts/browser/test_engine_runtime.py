@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def rust_const(name):
-    source = (ROOT / "crates/sdk/tilo-webview/src/chromium/runtime.rs").read_text()
+    source = (ROOT / "crates/engines/tilo-webview/src/chromium/runtime.rs").read_text()
     match = re.search(rf'pub const {name}: &str = "([^"]+)";', source)
     assert match, name
     return match.group(1)

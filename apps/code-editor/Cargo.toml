@@ -56,7 +56,7 @@ url.workspace = true
 uuid.workspace = true
 # The Language Server Protocol's message types.
 lsp-types = "0.97"
-bounded-command = { path = "../../crates/system/bounded-command" }
+bounded-command = { path = "../../crates/platform/bounded-command" }
 tilo-process = { path = "../../crates/platform/tilo-process" }
 hex.workspace = true
 sha2.workspace = true

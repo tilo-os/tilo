@@ -4,13 +4,13 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-AUDIO="$ROOT/crates/platform/tilo-media/src/audio.rs"
-RUNTIME="$ROOT/crates/platform/tilo-media/src/audio_runtime.rs"
-OCR="$ROOT/crates/media/ocr/src/lib.rs"
+AUDIO="$ROOT/crates/engines/tilo-media/src/audio.rs"
+RUNTIME="$ROOT/crates/engines/tilo-media/src/audio_runtime.rs"
+OCR="$ROOT/crates/engines/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
-DEFAULT_NODE="$ROOT/crates/platform/tilo-media/src/audio/default_node.rs"
-EVENT_SOUND="$ROOT/crates/platform/tilo-media/src/event_sound.rs"
-SHELL_CAPTURE="$ROOT/crates/platform/tilo-media/src/audio_runtime.rs"
+DEFAULT_NODE="$ROOT/crates/engines/tilo-media/src/audio/default_node.rs"
+EVENT_SOUND="$ROOT/crates/engines/tilo-media/src/event_sound.rs"
+SHELL_CAPTURE="$ROOT/crates/engines/tilo-media/src/audio_runtime.rs"
 
 fails=0
 checks=0

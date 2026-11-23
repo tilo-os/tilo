@@ -1,0 +1,89 @@
+[package]
+name = "tilo-webview"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "The embedded web engine client: the Chromium helper transport, the page protocol, and the commands and events a viewer exchanges with a web engine. It links no toolkit."
+
+[features]
+# The only feature an app turns on for it: compiling filter lists for the WebView's
+# built-in ad blocking (`adblock`). Off by default: only the browser app (and any
+# other app embedding a WebView with built-in blocking) pays for the
+# adblock-rust dependency.
+webview-adblock = ["dep:tilo-content-blocker"]
+# The compiler is not linked: `adblock` opens it from libtilo_adblock_engine.so the
+# first time an app compiles lists. The engine library's own build
+# (crates/engines/loadable/adblock) turns this on, so the shared runtime every app maps
+# leaves adblock-rust out; any other build links the compiler.
+lazy-adblock = ["webview-adblock", "dep:tilo-engine-loader"]
+# The launcher's visitor-window switch a Browser window carries when it is opened for an
+# agent.
+local-daemons = ["dep:runtime-portal"]
+
+[dependencies]
+# The sanctioned clocks: an engine's deadlines and the wall time its private text
+# protocol stamps.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The platform's clock a frame receipt was read on, for the opt-in frame trace.
+tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The few rows of engine profiling the toolkit's view draws are sorted here.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# The Chromium helper process, its rendezvous and its shared frames.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
+tilo-paths.workspace = true
+# The Browser's app id and the visitor window flag a launch carries.
+tilo-app-id.workspace = true
+# The engine's audio worker is spawned on the toolkit's shared runtime.
+tilo-rt.workspace = true
+media = { version = "0.1.0", package = "tilo-media", path = "../tilo-media" }
+# A page as a display list an engine can report instead of pixels.
+tilo-paint-stream = { version = "0.1.0", path = "../paint-stream" }
+# The actors a page action names.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The page resource a person typed into the page travels as the collaboration wire's JSON.
+runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
+# The page's URLs, and the lock an engine profile takes on its files.
+url.workspace = true
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
+hex.workspace = true
+uuid.workspace = true
+# Only the session vocabulary and the engine launch boundary: capture (with SQLite) must
+# never be unified into the runtime this crate is part of.
+browser-continuity-core.workspace = true
+# The framed transport the Chromium helper speaks.
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+# The page field's box, as the input method places its candidates.
+kurbo = "0.13.1"
+# The pointer shape a page asks for and the key vocabulary of its events.
+winit.workspace = true
+tracing.workspace = true
+# Filter-list compiler for the WebView's built-in ad blocking (feature
+# `webview-adblock`): adblock-rust's EasyList→WebKit-content-blocker
+# conversion; blocking then runs inside WebKit's network process, not in Rust.
+tilo-content-blocker = { version = "0.1.0", path = "../content-blocker", optional = true }
+# Opens the engine library the adblock compiler lives in, on first use.
+tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
+
+[dev-dependencies]
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+# The temporary engine instances and profiles a test stands up.
+tempfile.workspace = true
+# Scoped monotonic readings for the private text protocol's deadline tests.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

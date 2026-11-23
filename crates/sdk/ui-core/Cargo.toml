@@ -41,13 +41,13 @@ x11 = ["dep:tilo-winit-x11"]
 syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
 # The grammar set is not linked: the code editor's highlighter opens it from
 # libtilo_highlight_engine.so the first time code is highlighted. The engine
-# library's own build (crates/runtime/engines/highlight) turns this on, so the
+# library's own build (crates/engines/loadable/highlight) turns this on, so the
 # shared runtime every app maps leaves syntect and the grammars out; any
 # other build links them.
 lazy-highlight = ["dep:tilo-engine-loader"]
 # The interpreter a theme's painter sets run on is not linked: `part_paint`
 # opens it from libtilo_theme_painter_engine.so the first time a theme names
-# a set. The engine library's own build (crates/runtime/engines/theme-painter)
+# a set. The engine library's own build (crates/engines/loadable/theme-painter)
 # turns this on, so the shared runtime every app maps leaves wasmi out; any
 # other build links it.
 lazy-painter = ["dep:tilo-engine-loader"]
@@ -83,7 +83,7 @@ dx12-shader-cache = []
 webview-adblock = ["tilo-webview/webview-adblock"]
 # The compiler is not linked: `webview::adblock` opens it from
 # libtilo_adblock_engine.so the first time an app compiles lists. The engine
-# library's own build (crates/runtime/engines/adblock) turns this on, so the
+# library's own build (crates/engines/loadable/adblock) turns this on, so the
 # shared runtime every app maps leaves adblock-rust out; any other build links
 # the compiler.
 lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
@@ -131,7 +131,7 @@ tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # The web engine client the `WebView` widget displays: the Chromium helper transport,
 # the page protocol and their commands, so code that talks to a web engine links that
 # crate instead of the toolkit.
-tilo-webview = { version = "0.1.0", path = "../tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
@@ -147,7 +147,7 @@ emoji = { version = "0.1.0", path = "../../text/emoji" }
 # instead of the engine's pixels, natively and in the WASM client alike. Its
 # SVG parser (`svg`, usvg) is native only, below: the browser toolkit core
 # leaves it out, so `Image::from_svg` there finds no supported artwork.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
+tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream" }
 # The system's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
@@ -155,7 +155,7 @@ tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", 
 tilo-host-search = { version = "0.1.0", path = "../../integrations/tilo-host-search", optional = true }
 # Test builds bound their waits with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
-tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
 # Frames drawn by the workspace's render service instead of a GPU in the app
@@ -284,13 +284,13 @@ serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
-tilo-image-codec = { version = "0.1.0", path = "../../platform/tilo-image-codec" }
+tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 jiff.workspace = true
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
-media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media" }
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -311,7 +311,7 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
-tilo-search = { version = "0.1.0", path = "../search" }
+tilo-search = { version = "0.1.0", path = "../../engines/search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
@@ -361,7 +361,7 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-tilo-tts = { version = "0.1.0", path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../engines/tts" }
 
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
@@ -510,7 +510,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
+tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream", features = ["svg"] }
 # Hyphenation patterns for every language. The browser toolkit core keeps
 # English and German only (the common table): the rest would add about 1 MB
 # downloaded before anything runs; other languages there are not hyphenated.

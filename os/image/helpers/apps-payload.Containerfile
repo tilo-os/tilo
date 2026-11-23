@@ -158,7 +158,7 @@ ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,from=chromium-engine,source=/,target=/run/tilo-chromium,ro \
-    --mount=type=bind,source=crates/sdk/tilo-webview/src/chromium/runtime.rs,target=/run/tilo-chromium-runtime.rs,ro \
+    --mount=type=bind,source=crates/engines/tilo-webview/src/chromium/runtime.rs,target=/run/tilo-chromium-runtime.rs,ro \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \

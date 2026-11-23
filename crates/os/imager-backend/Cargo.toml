@@ -36,7 +36,7 @@ destination = [
 ed25519-dalek.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tar.workspace = true
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
@@ -63,7 +63,7 @@ migration-sources = { path = "../../import/migration-sources" }
 account-credentials = { path = "../../integrations/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../block-devices" }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 crc32fast.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
@@ -95,7 +95,7 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # One advisory lock guard on every platform: `flock(2)` on Unix and the
 # standard library's file lock elsewhere.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

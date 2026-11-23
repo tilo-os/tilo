@@ -19,7 +19,7 @@ gstreamer-app = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync", "time"] }
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 tilo-rt = { path = "../../platform/tilo-rt", optional = true }
-tilo-media = { path = "../../platform/tilo-media", optional = true, features = ["voice"] }
+tilo-media = { path = "../../engines/tilo-media", optional = true, features = ["voice"] }
 account-credentials = { path = "../account-credentials" }
 accounts = { path = "../accounts" }
 

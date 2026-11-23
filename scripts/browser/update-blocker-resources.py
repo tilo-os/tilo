@@ -11,7 +11,7 @@ import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / 'crates/browser/chromium-blocker/resources'
+OUT = ROOT / 'crates/engines/chromium-blocker/resources'
 UBLOCK_REV = '4dfbb048607ec4fd19c1c252fd255df6cc653720'
 UBLOCK_SHA = 'f40c26fee854a01fe654ff753799feee6c642e264084203ed84ded594509c84e'
 BRAVE_REV = '6da9b247c3368baa8b4f24cd02046e18702a6527'

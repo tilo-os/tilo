@@ -223,7 +223,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The host keeps its workspaces' content in directories, one per workspace.
 tilo-content = { path = "../../system/content", features = ["dir"] }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
@@ -277,7 +277,7 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
@@ -318,7 +318,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # A Linux turn's takeover is proven past its claim's minute with the process's wall clock pinned.
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
 # The offloadable action the offload journey runs: a batch of thumbnails.
-tilo-thumbnail = { path = "../../media/thumbnail" }
+tilo-thumbnail = { path = "../../engines/thumbnail" }
 # The app that publishes it, whose handler is its local run, and the content
 # store that handler keeps its outputs in.
 photos = { path = "../../../apps/photos" }

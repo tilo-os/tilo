@@ -2,7 +2,7 @@
 //! the type it answers in, and where the toolkit finds it.
 //!
 //! The interpreter is not in the shared runtime every app maps. It is an
-//! engine library beside it (`crates/runtime/engines/theme-painter`), which
+//! engine library beside it (`crates/engines/loadable/theme-painter`), which
 //! the toolkit opens the first time a theme names a set it draws
 //! (`docs/architecture/theming.md`, "Part painters").
 

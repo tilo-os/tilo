@@ -126,7 +126,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-tilo-thumbnail = { version = "0.1.0", path = "../../media/thumbnail", optional = true }
+tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
@@ -167,7 +167,7 @@ zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 # The daemon's log, on its standard error.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", optional = true, features = ["tokio", "postcard"] }
 # The daemon's tree writer joins the session's record route as the Files app does.
 # The bytes a device signs to join a workspace, as every app's identity does.
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }

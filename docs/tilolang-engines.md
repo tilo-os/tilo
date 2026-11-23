@@ -16,7 +16,7 @@ python3 tools/perf/tilolang_engines.py
 
 It builds `tilolang bench` (the `bench` example of `tilolang-tilo`) in release and the image
 filter library
-(`crates/platform/tilolang-tilo/bench/imagefilter/build.sh`). Then it runs the bench once
+(`crates/lang/tilolang-tilo/bench/imagefilter/build.sh`). Then it runs the bench once
 per engine over every app in `apps/tl` at 1k and 10k items and prints one table of p50s.
 Options: `--engines tiered,wasmi`, `--apps notes,todo`, `--sizes 1000`, `--samples 20`,
 `--records out.jsonl` (every record, as `tools/perf/record.py` JSON), and `--no-build` to rerun
@@ -47,11 +47,11 @@ target/release/examples/bench apps/tl/notes --engine cranelift --sizes 1000,1000
 - **open, keystroke, press, peer edit, send in a thread**: the bench's usual scenarios
   (`tilolang bench`), with the modules already compiled (on the tiered engine, after its
   compile finished: what an app runs a moment after it starts).
-- **compute**: `crates/platform/tilolang-tilo/bench/compute`, a tilolang package doing 64-bit
+- **compute**: `crates/lang/tilolang-tilo/bench/compute`, a tilolang package doing 64-bit
   integer arithmetic over 2^20 indices. tilolang has no buffers and no counting loops, so it runs
   this twice: as recursive guest calls only, and as four nested `for` loops over a 32-element
   list. In the loops, each step reads an element through the host (`list_get_i`).
-- **library**: `crates/platform/tilolang-tilo/bench/imagefilter`, a 3x3 box blur written in Rust
+- **library**: `crates/lang/tilolang-tilo/bench/imagefilter`, a 3x3 box blur written in Rust
   and compiled for `wasm32-unknown-unknown`, run on a 512 x 512 RGBA image for 4 passes. It is
   loaded and called through the runtime's engine like a library an app ships.
 

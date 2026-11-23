@@ -323,7 +323,7 @@ action the person did not allow is never counted.
 
 A web page is foreign content, so its drawing is the one thing sent to
 viewers: the session publishes the page's paint stream
-(`crates/browser/paint-stream`) as one track per Browser window
+(`crates/engines/paint-stream`) as one track per Browser window
 (`tilo-page/1`) on the workspace's live scope, only while someone views it,
 and a member's window draws it with `ui::webview::paint::PageRenderer`. No
 video is streamed.

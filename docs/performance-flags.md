@@ -128,7 +128,7 @@ animation. Likewise keep UI scale, text scale, theme, and overlays constant.
 
 Sources: [app.rs](../crates/sdk/ui-core/src/app.rs),
 [profiling.rs](../crates/sdk/ui-core/src/profiling.rs),
-[WebView profiling](../crates/sdk/tilo-webview/src/profile.rs).
+[WebView profiling](../crates/engines/tilo-webview/src/profile.rs).
 
 ## Startup warmup and DMA-BUF routing
 

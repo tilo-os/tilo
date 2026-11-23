@@ -45,7 +45,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The locator another device hands over, which a now-playing card offers to
 # continue here. The portable decode only: a browser builds this too, and the
 # media stack's realtime part is the native section's.
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", default-features = false }
+tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", default-features = false }
 serde.workspace = true
 hex.workspace = true
 serde_json.workspace = true
@@ -72,7 +72,7 @@ neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 
 [dev-dependencies]
 # The peer-page test drives a synchronous web engine.
-tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
@@ -100,8 +100,8 @@ workspace-hack = { version = "0.1" }
 # share's own rule for the input a viewer sends back. All four run the media stack, which has no wasm32 build and which a host
 # without a screen (a server, an agent's member) never presents. They are
 # the `peer-view` feature's, so such a host links this surface without them.
-tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"], optional = true }
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"], optional = true }
+tilo-callstream = { version = "0.1.0", path = "../../engines/tilo-callstream", features = ["surface-decoder"], optional = true }
+tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", features = ["realtime"], optional = true }
 tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline", optional = true }
 # The share's registry and input vocabulary; the owner side's dmabuf staging
 # (the one part that holds a host graphics stack) is not a viewer's.
@@ -122,4 +122,4 @@ tilo-desktop = { path = "../desktop" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 # The tests encode their own frames with the crate's encoder, as a sharing
 # device does, and read the input events back off the wire.
-tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
+tilo-callstream = { path = "../../engines/tilo-callstream", features = ["surface-decoder"] }

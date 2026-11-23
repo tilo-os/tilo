@@ -636,7 +636,7 @@ enum = "Change"
 reason = "a settled change in the files record; the removed variants were written only by the import-once transfer this change deletes, and a files record is a pre-release document whose only writers are the apps in the same build"
 
 [[break]]
-file = "crates/platform/tilolang-tilo/src/personal.rs"
+file = "crates/lang/tilolang-tilo/src/personal.rs"
 enum = "Keep"
 reason = "a person's state in a tilolang app, written as a write to the workspace's resource store from this change on; the documents that held `Reminded` entries are deleted with the store they lived in, and no copy of a workspace holds a tilolang document"
 

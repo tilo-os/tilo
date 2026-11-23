@@ -29,7 +29,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-impo
 gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 rustix = { workspace = true, features = ["event", "fs", "mm", "net", "process", "std", "time"] }
 libc.workspace = true
-tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The runtime bundles the apps run on carry the product font catalog.
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
 

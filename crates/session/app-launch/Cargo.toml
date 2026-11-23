@@ -43,7 +43,7 @@ tilo-service = { path = "../service" }
 # always keeps.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Bounded line cutting for what an app writes to its standard streams.
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 # Whether a process the session met is still that process, and still running.
 tilo-process = { path = "../../platform/tilo-process" }

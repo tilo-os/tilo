@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The publisher key file.
 registry-types = { path = "../../packaging/registry-types" }

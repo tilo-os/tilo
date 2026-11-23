@@ -118,7 +118,7 @@ names are stable even when directories move.
 | App SDK: the public facade apps depend on (as `ui`) | `crates/sdk/tilo-app` |
 | Resources, actions and their macros | `crates/sdk/tilo-resource`, `crates/sdk/tilo-resource-macros` |
 | UI toolkit: widgets, layout, text, rendering, headless testing | `crates/sdk/ui-core` |
-| History, search | `crates/sdk/tilo-history`, `crates/sdk/search` |
+| History, search | `crates/sdk/tilo-history`, `crates/engines/search` |
 | Example apps, one idea each | `examples/apps` |
 | First-party apps | `apps/` ([list](../../apps/README.md)) |
 | Identity, MLS groups, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `tilo-device-identity`, `key-group`, `action-policy`, `tilo-peer-state`) |

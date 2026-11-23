@@ -247,13 +247,13 @@ class AppReleaseTests(unittest.TestCase):
                 # A runtime engine is signed into the runtime bundle:
                 # changing it changes the runtime every app names, not only
                 # the one app that loads it.
-                engine = root / 'crates/runtime/engines/typst/Cargo.toml'
+                engine = root / 'crates/engines/loadable/typst/Cargo.toml'
                 engine.parent.mkdir(parents=True)
                 engine.write_text('[package]\nname = "tilo-typst-engine"\n')
-                metadata['packages'].append(package('tilo-typst-engine', 'crates/runtime/engines/typst'))
+                metadata['packages'].append(package('tilo-typst-engine', 'crates/engines/loadable/typst'))
                 self.assertEqual({'tilo-typst-engine'}, app_release.runtime_engines(root))
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
-                    ['crates/runtime/engines/typst/src/lib.rs'], catalog, metadata, root))
+                    ['crates/engines/loadable/typst/src/lib.rs'], catalog, metadata, root))
                 metadata['packages'].pop()
                 # A shared dependency can invalidate packaging tools AND app code;
                 # do not label that as packaging-only for a future reuse worker.
@@ -318,8 +318,8 @@ class AppReleaseTests(unittest.TestCase):
             # the formats it reads. Apps decode through the toolkit's one codec,
             # so the formats a slides tapp carries are the codec's.
             expected = {
-                ROOT / "crates/platform/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
-                ROOT / "crates/doc/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
+                ROOT / "crates/engines/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
+                ROOT / "crates/engines/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():
                 dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]

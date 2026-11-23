@@ -43,7 +43,7 @@ tempfile.workspace = true
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The capture broker a confined app inherits, with synthetic devices.
-tilo-capture = { path = "../../platform/tilo-capture", features = ["test-support"] }
+tilo-capture = { path = "../../engines/tilo-capture", features = ["test-support"] }
 
 [[test]]
 name = "it"

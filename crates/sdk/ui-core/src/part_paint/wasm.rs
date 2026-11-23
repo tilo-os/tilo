@@ -43,7 +43,7 @@ mod lazy {
         static ENTRY: OnceLock<Option<PainterEntry>> = OnceLock::new();
         *ENTRY.get_or_init(|| {
             // SAFETY: the engine's entry is checked against `PainterEntry`
-            // where it is defined (crates/runtime/engines/theme-painter), in
+            // where it is defined (crates/engines/loadable/theme-painter), in
             // the same build.
             let entry = unsafe {
                 tilo_engine_loader::entry::<PainterEntry>(

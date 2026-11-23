@@ -19,7 +19,7 @@ tilo-contact-directory = { path = "../tilo-contact-directory" }
 zeroize.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-wire-frame = { path = "../../system/wire-frame", optional = true }
+wire-frame = { path = "../../platform/wire-frame", optional = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
 tracing = { workspace = true, optional = true }
 accounts = { path = "../accounts", features = ["person"] }

@@ -24,13 +24,13 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
 sha2.workspace = true
@@ -41,7 +41,7 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The publisher key file.
 registry-types = { path = "../../packaging/registry-types" }
 tilolang = { path = "../tilolang" }
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../tilolang-tilo" }
 # The platform a window with nothing on screen stands on, which `layout-check` lays out over.
 tilolang-web = { path = "../tilolang-web" }
 # The person the layout is checked for: their language, staged over the machine's.
@@ -49,7 +49,7 @@ tilo-process = { path = "../../platform/tilo-process", features = ["native"] }
 # Rebuilding on every saved source.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The generations a saved build is published into for the running app (`src/dev.rs`).
-tilo-app-module = { version = "0.1.0", path = "../../platform/tilo-app-module" }
+tilo-app-module = { version = "0.1.0", path = "../tilo-app-module" }
 toml.workspace = true
 # `tilolang repl`: Tilo's API as the person, through the client `tilo` uses.
 tilo-api = { path = "../../server/tilo-api" }

@@ -86,13 +86,13 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # Native app-build checks also exercise the engine probes and loader traces;
 # the budgets below adopt their suggested one-percent headroom.
 #
-# [engines.<arch>] budgets each engine library's file (crates/runtime/engines/)
+# [engines.<arch>] budgets each engine library's file (crates/engines/loadable/)
 # by name, with the same headroom, rounding and raise files
 # ([engines.<arch>] "lib<name>.so" = <bytes> in a raise). the app release and
 # t's runtime-size check fail when an engine is over its budget or has none.
 
 # The apps of apps_without_media that use an engine library
-# (crates/runtime/engines/), by library: they load it at exec. the app release
+# (crates/engines/loadable/), by library: they load it at exec. the app release
 # fails when one of those apps loads any other engine.
 [engine_users]
 "libtilo_timezone_engine.so" = ["clocks"]

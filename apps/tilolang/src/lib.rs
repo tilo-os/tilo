@@ -11,7 +11,7 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    reason = "layout weights, counts and sizes are small values; see crates/platform/tilolang-tilo"
+    reason = "layout weights, counts and sizes are small values; see crates/lang/tilolang-tilo"
 )]
 
 pub mod app;

@@ -43,7 +43,7 @@ audio = { package = "tilo-audio-service", path = "../audio-service", default-fea
 # service publishes them.
 connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
 os-actions = { path = "../../system/os-actions" }
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 # What the battery and the sleep policy are, as the power service publishes them.
 power = { package = "tilo-session-power", path = "../power-service", default-features = false }
 serde.workspace = true

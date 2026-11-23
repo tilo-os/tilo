@@ -37,9 +37,9 @@ taffy.workspace = true
 
 # Decode, playback and export run through tilo-media, which links GStreamer
 # under the `decode` and `gst` features. ffmpeg is intentionally not a dep.
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+media = { package = "tilo-media", path = "../../crates/engines/tilo-media" }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
-tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/engines/thumbnail" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
@@ -49,7 +49,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/platform/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
 
 # Tests generate their fixture media with GStreamer.

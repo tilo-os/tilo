@@ -47,7 +47,7 @@ dev-overrides = ["service", "package-store/dev-overrides"]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
-bounded-command = { path = "../../system/bounded-command", optional = true }
+bounded-command = { path = "../../platform/bounded-command", optional = true }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry; the daemon (`service`) also writes its store and
 # keeps none of its own.
@@ -58,7 +58,7 @@ runtime-portal = { path = "../../runtime/runtime-portal", default-features = fal
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "io-util", "time", "sync"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio", "postcard"] }
 
 # Daemon plumbing.
 clap = { workspace = true, optional = true }

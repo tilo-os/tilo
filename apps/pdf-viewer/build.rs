@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prepare_fixture_assets("../..", "tests/fixtures/artifacts.json", None)?;
     prepare_fixture_assets(
         "../..",
-        "../../crates/platform/tilo-pdf/tests/fixtures/artifacts.json",
+        "../../crates/engines/tilo-pdf/tests/fixtures/artifacts.json",
         None,
     )?;
     Ok(())

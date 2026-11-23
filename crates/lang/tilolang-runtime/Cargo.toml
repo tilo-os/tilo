@@ -28,13 +28,13 @@ tilo-app-id.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }
 # A document as the Markdown an editor shows and writes, and the bounded reader of the archives
 # a person imports.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false, features = [
+tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false, features = [
     "markdown",
 ] }
-bounded-zip = { path = "../../doc/bounded-zip" }
+bounded-zip = { path = "../../engines/bounded-zip" }
 # The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks
 # resolves, so a time of day survives one on every device.
-tilo-recurrence = { path = "../../sdk/tilo-recurrence" }
+tilo-recurrence = { path = "../../engines/tilo-recurrence" }
 # Days and moments.
 jiff.workspace = true
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.

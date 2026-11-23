@@ -105,8 +105,8 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
-tilo-advisory-lock = { path = "../../system/advisory-lock", optional = true }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio"], optional = true }
 launcher = { path = "../../packaging/launcher", optional = true }
 tilo-app-package = { path = "../../packaging/tilo-app-package", optional = true }
 parking_lot = { workspace = true, optional = true }
@@ -164,7 +164,7 @@ accounts = { path = "../../integrations/accounts", features = ["person"] }
 tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { path = "../../integrations/provider-config" }
 # Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a

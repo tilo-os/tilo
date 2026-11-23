@@ -15,7 +15,7 @@ FIXTURES = {
     "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex":
         "TiloSansFeaturesFixture-Regular.ttf",
     "tests/fixtures/test_image.png.hex": "test_image.png",
-    "../../browser/paint-stream/tests/fixtures/layers.top.png.hex": "layers.top.png",
+    "../../engines/paint-stream/tests/fixtures/layers.top.png.hex": "layers.top.png",
 }
 
 

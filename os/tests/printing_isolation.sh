@@ -19,7 +19,7 @@ CONFINEMENT="$OS_ROOT/usr/lib/systemd/system/cups.service.d/tilo-confinement.con
 SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf"
 CUPSD_CONF="$OS_ROOT/etc/cups/cupsd.conf"
 CONTAINERFILE="$OS_ROOT/Containerfile"
-SCANNER_RS="$OS_ROOT/../crates/platform/tilo-capture/src/scanner.rs"
+SCANNER_RS="$OS_ROOT/../crates/engines/tilo-capture/src/scanner.rs"
 PORTAL_PRINT_RS="$OS_ROOT/../crates/session/portal/src/print.rs"
 
 fails=0
@@ -162,7 +162,7 @@ echo "== apps reach printing through the portal, never the socket =="
 # appears there, this fails.
 SANDBOX_SRCS=(
     "$OS_ROOT/../crates/packaging/launcher/src"
-    "$OS_ROOT/../crates/system/sandbox-core/src"
+    "$OS_ROOT/../crates/platform/sandbox-core/src"
 )
 if [ -d "${SANDBOX_SRCS[0]}" ] && [ -d "${SANDBOX_SRCS[1]}" ]; then
     if grep -rEq 'cups\.sock|/run/cups' "${SANDBOX_SRCS[@]}"; then

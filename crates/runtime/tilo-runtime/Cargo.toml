@@ -46,7 +46,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 anyhow.workspace = true
@@ -168,7 +168,7 @@ fuser.workspace = true
 # in process, and Linux programs in the local hosted-VM service.
 ush = { path = "../../vm/ush", features = ["quic"] }
 # Bounded line cutting for a tilolang process's stderr relay.
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -176,7 +176,7 @@ launcher-macos = { path = "../../packaging/launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The camera and microphone a confined app asks this runtime to capture.
-tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
+tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "microphone"] }
 
 [dev-dependencies]
 # The relays the replica tests start.
