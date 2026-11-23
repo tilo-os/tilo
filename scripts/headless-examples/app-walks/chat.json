@@ -14,7 +14,7 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open Chat",
+      "said": "Open Chat: the conversation list is there",
       "ops": [
         {
           "theme": false
@@ -29,11 +29,401 @@
           "wait_for": "actions"
         },
         {
+          "must": [
+            "Channels"
+          ]
+        },
+        {
           "targets": true
         }
       ],
       "dark": true,
       "budget_ms": 30000
+    },
+    {
+      "id": "channel",
+      "said": "Start a channel for the launch",
+      "ops": {
+        "rust": [
+          {
+            "must": {
+              "see": [
+                "More actions"
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press": "More actions"
+          },
+          {
+            "must": {
+              "see": [
+                {
+                  "menuitem": "Create channel or category"
+                }
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press": {
+              "menuitem": "Create channel or category"
+            }
+          },
+          {
+            "must": {
+              "see": [
+                {
+                  "menuitem": "New channel"
+                }
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press": {
+              "menuitem": "New channel"
+            }
+          },
+          {
+            "type": "launch"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              "launch"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "must": {
+              "see": [
+                "New channel"
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press": "New channel"
+          },
+          {
+            "must": {
+              "see": [
+                "new-channel"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "channel-from-search",
+      "said": "Start a channel through the desktop's search: the window's button ran nothing",
+      "ops": {
+        "rust": [],
+        "tl": [
+          {
+            "key": "Escape"
+          },
+          {
+            "search": "New channel"
+          },
+          {
+            "result": "New channel"
+          },
+          {
+            "choose_result": "New channel"
+          },
+          {
+            "must": {
+              "see": [
+                "new-channel"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "send",
+      "said": "Say hello in the channel",
+      "ops": {
+        "rust": [
+          {
+            "press": "launch"
+          },
+          {
+            "click_any": [
+              "Message composer",
+              {
+                "prefix": "Message #"
+              }
+            ]
+          },
+          {
+            "type": "Hello team"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              {
+                "prefix": "Throwaway test identity: Hello"
+              }
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press": "new-channel"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Message #"
+              }
+            ]
+          },
+          {
+            "type": "Hello team"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              "Hello team"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "reply",
+      "said": "Answer the message",
+      "ops": {
+        "rust": [
+          {
+            "hover": {
+              "rust": {
+                "prefix": "Throwaway test identity: Hello"
+              },
+              "tl": {
+                "prefix": "Hello"
+              }
+            }
+          },
+          {
+            "press_any": [
+              "Reply in thread"
+            ]
+          },
+          {
+            "click_any": [
+              "Thread reply composer",
+              {
+                "prefix": "Reply in thread"
+              }
+            ]
+          },
+          {
+            "type": "Welcome to launch"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              {
+                "prefix": "Throwaway test identity: Welcome"
+              }
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "hover": {
+              "rust": {
+                "prefix": "Throwaway test identity: Hello"
+              },
+              "tl": {
+                "prefix": "Hello"
+              }
+            }
+          },
+          {
+            "press_any": [
+              "Reply"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Message #"
+              }
+            ]
+          },
+          {
+            "type": "Welcome to launch"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              "Welcome to launch"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "react",
+      "said": "React to the message",
+      "ops": [
+        {
+          "hover": {
+            "rust": {
+              "prefix": "Throwaway test identity: Hello"
+            },
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Add reaction"
+          ]
+        },
+        {
+          "press_any": [
+            {
+              "prefix": "\ud83c\udf89"
+            },
+            {
+              "prefix": "Choose party"
+            },
+            {
+              "prefix": "Choose"
+            }
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "edit",
+      "said": "Fix what the message says",
+      "ops": [
+        {
+          "hover": {
+            "rust": {
+              "prefix": "Throwaway test identity: Hello"
+            },
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Edit",
+            "Edit message"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Edit message"
+            }
+          ]
+        },
+        {
+          "chord": [
+            "Control",
+            "a"
+          ]
+        },
+        {
+          "type": "Hello team!"
+        },
+        {
+          "press_any": [
+            "Save",
+            "Save message edit"
+          ]
+        },
+        {
+          "must": [
+            {
+              "rust": {
+                "prefix": "Throwaway test identity: Hello team!"
+              },
+              "tl": "Hello team!"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pin",
+      "said": "Pin the message so it is kept with the conversation",
+      "ops": [
+        {
+          "hover": {
+            "rust": {
+              "prefix": "Throwaway test identity: Hello"
+            },
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Pin",
+            "Pin message"
+          ]
+        },
+        {
+          "must": [
+            "Pinned"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Find the message through the system's search",
+      "ops": [
+        {
+          "search": "Hello"
+        },
+        {
+          "result": "Hello"
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "dark",
+      "said": "The conversation in the dark theme",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "theme": true
+        }
+      ]
     }
   ]
 }
