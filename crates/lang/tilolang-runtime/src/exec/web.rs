@@ -4,6 +4,8 @@
 //! host the package did not declare, one the workspace revoked, and any network failure are
 //! values the run carries on with.
 
+use base64::Engine as _;
+
 use super::{Args, Core, HResult, Imp, JournalEntry, Rc, Value, Wasm, ret_i32, trap};
 
 impl Core {
@@ -93,17 +95,7 @@ impl Core {
                 };
                 self.ret_h(Value::Text(text))
             }
-            // The bytes a base64 text holds: how a picture or any other bytes an action came by
-            // as text (a vCard's PHOTO, a body written inline) becomes a file it can keep.
-            Imp::Base64Decode => {
-                let text = self.text(a.h(0)?)?;
-                use base64::Engine as _;
-                let bytes = match base64::engine::general_purpose::STANDARD.decode(text.trim()) {
-                    Ok(bytes) => bytes,
-                    Err(why) => return trap(format!("this is not base64: {why}")),
-                };
-                self.ret_h(Value::Bytes(Rc::new(bytes)))
-            }
+            Imp::Base64Decode => self.base64_decode(a),
             Imp::BytesLength => {
                 let n = match self.val(a.h(0)?)? {
                     Value::Bytes(bytes) => bytes.len(),
@@ -115,6 +107,17 @@ impl Core {
             }
             _ => trap("not a web import"),
         }
+    }
+
+    /// The bytes a base64 text holds: how a picture, or any other bytes an action came by as
+    /// text (a vCard's `PHOTO`, a body written inline), becomes a file it can keep.
+    fn base64_decode(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let text = self.text(a.h(0)?)?;
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(text.trim()) {
+            Ok(bytes) => bytes,
+            Err(why) => return trap(format!("this is not base64: {why}")),
+        };
+        self.ret_h(Value::Bytes(Rc::new(bytes)))
     }
 
     /// The headers a call was given: each `Name: value`.
