@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod workspace_activity {
     use super::*;
-    use crate::activity::ActivitySnapshot;
+    use crate::desktop::activity::ActivitySnapshot;
     #[allow(
         unused_imports,
         reason = "the store-backed history refresh is a method of this trait"
     )]
-    use crate::activity::testing::StoreRecords as _;
+    use crate::desktop::activity::testing::StoreRecords as _;
     use automerge::{
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},

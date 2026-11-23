@@ -179,7 +179,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         });
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", tabs.into());
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", tabs.into());
         let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 5, Box::new(Blank));
         (WindowWalk::new(handle), surface)
     }

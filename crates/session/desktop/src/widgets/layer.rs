@@ -1642,7 +1642,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tilo_desktop_model::{IdMinter, Member, Tab, WindowWidth, Workspace};
-    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+    use tilo_session_core::desktop::seed_tree;
     use tilo_system_stats::protocol::{CpuStats, MemoryStats, SystemStats, ThermalZone};
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use ui::widget::{TileContent, TileHost};

@@ -272,8 +272,8 @@ impl FloatingLayer {
             .map(|(_, _, control)| control.as_str());
         ActivityCardFace {
             summary: &card.summary,
-            collapse_label: &crate::i18n::t("activity-collapse"),
-            close_label: &crate::i18n::t("activity-close"),
+            collapse_label: &tilo_session_core::desktop::i18n::t("activity-collapse"),
+            close_label: &tilo_session_core::desktop::i18n::t("activity-close"),
             focused,
             held,
             scrub: self
@@ -532,13 +532,13 @@ impl FloatingLayer {
                 }
                 children.push(
                     AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::t("activity-collapse"))
+                        .with_name(tilo_session_core::desktop::i18n::t("activity-collapse"))
                         .with_action_target(target(card, "collapse")),
                 );
                 children.push(
                     AccessNode::new(Role::Button)
                         .with_name(summary.close_control().map_or_else(
-                            || crate::i18n::t("activity-close"),
+                            || tilo_session_core::desktop::i18n::t("activity-close"),
                             |close| close.label.clone(),
                         ))
                         .with_action_target(target(card, "close")),
@@ -552,7 +552,7 @@ impl FloatingLayer {
             .collect();
         Some(
             AccessNode::new(Role::Group)
-                .with_name(crate::i18n::t("activities-layer"))
+                .with_name(tilo_session_core::desktop::i18n::t("activities-layer"))
                 .with_children(groups),
         )
     }

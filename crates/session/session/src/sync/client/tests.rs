@@ -1580,7 +1580,7 @@ fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
         pinned: false,
     };
     let id = tab.id;
-    let tree = tilo_desktop_surface::seed_tree(&mut minter, "Session", vec![tab]);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Session", vec![tab]);
     let (_surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(Plain));
     (handle, id)
 }

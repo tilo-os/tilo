@@ -1,6 +1,7 @@
 //! A viewer-local reading page using the toolkit's painted scroll region.
-use super::{CenterLayout, Notification};
-use crate::i18n::t;
+use super::CenterLayout;
+use tilo_session_core::desktop::i18n::t;
+use tilo_session_core::desktop::notifications::Notification;
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::num::f32_of_f64;

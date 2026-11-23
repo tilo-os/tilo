@@ -3,7 +3,7 @@
 use tilo_desktop_model::{GroupId, StripId, Tab, TabId, WindowWidth};
 use ui::widget::TabDescriptor;
 
-use crate::navigation::{HistoryDirection, ScrollAction};
+use tilo_session_core::desktop::navigation::{HistoryDirection, ScrollAction};
 
 /// A widget-side follow-up to a command already applied to the tree.
 pub(super) enum RowOp {

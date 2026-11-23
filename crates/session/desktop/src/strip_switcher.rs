@@ -29,7 +29,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::{Layout, StripId};
-use tilo_desktop_surface::names;
+use tilo_session_core::desktop::names;
 use ui::widget::DrawChild;
 
 /// Longest strip name a person or an agent may give, in characters: what the strip switcher's row

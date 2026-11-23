@@ -236,7 +236,7 @@ fn a_notification_does_not_take_a_press_on_the_name_field() {
     );
     let title = "You joined Garden club";
     session.notifications().post(
-        tilo_desktop_surface::notifications::Notification::new(title, "")
+        tilo_session_core::desktop::notifications::Notification::new(title, "")
             .with_dismiss_after(Duration::from_secs(60)),
     );
     until(&mut session, "the banner on screen", |session| {

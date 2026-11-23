@@ -214,7 +214,7 @@ mod tests {
             to_ask: true,
         };
         let mut minter = IdMinter::new(7);
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", Vec::new());
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", Vec::new());
         let handle = tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
         let mut layer = BackgroundLayer::new(
             Box::new(surface),

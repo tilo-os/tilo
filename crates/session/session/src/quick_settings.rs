@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Part};
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
-use tilo_desktop_surface::navigation::ChromeEffect;
+use tilo_session_core::desktop::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
 use ui::kurbo::{Point, Rect};
 use ui::motion::{Appear, Appearing};

@@ -21,7 +21,7 @@ use crate::platform::fabric::{FabricLink as _, SharedLink};
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
 use tilo_actions::{ActionApp, ActionContext, ActionFacet, ActionItem, ActionKey, Did, Scalar};
-use tilo_desktop_surface::activity::DetachedRecordHistory;
+use tilo_session_core::desktop::activity::DetachedRecordHistory;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 use crate::i18n::t;

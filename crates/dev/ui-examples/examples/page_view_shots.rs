@@ -15,8 +15,9 @@ use tilo_desktop_model::{IdMinter, Tab, TabId, TileContent as ModelTile, Workspa
 use tilo_desktop_surface::page_view::PageStream;
 use tilo_desktop_surface::{
     DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces, PeerTiles, SurfaceId,
-    TileSource, seed_tree,
+    TileSource,
 };
+use tilo_session_core::desktop::seed_tree;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::webview::paint::PaintEngine;

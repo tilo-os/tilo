@@ -26,7 +26,7 @@ use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_surface::outcome::{Closed, Outcome};
+use tilo_session_core::desktop::outcome::{Closed, Outcome};
 use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
@@ -1139,7 +1139,7 @@ impl Apps {
                     asked.tab,
                     &asked.app,
                     None,
-                    &tilo_desktop_surface::i18n::t("answer-why-unknown-app"),
+                    &tilo_session_core::desktop::i18n::t("answer-why-unknown-app"),
                 );
                 continue;
             };
@@ -1482,7 +1482,7 @@ impl Apps {
     fn close_tab(&self, tab: u64) {
         self.answer_in_tabs(|policy| {
             let _ = policy.handle().dispatch(
-                tilo_desktop_surface::navigation::LayoutEffect::CloseTab {
+                tilo_session_core::desktop::navigation::LayoutEffect::CloseTab {
                     tab: tab.to_string(),
                 },
             );

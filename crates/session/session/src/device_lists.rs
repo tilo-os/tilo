@@ -14,10 +14,10 @@ use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::overlays::{Overlay, Overlays, Part};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::Role;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::navigation::ChromeEffect;
 
 use crate::windows::{reaching, windows};
 
@@ -1188,7 +1188,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         };
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", vec![tab]);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", vec![tab]);
         let (_surface, handle) =
             tilo_desktop_surface::DesktopSurface::new(tree.clone(), 5, Box::new(Blank));
         assert!(!windows(&tree, &handle)[0].not_responding);

@@ -1068,14 +1068,14 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
             .and_then(serde_json::Value::as_str),
         Some(tab)
     );
-    let to: tilo_desktop_surface::navigation::Destination =
+    let to: tilo_session_core::desktop::navigation::Destination =
         serde_json::from_value(asked.arguments.get("to").cloned().expect("the destination"))
             .unwrap_or_else(|why| {
                 panic!("the destination reads as the chrome's: {why}: {asked:?}")
             });
     assert_eq!(
         to,
-        tilo_desktop_surface::navigation::Destination {
+        tilo_session_core::desktop::navigation::Destination {
             strip: Some(strip.to_owned()),
             ..Default::default()
         }

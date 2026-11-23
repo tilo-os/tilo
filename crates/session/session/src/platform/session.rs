@@ -364,7 +364,7 @@ impl Session {
         // The person's layout: the shell this session holds, whose layout the workspaces keep.
         let layout = Rc::new(RefCell::new(layout::Layout::new(
             &options.person,
-            handle.clone(),
+            handle.tree(),
             Rc::new(crate::layout::Steps::new(
                 Rc::clone(&desktops),
                 handle.clone(),

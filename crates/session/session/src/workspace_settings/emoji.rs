@@ -20,7 +20,7 @@ use tilo_app::tilo_workspace_emoji::{
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{Layout, UserId, Workspace};
-use tilo_desktop_surface::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;

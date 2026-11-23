@@ -58,7 +58,7 @@ const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS];
 
 /// The session's program, described for the broker's catalogue.
 fn descriptor() -> tilo_actions::ActionDescriptor {
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
     tilo_actions::ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),

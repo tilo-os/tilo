@@ -3,7 +3,7 @@
 //! ([`tilo_desktop_model::personal`]) to the shell they were opened on.
 use tilo_desktop_model::{Layout, OutputPartition, TabId, WindowWidth, WorkspaceId};
 
-pub(crate) fn projection(mut tree: Layout) -> Layout {
+pub fn projection(mut tree: Layout) -> Layout {
     let local: Vec<_> = tree
         .workspaces
         .iter()
@@ -36,7 +36,7 @@ pub(crate) fn projection(mut tree: Layout) -> Layout {
     tree
 }
 
-pub(crate) fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) -> Layout {
+pub fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) -> Layout {
     // Old senders also send their stream proxies. Those process-local bindings have no meaning
     // here, even when their ids happen to match.
     let mut incoming = projection(incoming);

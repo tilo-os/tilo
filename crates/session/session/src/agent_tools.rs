@@ -18,7 +18,7 @@ pub(crate) struct AgentToolSteps(tilo_mcp::agent_tools::AgentTools);
 
 /// Step `action`, described for the broker's catalogue.
 fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDescriptor {
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
     tilo_actions::ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),

@@ -555,7 +555,7 @@ impl Loop {
                             .find(|held| {
                                 !held.id().is_nil() && held.id().to_string() == ask.workspace
                             })
-                            .map(|held| tilo_desktop_surface::names::workspace(&held.name))
+                            .map(|held| tilo_session_core::desktop::names::workspace(&held.name))
                     })
                     .ok_or_else(|| word("mcp-server-no-workspace"))?;
                 let (agent, name) = members(&ask.workspace, &ask.client)?;
@@ -1442,7 +1442,7 @@ impl SessionServices {
                     Some((
                         workspace.id().to_string(),
                         awaited_sentence(
-                            &tilo_desktop_surface::names::workspace(&workspace.name),
+                            &tilo_session_core::desktop::names::workspace(&workspace.name),
                             &host,
                         ),
                     ))
@@ -1587,7 +1587,7 @@ impl SessionServices {
                 .map(|workspace| {
                     [
                         workspace.id().to_string(),
-                        tilo_desktop_surface::names::workspace(&workspace.name),
+                        tilo_session_core::desktop::names::workspace(&workspace.name),
                     ]
                 })
                 .collect()
@@ -1605,7 +1605,7 @@ impl SessionServices {
     /// Whether the shell's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
     /// `workspace`: a window the shell no longer knows is no one's.
     fn window_elsewhere(&self, resource: &str, workspace: &str) -> bool {
-        tilo_desktop_surface::window::resource_tab(resource).is_some_and(|tab| {
+        tilo_session_core::desktop::window::resource_tab(resource).is_some_and(|tab| {
             self.tabs
                 .lock_recover()
                 .get(&tab)
@@ -2908,7 +2908,7 @@ pub(crate) fn awaited_reason(
             tree.workspaces
                 .iter()
                 .find(|held| held.id() == id)
-                .map(|held| tilo_desktop_surface::names::workspace(&held.name))
+                .map(|held| tilo_session_core::desktop::names::workspace(&held.name))
         })
         .unwrap_or_else(|| workspace.to_owned());
     Some(awaited_sentence(&name, &host))

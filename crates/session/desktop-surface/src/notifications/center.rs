@@ -21,13 +21,13 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
-use super::history::{
-    HistoryActivation, HistoryRow, RowIdentity, accessible_description, relative_time,
-};
-use super::model::Notification;
 use super::reader::NotificationReader;
 use crate::drill_in::{self as qs, DrillInList};
-use crate::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::notifications::Notification;
+use tilo_session_core::desktop::notifications::{
+    HistoryActivation, HistoryRow, RowIdentity, accessible_description, relative_time,
+};
 use ui::TextRole;
 
 /// Rows the panel asks room for; the rest scroll rather than page.
@@ -762,11 +762,17 @@ fn leading_label(layout: &CenterLayout) -> String {
 
 /// The tone a notification's severity marks, for the rail a warning or a failure keeps; plain
 /// information carries no rail.
-fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::widget::Tone> {
+fn severity_tone(
+    severity: tilo_session_core::desktop::notifications::NotificationSeverity,
+) -> Option<ui::widget::Tone> {
     match severity {
-        super::model::NotificationSeverity::Info => None,
-        super::model::NotificationSeverity::Warning => Some(ui::widget::Tone::Warning),
-        super::model::NotificationSeverity::Error => Some(ui::widget::Tone::Danger),
+        tilo_session_core::desktop::notifications::NotificationSeverity::Info => None,
+        tilo_session_core::desktop::notifications::NotificationSeverity::Warning => {
+            Some(ui::widget::Tone::Warning)
+        }
+        tilo_session_core::desktop::notifications::NotificationSeverity::Error => {
+            Some(ui::widget::Tone::Danger)
+        }
     }
 }
 

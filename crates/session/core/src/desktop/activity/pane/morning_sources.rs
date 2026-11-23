@@ -44,7 +44,7 @@ impl WorkspaceActivityPane {
             return None;
         }
         let source = MorningSource::from_target(detail.resources.first()?)?;
-        (self.chosen_morning_sources().len() < crate::activity::morning::MAX_SOURCES
+        (self.chosen_morning_sources().len() < crate::desktop::activity::morning::MAX_SOURCES
             || self.chosen_morning_sources().contains(&source))
         .then_some(source)
     }

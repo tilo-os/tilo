@@ -9,14 +9,14 @@ mod native_history {
         unused_imports,
         reason = "the store-backed history refresh is a method of this trait"
     )]
-    use crate::activity::testing::StoreRecords as _;
-    use crate::activity::testing::TestHost;
+    use crate::desktop::activity::testing::StoreRecords as _;
+    use crate::desktop::activity::testing::TestHost;
     use tilo_automerge::ApplyIncoming as _;
 
     /// The history a native session serves, what the host keeps of what the
     /// model writes back, and who the changes are by.
     type NativeHistory = (
-        crate::activity::ActivitySnapshot,
+        crate::desktop::activity::ActivitySnapshot,
         Rc<RefCell<Option<tilo_desktop_model::Layout>>>,
         std::collections::BTreeMap<String, String>,
     );
@@ -38,7 +38,7 @@ mod native_history {
     /// A native session's layout and its document: "Studio" opened with Notes,
     /// Grace renaming it to "Plans", Ada then closing Notes.
     fn native_history() -> NativeHistory {
-        use crate::activity::ActivitySnapshot;
+        use crate::desktop::activity::ActivitySnapshot;
         use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent};
 
         let mut minter = IdMinter::new(7);
@@ -54,7 +54,7 @@ mod native_history {
             view: String::new(),
             pinned: false,
         };
-        let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+        let mut tree = crate::desktop::seed_tree(&mut minter, "Studio", vec![notes]);
 
         // The one document the layout is kept as: its changes are what happened
         // to it, who did it and when.
@@ -98,7 +98,7 @@ mod native_history {
         {
             let (mut snapshot, _written, authors) = native_history();
             let mut pane = native_pane();
-            crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
+            crate::desktop::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
             pane.view = ActivityView::Explore;
             pane.refresh(&mut snapshot);
 
@@ -133,7 +133,7 @@ mod native_history {
 
             let (mut snapshot, written, authors) = native_history();
             let mut pane = native_pane();
-            crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
+            crate::desktop::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
             pane.view = ActivityView::Explore;
             pane.refresh(&mut snapshot);
 

@@ -13,24 +13,14 @@
     )
 )]
 
-pub mod activity;
 pub mod drill_in;
 pub mod floating_layer;
-pub mod history_log;
 pub mod host;
-pub mod i18n;
-pub mod names;
-pub mod navigation;
 pub mod notifications;
-pub mod now_playing;
-pub mod outcome;
 pub mod page_view;
 pub mod session;
-mod shared_tree;
 pub mod surface;
 mod wake;
-pub mod warmth;
-pub mod window;
 pub mod window_input;
 
 pub use page_view::{PageStream, PageView};
@@ -44,8 +34,7 @@ pub use surface::{
     DesktopNotifications, DesktopSurface, DockedCard, HistorySource, HostAction, HostActionSource,
     LivenessChoice, NotificationLayer, NotificationOutcome, OpenActivity, PALETTE_EDGE,
     PersonalAsk, SearchHost, SearchHostFeed, SearchRow, StripPart, TileSource, TypedField,
-    TypedInsertion, TypedRefusal, WorkspaceShare, WorkspaceShares, display_rect, host_action_key,
-    is_escape, is_host_offer, is_search_chord, open_activity, published_selection,
-    search_chord_keys, seed_tree, seed_tree_in, tile_app_kind, window_name, window_title,
-    working_display,
+    TypedInsertion, TypedRefusal, WorkspaceShare, WorkspaceShares, host_action_key, is_escape,
+    is_host_offer, is_search_chord, open_activity, published_selection, search_chord_keys,
+    tile_app_kind, window_name, window_title,
 };

@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_desktop_surface::i18n::t;
 use tilo_session::Session;
+use tilo_session_core::desktop::i18n::t;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;

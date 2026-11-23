@@ -230,7 +230,8 @@ tilo_test_env::scenario! {
     // A banner and an activity card stand where the sheets do: on the display the person is working
     // on, and on the other display once they work there.
     {
-        use tilo_desktop::notifications::{Banner, BannerFeed, Notification};
+        use tilo_desktop::notifications::{Banner, BannerFeed};
+        use tilo_session_core::desktop::notifications::Notification;
         use ui::live_activity::{Kind, Published, Summary};
 
         let _settled = ui::motion::testing::settled();

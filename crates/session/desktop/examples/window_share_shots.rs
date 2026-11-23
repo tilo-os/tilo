@@ -33,12 +33,13 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, WindowWidth, Workspace};
-use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup;
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerStreamStart, StreamState,
-    TileSource, WorkspaceShare, seed_tree,
+    TileSource, WorkspaceShare,
 };
+use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::seed_tree;
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
@@ -473,7 +474,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&output)?;
     let mut minter = IdMinter::new(7);
     // The desktop's catalogue is on this thread before a locale is chosen in it.
-    tilo_desktop_surface::i18n::ensure();
+    tilo_session_core::desktop::i18n::ensure();
     for locale in ["en-US", "de-DE"] {
         ui::i18n::I18nManager::set_locale(locale);
         for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {

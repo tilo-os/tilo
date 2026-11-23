@@ -3,7 +3,7 @@ use super::*;
     unused_imports,
     reason = "the store-backed history refresh is a method of this trait"
 )]
-use crate::activity::testing::StoreRecords as _;
+use crate::desktop::activity::testing::StoreRecords as _;
 use tilo_actions::remote::workspace_activity as wire;
 
 #[cfg(test)]
@@ -12,14 +12,16 @@ mod tests {
     //! — nothing writes a synthetic `HistoryEntry` .
 
     use super::*;
-    use crate::activity::testing::{TestTree as WorkspaceTree, next_id};
+    use crate::desktop::activity::testing::{TestTree as WorkspaceTree, next_id};
     use tilo_desktop_model::WorkspaceId;
     use ui::{resource::ResourceStore, widget::HistoryAuthor};
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
         let mut pane = WorkspaceActivityPane::new();
-        pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
+        pane.set_host(Rc::new(
+            crate::desktop::activity::testing::TestHost::default(),
+        ));
         pane
     }
     use automerge::ActorId;
@@ -128,7 +130,7 @@ mod tests {
             let reads = || {
                 (
                     WORKSPACE_CHANGE_READS.with(Cell::get),
-                    crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+                    crate::desktop::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
                 )
             };
             for n in 0..12 {
@@ -420,7 +422,7 @@ mod tests {
                         "Release brief",
                     )
                     .with_app("org.tilo.Writer", "Writer")
-                    .with_described(crate::activity::testing::verb("Export")),
+                    .with_described(crate::desktop::activity::testing::verb("Export")),
                     tilo_actions::EffectReceiptStatus::Succeeded,
                 )
             );
@@ -445,7 +447,7 @@ mod tests {
 
         phase one_person_is_one_colour_across_device_edits_and_receipts;
         {
-            let local = crate::activity::testing::LOCAL_USER;
+            let local = crate::desktop::activity::testing::LOCAL_USER;
             let mut tree = WorkspaceTree::bootstrap_default();
             let invocation = tilo_actions::InvocationId::new();
             assert!(tree.append_workspace_effect_receipt(
@@ -597,7 +599,7 @@ mod tests {
             )
             .unwrap();
             doc.commit();
-            let mut tree = crate::activity::ActivitySnapshot::new(
+            let mut tree = crate::desktop::activity::ActivitySnapshot::new(
                 tilo_desktop_model::Layout {
                     active: workspace.id(),
                     workspaces: vec![workspace],
@@ -613,7 +615,7 @@ mod tests {
             record.commit();
             let checkout = ui::DocumentCheckout::new(DocumentId::for_tab(1), ui::ResourceType::new("test"));
             let input = |app: &str, document| {
-                crate::activity::DetachedRecordHistory::new(app, checkout.clone(), document)
+                crate::desktop::activity::DetachedRecordHistory::new(app, checkout.clone(), document)
             };
             let mut pane = native_pane();
             pane.refresh(&mut tree);
@@ -674,7 +676,7 @@ mod tests {
                     "Campaign brief",
                 )
                 .with_app("org.tilo.Writer", "Writer")
-                .with_described(crate::activity::testing::verb(action))
+                .with_described(crate::desktop::activity::testing::verb(action))
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-session:test",
@@ -699,7 +701,9 @@ mod tests {
                     app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     range: change,
-                    what: vec![crate::activity::testing::verb("rewrite the launch story")],
+                    what: vec![crate::desktop::activity::testing::verb(
+                        "rewrite the launch story",
+                    )],
                 }],
             )
             .expect("task receipt");
@@ -790,8 +794,8 @@ mod tests {
     fn detached_records(
         records: &ResourceStore,
         record: &DocumentId,
-    ) -> Vec<crate::activity::DetachedRecordHistory> {
-        vec![crate::activity::DetachedRecordHistory::new(
+    ) -> Vec<crate::desktop::activity::DetachedRecordHistory> {
+        vec![crate::desktop::activity::DetachedRecordHistory::new(
             "org.tilo.Writer",
             ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document")),
             records.read(record, Clone::clone),
@@ -806,7 +810,7 @@ mod tests {
                 pane.projected_origins.get(&entry.id).is_some_and(|origin| {
                     matches!(
                         origin.origin,
-                        crate::activity::index::HistoryOrigin::AppRecord { .. }
+                        crate::desktop::activity::index::HistoryOrigin::AppRecord { .. }
                     ) && origin.change == change
                 })
             })
@@ -855,7 +859,7 @@ mod tests {
         )
         .unwrap();
         doc.commit();
-        let mut tree = crate::activity::ActivitySnapshot::new(
+        let mut tree = crate::desktop::activity::ActivitySnapshot::new(
             tilo_desktop_model::Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
@@ -880,7 +884,7 @@ mod tests {
         write(&mut record, 2_000);
         // The host reads the record from its store on every refresh: a document of its own.
         let read = |record: &mut automerge::AutoCommit| {
-            crate::activity::DetachedRecordHistory::new(
+            crate::desktop::activity::DetachedRecordHistory::new(
                 "so.tilo.notes",
                 ui::DocumentCheckout::package_primary(ui::ResourceType::new("so.tilo.notes")),
                 Some(automerge::AutoCommit::load(&record.save()).unwrap()),
@@ -917,7 +921,7 @@ mod tests {
         phase a_window_someone_opened_is_listed_in_history_but_is_not_news;
         {
             let (mut tree, workspace, _) = busy_workspace();
-            let host = Rc::new(crate::activity::testing::TestHost::default());
+            let host = Rc::new(crate::desktop::activity::testing::TestHost::default());
             let mut pane = WorkspaceActivityPane::new();
             pane.set_host(host);
             pane.load_frontiers();
@@ -1108,7 +1112,7 @@ mod tests {
     #[test]
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
         let (mut tree, workspace, user) = busy_workspace();
-        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let host = Rc::new(crate::desktop::activity::testing::TestHost::default());
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.load_frontiers();
@@ -1166,7 +1170,7 @@ mod tests {
                 .policy
                 .joined
                 .insert(
-                    crate::activity::testing::LOCAL_USER.to_string(),
+                    crate::desktop::activity::testing::LOCAL_USER.to_string(),
                     u64::try_from(joined.as_millis()).expect("a time"),
                 );
             let mut pane = native_pane();
@@ -1245,7 +1249,7 @@ mod tests {
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
-        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let host = Rc::new(crate::desktop::activity::testing::TestHost::default());
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.begin_view(workspace);
@@ -1502,7 +1506,7 @@ mod tests {
     }
 
     fn the_local_users_own_rows_are_attributed_to_them(pane: &WorkspaceActivityPane) {
-        let me = crate::activity::testing::LOCAL_USER.to_string();
+        let me = crate::desktop::activity::testing::LOCAL_USER.to_string();
         assert!(!me.is_empty(), "there is always a local user id");
         assert!(
             pane.entries()
@@ -2083,7 +2087,7 @@ mod tests {
                             group_label,
                         )
                         .with_app("org.tilo.Writer", "Writer")
-                        .with_described(crate::activity::testing::verb(action))
+                        .with_described(crate::desktop::activity::testing::verb(action))
                         .with_group(group_id, group_label, "work-session"),
                         tilo_actions::EffectReceiptStatus::Succeeded,
                     )
@@ -2549,7 +2553,7 @@ mod tests {
         let receipt = || {
             tilo_actions::ActionContext::for_resource("document:brief", "document", "Release brief")
                 .with_app("org.tilo.Writer", "Writer")
-                .with_described(crate::activity::testing::verb("Export"))
+                .with_described(crate::desktop::activity::testing::verb("Export"))
         };
 
         // Every kind of row the steps make, once, before reads are counted: the first row of a kind
@@ -2704,8 +2708,8 @@ mod tasks_link_tests;
 #[cfg(test)]
 mod morning_source_tests {
     use super::*;
-    use crate::activity::ActivityHost;
-    use crate::activity::testing::TestTree;
+    use crate::desktop::activity::ActivityHost;
+    use crate::desktop::activity::testing::TestTree;
     use automerge::transaction::CommitOptions;
 
     /// A browser visitor: no private morning sources, no local identity.
@@ -2718,7 +2722,7 @@ mod morning_source_tests {
         let mut tree = TestTree::bootstrap_default();
         let context = tilo_actions::ActionContext::for_resource(record, "notes.note", record)
             .with_app("org.tilo.Notes", "org.tilo.Notes")
-            .with_described(crate::activity::testing::verb("Update"));
+            .with_described(crate::desktop::activity::testing::verb("Update"));
         tree.doc
             .put(automerge::ROOT, "name", "Visitor history")
             .unwrap();
@@ -2768,7 +2772,9 @@ mod morning_source_tests {
             "Chosen location",
         )
         .with_app("so.tilo.weather", "Weather")
-        .with_described(crate::activity::testing::verb("Update selected forecast"));
+        .with_described(crate::desktop::activity::testing::verb(
+            "Update selected forecast",
+        ));
         tree.doc
             .put(automerge::ROOT, "name", "Morning review")
             .unwrap();
@@ -2778,7 +2784,9 @@ mod morning_source_tests {
                 .with_message(context.change_message().unwrap()),
         );
         let mut pane = WorkspaceActivityPane::new();
-        pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
+        pane.set_host(Rc::new(
+            crate::desktop::activity::testing::TestHost::default(),
+        ));
         pane.refresh(&mut tree);
         let index = pane
             .timeline
@@ -2883,7 +2891,7 @@ mod morning_source_tests {
                     "Chosen location",
                 )
                 .with_app("so.tilo.weather", "Weather")
-                .with_described(crate::activity::testing::verb("Update"));
+                .with_described(crate::desktop::activity::testing::verb("Update"));
                 tree.doc.commit_with(
                     CommitOptions::default()
                         .with_time(1_800_000_010 + i64::try_from(index).unwrap())
@@ -2925,7 +2933,7 @@ mod morning_source_tests {
                 let id = format!("weather.location:fixture-{index}");
                 let context = tilo_actions::ActionContext::for_resource(&id, "location", &id)
                     .with_app("so.tilo.weather", "Weather")
-                    .with_described(crate::activity::testing::verb("Select location"));
+                    .with_described(crate::desktop::activity::testing::verb("Select location"));
                 tree.doc.put(automerge::ROOT, "name", &id).unwrap();
                 tree.doc.commit_with(
                     CommitOptions::default()
@@ -3007,7 +3015,7 @@ mod morning_source_tests {
                 ..Default::default()
             });
             pane.set_host(host.clone());
-            for index in 1..crate::activity::morning::MAX_SOURCES {
+            for index in 1..crate::desktop::activity::morning::MAX_SOURCES {
                 let workspace = pane.workspace.clone();
                 pane.morning_sources
                     .get_mut(&pane.morning_workspace)
@@ -3030,7 +3038,7 @@ mod morning_source_tests {
                 .collect();
             assert_eq!(
                 keys.len(),
-                crate::activity::morning::MAX_SOURCES,
+                crate::desktop::activity::morning::MAX_SOURCES,
                 "every source is served, removed evidence too"
             );
             for key in &keys {
@@ -3044,7 +3052,7 @@ mod morning_source_tests {
             run_source(&mut pane, &mut tree, &keys[1], SourceCommand::Remove);
             assert_eq!(
                 pane.chosen_morning_sources().len(),
-                crate::activity::morning::MAX_SOURCES - 1,
+                crate::desktop::activity::morning::MAX_SOURCES - 1,
                 "a source whose evidence is gone can still be removed"
             );
             assert_eq!(tree.doc.get_heads(), heads);
@@ -3141,7 +3149,7 @@ mod morning_source_tests {
         commands: RefCell<Vec<(String, super::MorningSource, super::MorningCommand)>>,
         noisy: bool,
     }
-    impl crate::activity::ActivityHost for PayloadHost {
+    impl crate::desktop::activity::ActivityHost for PayloadHost {
         fn morning_sources_available(&self) -> bool {
             true
         }
@@ -3149,8 +3157,8 @@ mod morning_source_tests {
             &self,
             _workspace: &str,
             _source: &super::MorningSource,
-        ) -> Option<crate::activity::morning::MorningPayload> {
-            Some(crate::activity::morning::MorningPayload {
+        ) -> Option<crate::desktop::activity::morning::MorningPayload> {
+            Some(crate::desktop::activity::morning::MorningPayload {
                 label: "Chosen location".into(),
                 presentation: tilo_actions::ResourcePresentation {
                     preview: Some(if self.noisy {

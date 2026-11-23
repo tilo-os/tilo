@@ -13,8 +13,9 @@ use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent as ModelTile,
 use tilo_desktop_surface::page_view::PageStream;
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces,
-    StreamState, SurfaceId, TileSource, seed_tree,
+    StreamState, SurfaceId, TileSource,
 };
+use tilo_session_core::desktop::seed_tree;
 use tilo_webview::test_engine::TestEngine;
 use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::headless::FrameHarness;

@@ -18,7 +18,7 @@ use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
 use crate::window_switcher::{WindowApp, WindowSource};
-use tilo_desktop_surface::names;
+use tilo_session_core::desktop::names;
 
 /// What the overview needs from its host beyond the layout.
 pub trait OverviewHost: WindowSource {

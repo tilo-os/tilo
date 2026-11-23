@@ -257,7 +257,7 @@ struct DownloadedRows {
 pub fn why_in_words(error: &ApiError) -> String {
     match error {
         ApiError::Unavailable { code, .. } if code == "action_provider_unavailable" => {
-            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
+            tilo_session_core::desktop::i18n::t("answer-why-cannot-start")
         }
         other => other.to_string(),
     }
@@ -2151,7 +2151,7 @@ mod tests {
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
             let _settled = ui::motion::testing::settled();
             let mut minter = tilo_desktop_model::IdMinter::new(7);
-            let tree = tilo_desktop_surface::seed_tree(&mut minter, "Visa", Vec::new());
+            let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Visa", Vec::new());
             let workspace = tree
                 .active_workspace()
                 .map(|held| held.id().to_string())

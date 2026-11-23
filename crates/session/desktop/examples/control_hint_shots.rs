@@ -244,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_or_else(|| PathBuf::from("control-hint-shots"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
     ui::i18n::I18nManager::init("en-US");
-    tilo_desktop_surface::i18n::ensure();
+    tilo_session_core::desktop::i18n::ensure();
     let viewport = (1400, 900);
     for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         // Two windows side by side, Chat in front at the screen's edge. Notes was closed and comes

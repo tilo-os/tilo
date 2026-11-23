@@ -21,8 +21,8 @@ use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::Layout;
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::{DesktopHandle, HostAction};
+use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect, LayoutEffect};
 use tilo_session_core::surfaces::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
@@ -1097,8 +1097,8 @@ impl Panel {
         (self.here)(&mut tree);
         let mut rows = roster_rows(&tree);
         let workspace = tree.active_workspace().map_or_else(
-            || tilo_desktop_surface::names::workspace(""),
-            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+            || tilo_session_core::desktop::names::workspace(""),
+            |workspace| tilo_session_core::desktop::names::workspace(&workspace.name),
         );
         let front = tree
             .active_workspace()

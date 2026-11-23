@@ -28,7 +28,7 @@ use ui::window_share::{self, Ask, OpenWindow};
 use ui::{TextRenderer, Theme};
 
 use super::DesktopSurface;
-use crate::navigation::Admitted;
+use tilo_session_core::desktop::navigation::Admitted;
 
 /// The views this desktop runs for the windows that embed them, and the windows its menus offer to
 /// share.

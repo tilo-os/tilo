@@ -1,7 +1,7 @@
 //! Applying queued navigation to the tree, then to the live rows.
 //!
 //! A command is admitted against the tree when it is dispatched (see
-//! `crate::navigation`), and lands here on the next update pass: the tree takes it first, so
+//! `tilo_session_core::desktop::navigation`), and lands here on the next update pass: the tree takes it first, so
 //! peers and the next session read the shell it leaves, and each row is told what changed in it,
 //! in order, so its live widgets follow without being rebuilt.
 
@@ -13,7 +13,7 @@ use ui::widget::Widget as _;
 
 use tilo_desktop_model::{Layout, WindowWidth};
 
-use crate::navigation::{self, Admitted, RouteIds};
+use tilo_session_core::desktop::navigation::{self, Admitted, RouteIds};
 
 use super::paging::pan_row;
 use super::tile_content::descriptor;
@@ -68,9 +68,9 @@ impl DesktopSurface {
                     // The workspace's history is the Activity app's to show: it opens, or comes
                     // forward, and is offered the view.
                     Admitted::Activity(_, view, author) => {
-                        let link = crate::activity::ActivityDeepLink {
+                        let link = tilo_session_core::desktop::activity::ActivityDeepLink {
                             author,
-                            ..crate::activity::ActivityDeepLink::default()
+                            ..tilo_session_core::desktop::activity::ActivityDeepLink::default()
                         };
                         shared.activity_focus = Some((view, link));
                         navigation::resolve_open(&shared.tree, ACTIVITY_APP)

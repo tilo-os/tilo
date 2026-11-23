@@ -115,8 +115,8 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
 
     // And the shell names the controls the sheet is pressed by, as it names an app's window's: the
     // tabs it switches with, by what they say.
-    let people = tilo_desktop_surface::i18n::t("workspace-settings-tab-people");
-    let agents = tilo_desktop_surface::i18n::t("workspace-settings-tab-agents");
+    let people = tilo_session_core::desktop::i18n::t("workspace-settings-tab-people");
+    let agents = tilo_session_core::desktop::i18n::t("workspace-settings-tab-agents");
     let listed = targets(&mut session, &socket);
     for name in [&people, &agents] {
         assert!(
@@ -154,7 +154,7 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     let shell = snapshot(&mut session, &socket, &root.path().join("shell.png"));
     // The empty shell's launchpad is what the person presses to invite someone: the sheet it opens
     // is the session's own, drawn over the shell.
-    let invite = tilo_desktop_surface::i18n::t("invite-title");
+    let invite = tilo_session_core::desktop::i18n::t("invite-title");
     let pressed = crate::common::control(
         &mut session,
         &socket,
@@ -185,7 +185,7 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
          between ({x0}, {y0}) and ({x1}, {y1})"
     );
 
-    let close = tilo_desktop_surface::i18n::t("invite-close");
+    let close = tilo_session_core::desktop::i18n::t("invite-close");
     let listed = targets(&mut session, &socket);
     assert!(
         listed.iter().any(|target| target == &close),

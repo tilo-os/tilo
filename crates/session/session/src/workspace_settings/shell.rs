@@ -15,7 +15,7 @@ use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::{Layout, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;
@@ -787,8 +787,8 @@ fn settings(
     sheet::Settings {
         title: t("workspace-settings-title"),
         name: workspace.map_or_else(
-            || tilo_desktop_surface::names::workspace(""),
-            |ws| tilo_desktop_surface::names::workspace(&ws.name),
+            || tilo_session_core::desktop::names::workspace(""),
+            |ws| tilo_session_core::desktop::names::workspace(&ws.name),
         ),
         role: crate::workspace_people::role_line(workspace.and_then(|ws| ws.role_of(person))),
         close: t("workspace-settings-close"),
@@ -968,8 +968,8 @@ fn going(tree: &Layout, engine: Option<&Engine>) -> Going {
     });
     let leavable = tree.workspaces.len() > 1 && !sole_member;
     let name = workspace.map_or_else(
-        || tilo_desktop_surface::names::workspace(""),
-        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+        || tilo_session_core::desktop::names::workspace(""),
+        |workspace| tilo_session_core::desktop::names::workspace(&workspace.name),
     );
     let decision = sheet::Decision {
         title: tilo_sheets::words("workspace-delete-title", &[("name", name.as_str())]),

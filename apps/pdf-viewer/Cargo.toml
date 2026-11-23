@@ -83,6 +83,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # A reader hosted in a desktop window, as the browser desktop hosts it.
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
+tilo-session-core = { path = "../../crates/session/core" }
 
 [[test]]
 name = "it"

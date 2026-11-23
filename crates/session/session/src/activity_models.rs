@@ -3,7 +3,7 @@
 //! without tools and nothing more. A session with no provider configured never asks, and its
 //! history keeps the deterministic digest.
 
-use tilo_desktop_surface::activity::describer::{self, Job};
+use tilo_session_core::desktop::activity::describer::{self, Job};
 
 use crate::platform::Models;
 

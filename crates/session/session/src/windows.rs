@@ -56,7 +56,7 @@ pub struct Window {
 
 /// What a window with no title is called.
 fn untitled() -> String {
-    tilo_desktop_surface::i18n::t("window-switcher-untitled")
+    tilo_session_core::desktop::i18n::t("window-switcher-untitled")
 }
 
 /// Where a tab stands on the shell while its window is read.
@@ -173,10 +173,10 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let mut focused_tab = None;
     for workspace in workspaces {
         let in_front = workspace.id() == front.id();
-        let workspace_name = tilo_desktop_surface::names::workspace(&workspace.name);
+        let workspace_name = tilo_session_core::desktop::names::workspace(&workspace.name);
         let mut place = 0_i64;
         for (at_strip, strip) in workspace.strips.iter().enumerate() {
-            let strip_name = tilo_desktop_surface::names::strip_named(&strip.name, at_strip);
+            let strip_name = tilo_session_core::desktop::names::strip_named(&strip.name, at_strip);
             let active_group = if in_front {
                 tree.active_group_for(strip.id)
                     .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))

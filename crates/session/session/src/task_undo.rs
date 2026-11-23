@@ -21,8 +21,8 @@ use tilo_actions::remote::{
     ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, InvokeArgument,
     InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionTarget, settle_with,
 };
-use tilo_desktop_surface::activity::TaskRunDocument;
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::activity::TaskRunDocument;
 
 /// How long one invocation's undo may take altogether.
 const UNDO_TIMEOUT: Duration = Duration::from_secs(30);

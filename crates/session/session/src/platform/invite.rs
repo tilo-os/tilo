@@ -136,7 +136,7 @@ impl Workspace for InviteWorkspace {
     fn name(&self) -> Option<String> {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
+                .map(|workspace| tilo_session_core::desktop::names::workspace(&workspace.name))
         })
     }
 

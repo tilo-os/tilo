@@ -2,10 +2,10 @@
 //! through the verb its menu row, its palette row and an agent's invocation name, and the rest
 //! handed to the session.
 
-use tilo_desktop_surface::navigation::{
+use tilo_desktop_surface::surface::window_menu;
+use tilo_session_core::desktop::navigation::{
     ActivityView, ChromeEffect, Destination, LayoutEffect, Route,
 };
-use tilo_desktop_surface::surface::window_menu;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use super::DesktopChrome;

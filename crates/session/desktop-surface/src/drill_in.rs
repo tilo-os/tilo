@@ -239,7 +239,7 @@ impl DrillInList {
                 .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
-                .accessible_name(&crate::i18n::t("drill-in-back")),
+                .accessible_name(&tilo_session_core::desktop::i18n::t("drill-in-back")),
         );
         let style = theme.text(TextRole::Caption);
         let (width, height) = text.measure_style(

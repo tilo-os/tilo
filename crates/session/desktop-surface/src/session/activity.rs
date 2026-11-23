@@ -28,7 +28,9 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use crate::activity::{is_document_write, is_personal, is_read, refused_to_agent};
+use tilo_session_core::desktop::activity::{
+    is_document_write, is_personal, is_read, refused_to_agent,
+};
 
 /// The activity model's reads, as the desktop holds it.
 pub trait ActivityReads {

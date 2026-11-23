@@ -373,7 +373,7 @@ pub(super) fn window_rows(
         // The workspace by the one name every surface names it by: the one the shell holds for
         // it, or the shell's own word for a workspace nobody has named yet. Never the id it is
         // numbered by.
-        let workspace_name = tilo_desktop_surface::names::workspace(&workspace.name);
+        let workspace_name = tilo_session_core::desktop::names::workspace(&workspace.name);
         let active_strip = tree.active_strip.get(&workspace.id());
         for strip in &workspace.strips {
             let strip_active = workspace_active && active_strip == Some(&strip.id);

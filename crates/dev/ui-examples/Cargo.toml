@@ -31,6 +31,7 @@ taffy = { workspace = true, features = ["content_size"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 # The surface a shot draws: the portable desktop surface, its model, and another device's window.
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
+tilo-session-core = { path = "../../session/core" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true

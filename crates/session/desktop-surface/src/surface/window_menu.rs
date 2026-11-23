@@ -41,8 +41,10 @@ use tilo_desktop_model::{
 };
 use ui::icons::Icon;
 
-use crate::i18n::{t, t_args};
-use crate::navigation::{ChromeEffect, Destination, LayoutEffect, RouteIds, Verb, WidthPreset};
+use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::navigation::{
+    ChromeEffect, Destination, LayoutEffect, RouteIds, Verb, WidthPreset,
+};
 
 use super::{DesktopHandle, Shared, WorkspaceShare};
 
@@ -511,7 +513,7 @@ fn show_rows(
                 .theirs(own, held.clone()),
         );
     }
-    if crate::navigation::has_a_second_tab(tree, route) {
+    if tilo_session_core::desktop::navigation::has_a_second_tab(tree, route) {
         rows.push(
             Row::offered(SPLIT_RIGHT, t("window-menu-split-right"))
                 .with_icon(Icon::Columns2)
@@ -529,7 +531,7 @@ fn show_rows(
 /// What closing offers: the tab alone, while the window has another, and the window itself.
 fn closing_rows(tree: &Layout, route: &RouteIds, own: bool, held: Option<String>) -> Vec<Row> {
     let mut rows = Vec::new();
-    if crate::navigation::has_a_second_tab(tree, route) {
+    if tilo_session_core::desktop::navigation::has_a_second_tab(tree, route) {
         rows.push(
             Row::offered(CLOSE, t("window-menu-close"))
                 .with_icon(Icon::X)
@@ -608,7 +610,7 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
         .map(|(index, strip)| {
             Row::offered(
                 move_to_strip_id(strip.id),
-                crate::names::strip_named(&strip.name, index),
+                tilo_session_core::desktop::names::strip_named(&strip.name, index),
             )
         })
         .collect();
@@ -641,7 +643,7 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
         .map(|workspace| {
             Row::offered(
                 move_to_workspace_id(workspace.id()),
-                crate::names::workspace(&workspace.name),
+                tilo_session_core::desktop::names::workspace(&workspace.name),
             )
         })
         .collect();
@@ -886,10 +888,10 @@ fn group_at<'a>(tree: &'a Layout, route: &RouteIds) -> Option<&'a WindowGroup> {
 /// for a command that is not a window menu's.
 pub(super) fn apply(
     shared: &mut super::Shared,
-    command: &crate::navigation::Admitted,
+    command: &tilo_session_core::desktop::navigation::Admitted,
     ops: &mut Vec<super::row_op::RowOp>,
 ) -> bool {
-    use crate::navigation::Admitted;
+    use tilo_session_core::desktop::navigation::Admitted;
     let handled = match command {
         Admitted::MoveToStrip(ids, strip, before) => move_to_strip(shared, *ids, *strip, *before),
         Admitted::JoinGroup(ids, into) => join_group(shared, *ids, ids.strip, *into),
@@ -1261,7 +1263,9 @@ impl crate::surface::DesktopHandle {
         };
         shared
             .queue
-            .push(crate::navigation::Admitted::Maximize(ids, maximized));
+            .push(tilo_session_core::desktop::navigation::Admitted::Maximize(
+                ids, maximized,
+            ));
         true
     }
 
@@ -1274,7 +1278,7 @@ impl crate::surface::DesktopHandle {
         };
         shared
             .queue
-            .push(crate::navigation::Admitted::Fullscreen(ids, fullscreen));
+            .push(tilo_session_core::desktop::navigation::Admitted::Fullscreen(ids, fullscreen));
         true
     }
 

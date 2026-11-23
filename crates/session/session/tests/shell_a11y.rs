@@ -295,8 +295,11 @@ fn a_notice_that_arrives_is_announced_politely() {
         session.shell_control("Notifications").is_some()
     });
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
-            .with_app_name("Settings"),
+        tilo_session_core::desktop::notifications::Notification::new(
+            "Backup finished",
+            "12 GB safe",
+        )
+        .with_app_name("Settings"),
     );
     until(&mut session, "the banner's words", |session| {
         shell_windows(session)

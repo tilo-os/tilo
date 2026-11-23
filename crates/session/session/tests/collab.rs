@@ -274,9 +274,9 @@ fn shell_of_two() -> Layout {
 
 /// The window in front of the shell `session` shows.
 fn front(session: &Session) -> Option<TabId> {
-    session
-        .handle()
-        .read(|tree| tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab))
+    session.handle().read(|tree| {
+        tilo_session_core::desktop::navigation::active_route(tree).map(|route| route.tab)
+    })
 }
 
 /// `device`'s page says where its windows are, and that the person works in `app`.

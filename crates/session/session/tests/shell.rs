@@ -366,7 +366,7 @@ tilo_test_env::scenario! {
         let before = keep(&mut session, "shell-bar-bell");
         session
             .notices()
-            .post_quiet(tilo_desktop_surface::notifications::Notification::new(
+            .post_quiet(tilo_session_core::desktop::notifications::Notification::new(
                 "New mail", "From Ada",
             ));
         until(&mut session, |session| {
@@ -959,8 +959,11 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     until(&mut session, |session| says(session, &time(session).clock));
     // The session posts a notice of its own, as an app's would arrive.
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
-            .with_app_name("Settings"),
+        tilo_session_core::desktop::notifications::Notification::new(
+            "Backup finished",
+            "12 GB safe",
+        )
+        .with_app_name("Settings"),
     );
     until(&mut session, |session| !centre(session).notices.is_empty());
     assert_eq!(centre(&session).notices[0].title, "Backup finished");
@@ -998,8 +1001,11 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
-            .with_app_name("Settings"),
+        tilo_session_core::desktop::notifications::Notification::new(
+            "Backup finished",
+            "12 GB safe",
+        )
+        .with_app_name("Settings"),
     );
     until(&mut session, |session| !centre(session).notices.is_empty());
     // A notice that arrives is unseen: the shell counts what the person has not seen, and its
@@ -2267,7 +2273,7 @@ fn a_press_on_the_centres_clear_all_empties_it() {
         ("Update ready", "Restart"),
     ] {
         session.notices().post(
-            tilo_desktop_surface::notifications::Notification::new(title, body)
+            tilo_session_core::desktop::notifications::Notification::new(title, body)
                 .with_app_name("Settings"),
         );
     }
@@ -2297,7 +2303,7 @@ fn a_press_on_the_centres_undo_brings_the_cleared_notices_back() {
         ("Update ready", "Restart"),
     ] {
         session.notices().post(
-            tilo_desktop_surface::notifications::Notification::new(title, body)
+            tilo_session_core::desktop::notifications::Notification::new(title, body)
                 .with_app_name("Settings"),
         );
     }
@@ -2330,7 +2336,7 @@ fn the_banners_stack_and_say_how_many_wait() {
     until(&mut session, |session| says(session, &time(session).clock));
     for index in 0..4 {
         session.notices().post(
-            tilo_desktop_surface::notifications::Notification::new(
+            tilo_session_core::desktop::notifications::Notification::new(
                 format!("Notice {index}"),
                 "Something happened",
             )

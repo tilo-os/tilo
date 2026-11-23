@@ -10,9 +10,9 @@ use tilo_desktop::verbs::{
     CHROME_RESOURCE, OpenSearch, SHELL_RESOURCE, chrome_resource, shell_resource, tab_resource_id,
 };
 use tilo_desktop_surface::SearchRow;
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
-use tilo_desktop_surface::window;
 use tilo_resource::Effect;
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
+use tilo_session_core::desktop::window;
 
 /// Every resource the desktop publishes: the chrome over the windows, the shell under them with its
 /// windows, a display and the open search, and the launchpad.

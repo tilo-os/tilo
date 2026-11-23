@@ -5,7 +5,7 @@ mod compare;
 mod morning_sources;
 mod runs;
 mod serve;
-pub(crate) use compare::comparison_field_changes;
+pub use compare::comparison_field_changes;
 use compare::{comparison_change_labels, detail_provenance};
 pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_agent};
 
@@ -27,7 +27,7 @@ pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
 use super::{ActivityDeepLink, ActivityHost, ActivityTree, TaskRunUndo, UnavailableActivityHost};
 
-use crate::i18n::{t, t_args};
+use crate::desktop::i18n::{t, t_args};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -1507,7 +1507,7 @@ impl WorkspaceActivityPane {
     pub fn refresh(&mut self, tree: &mut impl ActivityTree) {
         // History reads its rows in the desktop's words: loading them later would change the
         // reading's basis and read the log again.
-        crate::i18n::ensure();
+        crate::desktop::i18n::ensure();
         self.replay_presentation_note = tree.replay_presentation_note();
 
         let name = tree
@@ -3313,7 +3313,7 @@ fn receipt_summary(
     context: &tilo_actions::ActionContext,
     status: &tilo_actions::EffectReceiptStatus,
 ) -> String {
-    crate::i18n::ensure();
+    crate::desktop::i18n::ensure();
     let Some(what) = ui::history_source::sentence::step_summary(context) else {
         return receipt_status_label(status);
     };

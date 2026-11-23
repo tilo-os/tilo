@@ -5,7 +5,7 @@
 //! a workspace comes with — so the record holds the same nothing on every device, and each person
 //! reads it in their own language.
 
-use crate::i18n::{t, t_args};
+use crate::desktop::i18n::{t, t_args};
 
 /// The name a person reads for a workspace called `name` : the name they gave it, or the word for
 /// a workspace nobody has named.
@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn a_workspace_or_a_strip_nobody_named_reads_as_the_shells_own_word() {
-        crate::i18n::ensure();
+        crate::desktop::i18n::ensure();
         assert_eq!(workspace("Research"), "Research");
         assert_eq!(workspace("  "), "Workspace");
         assert_eq!(strip_named("Side", 1), "Side");
@@ -54,7 +54,7 @@ mod tests {
     /// they are: one record, read in the language of the person reading it.
     #[test]
     fn a_german_shell_names_what_nobody_named_in_german() {
-        crate::i18n::ensure();
+        crate::desktop::i18n::ensure();
         ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(workspace(""), "Arbeitsbereich");
         assert_eq!(strip_named("", 0), "Leiste 1");

@@ -596,7 +596,8 @@ fn window_name(session: &Session, strip: &str) -> String {
 /// The window the session has in front, by its key: the one the keyboard goes to.
 fn front_window(session: &Session) -> Option<String> {
     session.handle().read(|tree| {
-        tilo_desktop_surface::navigation::active_route(tree).map(|route| route.group.to_string())
+        tilo_session_core::desktop::navigation::active_route(tree)
+            .map(|route| route.group.to_string())
     })
 }
 

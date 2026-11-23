@@ -8,7 +8,7 @@
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
 
 use super::{DesktopHandle, DesktopSurface, TabId, app_name_of, descriptor, route_of};
-use crate::navigation::Admitted;
+use tilo_session_core::desktop::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
 use ui::window_targets::{TargetAction, WindowTarget};
@@ -368,12 +368,13 @@ impl DesktopSurface {
     /// the agent's mark in a window's bar does.
     pub(super) fn open_run(&self, run: String) {
         let mut shared = self.shared.borrow_mut();
-        let open = crate::navigation::resolve_open(&shared.tree, super::ACTIVITY_APP);
+        let open =
+            tilo_session_core::desktop::navigation::resolve_open(&shared.tree, super::ACTIVITY_APP);
         shared.activity_focus = Some((
-            crate::navigation::ActivityView::Explore,
-            crate::activity::ActivityDeepLink {
+            tilo_session_core::desktop::navigation::ActivityView::Explore,
+            tilo_session_core::desktop::activity::ActivityDeepLink {
                 group_id: Some(run),
-                ..crate::activity::ActivityDeepLink::default()
+                ..tilo_session_core::desktop::activity::ActivityDeepLink::default()
             },
         ));
         shared.queue.push(open);
@@ -603,7 +604,8 @@ impl DesktopSurface {
                 .flat_map(|row| row.groups.iter_mut())
                 .find(|group| group.tabs().iter().any(|shown| shown.id == tab))
             {
-                changed |= group.begin_tab_rename(tab, &crate::i18n::t("window-tab-name"));
+                changed |= group
+                    .begin_tab_rename(tab, &tilo_session_core::desktop::i18n::t("window-tab-name"));
             }
         }
         for (tab, opening) in searches {

@@ -36,7 +36,7 @@ fn retain_newest(history: &mut Vec<Notification>) {
 /// Age `banners` for being `on_screen` at `now` , `held` or not, where `was_held` is whether they
 /// were held at the last call: every copy of the live banners (the log, a stack drawing them) ages
 /// them the same way.
-pub(super) fn present_banners<'n>(
+pub fn present_banners<'n>(
     banners: impl IntoIterator<Item = &'n mut Notification>,
     was_held: &mut bool,
     (now, on_screen, held): (Instant, &[u64], bool),

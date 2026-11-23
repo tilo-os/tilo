@@ -20,8 +20,8 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::LayoutEffect;
 use tilo_resource::Effect;
+use tilo_session_core::desktop::navigation::LayoutEffect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
 use ui::widget::DrawChild;
@@ -63,7 +63,7 @@ pub use testing::{NoticeTiles, PermissiveRules};
 #[must_use]
 pub fn shell_is_empty(tree: &Layout) -> bool {
     tree.active_workspace().is_some_and(|workspace| {
-        tilo_desktop_surface::navigation::active_strip(tree, workspace)
+        tilo_session_core::desktop::navigation::active_strip(tree, workspace)
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
             .is_none_or(|strip| strip.window_groups.is_empty())
     })

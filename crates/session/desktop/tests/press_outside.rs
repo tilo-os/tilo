@@ -9,8 +9,8 @@ use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Part};
 use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopNotifications, DesktopSurface};
+use tilo_session_core::desktop::notifications::Notification;
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
 

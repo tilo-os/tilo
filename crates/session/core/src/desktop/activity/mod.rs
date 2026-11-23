@@ -234,7 +234,7 @@ impl ActivityTree for ActivitySnapshot {
         // never how wide they are or which is in front: those are the device's. The device's own
         // document of the layout records the view it was left in too, so there is nothing to note.
         self.workspace
-            .map(|_| crate::i18n::t("activity-replay-layout-not-recorded"))
+            .map(|_| crate::desktop::i18n::t("activity-replay-layout-not-recorded"))
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         let Some(workspace) = self.workspace else {
@@ -320,7 +320,9 @@ pub trait ActivityHost {
         _source: &morning::MorningSource,
         _command: morning::MorningCommand,
     ) -> Result<(), String> {
-        Err(crate::i18n::t("activity-morning-command-unavailable"))
+        Err(crate::desktop::i18n::t(
+            "activity-morning-command-unavailable",
+        ))
     }
     fn morning_command_status(
         &self,
@@ -376,7 +378,7 @@ pub trait ActivityHost {
     /// # Errors
     /// The host cannot undo here, or refused to start.
     fn undo_task_run(&self, _undo: TaskRunUndo) -> Result<(), String> {
-        Err(crate::i18n::t("activity-undo-task-unavailable"))
+        Err(crate::desktop::i18n::t("activity-undo-task-unavailable"))
     }
     /// How the undo `invocation` ended: the records it was carried out in,
     /// or why nothing was undone. `None` while it runs.

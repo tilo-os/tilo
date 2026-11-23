@@ -70,7 +70,7 @@ pub fn publish(
     can_report: bool,
     #[cfg(target_os = "linux")] lists: &crate::lists::Lists,
 ) {
-    let t = tilo_desktop_surface::i18n::t;
+    let t = tilo_session_core::desktop::i18n::t;
     let offer =
         |id: &str, title: &str, description: Option<&str>, icon: Icon, source: HostActionSource| {
             HostAction {

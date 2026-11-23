@@ -25,8 +25,8 @@ use tilo_app::tilo_workspace_agent::{
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{Layout, UserId, Workspace};
-use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_resource::Id;
+use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::LivePermissions;
 use ui::resource::workspace::WorkspaceResources;

@@ -59,7 +59,7 @@ impl Outcome {
     pub fn not_built(app: &str, technical_details: impl Into<String>) -> Self {
         Self::not_built_because(
             app,
-            crate::i18n::t_args("answer-why-not-built", &[("app", app.into())]),
+            crate::desktop::i18n::t_args("answer-why-not-built", &[("app", app.into())]),
             technical_details,
         )
     }
@@ -73,12 +73,12 @@ impl Outcome {
         cause: impl Into<String>,
         technical_details: impl Into<String>,
     ) -> Self {
-        Self::new(crate::i18n::t_args(
+        Self::new(crate::desktop::i18n::t_args(
             "answer-app-not-opened",
             &[("app", app.into())],
         ))
         .saying(cause)
-        .retryable(crate::i18n::t("answer-try-again"))
+        .retryable(crate::desktop::i18n::t("answer-try-again"))
         .with_technical_details(technical_details)
     }
 
@@ -98,9 +98,9 @@ impl Outcome {
                 "answer-why-from-before-update",
             )
         };
-        Self::new(crate::i18n::t_args(what, &[("app", app.into())]))
-            .saying(crate::i18n::t(why))
-            .retryable(crate::i18n::t("answer-restart"))
+        Self::new(crate::desktop::i18n::t_args(what, &[("app", app.into())]))
+            .saying(crate::desktop::i18n::t(why))
+            .retryable(crate::desktop::i18n::t("answer-restart"))
     }
 
     /// The same outcome with its Restart under way ([`Self::busy`]): the button says what is
@@ -110,9 +110,9 @@ impl Outcome {
     pub fn restarting(mut self, apps: bool) -> Self {
         self.busy = true;
         if self.retry.is_some() {
-            self.retry = Some(crate::i18n::t("answer-restarting"));
+            self.retry = Some(crate::desktop::i18n::t("answer-restarting"));
         }
-        self.why = crate::i18n::t(if apps {
+        self.why = crate::desktop::i18n::t(if apps {
             "answer-why-apps-restarting"
         } else {
             "answer-why-restarting"
@@ -124,12 +124,12 @@ impl Outcome {
     /// having no desktop: Reopen.
     #[must_use]
     pub fn closed_after_update(app: &str) -> Self {
-        Self::new(crate::i18n::t_args(
+        Self::new(crate::desktop::i18n::t_args(
             "answer-app-closed-after-update",
             &[("app", app.into())],
         ))
-        .saying(crate::i18n::t("answer-why-closed-after-update"))
-        .retryable(crate::i18n::t("answer-reopen"))
+        .saying(crate::desktop::i18n::t("answer-why-closed-after-update"))
+        .retryable(crate::desktop::i18n::t("answer-reopen"))
     }
 
     /// The same outcome, saying `why` .
@@ -169,8 +169,8 @@ impl Outcome {
     /// the shell to be drawn on: it says what did not happen and why in the notification centre,
     /// where it waits to be read.
     #[must_use]
-    pub fn notice(&self) -> crate::notifications::Notification {
-        crate::notifications::Notification::new(self.what.clone(), self.why.clone())
+    pub fn notice(&self) -> crate::desktop::notifications::Notification {
+        crate::desktop::notifications::Notification::new(self.what.clone(), self.why.clone())
     }
 }
 
@@ -194,16 +194,16 @@ impl Closed {
         let app = ("app", app.into());
         let (what, why) = match self {
             Self::Crashed => (
-                crate::i18n::t_args("answer-app-stopped", &[app]),
-                crate::i18n::t("answer-why-stopped"),
+                crate::desktop::i18n::t_args("answer-app-stopped", &[app]),
+                crate::desktop::i18n::t("answer-why-stopped"),
             ),
             Self::Memory => (
-                crate::i18n::t_args("answer-app-closed-for-memory", &[app]),
+                crate::desktop::i18n::t_args("answer-app-closed-for-memory", &[app]),
                 String::new(),
             ),
             Self::Runaway => (
-                crate::i18n::t_args("answer-app-closed-for-runaway", &[app]),
-                crate::i18n::t("answer-why-runaway"),
+                crate::desktop::i18n::t_args("answer-app-closed-for-runaway", &[app]),
+                crate::desktop::i18n::t("answer-why-runaway"),
             ),
         };
         Outcome::new(what).saying(why).retryable(retry)
@@ -484,7 +484,7 @@ mod tests {
                 "window-no-sandbox",
                 Outcome::not_built_because(
                     "Settings",
-                    crate::i18n::t("answer-why-no-sandbox"),
+                    crate::desktop::i18n::t("answer-why-no-sandbox"),
                     "tilo-launcher: so.tilo.settings ended: exit status: 1\n\
                      tilo-launcher: this computer allows no user namespaces, which every app's \
                      sandbox is made in",

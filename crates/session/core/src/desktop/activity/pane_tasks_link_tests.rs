@@ -1,6 +1,6 @@
 use super::*;
-use crate::activity::TaskRunDocument;
-use crate::activity::testing::TestTree as WorkspaceTree;
+use crate::desktop::activity::TaskRunDocument;
+use crate::desktop::activity::testing::TestTree as WorkspaceTree;
 use ui::resource::ResourceStore;
 #[derive(Default)]
 pub(super) struct UndoHost {
@@ -312,7 +312,7 @@ fn a_run_the_host_cannot_undo_is_reported_as_refused() {
         pane.agent_undo_notice
             .as_ref()
             .map(|(_, notice)| notice.clone()),
-        Some(crate::i18n::t_args(
+        Some(crate::desktop::i18n::t_args(
             "activity-undo-task-refused",
             &[("detail", why.into())]
         ))

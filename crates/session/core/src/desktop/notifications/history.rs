@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use ui::time::Instant;
 
 use super::model::{Notification, NotificationSeverity};
-use crate::i18n::{t, t_args};
+use crate::desktop::i18n::{t, t_args};
 
 /// Identity of the group a retained notification belongs to. Only the launcher-attributed app id
 /// (and, for a notification mirrored from another device, the caption naming that device) is used:

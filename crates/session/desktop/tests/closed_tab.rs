@@ -9,7 +9,7 @@ use crate::support::shell_and_chrome;
 use crate::support::window;
 use crate::support::windows_of;
 use tilo_desktop_model::{Layout, Strip, StripId, WindowGroup, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::LayoutEffect;
+use tilo_session_core::desktop::navigation::LayoutEffect;
 use winit::keyboard::{Key, ModifiersState};
 
 fn layout_tree(groups: Vec<WindowGroup>) -> Layout {

@@ -9,7 +9,7 @@ use tilo_desktop_model::{GroupId, StripId, Tab, TabId};
 use super::tile_content::{build_tile, descriptor};
 use super::{DesktopSurface, Shared, row_op::RowOp};
 use crate::TileSource;
-use crate::navigation::{Admitted, RouteIds};
+use tilo_session_core::desktop::navigation::{Admitted, RouteIds};
 
 /// Put a window for `app` into the group of the window at `ids` , as its tab right after it: what
 /// an app's request to open beside one of its own tabs does. A tab opened behind stays where it

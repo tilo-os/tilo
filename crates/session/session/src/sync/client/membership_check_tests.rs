@@ -283,7 +283,7 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 fn fresh_session() -> tilo_desktop_surface::DesktopHandle {
     let mut minter = tilo_desktop_model::IdMinter::new(1);
     let (policy, _surface) = tilo_desktop_policy::DesktopPolicy::with_tree(
-        tilo_desktop_surface::seed_tree(&mut minter, "Session", Vec::new()),
+        tilo_session_core::desktop::seed_tree(&mut minter, "Session", Vec::new()),
         1,
     );
     policy.handle().clone()

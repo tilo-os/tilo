@@ -54,7 +54,7 @@ tilo-power-mgmt = { path = "../../system/power", default-features = false }
 tilo-system-resources = { path = "../../platform/tilo-system-resources" }
 # The one now-playing reading, which the shell's music widget, the lock
 # screen's card and the bar's pill show as this panel does.
-tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
+tilo-session-core = { path = "../core" }
 tracing.workspace = true
 # A framework app: the panel's resource, effects and views.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }

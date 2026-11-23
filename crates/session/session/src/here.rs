@@ -164,7 +164,7 @@ fn workspace_here(
         .collect();
     WorkspaceHere {
         workspace: workspace_id,
-        name: tilo_desktop_surface::names::workspace(&workspace.name),
+        name: tilo_session_core::desktop::names::workspace(&workspace.name),
         active,
         people,
         windows,

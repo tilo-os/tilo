@@ -574,7 +574,7 @@ impl Shared {
     /// ([`crate::certification::host_action`]); an ask that went — answered elsewhere, or expired —
     /// is taken back from them.
     pub(crate) fn follow_device_asks(&self) {
-        use tilo_desktop_surface::notifications::NotificationIconKind;
+        use tilo_session_core::desktop::notifications::NotificationIconKind;
 
         use crate::platform::notice::Notice;
 
@@ -594,14 +594,14 @@ impl Shared {
             let found = if asking.via.is_empty() {
                 String::new()
             } else {
-                tilo_desktop_surface::i18n::t_args(
+                tilo_session_core::desktop::i18n::t_args(
                     "pairing-asks-via",
                     &[("device", asking.via.clone().into())],
                 )
             };
             let secs_ago = tilo_clock::unix_now_ms().saturating_sub(asking.asked_at_ms) / 1000;
             let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
-            let body = tilo_desktop_surface::i18n::t_args(
+            let body = tilo_session_core::desktop::i18n::t_args(
                 "pairing-asks-body",
                 &[
                     ("device", asking.label.clone().into()),
@@ -612,22 +612,22 @@ impl Shared {
             );
             self.telling().show(
                 &Notice::new(
-                    tilo_desktop_surface::i18n::t("host-action-source-devices"),
+                    tilo_session_core::desktop::i18n::t("host-action-source-devices"),
                     1,
-                    tilo_desktop_surface::i18n::t("pairing-asks-title"),
+                    tilo_session_core::desktop::i18n::t("pairing-asks-title"),
                     body,
                 )
                 .choosing(vec![
                     (
                         answer(asking.digest, true),
-                        tilo_desktop_surface::i18n::t_args(
+                        tilo_session_core::desktop::i18n::t_args(
                             "pairing-approve",
                             &[("code", asking.code.clone().into())],
                         ),
                     ),
                     (
                         answer(asking.digest, false),
-                        tilo_desktop_surface::i18n::t("pairing-decline"),
+                        tilo_session_core::desktop::i18n::t("pairing-decline"),
                     ),
                 ])
                 .about(NotificationIconKind::Permission)

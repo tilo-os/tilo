@@ -4,8 +4,8 @@
 
 use crate::sync::layout::live_record_as;
 use collab_types::presence::{ShellPresence, ShellWindow};
-use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
+use tilo_session_core::desktop::navigation;
 
 use crate::Session;
 

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-desktop = { path = "../desktop" }
+tilo-session-core = { path = "../core" }
 # A framework app: the banners' resource, effects and surface.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 

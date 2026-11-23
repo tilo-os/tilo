@@ -62,10 +62,10 @@ use ui::{TextRenderer, Theme};
 
 use super::elsewhere;
 pub use super::elsewhere::Elsewhere;
-use crate::i18n::{t, t_args};
 use crate::page_view::{PageStream, PageView};
 use tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect as _;
+use tilo_session_core::desktop::i18n::{t, t_args};
 use ui::widget::DrawChild;
 
 /// The kind of resource a shared surface's tile publishes.

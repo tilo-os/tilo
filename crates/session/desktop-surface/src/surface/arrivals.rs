@@ -431,7 +431,7 @@ impl DesktopSurface {
                         return None;
                     };
                     let title = title_of(&shared.tree, arrival.tab)?;
-                    let text = crate::i18n::t_args(
+                    let text = tilo_session_core::desktop::i18n::t_args(
                         "desktop-window-opened-elsewhere",
                         &[
                             ("person", holder.name.clone().into()),

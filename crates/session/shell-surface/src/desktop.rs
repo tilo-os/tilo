@@ -452,7 +452,7 @@ impl ShellDesktop {
         look: &mut crate::Look<'_>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
     {
-        use tilo_desktop_surface::window;
+        use tilo_session_core::desktop::window;
         let reads = address.action == "look" || address.action == "read";
         let Some(tab) = window::resource_tab(&address.resource).filter(|_| reads) else {
             return Ok(None);

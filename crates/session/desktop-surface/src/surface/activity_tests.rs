@@ -11,7 +11,7 @@ use ui::automerge::AutoCommit;
 use ui::{Arrival, RemoteActions};
 
 use super::*;
-use crate::navigation::ChromeEffect;
+use tilo_session_core::desktop::navigation::ChromeEffect;
 use ui::widget::TileContent;
 
 const WORKSPACE: &str = "workspace-a";
@@ -65,25 +65,27 @@ impl HistorySource for RetainedHistory {
         &mut self,
         tree: &Layout,
         workspace: WorkspaceId,
-    ) -> Option<crate::activity::ActivitySnapshot> {
+    ) -> Option<tilo_session_core::desktop::activity::ActivitySnapshot> {
         let mut desktop = tree.clone();
         desktop.active = workspace;
-        Some(crate::activity::ActivitySnapshot::of_desktop(
-            desktop,
-            self.document.borrow().clone(),
-        ))
+        Some(
+            tilo_session_core::desktop::activity::ActivitySnapshot::of_desktop(
+                desktop,
+                self.document.borrow().clone(),
+            ),
+        )
     }
 
     fn record_histories(
         &mut self,
         _: &Layout,
         _: WorkspaceId,
-    ) -> Vec<crate::activity::DetachedRecordHistory> {
+    ) -> Vec<tilo_session_core::desktop::activity::DetachedRecordHistory> {
         Vec::new()
     }
 
-    fn host(&self) -> Rc<dyn crate::activity::ActivityHost> {
-        Rc::new(crate::activity::UnavailableActivityHost)
+    fn host(&self) -> Rc<dyn tilo_session_core::desktop::activity::ActivityHost> {
+        Rc::new(tilo_session_core::desktop::activity::UnavailableActivityHost)
     }
 
     fn revision(&self) -> u64 {
@@ -106,7 +108,7 @@ impl HistorySource for DeferredHistory {
         &mut self,
         tree: &Layout,
         workspace: WorkspaceId,
-    ) -> Option<crate::activity::ActivitySnapshot> {
+    ) -> Option<tilo_session_core::desktop::activity::ActivitySnapshot> {
         self.retained.workspace_history(tree, workspace)
     }
 
@@ -114,11 +116,11 @@ impl HistorySource for DeferredHistory {
         &mut self,
         tree: &Layout,
         workspace: WorkspaceId,
-    ) -> Vec<crate::activity::DetachedRecordHistory> {
+    ) -> Vec<tilo_session_core::desktop::activity::DetachedRecordHistory> {
         self.retained.record_histories(tree, workspace)
     }
 
-    fn host(&self) -> Rc<dyn crate::activity::ActivityHost> {
+    fn host(&self) -> Rc<dyn tilo_session_core::desktop::activity::ActivityHost> {
         self.retained.host()
     }
 
@@ -152,7 +154,7 @@ impl Served {
             view: String::new(),
             pinned: false,
         };
-        let tree = seed_tree(&mut minter, "Office", vec![tab]);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", vec![tab]);
         let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Activity));
         let mut tree = handle.read(Clone::clone);
         let mut retained = AutoCommit::new();
@@ -414,7 +416,7 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
         wire::argument(&wire::FeedQuery::default()),
     );
     shell.frame();
-    let personal = crate::i18n::t("activity-served-personal-only");
+    let personal = tilo_session_core::desktop::i18n::t("activity-served-personal-only");
     assert_eq!(refusal(&marked), Some(personal.clone()));
     assert_eq!(refusal(everywhere.call()), Some(personal));
     assert!(
@@ -430,7 +432,9 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     assert!(succeeded(&marked));
     assert_eq!(
         refusal(&undone),
-        Some(crate::i18n::t("activity-served-read-only"))
+        Some(tilo_session_core::desktop::i18n::t(
+            "activity-served-read-only"
+        ))
     );
 
     // Someone outside the workspace reads nothing of it.

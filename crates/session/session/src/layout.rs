@@ -3055,10 +3055,10 @@ impl crate::activity::History for LayoutHistory {
         &self,
         tree: &Layout,
         workspace_id: WorkspaceId,
-    ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
+    ) -> Option<tilo_session_core::desktop::activity::ActivitySnapshot> {
         Self::workspace_of(tree, workspace_id)?;
         // A workspace with no layout yet still has a history: what its devices answered.
-        let snapshot = tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
+        let snapshot = tilo_session_core::desktop::activity::ActivitySnapshot::of_layout(
             tree.clone(),
             workspace_id,
             self.layouts.layout(workspace_id).unwrap_or_default(),

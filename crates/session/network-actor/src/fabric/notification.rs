@@ -1,7 +1,7 @@
 //! A notification mirrored from another of the person's devices.
 
 use serde::{Deserialize, Serialize};
-pub use tilo_desktop_surface::notifications::ContinuityNotificationId;
+pub use tilo_session_core::desktop::notifications::ContinuityNotificationId;
 
 /// Longest a mirrored notification may stay up on another device.
 pub const MAX_CONTINUITY_NOTIFICATION_TTL_MS: u64 = 15 * 60 * 1_000;

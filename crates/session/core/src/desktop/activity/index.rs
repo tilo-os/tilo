@@ -58,7 +58,7 @@ impl HistoryOrigin {
 
     pub fn label(&self) -> String {
         match self {
-            Self::Layout => crate::i18n::t("activity-source-workspace"),
+            Self::Layout => crate::desktop::i18n::t("activity-source-workspace"),
             Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
         }
     }
@@ -343,7 +343,7 @@ fn folder_rows(
 /// in place of the change's own summary, never beside it, and never replaces its author, time or
 /// kind.
 fn described(mut rows: Vec<HistoryEntry>, doc: &AutoCommit) -> Vec<HistoryEntry> {
-    crate::activity::describer::shown(&mut rows, doc);
+    crate::desktop::activity::describer::shown(&mut rows, doc);
     rows
 }
 

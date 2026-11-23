@@ -56,7 +56,7 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
             "session-left-workspace",
             Some("session-left-workspace-body"),
         ),
-        &tilo_desktop_surface::names::workspace(name),
+        &tilo_session_core::desktop::names::workspace(name),
     );
 }
 
@@ -1192,7 +1192,7 @@ impl crate::Shared {
                     // The name it is founded under is the one a person reads: a workspace nobody
                     // named keeps no name of its own, and a workspace is founded under a name, so
                     // the word the session reads for it stands in until one is given.
-                    let name = tilo_desktop_surface::names::workspace(&workspace.name);
+                    let name = tilo_session_core::desktop::names::workspace(&workspace.name);
                     let told = name.clone();
                     let founded =
                         crate::landing::off_loop(async move { engine.found(id, &name).await });
@@ -1297,7 +1297,7 @@ impl crate::Shared {
     /// no empty workspace to arrive in and vanish from.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
         let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
-            return Err(tilo_desktop_surface::i18n::t(
+            return Err(tilo_session_core::desktop::i18n::t(
                 "desktop-joined-workspace-unknown",
             ));
         };
@@ -1462,8 +1462,8 @@ impl crate::Shared {
                 })
                 .or(named_on_shell)
                 .map_or_else(
-                    || tilo_desktop_surface::names::workspace(""),
-                    |name| tilo_desktop_surface::names::workspace(&name),
+                    || tilo_session_core::desktop::names::workspace(""),
+                    |name| tilo_session_core::desktop::names::workspace(&name),
                 );
             match &enrolled.result {
                 Ok(()) => {
@@ -2029,7 +2029,7 @@ impl crate::Shared {
 mod tests {
     use super::*;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
-    use tilo_desktop_surface::seed_tree;
+    use tilo_session_core::desktop::seed_tree;
     use tilo_user_identity::DeviceCert;
 
     /// The list as a later session opens it.

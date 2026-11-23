@@ -44,7 +44,7 @@ pub(super) fn detail_provenance(detail: &HistorySelectionDetail) -> String {
 /// the human-facing comparison preview. Resource-native renderers can still use the complete
 /// before/after documents when opened. The fields a comparison changed, with what each held either
 /// side, read from the before and after documents the comparison kept.
-pub(crate) fn comparison_field_changes(
+pub fn comparison_field_changes(
     comparison: &ui::history_source::HistoryComparison,
 ) -> Vec<tilo_actions::remote::workspace_activity::FieldChange> {
     let before = automerge::AutoCommit::load(&comparison.before_document).ok();

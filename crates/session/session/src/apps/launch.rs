@@ -393,7 +393,7 @@ fn sentence_not_opened(event: &Event) -> String {
         } => "answer-why-no-sandbox",
         _ => "answer-why-not-opened",
     };
-    tilo_desktop_surface::i18n::t(key)
+    tilo_session_core::desktop::i18n::t(key)
 }
 
 /// The reason the app whose launch `event` ended gives the person: its own last word when it said
@@ -405,5 +405,5 @@ fn why_not_opened(event: &Event, could_not_open: bool) -> String {
         .last()
         .filter(|_| could_not_open)
         .cloned()
-        .unwrap_or_else(|| tilo_desktop_surface::i18n::t("answer-why-not-opened"))
+        .unwrap_or_else(|| tilo_session_core::desktop::i18n::t("answer-why-not-opened"))
 }

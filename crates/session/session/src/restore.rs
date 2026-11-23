@@ -26,7 +26,7 @@ use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
 use crate::windows_compat::Reopen;
-use tilo_desktop_surface::outcome::Closed;
+use tilo_session_core::desktop::outcome::Closed;
 
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.

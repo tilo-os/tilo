@@ -17,9 +17,9 @@ use tilo_actions::surface::{
     FieldType, ParamSurface, RESOURCE_UNIT, Surface, TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionSpec, ResourceSpec, RiskLevel};
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_resource::Effect;
 use tilo_resource::effect::EffectDecl;
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
 
 /// The package id a shell `use` s.
 pub const APP: &str = "so.tilo.session";

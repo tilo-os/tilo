@@ -2,7 +2,7 @@
 
 use super::paging::panned_to;
 use super::*;
-use crate::navigation::{ChromeEffect, LayoutEffect, Route};
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, Route};
 use ui::automerge::AutoCommit;
 use ui::search::Scope;
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
@@ -76,7 +76,7 @@ pub(super) fn shell_with(
 ) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, windows);
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     DesktopSurface::new(tree, 7, tiles)
 }
 
@@ -91,7 +91,7 @@ pub(super) fn one_window_shell(windows: usize) -> (DesktopSurface, DesktopHandle
 pub(super) fn tabbed_shell(tabbed: usize, alone: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, tabbed.saturating_add(alone));
-    let mut tree = seed_tree(&mut minter, "Office", tabs);
+    let mut tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let strip = &mut tree.workspaces[0].strips[0];
     let id = strip.window_groups[0].id;
     let tabs: Vec<Tab> = strip
@@ -317,7 +317,7 @@ fn the_all_apps_row_opens_the_catalogue() {
     for _ in 0..3 {
         frame.relayout();
     }
-    let all_apps = crate::i18n::t("search-launcher-all-apps");
+    let all_apps = tilo_session_core::desktop::i18n::t("search-launcher-all-apps");
     // The row under the apps: one step down from the best app, then Enter.
     frame.key("Down");
     for _ in 0..3 {
@@ -855,15 +855,23 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
         }
     }
     let mut minter = IdMinter::new(7);
-    let tree = seed_tree(&mut minter, "Office", Vec::new());
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", Vec::new());
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Relaunch));
     let notifications = DesktopNotifications::default();
-    let mut notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+    let mut notice = tilo_session_core::desktop::notifications::Notification::new(
+        "Timer finished",
+        "Tea is ready",
+    );
     notice.app_id = Some("so.tilo.clocks".into());
     notice.app_name = Some("Clocks".into());
     let wall = ui::time::SystemTime::now();
-    let kept =
-        crate::notifications::encode_history(&[notice], |_| false, wall, ui::time::now()).unwrap();
+    let kept = tilo_session_core::desktop::notifications::encode_history(
+        &[notice],
+        |_| false,
+        wall,
+        ui::time::now(),
+    )
+    .unwrap();
     notifications.restore_kept(&kept, wall).unwrap();
     surface.set_notifications(notifications.clone());
     let mut centre = NotificationLayer::new(notifications.clone());
@@ -885,7 +893,10 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
     let notifications = DesktopNotifications::default();
     surface.set_notifications(notifications.clone());
     assert_eq!(notifications.counts(), (0, 0));
-    let notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+    let notice = tilo_session_core::desktop::notifications::Notification::new(
+        "Timer finished",
+        "Tea is ready",
+    );
     let id = notice.id;
     let shown = ui::time::now();
     let expires = shown + notice.dismiss_after;
@@ -1737,7 +1748,7 @@ fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::
 /// A desktop of one window with someone else's Notes, just arrived from the workspace, three
 /// windows further along the strip than the view reaches.
 fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
-    crate::i18n::ensure();
+    tilo_session_core::desktop::i18n::ensure();
     let (width, height) = (1440_u32, 900_u32);
     let (surface, handle) = desktop(1);
     handle.set_viewport_width(f64::from(width));
@@ -2315,7 +2326,7 @@ fn a_windows_own_icon_is_on_its_tab() {
         view: String::new(),
         pinned: false,
     };
-    let tree = seed_tree(&mut minter, "Office", vec![tab]);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
@@ -2536,14 +2547,14 @@ fn a_swipe_on_a_strip_that_barely_overflows_stops_at_its_end_and_never_turns_bac
 fn unread_notices_stay_unread_across_a_restart() {
     let wall = ui::time::SystemTime::now();
     let before = DesktopNotifications::default();
-    before.post_quiet(crate::notifications::Notification::new("Seen", ""));
+    before.post_quiet(tilo_session_core::desktop::notifications::Notification::new("Seen", ""));
     let _ = before.take_history_dirty();
     before.mark_read();
     assert!(
         before.take_history_dirty(),
         "reading the centre is kept with it"
     );
-    before.post_quiet(crate::notifications::Notification::new("New", ""));
+    before.post_quiet(tilo_session_core::desktop::notifications::Notification::new("New", ""));
     assert_eq!(before.unread(), 1);
     let kept = before.kept(wall).unwrap();
     let after = DesktopNotifications::default();
@@ -2566,7 +2577,7 @@ fn unread_notices_stay_unread_across_a_restart() {
 fn agent_opens_notes_out_of_sight(
     before: impl FnOnce(&mut ui::headless::FrameHarness),
 ) -> (ui::headless::FrameHarness, DesktopHandle, TabId, Route) {
-    crate::i18n::ensure();
+    tilo_session_core::desktop::i18n::ensure();
     let (width, height) = (1440_u32, 900_u32);
     let (surface, handle) = desktop(1);
     handle.set_viewport_width(f64::from(width));

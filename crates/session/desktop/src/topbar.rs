@@ -31,7 +31,7 @@ use crate::chrome::{
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::Layout;
-use tilo_desktop_surface::names;
+use tilo_session_core::desktop::names;
 use ui::TextRole;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextStyle;

@@ -2864,7 +2864,7 @@ fn a_german_bar_names_what_nobody_named_in_german() {
     crate::i18n::ensure();
     ui::i18n::I18nManager::set_locale("de-DE");
     let mut minter = tilo_desktop_model::IdMinter::default();
-    let tree = tilo_desktop_surface::seed_tree(&mut minter, "", Vec::new());
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "", Vec::new());
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
     lay_out_and_draw(&mut bar, 1600.0);
@@ -2886,7 +2886,7 @@ fn a_german_bar_names_what_nobody_named_in_german() {
         "the shell's own strip keeps no name, so the bar calls it by its place, in German"
     );
     assert_eq!(
-        tilo_desktop_surface::names::strip_named("", 0),
+        tilo_session_core::desktop::names::strip_named("", 0),
         "Leiste 1",
         "and the strip switcher names it in German where it is listed"
     );

@@ -6,7 +6,7 @@ use tilo_action_policy::Grantee;
 use tilo_actions::remote::workspace_activity as wire;
 
 use super::super::{ActivityView, WorkspaceActivityPane};
-use crate::activity::testing::{TestHost, TestTree};
+use crate::desktop::activity::testing::{TestHost, TestTree};
 
 /// A workspace another person changed three times since this device arrived.
 fn workspace_a_peer_changed() -> (TestTree, tilo_desktop_model::WorkspaceId) {
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
         let mut pane = pane();
         pane.refresh(&mut tree);
         let entry = pane.entries()[0].id;
-        pane.focus_deep_link(&crate::activity::ActivityDeepLink {
+        pane.focus_deep_link(&crate::desktop::activity::ActivityDeepLink {
             entry_id: Some(*entry.as_bytes()),
             ..Default::default()
         });
@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(first.view, wire::View::History, "a change shows in History");
         let revision = pane.served_revision();
-        pane.focus_deep_link(&crate::activity::ActivityDeepLink {
+        pane.focus_deep_link(&crate::desktop::activity::ActivityDeepLink {
             author: Some("Ada".into()),
             ..Default::default()
         });

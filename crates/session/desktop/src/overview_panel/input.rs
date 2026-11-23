@@ -14,7 +14,7 @@ use super::{Naming, OverviewPanel, OverviewPick};
 use crate::overview::{OverviewPress, PressEnd, PressSource};
 use crate::strip_switcher::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 use crate::text_entry::{self, Edit, Mods};
-use tilo_desktop_surface::names;
+use tilo_session_core::desktop::names;
 
 impl OverviewPanel {
     /// A key while the overview is up. Returns whether it was taken.

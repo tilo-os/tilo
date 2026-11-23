@@ -5,7 +5,7 @@ use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
 use super::{Shared, row_op::RowOp};
 use crate::TileSource;
-use crate::navigation;
+use tilo_session_core::desktop::navigation;
 
 /// Put a window for `app` after the focused one of the shown strip, or at
 /// the place `at` in it (a drop's [`StripPart::index`]), over the
@@ -177,7 +177,10 @@ impl super::DesktopHandle {
         }
         shared
             .queue
-            .push(crate::navigation::Admitted::LaunchAt(app.to_owned(), index));
+            .push(tilo_session_core::desktop::navigation::Admitted::LaunchAt(
+                app.to_owned(),
+                index,
+            ));
         shared.wake.wake();
         Ok(())
     }

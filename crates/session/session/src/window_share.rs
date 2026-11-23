@@ -48,13 +48,13 @@ use tilo_desktop_model::window_share::{
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
-use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::{DesktopHandle, PeerStreamStart, WhyEnded};
 use tilo_live::live::Track;
 use tilo_live::live_session::LiveSession;
 use tilo_live::video::{Layer, VideoObject};
 use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
+use tilo_session_core::desktop::i18n::t;
 use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
 use tilo_window_share::streaming::InputEvent as SharedInput;
@@ -2689,10 +2689,7 @@ pub struct WindowSharesRoot;
 /// What a person asks of the shares, declared once: share a window with the workspace, stop it,
 /// let the members viewing it control it, show another member's window, stop showing it.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(
-    operation = "tilo.session.window-share",
-    catalogue = "../desktop-surface/locales"
-)]
+#[effect(operation = "tilo.session.window-share", catalogue = "../core/locales")]
 pub enum ShareEffect {
     /// Share a window with the workspace
     #[effect(kind = "undoable", label = "session-window-share-share")]

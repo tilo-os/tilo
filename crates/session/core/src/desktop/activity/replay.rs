@@ -145,11 +145,11 @@ fn replay_checkpoint<T: ActivityTree>(
     for workspace in &snapshot.workspaces {
         let multiple_strips = workspace.strips.len() > 1;
         for (at, strip) in workspace.strips.iter().enumerate() {
-            let workspace_name = crate::names::workspace(&workspace.name);
+            let workspace_name = crate::desktop::names::workspace(&workspace.name);
             let name = if multiple_strips {
                 format!(
                     "{workspace_name} · {}",
-                    crate::names::strip_named(&strip.name, at)
+                    crate::desktop::names::strip_named(&strip.name, at)
                 )
             } else {
                 workspace_name

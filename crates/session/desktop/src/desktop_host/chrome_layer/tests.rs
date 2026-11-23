@@ -15,8 +15,8 @@ use crate::topbar::TopBarChrome;
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostAction, HostActionSource};
+use tilo_session_core::desktop::navigation::ChromeEffect;
 
 fn en() {
     ui::i18n::I18nManager::init("en-US");
@@ -477,7 +477,7 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
     let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
     let shown = handle.read(|tree| {
         tree.active_workspace()
-            .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
+            .map(|workspace| tilo_session_core::desktop::names::workspace(&workspace.name))
     });
     assert_eq!(menu.marked(), shown, "the workspace shown is marked");
     assert!(

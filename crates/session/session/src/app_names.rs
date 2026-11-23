@@ -44,7 +44,7 @@ pub(crate) fn program_sender_name(
     desktop_entry: Option<&str>,
 ) -> String {
     let program_name = program.rsplit('/').next().unwrap_or(program);
-    match tilo_desktop_surface::notifications::sender_words(said) {
+    match tilo_session_core::desktop::notifications::sender_words(said) {
         Some(words) if !words.eq_ignore_ascii_case(program_name) => words,
         Some(_) => entry_name(desktop_entry)
             .unwrap_or_else(|| crate::i18n::t("notification-sender-terminal")),

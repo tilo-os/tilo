@@ -30,11 +30,11 @@ use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 
 use crate::device_lists::Surfaces;
-use tilo_desktop_surface::navigation::active_route;
 use tilo_desktop_surface::surface::WindowMenuRow;
 use tilo_desktop_surface::surface::window_menu;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::navigation::active_route;
 use ui::shortcut_table::{KeyChord, ShortcutAction};
 
 /// The window menu's resource in the session's catalogue.

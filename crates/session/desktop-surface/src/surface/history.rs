@@ -14,12 +14,12 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_desktop_model::{Layout, TabId, WorkspaceId};
 
-use crate::activity::{
+use crate::session::ActivityReads;
+use tilo_session_core::desktop::activity::{
     ActivityHost, ActivitySnapshot, ActivityView as PaneView, DetachedRecordHistory,
     WorkspaceActivityPane,
 };
-use crate::navigation::ActivityView;
-use crate::session::ActivityReads;
+use tilo_session_core::desktop::navigation::ActivityView;
 
 /// Where a surface's workspace history comes from. Without one, Catch up,
 /// Explore and Replay stay unavailable.
@@ -120,7 +120,11 @@ pub(super) trait Served: ActivityReads {
     fn end_summary(&mut self);
     /// Offer `view` to the app, at what `link` names when it names anything (one person's
     /// doings, one run).
-    fn focus(&mut self, view: ActivityView, link: crate::activity::ActivityDeepLink);
+    fn focus(
+        &mut self,
+        view: ActivityView,
+        link: tilo_session_core::desktop::activity::ActivityDeepLink,
+    );
     /// Whether a view is offered that the app has not shown yet.
     fn offers_focus(&self) -> bool;
     /// The model closes: remember what this device has now seen.
@@ -223,8 +227,12 @@ impl Served for WorkspaceActivity {
         self.pane.end_summary(self.workspace);
     }
 
-    fn focus(&mut self, view: ActivityView, link: crate::activity::ActivityDeepLink) {
-        if link == crate::activity::ActivityDeepLink::default() {
+    fn focus(
+        &mut self,
+        view: ActivityView,
+        link: tilo_session_core::desktop::activity::ActivityDeepLink,
+    ) {
+        if link == tilo_session_core::desktop::activity::ActivityDeepLink::default() {
             self.pane.focus_view(pane_view(view));
         } else {
             self.pane.focus_deep_link(&link);

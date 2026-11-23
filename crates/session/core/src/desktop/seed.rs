@@ -54,14 +54,14 @@ pub fn seed_tree_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::names;
+    use crate::desktop::names;
 
     /// The shell a host starts from keeps no name of its own: what nobody named is the shell's word
     /// to say, in the language of whoever reads it, so the record holds the same nothing on every
     /// device.
     #[test]
     fn a_fresh_shell_stores_no_name_beside_its_workspace_and_strip() {
-        crate::i18n::ensure();
+        crate::desktop::i18n::ensure();
         let mut minter = IdMinter::default();
         let tree = seed_tree(&mut minter, "", Vec::new());
         let workspace = &tree.workspaces[0];

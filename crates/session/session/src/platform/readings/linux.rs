@@ -11,9 +11,9 @@ use tilo_connectivity_service::model::{LinkKind, Network};
 use tilo_desktop::chrome::{
     ActiveMediaUse, LinkKind as BarLinkKind, LinkStatus, MediaKind, VolumeState,
 };
-use tilo_desktop_surface::now_playing::NowPlaying;
 use tilo_power_mgmt::BatteryState;
 use tilo_service::Services;
+use tilo_session_core::desktop::now_playing::NowPlaying;
 use tilo_session_power::{BATTERY, Battery};
 
 use super::{Charge, Handover, Machine, Media, Reading};
@@ -94,7 +94,7 @@ struct Playing {
 
 impl Media for Playing {
     fn playing(&self) -> Option<NowPlaying> {
-        tilo_desktop_surface::now_playing::now_playing(
+        tilo_session_core::desktop::now_playing::now_playing(
             &self.players,
             Some(self.at),
             Instant::now(),
@@ -110,7 +110,7 @@ impl Media for Playing {
             app_id: front.app_id.clone()?,
             title: front.headline(),
             url: front.url.clone()?,
-            position_ms: tilo_desktop_surface::now_playing::playhead_at(
+            position_ms: tilo_session_core::desktop::now_playing::playhead_at(
                 front,
                 Some(self.at),
                 Instant::now(),

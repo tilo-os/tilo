@@ -19,10 +19,7 @@ use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_desktop_surface::notifications::{
-    self, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
-    NotificationPerson, QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
-};
+use tilo_desktop_surface::notifications::BannerAsk;
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
@@ -30,6 +27,11 @@ use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifica
 use tilo_quick_settings::hosted::NotificationCentre;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::notifications;
+use tilo_session_core::desktop::notifications::{
+    ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
+    RemoteNotificationRoute, ScheduledNotificationTarget,
+};
 use tilo_session_power::PowerLink;
 
 use crate::app_icons;

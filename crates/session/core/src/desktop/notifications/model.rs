@@ -7,7 +7,7 @@ use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::toast::{Dwell, ToastKind};
 
-use crate::i18n::t_args;
+use crate::desktop::i18n::t_args;
 
 /// Severity tier for a notification, controlling the leading-dot colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -30,7 +30,7 @@ impl NotificationSeverity {
         }
     }
 
-    pub fn color(self, theme: &Theme) -> vello::peniko::Color {
+    pub fn color(self, theme: &Theme) -> ui::vello::peniko::Color {
         match self {
             Self::Info => theme.tokens.colors.semantic.info,
             Self::Warning => theme.tokens.colors.semantic.warning,
@@ -409,7 +409,7 @@ impl Notification {
             .clone()
             .or_else(|| self.app_id.clone())
             .or_else(|| self.from.as_ref().map(|from| from.name.clone()))
-            .unwrap_or_else(|| crate::i18n::t("notification-group-system"))
+            .unwrap_or_else(|| crate::desktop::i18n::t("notification-group-system"))
     }
 }
 

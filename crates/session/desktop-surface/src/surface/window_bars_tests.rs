@@ -9,7 +9,7 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{AppKind, AppWidget, TaffyTreeExt as _, TileContent, TileHost, Widget};
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
-use crate::surface::{DesktopSurface, TileSource, seed_tree};
+use crate::surface::{DesktopSurface, TileSource};
 
 /// An app as the apps moved to the window bar's parts are written: it declares its parts with
 /// [`ui::window_toolbar::declare`] and reads what the person did with
@@ -98,7 +98,7 @@ fn each_apps_parts_stand_in_its_windows_bar_and_a_press_reaches_it() {
     let apps: Vec<(&'static str, Rc<RefCell<Vec<ToolbarEvent>>>)> =
         vec![("new-contact", Rc::default()), ("compose", Rc::default())];
     let action_of = |tab: u64| apps[usize::try_from(tab % 2).unwrap_or(0)].0;
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(PartApps(apps.clone())));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
@@ -171,7 +171,7 @@ fn a_bar_press_with_nothing_after_it_reaches_its_app_in_the_frames_asked_for() {
     }];
     let heard: Rc<RefCell<Vec<ToolbarEvent>>> = Rc::default();
     let apps = vec![("back", Rc::clone(&heard)), ("back", Rc::clone(&heard))];
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(PartApps(apps)));
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     handle.set_wake({

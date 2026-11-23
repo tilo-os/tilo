@@ -5,7 +5,7 @@
 //!
 //! Wire types ported from the qOS browser runtime (PR 541,
 //! `desktop_navigation.rs`) onto `tilo-desktop-model`.
-use crate::i18n::t;
+use crate::desktop::i18n::t;
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{GroupId, Layout, StripId, TabId, WindowGroup, Workspace, WorkspaceId};
 use tilo_resource::Effect;
@@ -1437,7 +1437,7 @@ fn admit_open(tree: &Layout, app: &str) -> Result<Admitted, String> {
 
 /// What [`Admitted::Open`] of `app` does on `tree` now: select the shown strip's window of it, or
 /// launch one.
-pub(crate) fn resolve_open(tree: &Layout, app: &str) -> Admitted {
+pub fn resolve_open(tree: &Layout, app: &str) -> Admitted {
     match admit_open(tree, app) {
         Ok(Admitted::Select(ids)) => Admitted::Select(ids),
         _ => Admitted::Launch(app.to_owned(), false),
@@ -1738,8 +1738,8 @@ pub fn snapshot_with(
                         app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
                             .map(String::from),
                         label: tab.title.clone(),
-                        strip_label: crate::names::strip_named(&strip.name, at),
-                        workspace_label: crate::names::workspace(&workspace.name),
+                        strip_label: crate::desktop::names::strip_named(&strip.name, at),
+                        workspace_label: crate::desktop::names::workspace(&workspace.name),
                     });
                 }
             }

@@ -11,11 +11,11 @@ use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use tilo_actions::remote::workspace_activity as wire;
 
 use super::TERMINAL_APP;
-use crate::activity::index::DetachedRecordHistory;
-use crate::activity::pane::{ActivityView, WorkspaceActivityPane};
-use crate::activity::testing::{TestHost, TestTree as WorkspaceTree};
-use crate::activity::{ActivityHost, TaskRunDocument, TaskRunUndo};
-use crate::i18n::t;
+use crate::desktop::activity::index::DetachedRecordHistory;
+use crate::desktop::activity::pane::{ActivityView, WorkspaceActivityPane};
+use crate::desktop::activity::testing::{TestHost, TestTree as WorkspaceTree};
+use crate::desktop::activity::{ActivityHost, TaskRunDocument, TaskRunUndo};
+use crate::desktop::i18n::t;
 
 const OUTPUT_HASH: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 const OUTPUT: &[u8] = b"\x1b[1m   Compiling\x1b[0m signup v0.1.0\r\nrunning 2 tests\r\ntest signs_up ... ok\r\ntest rejects_taken_names ... FAILED\r\n\r\ntest result: FAILED. 1 passed; 1 failed\r\n";
@@ -614,7 +614,7 @@ impl Connection {
             doc.put(ROOT, "title", *file).unwrap();
             let context = tilo_actions::ActionContext::for_resource(record.as_str(), "note", *file)
                 .with_app(NOTES_APP, "Notes")
-                .with_described(crate::activity::testing::verb("Write the note"))
+                .with_described(crate::desktop::activity::testing::verb("Write the note"))
                 .with_group(
                     GROUP,
                     "Write the notes",

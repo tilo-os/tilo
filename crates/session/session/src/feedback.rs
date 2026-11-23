@@ -48,7 +48,7 @@ impl Destination {
         Recipient::found(
             RecipientKind::Feedback,
             self.channel.clone(),
-            tilo_desktop_surface::i18n::t("session-feedback-destination"),
+            tilo_session_core::desktop::i18n::t("session-feedback-destination"),
         )
     }
 

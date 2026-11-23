@@ -1019,7 +1019,10 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
         assert!(
             matches!(
                 action.action_type().operation_type.as_deref(),
-                Some(tilo_desktop_surface::window::LOOK | tilo_desktop_surface::window::READ)
+                Some(
+                    tilo_session_core::desktop::window::LOOK
+                        | tilo_session_core::desktop::window::READ
+                )
             ) || action.id == "focus"
                 || action.id == "close-tab",
             "the window's row offers {}, which reaches into another desktop's window",

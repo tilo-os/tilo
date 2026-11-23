@@ -122,7 +122,7 @@ pub(super) fn workspace(
                 tree.active_workspace().map(|held| {
                     (
                         held.id().to_string(),
-                        tilo_desktop_surface::names::workspace(&held.name),
+                        tilo_session_core::desktop::names::workspace(&held.name),
                     )
                 })
             })
@@ -137,7 +137,7 @@ pub(super) fn workspace(
                 .map(|held| {
                     (
                         held.id().to_string(),
-                        tilo_desktop_surface::names::workspace(&held.name),
+                        tilo_session_core::desktop::names::workspace(&held.name),
                     )
                 })
         })

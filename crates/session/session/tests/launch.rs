@@ -1373,12 +1373,14 @@ fn starts(records: &Path) -> usize {
 fn open_from_the_shell(session: &Session, app: &str) {
     session
         .handle()
-        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-            app: app.to_owned(),
-            beside: None,
-            background: None,
-            float: None,
-        })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                app: app.to_owned(),
+                beside: None,
+                background: None,
+                float: None,
+            },
+        )
         .expect("the session takes the open");
 }
 
@@ -1448,7 +1450,7 @@ fn stand_in(session: &Session, workspace: &str) {
     session
         .handle()
         .dispatch(
-            tilo_desktop_surface::navigation::ChromeEffect::SwitchWorkspace {
+            tilo_session_core::desktop::navigation::ChromeEffect::SwitchWorkspace {
                 workspace: Some(slot),
                 delta: None,
             },

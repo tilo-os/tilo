@@ -11,8 +11,8 @@
 
 #[cfg(test)]
 const CATALOGS: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ("en-US", include_str!("../../locales/en-US.ftl")),
+    ("de-DE", include_str!("../../locales/de-DE.ftl")),
 ];
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
@@ -72,19 +72,19 @@ mod tests {
         // why without blaming the person for it.
         {
             assert_eq!(
-                crate::outcome::Closed::Crashed
+                crate::desktop::outcome::Closed::Crashed
                     .outcome("Canvas", t("answer-reopen"))
                     .detail(),
                 "Canvas stopped working. It ended unexpectedly."
             );
             assert_eq!(
-                crate::outcome::Closed::Memory
+                crate::desktop::outcome::Closed::Memory
                     .outcome("Canvas", t("answer-reopen"))
                     .detail(),
                 "Canvas was closed to free memory"
             );
             assert_eq!(
-                crate::outcome::Closed::Runaway
+                crate::desktop::outcome::Closed::Runaway
                     .outcome("Canvas", t("answer-reopen"))
                     .detail(),
                 "Canvas was using too much memory. It was closed so the rest keeps running."
@@ -425,7 +425,7 @@ mod copy_lint_tests {
     /// the catalogue; the surface's navigation contract is a wire format.
     #[test]
     fn copy_builders_take_catalogue_strings_not_english_literals() {
-        for dir in ["activity", "notifications"] {
+        for dir in ["desktop/activity", "desktop/notifications"] {
             tilo_copy_lint::CopyLint::new(
                 concat!(env!("CARGO_MANIFEST_DIR"), "/src/").to_owned() + dir,
             )

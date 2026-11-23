@@ -26,9 +26,11 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
-use super::history::relative_time;
-use super::model::{INLINE_REPLY, Notification, NotificationSeverity, lock_suppressed_label};
-use crate::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::notifications::relative_time;
+use tilo_session_core::desktop::notifications::{
+    INLINE_REPLY, Notification, NotificationSeverity, lock_suppressed_label,
+};
 use ui::TextRole;
 use ui::widget::toast::Dwell;
 
@@ -158,7 +160,7 @@ impl BannerFeed {
     fn present(&mut self, now: Instant, on_screen: &[u64], held: bool) -> bool {
         let before: Vec<Dwell> = self.dwells().collect();
         let was_held = self.held;
-        super::log::present_banners(
+        tilo_session_core::desktop::notifications::present_banners(
             self.banners
                 .iter_mut()
                 .map(|banner| &mut banner.notification),
@@ -1277,11 +1279,9 @@ impl NotificationStack {
             .time(time)
             // A card that offers its own way out ("Not now", "Dismiss") needs no second one in its
             // corner.
-            .closable(
-                !actions
-                    .iter()
-                    .any(|(key, _)| key == super::model::NOT_NOW_ACTION || key == "dismiss"),
-            )
+            .closable(!actions.iter().any(|(key, _)| {
+                key == tilo_session_core::desktop::notifications::NOT_NOW_ACTION || key == "dismiss"
+            }))
             .actionable(!n.actions.is_empty());
         // A sender that takes an inline reply gets the field, when this stack's host can carry the
         // answer back. The one being typed in holds what the person has written so far.

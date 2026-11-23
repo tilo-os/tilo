@@ -127,11 +127,13 @@ fn a_tab_widens_to_the_smallest_size_its_window_keeps() {
     shell.with_policy(|policy| {
         policy
             .handle()
-            .dispatch(tilo_desktop_surface::navigation::ChromeEffect::SetWidth {
-                group: group.to_string(),
-                permille: Some(300),
-                preset: None,
-            })
+            .dispatch(
+                tilo_session_core::desktop::navigation::ChromeEffect::SetWidth {
+                    group: group.to_string(),
+                    permille: Some(300),
+                    preset: None,
+                },
+            )
             .expect("a narrow share");
     });
     let mapped = [(fixed.clone(), LayoutRect::new(at, size.into()))];

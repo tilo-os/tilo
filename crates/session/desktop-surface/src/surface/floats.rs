@@ -47,19 +47,50 @@ fn workspace_with(tree: &Layout, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
-/// A window the shell floated or put back in its strip: the person asked for it, or the window
-/// opened as a card. The host makes it an arranging action of the workspace's layout
-/// ([`super::DesktopHandle::take_asked_floats`]); until then the shell shows the window as asked.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AskedFloat {
-    /// The window in front of the group, which the action names.
-    pub tab: TabId,
-    pub group: u64,
-    /// Where it floats; `None` puts it back in its strip.
-    pub float: Option<FloatPlace>,
+pub use tilo_session_core::desktop::tree::AskedFloat;
+
+impl tilo_session_core::desktop::tree::DesktopTree for super::DesktopHandle {
+    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) {
+        self.read(|tree| read(tree));
+    }
+
+    fn mint_id(&self) -> u64 {
+        Self::mint_id(self)
+    }
+
+    fn replace_tree(&self, tree: Layout) {
+        Self::replace_tree(self, tree);
+    }
+
+    fn focus_tab(&self, tab: TabId) -> bool {
+        Self::focus_tab(self, tab)
+    }
+
+    fn take_asked_floats(&self) -> Vec<AskedFloat> {
+        std::mem::take(&mut self.shared.borrow_mut().asked_floats)
+    }
+
+    fn revision(&self) -> u64 {
+        Self::revision(self)
+    }
+
+    fn report_drawn(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        group: tilo_desktop_model::GroupId,
+        height: u32,
+    ) -> bool {
+        Self::report_drawn(self, workspace, group, height)
+    }
 }
 
 impl super::DesktopHandle {
+    /// The person's layout's view of this shell's tree.
+    #[must_use]
+    pub fn tree(&self) -> tilo_session_core::desktop::tree::TreeHandle {
+        tilo_session_core::desktop::tree::TreeHandle::new(std::rc::Rc::new(self.clone()))
+    }
+
     /// The windows the person floated or put back since the last call, in the order asked.
     pub fn take_asked_floats(&self) -> Vec<AskedFloat> {
         std::mem::take(&mut self.shared.borrow_mut().asked_floats)

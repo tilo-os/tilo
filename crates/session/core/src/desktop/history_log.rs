@@ -98,7 +98,7 @@ pub fn register_authors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::activity::{ActivitySnapshot, WorkspaceActivityPane};
+    use crate::desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
     use tilo_automerge::ApplyIncoming as _;
     use tilo_desktop_model::desktop_doc;
     use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent};
@@ -156,7 +156,7 @@ mod tests {
         {
             let mut minter = IdMinter::new(7);
             let notes = app(&mut minter, "Notes");
-            let tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+            let tree = crate::desktop::seed_tree(&mut minter, "Studio", vec![notes]);
             let mut doc = AutoCommit::new();
             desktop_doc::seed(&mut doc, &tree);
             commit(&mut doc, "Ada", 1_000);
@@ -216,7 +216,7 @@ mod tests {
             let first = app(&mut minter, "Notes");
             let second = app(&mut minter, "Sheets");
             let second_id = second.id;
-            let mut tree = crate::seed_tree(&mut minter, "Studio", vec![first]);
+            let mut tree = crate::desktop::seed_tree(&mut minter, "Studio", vec![first]);
             tree.workspaces[0].strips[0].window_groups[0]
                 .tabs
                 .push(second);

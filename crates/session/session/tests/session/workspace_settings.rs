@@ -567,7 +567,7 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
             tab: "permissions".to_owned(),
         },
     );
-    let apps = tilo_desktop_surface::i18n::t("workspace-settings-section-apps");
+    let apps = tilo_session_core::desktop::i18n::t("workspace-settings-section-apps");
     let section = session
         .workspace_settings()
         .expect("workspace settings")

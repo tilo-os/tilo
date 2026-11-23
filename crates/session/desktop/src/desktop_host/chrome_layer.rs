@@ -5,9 +5,12 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
-use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource, NotificationLayer, names};
+use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource, NotificationLayer};
 use tilo_resource::Effect;
+use tilo_session_core::desktop::names;
+use tilo_session_core::desktop::navigation::{
+    ActivityView, ChromeEffect, Destination, LayoutEffect,
+};
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 use ui::widget::DrawChild;
@@ -640,7 +643,7 @@ impl DesktopChrome {
     /// The display the person is working on, while the shell spans several: where a card without a
     /// caret is centred.
     fn working_display(&self) -> Option<Rect> {
-        tilo_desktop_surface::working_display(&self.rules.tree())
+        tilo_session_core::desktop::working_display(&self.rules.tree())
     }
 
     /// Where the overview stands while the shell spans several displays: on the one the person works
@@ -823,7 +826,7 @@ impl DesktopChrome {
         }
     }
 
-    fn dispatch(&self, verb: impl Into<tilo_desktop_surface::navigation::Verb>) {
+    fn dispatch(&self, verb: impl Into<tilo_session_core::desktop::navigation::Verb>) {
         if let Err(error) = self.handle.dispatch(verb) {
             tracing::warn!(%error, "desktop chrome");
         }
@@ -1507,7 +1510,7 @@ impl DesktopChrome {
         let joining = join.is_some();
         let workspace = if let Some(id) = join {
             let Some(joined) = WorkspaceId::parse(id) else {
-                self.handle.acknowledge(tilo_desktop_surface::i18n::t(
+                self.handle.acknowledge(tilo_session_core::desktop::i18n::t(
                     "desktop-joined-workspace-unknown",
                 ));
                 return;
@@ -2043,7 +2046,7 @@ impl DesktopChrome {
                 .map(|display| {
                     (
                         display.monitor.clone(),
-                        tilo_desktop_surface::display_rect(display),
+                        tilo_session_core::desktop::display_rect(display),
                     )
                 })
                 .collect();

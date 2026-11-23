@@ -86,7 +86,7 @@ fn unix_ms(time: SystemTime) -> u64 {
 /// Encode retained notifications, oldest first, for a host's private store.
 /// `history` as kept between sessions, each entry with whether `unread` says the person has not
 /// seen it.
-pub(crate) fn encode_history(
+pub fn encode_history(
     history: &[Notification],
     unread: impl Fn(u64) -> bool,
     wall_now: SystemTime,
@@ -125,7 +125,7 @@ pub(crate) fn encode_history(
 
 /// Restore bounded history with its original age and verified app attribution.
 /// The history kept in `bytes`, each entry with whether the person had not seen it.
-pub(crate) fn decode_history(
+pub fn decode_history(
     bytes: &[u8],
     wall_now: SystemTime,
     now: Instant,

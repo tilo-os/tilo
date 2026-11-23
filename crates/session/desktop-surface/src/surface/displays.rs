@@ -25,7 +25,7 @@ use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
 
 use super::{DesktopHandle, DesktopSurface, Shared};
-use crate::navigation::{self, Admitted, RouteIds};
+use tilo_session_core::desktop::navigation::{self, Admitted, RouteIds};
 
 /// Where stepping focus along a strip spread over several displays goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,32 +266,6 @@ pub(crate) fn display_strips(tree: &Layout) -> Vec<StripPlan> {
 
 /// The display among `displays` (in the surface's coordinates, the surface at `surface` ) holding
 /// point `p` .
-/// A display's rectangle, in the shell's coordinates.
-#[must_use]
-pub fn display_rect(display: &Display) -> Rect {
-    Rect::new(
-        display.x,
-        display.y,
-        display.x + display.width,
-        display.y + display.height,
-    )
-}
-
-/// The display the person works on, in the shell's coordinates, while the shell spans several: the
-/// one every shell surface without a place of its own stands on. `None` on one display.
-#[must_use]
-pub fn working_display(tree: &Layout) -> Option<Rect> {
-    if !tree.is_partitioned() {
-        return None;
-    }
-    let focused = tree.outputs.focused_display()?;
-    tree.outputs
-        .displays
-        .iter()
-        .find(|display| display.id == focused)
-        .map(display_rect)
-}
-
 pub(crate) fn display_at(displays: &[Display], surface: Rect, p: Point) -> Option<u32> {
     displays
         .iter()
@@ -826,16 +800,16 @@ mod tests {
             let mut tree = docked(&[1, 2], 1);
             tree.outputs.set_focused(1);
             assert_eq!(
-                working_display(&tree),
+                tilo_session_core::desktop::working_display(&tree),
                 Some(Rect::new(800.0, 0.0, 1600.0, 600.0)),
                 "the right display, not the shell across both"
             );
             tree.outputs.set_focused(0);
             assert_eq!(
-                working_display(&tree),
+                tilo_session_core::desktop::working_display(&tree),
                 Some(Rect::new(0.0, 0.0, 800.0, 600.0))
             );
-            assert_eq!(working_display(&Layout::default()), None, "one display");
+            assert_eq!(tilo_session_core::desktop::working_display(&Layout::default()), None, "one display");
         }
 
         phase each_display_gets_a_section_with_the_rows_insets_and_its_own_gutters;

@@ -90,7 +90,7 @@ pub enum LookWindow {
 pub fn look(label: String) -> ActionSpec {
     let mut spec = LookWindow::Look.bound();
     spec.type_mut().label = label;
-    spec.type_mut().description = Some(crate::i18n::t("shell-look-window-detail"));
+    spec.type_mut().description = Some(crate::desktop::i18n::t("shell-look-window-detail"));
     result(spec)
 }
 
@@ -109,7 +109,7 @@ pub enum ReadWindow {
 pub fn read(label: String) -> ActionSpec {
     let mut spec = ReadWindow::Read.bound();
     spec.type_mut().label = label;
-    spec.type_mut().description = Some(crate::i18n::t("shell-read-window-detail"));
+    spec.type_mut().description = Some(crate::desktop::i18n::t("shell-read-window-detail"));
     result(spec)
 }
 
