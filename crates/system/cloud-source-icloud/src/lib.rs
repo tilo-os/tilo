@@ -24,7 +24,7 @@
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use cloud_source::{
     Capabilities, ChangeFeed, CloudSource, Credential, CredentialSource, Download, Error, Item,
@@ -706,14 +706,6 @@ impl CloudSource for ICloudDrive {
         let etag = current.revision.map(|r| r.0).unwrap_or_default();
         self.trash(id, &etag)
     }
-}
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[cfg(test)]

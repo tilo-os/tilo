@@ -221,7 +221,7 @@ impl Confirmation {
             }
             Change::Settings { deadline, .. } => deadline.map(|deadline| {
                 seconds_left(Duration::from_millis(
-                    deadline.saturating_sub(display_settings::unix_now_ms()),
+                    deadline.saturating_sub(tilo_clock::unix_now_ms()),
                 ))
             }),
         };

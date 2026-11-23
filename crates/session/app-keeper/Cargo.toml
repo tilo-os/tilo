@@ -42,6 +42,8 @@ tilo-x11-transfer = { path = "../x11-transfer" }
 wire-frame = { path = "../../system/wire-frame" }
 # A socket in a directory of any depth.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Wall-clock milliseconds for synthetic pointer events.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The peer's uid comes from SO_PEERCRED through libc: the kernel may report a
 # pid of 0, which rustix's credentials type cannot hold.
 libc.workspace = true

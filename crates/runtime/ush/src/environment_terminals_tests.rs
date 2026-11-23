@@ -398,6 +398,10 @@ tilo_test_env::scenario! {
         assert!(printed.contains("hello"), "{printed:?}");
         assert!(!printed.contains("he\"\"llo"), "the line as typed is not its output: {printed:?}");
         assert!(ran.started_ms <= ran.ended_ms && !ran.truncated, "{ran:?}");
+        assert_eq!(
+            tilo_clock::with_wall_ms(1_700_000_000_123, now_ms),
+            1_700_000_000_123
+        );
 
         // Nobody attached: the run is told all the same, once.
         first.type_at_prompt("sleep 1; echo lat\"\"er\r");

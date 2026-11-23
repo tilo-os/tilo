@@ -126,7 +126,7 @@ pub fn snapshot(
     entries.sort_by(|left, right| left.descriptor.connector.cmp(&right.descriptor.connector));
     let (publisher_pid, publisher_start_ticks) = publisher.unwrap_or_default();
     DisplayHardwareSnapshot {
-        generated_unix_ms: unix_now_ms(),
+        generated_unix_ms: tilo_clock::unix_now_ms(),
         backend: backend.to_owned(),
         publisher_pid,
         publisher_start_ticks,
@@ -285,15 +285,6 @@ fn same(left: &DisplayHardwareSnapshot, right: &DisplayHardwareSnapshot) -> bool
     left.backend == right.backend && left.outputs == right.outputs && left.layout == right.layout
 }
 
-/// Milliseconds since the Unix epoch: when a snapshot was taken.
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use smithay::output::{Mode, PhysicalProperties, Scale, Subpixel};
@@ -375,8 +366,14 @@ mod tests {
         phase a_snapshot_counts_as_the_same_whatever_second_it_was_taken_in;
         {
             let left = output("eDP-1", (1280, 800), Transform::Normal, 1.0);
-            let first = snapshot(&[(left.clone(), true)], &[], "drm-kms", None);
-            let second = snapshot(&[(left, true)], &[], "drm-kms", None);
+            let first = tilo_clock::with_wall_ms(1_700_000_000_123, || {
+                snapshot(&[(left.clone(), true)], &[], "drm-kms", None)
+            });
+            let second = tilo_clock::with_wall_ms(1_700_000_005_456, || {
+                snapshot(&[(left, true)], &[], "drm-kms", None)
+            });
+            assert_eq!(first.generated_unix_ms, 1_700_000_000_123);
+            assert_eq!(second.generated_unix_ms, 1_700_000_005_456);
             assert!(same(&first, &second));
             let rescaled = output("eDP-1", (1280, 800), Transform::Normal, 1.5);
             assert!(!same(

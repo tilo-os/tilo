@@ -208,9 +208,56 @@ impl InvocationLog {
 
 /// Now, in milliseconds since the Unix epoch.
 pub(super) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        })
+    tilo_clock::unix_now_ms_i64()
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::api::ActionAddress;
+    use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
+
+    use super::*;
+
+    #[test]
+    fn invocation_timestamps_read_through_the_shared_clock() {
+        let caller = Caller::local_person("ada");
+        let invocation = InvocationId::new();
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: "tilo.notes:page".into(),
+                address: ActionAddress::new("notes.page", "append"),
+            },
+            argument: InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let mut log = InvocationLog::default();
+        let inserted = tilo_clock::with_wall_ms(1_700_000_000_123, || log.insert(&caller, request));
+        assert!(inserted);
+        assert_eq!(
+            log.entries.get(&invocation).map(|entry| entry.started_ms),
+            Some(1_700_000_000_123)
+        );
+        log.answered(
+            invocation,
+            &InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            None,
+        );
+        tilo_clock::with_wall_ms(1_700_000_005_456, || log.stamp_ended());
+        assert_eq!(
+            log.entries
+                .get(&invocation)
+                .and_then(|entry| entry.ended_ms),
+            Some(1_700_000_005_456)
+        );
+    }
 }

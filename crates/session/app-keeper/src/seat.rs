@@ -165,14 +165,7 @@ impl SeatMirror {
 
     pub(crate) fn synthetic_pointer_release(&self, surface: &WlSurface, button: u32) {
         // Milliseconds, wrapping as the protocol's do.
-        let time = u32::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                & u128::from(u32::MAX),
-        )
-        .unwrap_or_default();
+        let time = synthetic_pointer_time_ms(tilo_clock::unix_now_ms());
         for pointer in self.pointers_of(surface) {
             pointer.button(
                 self.last_serial,
@@ -734,5 +727,29 @@ impl wayland_client::Dispatch<c::wl_touch::WlTouch, ()> for State {
             }
             _ => {}
         }
+    }
+}
+
+/// Milliseconds, wrapping into `u32` as the Wayland pointer protocol specifies.
+fn synthetic_pointer_time_ms(now_ms: u64) -> u32 {
+    u32::try_from(now_ms & u64::from(u32::MAX)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_pointer_time_wraps_shared_clock_milliseconds_into_u32() {
+        assert_eq!(synthetic_pointer_time_ms(0), 0);
+        assert_eq!(synthetic_pointer_time_ms(u64::from(u32::MAX)), u32::MAX);
+        assert_eq!(synthetic_pointer_time_ms(u64::from(u32::MAX) + 1), 0);
+        assert_eq!(synthetic_pointer_time_ms(u64::from(u32::MAX) + 42), 41);
+        assert_eq!(
+            tilo_clock::with_wall_ms(u64::from(u32::MAX) + 42, || {
+                synthetic_pointer_time_ms(tilo_clock::unix_now_ms())
+            }),
+            41
+        );
     }
 }
