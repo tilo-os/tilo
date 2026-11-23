@@ -394,3 +394,81 @@ fn a_secret_named_by_reference_is_withheld_like_a_secret() {
         draft.summary()
     );
 }
+
+#[test]
+fn arguments_digest_pins_canonical_bytes_for_shared_corpus() {
+    const CORPUS: &[(&str, &str, &[u8])] = &[
+        (
+            "nested_unsorted",
+            r#"{"z":{"b":2,"a":1},"a":{"d":{"y":true,"x":false},"c":[3,2,1]},"m":0}"#,
+            br#"{"a":{"c":[3,2,1],"d":{"x":false,"y":true}},"m":0,"z":{"a":1,"b":2}}"#,
+        ),
+        (
+            "utf8_vs_utf16_key_order",
+            r#"{"\uD83D\uDE00":4,"\uE000":3,"é":2,"z":1}"#,
+            b"{\"z\":1,\"\xc3\xa9\":2,\"\xee\x80\x80\":3,\"\xf0\x9f\x98\x80\":4}",
+        ),
+        ("empty_object", "{}", b"{}"),
+        ("empty_array", "[]", b"[]"),
+        (
+            "escaped_and_unicode_string",
+            r#""q\"b\\c\u0000\u0001\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u001f\u007f café 日本語 🚀""#,
+            b"\"q\\\"b\\\\c\\u0000\\u0001\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u001f\x7f caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xf0\x9f\x9a\x80\"",
+        ),
+        (
+            "escaped_keys_object",
+            r#"{"q\"b\\c\u0000\b\t\n\f\r\u001f\u007f":2,"a":1}"#,
+            b"{\"a\":1,\"q\\\"b\\\\c\\u0000\\b\\t\\n\\f\\r\\u001f\x7f\":2}",
+        ),
+        ("i64_min", "-9223372036854775808", b"-9223372036854775808"),
+        ("i64_max", "9223372036854775807", b"9223372036854775807"),
+        (
+            "u64_above_i64_max",
+            "9223372036854775808",
+            b"9223372036854775808",
+        ),
+        ("u64_max", "18446744073709551615", b"18446744073709551615"),
+        ("zero", "0", b"0"),
+        ("negative_zero", "-0.0", b"-0.0"),
+        ("float_whole", "1.0", b"1.0"),
+        ("float_tenth", "0.1", b"0.1"),
+        ("float_1e20", "1e20", b"1e+20"),
+        ("float_1e_neg5", "1e-5", b"0.00001"),
+        ("bool_true", "true", b"true"),
+        ("bool_false", "false", b"false"),
+        ("null", "null", b"null"),
+        (
+            "mixed_array",
+            r#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"b":2,"a":1}]"#,
+            br#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"a":1,"b":2}]"#,
+        ),
+    ];
+    const PINNED_NESTED_DIGEST: [u8; 32] = [
+        0xbc, 0xc6, 0xf1, 0xbb, 0x4c, 0xe5, 0xa2, 0xb3, 0x58, 0x07, 0x05, 0x0e, 0xdb, 0x5f, 0x5b,
+        0x78, 0x6e, 0x3f, 0xd5, 0xe1, 0x18, 0xb0, 0x6b, 0xd9, 0x09, 0xed, 0xb0, 0x87, 0xfd, 0x6e,
+        0xf8, 0xd9,
+    ];
+
+    for &(name, input, expected) in CORPUS {
+        let value: Value = serde_json::from_str(input).unwrap();
+        let (map, expected_bytes) = match value {
+            Value::Object(map) => (map, expected.to_vec()),
+            other => {
+                let mut map = Map::new();
+                map.insert("v".to_owned(), other);
+                let mut bytes = Vec::with_capacity(expected.len().saturating_add(6));
+                bytes.extend_from_slice(br#"{"v":"#);
+                bytes.extend_from_slice(expected);
+                bytes.push(b'}');
+                (map, bytes)
+            }
+        };
+        let expected_digest = *blake3::Hasher::new_derive_key("Tilo draft arguments v1")
+            .update(&expected_bytes)
+            .finalize()
+            .as_bytes();
+        assert_eq!(arguments_digest(&map), expected_digest, "row {name}");
+    }
+    let nested = args(serde_json::from_str(CORPUS[0].1).unwrap());
+    assert_eq!(arguments_digest(&nested), PINNED_NESTED_DIGEST);
+}

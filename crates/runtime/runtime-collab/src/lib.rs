@@ -1281,6 +1281,74 @@ mod local_document_action_report_tests {
     }
 
     #[test]
+    fn admission_request_digest_pins_canonical_bytes_for_shared_corpus() {
+        const CORPUS: &[(&str, &str, &[u8])] = &[
+            (
+                "nested_unsorted",
+                r#"{"z":{"b":2,"a":1},"a":{"d":{"y":true,"x":false},"c":[3,2,1]},"m":0}"#,
+                br#"{"a":{"c":[3,2,1],"d":{"x":false,"y":true}},"m":0,"z":{"a":1,"b":2}}"#,
+            ),
+            (
+                "utf8_vs_utf16_key_order",
+                r#"{"\uD83D\uDE00":4,"\uE000":3,"é":2,"z":1}"#,
+                b"{\"z\":1,\"\xc3\xa9\":2,\"\xee\x80\x80\":3,\"\xf0\x9f\x98\x80\":4}",
+            ),
+            ("empty_object", "{}", b"{}"),
+            ("empty_array", "[]", b"[]"),
+            (
+                "escaped_and_unicode_string",
+                r#""q\"b\\c\u0000\u0001\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u001f\u007f café 日本語 🚀""#,
+                b"\"q\\\"b\\\\c\\u0000\\u0001\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u001f\x7f caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xf0\x9f\x9a\x80\"",
+            ),
+            (
+                "escaped_keys_object",
+                r#"{"q\"b\\c\u0000\b\t\n\f\r\u001f\u007f":2,"a":1}"#,
+                b"{\"a\":1,\"q\\\"b\\\\c\\u0000\\b\\t\\n\\f\\r\\u001f\x7f\":2}",
+            ),
+            ("i64_min", "-9223372036854775808", b"-9223372036854775808"),
+            ("i64_max", "9223372036854775807", b"9223372036854775807"),
+            (
+                "u64_above_i64_max",
+                "9223372036854775808",
+                b"9223372036854775808",
+            ),
+            ("u64_max", "18446744073709551615", b"18446744073709551615"),
+            ("zero", "0", b"0"),
+            ("negative_zero", "-0.0", b"-0.0"),
+            ("float_whole", "1.0", b"1.0"),
+            ("float_tenth", "0.1", b"0.1"),
+            ("float_1e20", "1e20", b"1e+20"),
+            ("float_1e_neg5", "1e-5", b"0.00001"),
+            ("bool_true", "true", b"true"),
+            ("bool_false", "false", b"false"),
+            ("null", "null", b"null"),
+            (
+                "mixed_array",
+                r#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"b":2,"a":1}]"#,
+                br#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"a":1,"b":2}]"#,
+            ),
+        ];
+        const PINNED_NESTED_DIGEST: [u8; 32] = [
+            0xba, 0x80, 0xee, 0x1e, 0xd1, 0x3b, 0x65, 0x00, 0xe4, 0x54, 0xc6, 0x46, 0x41, 0x8a,
+            0x99, 0xe3, 0x6a, 0xc7, 0xd2, 0xac, 0xd2, 0x10, 0x9c, 0x68, 0x5c, 0xb4, 0xc7, 0x08,
+            0xfd, 0xb6, 0x88, 0x25,
+        ];
+
+        for &(name, input, expected) in CORPUS {
+            let value: serde_json::Value = serde_json::from_str(input).unwrap();
+            let mut hasher = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
+            hasher.update(expected);
+            assert_eq!(
+                admission_request_digest(&value),
+                *hasher.finalize().as_bytes(),
+                "row {name}"
+            );
+        }
+        let nested: serde_json::Value = serde_json::from_str(CORPUS[0].1).unwrap();
+        assert_eq!(admission_request_digest(&nested), PINNED_NESTED_DIGEST);
+    }
+
+    #[test]
     fn validate_refuses_every_malformed_or_out_of_bounds_field() {
         let valid: LocalDocumentActionReport = serde_json::from_slice(FIXTURE_BYTES).unwrap();
         assert!(valid.validate().is_ok());

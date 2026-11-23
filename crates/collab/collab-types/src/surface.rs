@@ -524,4 +524,75 @@ writes = ["document", "comments.*"]
             assert!(parsed > 10, "found the apps' surfaces");
         }
     }
+
+    #[test]
+    fn canonical_bytes_are_pinned_for_shared_corpus() {
+        const CORPUS: &[(&str, &str, &[u8])] = &[
+            (
+                "nested_unsorted",
+                r#"{"z":{"b":2,"a":1},"a":{"d":{"y":true,"x":false},"c":[3,2,1]},"m":0}"#,
+                br#"{"a":{"c":[3,2,1],"d":{"x":false,"y":true}},"m":0,"z":{"a":1,"b":2}}"#,
+            ),
+            (
+                "utf8_vs_utf16_key_order",
+                r#"{"\uD83D\uDE00":4,"\uE000":3,"é":2,"z":1}"#,
+                b"{\"z\":1,\"\xc3\xa9\":2,\"\xee\x80\x80\":3,\"\xf0\x9f\x98\x80\":4}",
+            ),
+            ("empty_object", "{}", b"{}"),
+            ("empty_array", "[]", b"[]"),
+            (
+                "escaped_and_unicode_string",
+                r#""q\"b\\c\u0000\u0001\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u001f\u007f café 日本語 🚀""#,
+                b"\"q\\\"b\\\\c\\u0000\\u0001\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u001f\x7f caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xf0\x9f\x9a\x80\"",
+            ),
+            (
+                "escaped_keys_object",
+                r#"{"q\"b\\c\u0000\b\t\n\f\r\u001f\u007f":2,"a":1}"#,
+                b"{\"a\":1,\"q\\\"b\\\\c\\u0000\\b\\t\\n\\f\\r\\u001f\x7f\":2}",
+            ),
+            ("i64_min", "-9223372036854775808", b"-9223372036854775808"),
+            ("i64_max", "9223372036854775807", b"9223372036854775807"),
+            (
+                "u64_above_i64_max",
+                "9223372036854775808",
+                b"9223372036854775808",
+            ),
+            ("u64_max", "18446744073709551615", b"18446744073709551615"),
+            ("zero", "0", b"0"),
+            ("negative_zero", "-0.0", b"-0.0"),
+            ("float_whole", "1.0", b"1.0"),
+            ("float_tenth", "0.1", b"0.1"),
+            ("float_1e20", "1e20", b"1e+20"),
+            ("float_1e_neg5", "1e-5", b"0.00001"),
+            ("bool_true", "true", b"true"),
+            ("bool_false", "false", b"false"),
+            ("null", "null", b"null"),
+            (
+                "mixed_array",
+                r#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"b":2,"a":1}]"#,
+                br#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"a":1,"b":2}]"#,
+            ),
+        ];
+
+        const PINNED_NESTED_DIGEST: [u8; 32] = [
+            0x94, 0x8c, 0x6e, 0x61, 0xfa, 0x0a, 0xef, 0x3c, 0x6b, 0xf7, 0x26, 0xc5, 0x9a, 0xae,
+            0xa9, 0x25, 0xe2, 0x72, 0x8f, 0x60, 0x66, 0xdb, 0xf3, 0x26, 0x2c, 0x35, 0x86, 0x70,
+            0x24, 0x53, 0xef, 0x94,
+        ];
+
+        for &(name, input, expected) in CORPUS {
+            let value: serde_json::Value = serde_json::from_str(input).unwrap();
+            assert_eq!(canonical(&value).as_bytes(), expected, "row {name}");
+            assert_eq!(
+                canonical_json(input).as_deref().map(str::as_bytes),
+                Some(expected),
+                "canonical_json row {name}"
+            );
+        }
+        let nested: serde_json::Value = serde_json::from_str(CORPUS[0].1).unwrap();
+        assert_eq!(
+            *blake3::hash(canonical(&nested).as_bytes()).as_bytes(),
+            PINNED_NESTED_DIGEST
+        );
+    }
 }
