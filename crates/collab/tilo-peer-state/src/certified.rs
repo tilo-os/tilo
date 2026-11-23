@@ -6,11 +6,11 @@ use crate::join::{
     VerifiedJoin,
 };
 use crate::owner::PendingEnrollmentId;
-use tilo_desktop_model::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
     MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceDeviceHintV1,
 };
+use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 

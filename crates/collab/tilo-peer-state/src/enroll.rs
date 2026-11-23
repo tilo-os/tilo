@@ -1,12 +1,12 @@
 //! Redeeming an invitation with the host it names: the typed canonical
 //! exchange. The caller supplies its real endpoint and ownership.
+use crate::enrollment::ns as now_ns;
 use crate::join::WorkspaceId;
 use crate::join::native::InvitationLink;
 use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
 };
 use crate::join_transport::{WorkspaceJoinClient, invitation_host};
-use crate::enrollment::ns as now_ns;
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent,
