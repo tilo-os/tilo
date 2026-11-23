@@ -159,7 +159,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -216,7 +216,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -225,7 +225,7 @@ class Mailbox(Resource):
     al2vjuet: bool  # more
 
     def older_messages(self) -> None:
-        """Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here."""
+        """Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here. A mailbox whose server holds nothing older answers nothing, as a list reads to its end asking whether a page is there."""
         return self.action("older_messages")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -235,7 +235,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -414,13 +414,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -490,7 +490,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -573,7 +573,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -717,5 +717,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
+    __surface__ = "so.tilo.mail@33ae2193476d972e"
 

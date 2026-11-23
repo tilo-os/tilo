@@ -29359,7 +29359,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Asks the account's server for the messages older than the oldest this workspace holds in the\nmailbox, so a folder longer than one page can be read back to its first message. They come in\nas new mail does, and the mailbox stops offering them once its first message is here."
+        "description": "Asks the account's server for the messages older than the oldest this workspace holds in the\nmailbox, so a folder longer than one page can be read back to its first message. They come in\nas new mail does, and the mailbox stops offering them once its first message is here. A\nmailbox whose server holds nothing older answers nothing, as a list reads to its end asking\nwhether a page is there."
       },
       "tl.so.tilo.mail.Thread.$create.Arguments": {
         "type": "object",

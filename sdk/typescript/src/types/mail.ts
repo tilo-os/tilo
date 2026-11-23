@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@c979b65ba2f36fa0";
+export const SURFACE = "so.tilo.mail@33ae2193476d972e";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -174,7 +174,7 @@ export interface Mailbox extends tilo.Resource {
   dtd4czyv: number;  // unread
   rxoe5vzb: number;  // total
   al2vjuet: boolean;  // more
-  /** Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here. */
+  /** Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here. A mailbox whose server holds nothing older answers nothing, as a list reads to its end asking whether a page is there. */
   older_messages(): Promise<void>;
 }
 
