@@ -234,7 +234,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), app, WORKSPACE, true);
     let mut session = crate::common::headless(Options {
-        collab: false,
+        collab: true,
         wake: LoopWake::default(),
         app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
@@ -485,9 +485,21 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
                 .join_channel(&channel(BROWSER), &presentation(&phone, &phone_cert))
                 .await
                 .expect("the person's other device joins its workspace's channel");
-            let mut replies = Vec::new();
+            // The session's copy of the workspace learns of the phone from its own service once it
+            // runs, so the phone asks again until its list shows the selection.
+            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            let listed = loop {
+                let listed = handle
+                    .browser_service_session_command(&Command::List {})
+                    .await
+                    .map_err(|error| error.to_string());
+                let shown = matches!(&listed, Ok(Reply::List { sessions }) if !sessions.is_empty());
+                if shown || std::time::Instant::now() >= deadline {
+                    break listed;
+                }
+            };
+            let mut replies = vec![listed];
             for command in [
-                Command::List {},
                 Command::Forget {
                     id: "selected-slack".into(),
                     setup_binding: "prepared-operation".into(),

@@ -141,19 +141,8 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
 /// as a session founds a workspace the person makes here: the service holds it, this device's
 /// person is its owner, and this device's own copy of it is enrolled in the owner store the session
 /// opens. What the session asks of the workspace's governance — an invitation into it above all —
-/// is answered by that service from then on.
-pub fn workspace_founded_on_own_service(
-    state: &Path,
-    workspace: &str,
-    name: &str,
-    cert: &DeviceCert,
-    key: &SigningKey,
-) {
-    workspace_founded_on_this_device_then(state, workspace, name, cert, key, async |_| {});
-}
-
-/// [`workspace_founded_on_own_service`], doing `then` on the service once the workspace is founded
-/// there: what the person did in it before the session started.
+/// is answered by that service from then on. `then` runs on the service once the workspace is
+/// founded there: what the person did in it before the session started.
 pub fn workspace_founded_on_this_device_then(
     state: &Path,
     workspace: &str,
@@ -180,22 +169,28 @@ pub fn workspace_founded_on_this_device_then(
             .bind()
             .await
             .expect("this device's endpoint");
+        // The service writes under a key of its own beside the device's, and its member copies
+        // act as the device, as the session's own service does when it opens this store again.
+        let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
+        let identity =
+            tilo_workspace_service::service::ServiceIdentity::beside_device(&root, cert, &*signer)
+                .await
+                .expect("this device certifies its service's own key");
         let service = tilo_workspace_service::service::WorkspaceService::open(
             tilo_workspace_service::service::ServiceConfig {
                 // The service names no address of its own until something needs it reachable, as
                 // the session's own service does: nothing here waits for a server to name it.
                 reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+                member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+                    cert: cert.clone(),
+                    signer,
+                })),
                 ..tilo_workspace_service::service::ServiceConfig::new(
                     root,
                     tilo_server_protocol::WorkSetting::none(),
                 )
             },
-            tilo_workspace_service::service::ServiceIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key.clone(),
-                device_cert: cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-            },
+            identity,
             endpoint.clone(),
             None,
         )
