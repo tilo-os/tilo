@@ -550,7 +550,7 @@ impl Reconciler {
     /// The page this window shows, as the reconciler hands it to its views: the window keeps
     /// the same one to answer its app's page calls.
     #[must_use]
-    pub fn page(&self) -> crate::page_runner::Page {
+    pub fn page_handle(&self) -> crate::page_runner::Page {
         Rc::clone(&self.shown_page)
     }
 

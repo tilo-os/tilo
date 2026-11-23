@@ -20,13 +20,12 @@ pub type Page = Rc<RefCell<Option<PageSession>>>;
 #[must_use]
 pub fn engine_of(page: &Page) -> SharedEngine {
     let mut held = page.borrow_mut();
-    match held.as_ref() {
-        Some(session) => session.engine().clone(),
-        None => {
-            let engine = webview::new_page_engine();
-            held.replace(PageSession::new(engine.clone()));
-            engine
-        }
+    if let Some(session) = held.as_ref() {
+        session.engine().clone()
+    } else {
+        let engine = webview::new_page_engine();
+        held.replace(PageSession::new(engine.clone()));
+        engine
     }
 }
 

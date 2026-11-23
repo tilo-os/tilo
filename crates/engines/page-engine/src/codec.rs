@@ -39,7 +39,7 @@ use crate::Asks;
 const SETTLE_QUIET_MS: u32 = 500;
 const SETTLE_TIMEOUT_MS: u32 = 10_000;
 /// The steps of a drag, so a gesture is a bounded amount of work whoever asks.
-const DRAG_STEPS: u8 = 8;
+const DRAG_STEPS: u32 = 8;
 
 /// What an app asked the page to do.
 #[derive(Debug, Clone)]
@@ -54,8 +54,12 @@ pub enum Ask {
 
 /// Read a request an app's action wrote.
 ///
+/// One arm per operation, which reads best as the one table this closed vocabulary is; a table
+/// split into helpers per operation would only move the same lines apart.
+///
 /// # Errors
 /// The text is no JSON object, or it names no operation this vocabulary has.
+#[allow(clippy::too_many_lines, reason = "one arm per operation of one closed vocabulary")]
 pub fn decode(request: &str) -> Result<Ask, String> {
     let value: serde_json::Value =
         serde_json::from_str(request).map_err(|error| format!("a page request is no object: {error}"))?;
@@ -81,7 +85,7 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             from_point: point_named(&value, "from_x", "from_y"),
             to: element_opt(&value, "to"),
             to_point: point_named(&value, "to_x", "to_y"),
-            steps: u8::try_from(integer(&value, "drag_steps").unwrap_or(u32::from(DRAG_STEPS)))
+            steps: u8::try_from(integer(&value, "drag_steps").unwrap_or(DRAG_STEPS))
                 .unwrap_or(u8::MAX),
         }),
         "path" => Ask::Page(PageRequest::Path {
@@ -308,8 +312,13 @@ pub fn encode(result: &Result<PageReply, PageFailure>) -> String {
                 "loading": reply.loading,
                 "record": record(&reply.record),
             });
-            if let Some(image) = &reply.image {
-                answer["image"] = base64::engine::general_purpose::STANDARD.encode(image).into();
+            if let Some(image) = &reply.image
+                && let Some(fields) = answer.as_object_mut()
+            {
+                fields.insert(
+                    "image".to_owned(),
+                    base64::engine::general_purpose::STANDARD.encode(image).into(),
+                );
             }
             answer.to_string()
         }

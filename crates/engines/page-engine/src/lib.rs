@@ -12,7 +12,7 @@ mod asks;
 
 pub use asks::{Asks, Download, Menu};
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 use tilo_webview::{
     PageActor, PageFailure, PageReply, PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
@@ -24,8 +24,8 @@ pub struct PageSession {
     engine: SharedEngine,
     /// The id of the last page action asked about.
     next: u32,
-    /// The actions whose answers have not come, by their id.
-    waiting: BTreeMap<u32, ()>,
+    /// The actions whose answers have not come.
+    waiting: BTreeSet<u32>,
     /// The answers that came and wait to be carried to whoever asked.
     answers: Vec<(u32, Result<PageReply, PageFailure>)>,
     /// The engine's other events, in the order they came, for the view to show.
@@ -41,7 +41,7 @@ impl PageSession {
         Self {
             engine,
             next: 0,
-            waiting: BTreeMap::new(),
+            waiting: BTreeSet::new(),
             answers: Vec::new(),
             events: VecDeque::new(),
             asks: Asks::default(),
@@ -59,7 +59,7 @@ impl PageSession {
     pub fn ask(&mut self, actor: Option<PageActor>, request: PageRequest) -> u32 {
         let request_id = self.next.wrapping_add(1);
         self.next = request_id;
-        self.waiting.insert(request_id, ());
+        self.waiting.insert(request_id);
         self.engine.send(WebViewCommand::Page {
             request_id,
             actor,
@@ -71,7 +71,7 @@ impl PageSession {
     /// Stop waiting for `action`: whoever asked gave up, and the page must not hold the next
     /// action behind this one.
     pub fn cancel(&mut self, action: u32) {
-        if self.waiting.remove(&action).is_some() {
+        if self.waiting.remove(&action) {
             self.engine.send(WebViewCommand::CancelPage {
                 request_id: action,
             });
@@ -86,7 +86,7 @@ impl PageSession {
                 WebViewEvent::PageResult { request_id, result } => {
                     // An answer to an action cancelled meanwhile is dropped: nobody waits for
                     // it, and the page settled it as asked.
-                    if self.waiting.remove(&request_id).is_some() {
+                    if self.waiting.remove(&request_id) {
                         self.answers.push((request_id, result));
                     }
                 }
@@ -111,7 +111,7 @@ impl PageSession {
     /// Whether `action` still waits for its answer.
     #[must_use]
     pub fn waiting_for(&self, action: u32) -> bool {
-        self.waiting.contains_key(&action)
+        self.waiting.contains(&action)
     }
 
     /// What the page waits on and last reported of itself.

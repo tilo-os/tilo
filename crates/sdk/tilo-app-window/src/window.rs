@@ -424,7 +424,7 @@ impl AppWindow {
             Reconciler::new(Rc::clone(&events)).with_rows(rows_of)
         };
         let reconciler = Rc::new(RefCell::new(reconciler));
-        let page = reconciler.borrow().page();
+        let page = reconciler.borrow().page_handle();
         Self {
             transport,
             limits: PatchLimits::default(),
@@ -651,19 +651,61 @@ impl AppWindow {
         self.failed = Some(why.to_owned());
     }
 
-    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing until
-    /// the app opens its root anew.
-    fn refuses_while_failed(&self, message: &ToUi) -> bool {
-        self.failed.is_some()
-            && !matches!(
+    /// Do what the app asked of the window's page, and answer it: an operation the page answers
+    /// at once is done here; one the page thinks about waits with the window's next frames.
+    fn page_asked(&mut self, request_id: u32, request: Vec<u8>) {
+        let Ok(request) = String::from_utf8(request) else {
+            self.refuse_page(request_id, "a page request is no text");
+            return;
+        };
+        match crate::page_runner::ask(&self.page, &request) {
+            Ok(crate::page_runner::Asked::Answered(answer)) => {
+                self.out.push(ToApp::PageAnswer {
+                    request_id,
+                    answer: answer.into_bytes(),
+                });
+            }
+            Ok(crate::page_runner::Asked::Waiting(action)) => {
+                self.page_asks.insert(action, request_id);
+            }
+            Err(why) => self.refuse_page(request_id, &why),
+        }
+    }
+
+    /// Answer a page request the window cannot run, so the action waiting on it is told why and
+    /// never waits for good.
+    fn refuse_page(&mut self, request_id: u32, why: &str) {
+        self.out.push(ToApp::PageAnswer {
+            request_id,
+            answer: tilo_page_engine::codec::refused(why).into_bytes(),
+        });
+    }
+
+    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing
+    /// until the app opens its root anew, though a page request in it still answers, so an
+    /// action waiting on the page is never left waiting.
+    fn refuses(&mut self, message: &ToUi) -> bool {
+        if self.failed.is_none()
+            || matches!(
                 message,
                 ToUi::Open {
                     level: Level::Root,
                     ..
                 }
             )
+        {
+            return false;
+        }
+        if let ToUi::Page { request_id, .. } = message {
+            self.refuse_page(*request_id, "this window shows no page");
+        }
+        true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per message of one closed protocol"
+    )]
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
         let mut content = false;
         // Rows the app sent for a list: its selection then names rows it did not hold yet.
@@ -672,15 +714,7 @@ impl AppWindow {
         // A view a person's press opened: its first field takes the keyboard.
         let mut opened_for_input = false;
         for message in messages {
-            if self.refuses_while_failed(&message) {
-                // A page that cannot be shown still answers, so an action waiting on it is
-                // never left waiting.
-                if let ToUi::Page { request_id, .. } = message {
-                    self.out.push(ToApp::PageAnswer {
-                        request_id,
-                        answer: Vec::new(),
-                    });
-                }
+            if self.refuses(&message) {
                 continue;
             }
             match message {
@@ -695,28 +729,7 @@ impl AppWindow {
                 ToUi::Page {
                     request_id,
                     request,
-                } => match String::from_utf8(request) {
-                    Ok(request) => match crate::page_runner::ask(&self.page, &request) {
-                        Ok(crate::page_runner::Asked::Answered(answer)) => {
-                            self.out.push(ToApp::PageAnswer {
-                                request_id,
-                                answer: answer.into_bytes(),
-                            });
-                        }
-                        Ok(crate::page_runner::Asked::Waiting(action)) => {
-                            self.page_asks.insert(action, request_id);
-                        }
-                        Err(why) => self.out.push(ToApp::PageAnswer {
-                            request_id,
-                            answer: tilo_page_engine::codec::refused(&why).into_bytes(),
-                        }),
-                    },
-                    Err(_) => self.out.push(ToApp::PageAnswer {
-                        request_id,
-                        answer: tilo_page_engine::codec::refused("a page request is no text")
-                            .into_bytes(),
-                    }),
-                },
+                } => self.page_asked(request_id, request),
                 // Its page goes back to what the window shows ([`Self::compose`]).
                 ToUi::History(shown) => content |= self.shows_history(shown),
                 // What the window shows of people never stops it showing the app.

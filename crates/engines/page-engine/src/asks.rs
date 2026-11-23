@@ -109,7 +109,7 @@ impl Asks {
             WebViewEvent::ZoomChanged(level) => self.zoom = Some(*level),
             WebViewEvent::FullscreenChanged(on) => self.fullscreen = *on,
             WebViewEvent::LoadProgress(share) => self.progress = *share,
-            WebViewEvent::TitleChanged(title) => self.title = title.clone(),
+            WebViewEvent::TitleChanged(title) => self.title.clone_from(title),
             WebViewEvent::LoadFinished => self.loading = false,
             WebViewEvent::UriChanged(_) => self.loading = true,
             WebViewEvent::DownloadUpdated {
