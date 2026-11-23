@@ -1145,11 +1145,6 @@ def named_position(code: str, begin: int, end: int, name: str) -> int:
     return -1
 
 
-def named_in(code: str, begin: int, end: int, name: str) -> bool:
-    """Whether `name` is used as a whole identifier inside `[begin, end)`."""
-    return named_position(code, begin, end, name) >= 0
-
-
 def constant_used(code: str, begin: int, end: int, name: str) -> bool:
     """Whether the crate's constant `name` is used inside `[begin, end)`.
 

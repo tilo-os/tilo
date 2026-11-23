@@ -31,16 +31,6 @@ class PackageSetsTests(unittest.TestCase):
         }
         self.assertEqual(package_sets.browser_crates(packages), {"web"})
 
-    def test_example_apps_live_under_examples_apps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            packages = {
-                "counter": {"manifest_path": str(root / "examples/apps/counter/Cargo.toml")},
-                "gallery": {"manifest_path": str(root / "examples/gallery/Cargo.toml")},
-                "notes": {"manifest_path": str(root / "apps/settings/Cargo.toml")},
-            }
-            self.assertEqual(package_sets.example_apps(packages, root), {"counter"})
-
     def test_a_unit_differs_between_architectures_by_its_cpu_cfgs_branches_and_intrinsics(self):
         differs = [
             '#[cfg(target_arch = "x86_64")]\nconst SYS_OPEN: i64 = 2;',

@@ -17,8 +17,6 @@ import re
 import subprocess
 import sys
 
-# Example apps.
-EXAMPLE_APPS = "examples/apps/"
 # Patched vendored crates with test suites of their own, mapped to the paths
 # those tests read. The workspace builds them only as path dependencies, so its
 # tests never run theirs; tools/ci/test-vendored-crates.sh tests its keys when
@@ -48,16 +46,6 @@ def browser_crates(packages: dict[str, dict]) -> set[str]:
     }
 
 
-def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
-    """Packages under examples/apps/."""
-    base = root.resolve()
-    return {
-        name for name, package in packages.items()
-        if Path(package["manifest_path"]).resolve().parent.relative_to(base).as_posix()
-        .startswith(EXAMPLE_APPS)
-    }
-
-
 # Crates the page runtime compiles for the browser that reach wasm-bindgen only
 # through others, with the features the web build gives them: the arguments
 # that build each as tilo-browser-runtime's dependency on it does. key-group
@@ -80,23 +68,6 @@ WASM_ALSO = {
 # The crate the web build compiles into the module a browser loads: the page's
 # runtime (`build.sh`).
 PAGE_ENTRY = "tilo-browser-runtime"
-
-
-def page_closure(packages: dict[str, dict]) -> set[str]:
-    """The workspace crates the page compiles for the browser: its entry, and every
-    workspace crate the entry reaches through normal dependencies. A change to any
-    of them can break the page while every crate still builds natively."""
-    if PAGE_ENTRY not in packages:
-        return set()
-    reached = {PAGE_ENTRY}
-    pending = [PAGE_ENTRY]
-    while pending:
-        for dependency in packages[pending.pop()].get("dependencies", ()):
-            name = dependency.get("name")
-            if dependency.get("kind") is None and name in packages and name not in reached:
-                reached.add(name)
-                pending.append(name)
-    return reached
 
 
 def wasm_crates(packages: dict[str, dict]) -> set[str]:

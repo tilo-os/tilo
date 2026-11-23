@@ -390,12 +390,6 @@ def strip_tests(text: str, code: str) -> Pruned:
     return Pruned("".join(out), removed, modules, False)
 
 
-def path_regex(path: str, suffix: str = "") -> re.Pattern[str]:
-    """``a::b`` with any whitespace; callers check what precedes a match."""
-    segments = [re.escape(segment) for segment in path.split("::")]
-    return re.compile(r"\s*::\s*".join(segments) + r"\b" + suffix)
-
-
 def starts(code: str, pattern: re.Pattern[str], forbidden: str = "."):
     """Matches of ``pattern`` that begin an identifier and do not follow
     ``forbidden`` (a leading lookbehind would disable the regex prefix scan)."""
@@ -405,81 +399,11 @@ def starts(code: str, pattern: re.Pattern[str], forbidden: str = "."):
             yield match
 
 
-@dataclass(frozen=True)
-class Source:
-    path: Path
-    # Production code: comments, literals and test items blanked.
-    code: str
-    # String literals outside test items.
-    literals: list[Literal]
-
-
-def parse_source(path: Path, text: str) -> tuple[Source, list[tuple[str, str | None]], bool]:
-    code, literals = lex(text)
-    pruned = strip_tests(text, code)
-    live = [literal for literal in literals if pruned.keeps(literal.start)]
-    return Source(path, pruned.code, live), pruned.test_modules, pruned.test_only
-
-
 def module_children(file: Path) -> Path:
     """The directory a file's out-of-line modules live in."""
     if file.name in ("lib.rs", "main.rs", "mod.rs") or file.parent.name == "bin":
         return file.parent
     return file.parent / file.stem
-
-
-def build_includes(build: Path) -> list[str]:
-    """Every `#[path = "..."]` a package's build script includes, as written."""
-    if not build.is_file():
-        return []
-    return PATH_ATTRIBUTE.findall(build.read_text(encoding="utf-8", errors="replace"))
-
-
-def production_sources(
-    directory: Path, exempt_dirs: list[str], root: Path
-) -> list[Source]:
-    """The package's shipped sources: the files a production build compiles,
-    without the items only tests compile."""
-    nested = {
-        path.parent for path in directory.rglob("Cargo.toml") if path.parent != directory
-    }
-    candidates = []
-    for path in sorted(directory.rglob("*.rs")):
-        relative = path.relative_to(directory)
-        if relative.parts[0] in (*exempt_dirs, "target") or relative == Path("build.rs"):
-            continue
-        if any(parent in nested for parent in path.parents):
-            continue
-        if is_test_file(relative):
-            continue
-        candidates.append(path)
-    parsed = []
-    excluded: set[Path] = set()
-    for path in candidates:
-        source, test_modules, test_only = parse_source(
-            path, path.read_text(encoding="utf-8", errors="replace")
-        )
-        if not test_only:
-            parsed.append(source)
-        for module, path_attribute in test_modules:
-            if path_attribute:
-                excluded.add((path.parent / path_attribute).resolve())
-                continue
-            children = module_children(path)
-            excluded.add((children / f"{module}.rs").resolve())
-            excluded.add((children / module).resolve())
-    # A source `build.rs` includes by `#[path]` is build code: it generates
-    # what the crate compiles, and the crate itself never declares it.
-    for path_attribute in build_includes(directory / "build.rs"):
-        excluded.add((directory / path_attribute).resolve())
-    return [
-        source
-        for source in parsed
-        if not any(
-            item == source.path.resolve() or item in source.path.parents
-            for item in excluded
-        )
-    ]
 
 
 def load_manifest(path: Path) -> dict:
@@ -502,20 +426,6 @@ def dependency_tables(manifest: dict) -> list[tuple[str, dict]]:
                 if isinstance(value.get(key), dict):
                     tables.append((f"target.{target}.{key}", value[key]))
     return tables
-
-
-def key_line(text: str, key: str) -> int:
-    """The line of `key` in a Cargo manifest, or the first line naming it."""
-    for index, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if re.match(rf"^{re.escape(key)}\s*[=.]", stripped) or re.match(
-            rf'^"{re.escape(key)}"\s*[=.]', stripped
-        ):
-            return index
-    for index, line in enumerate(text.splitlines(), start=1):
-        if key in line:
-            return index
-    return 1
 
 
 def matches_any(value: str, patterns: list[str]) -> bool:
