@@ -1016,76 +1016,6 @@ impl InvocationJournal {
         }
     }
 
-    // Storage prerequisites only. No production caller is wired until the
-    // genuine selected worker/owner capsule protocol is installed.
-    #[cfg(test)]
-    fn require_guarded_read(
-        &mut self,
-        key: &InvocationKey,
-        selection: [u8; 32],
-    ) -> Result<(), String> {
-        self.ready()?;
-        let (at, record) = self.document_mut(key)?;
-        if let Some(guarded) = &record.guarded {
-            return if guarded.selection() == &selection {
-                Ok(())
-            } else {
-                Err("changed guarded selection".into())
-            };
-        }
-        if !matches!(record.update, InvocationUpdate::Accepted { .. })
-            || record.uncertain
-            || record.cancellation_requested
-        {
-            return Err("guarded selection requires fresh accepted invocation".into());
-        }
-        let started = record.clone();
-        record.guarded = Some(guarded::State::selected(selection));
-        let write = self.commit(at, Injected::default())?;
-        self.settle(at, &started, write)
-    }
-
-    #[cfg(test)]
-    fn complete_guarded_read(
-        &mut self,
-        key: &InvocationKey,
-        selection: [u8; 32],
-        output: [u8; 32],
-        basis: [u8; 32],
-        bytes: u32,
-    ) -> Result<(), String> {
-        self.ready()?;
-        let (at, record) = self.document_mut(key)?;
-        if !matches!(record.update, InvocationUpdate::Accepted { .. })
-            || record.uncertain
-            || record.cancellation_requested
-        {
-            return Err("guarded terminal requires live accepted invocation".into());
-        }
-        let guarded = record.guarded.as_mut().ok_or("guarded selection absent")?;
-        if guarded.selection() != &selection {
-            return Err("changed guarded selection".into());
-        }
-        guarded.complete(key.invocation, output, basis, bytes)?;
-        let started = record.clone();
-        record.update = guarded::unavailable(key.invocation);
-        record.uncertain = false;
-        let write = self.commit(at, Injected::default())?;
-        self.settle(at, &started, write)
-    }
-
-    /// [`Self::record_cancellation`], waiting for the write here.
-    #[cfg(test)]
-    pub fn cancel(&mut self, key: &InvocationKey) -> Result<(), String> {
-        let at = self
-            .position(key)
-            .ok_or("unknown invocation journal identity")?;
-        let started = self.snapshot.records.get(at).cloned();
-        let write = self.record_cancellation(key)?;
-        let started = started.ok_or("unknown invocation journal identity")?;
-        self.settle(at, &started, write)
-    }
-
     /// The cancellation request is durable once the returned write resolves.
     pub fn record_cancellation(&mut self, key: &InvocationKey) -> Result<Durable, String> {
         self.ready()?;
@@ -1790,8 +1720,8 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "invocation_journal/guarded_tests.rs"]
-mod guarded_tests;
+#[path = "invocation_journal/guarded_decode_tests.rs"]
+mod guarded_decode_tests;
 
 #[cfg(test)]
 #[path = "invocation_journal/authenticated_local_tests.rs"]

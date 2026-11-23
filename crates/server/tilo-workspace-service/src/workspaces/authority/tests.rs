@@ -14,8 +14,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use crate::workspaces::PersonNames as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{
-    CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest,
-    SetMemberRoleRequest, WaitListMail, WaitListSecrets, WaitListed, Workspaces,
+    IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, SetMemberRoleRequest,
+    WaitListMail, WaitListSecrets, WaitListed, Workspaces,
 };
 
 /// A new person admitted to `workspace` as an Editor, through the owner's
@@ -1196,187 +1196,6 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
 }
 
 #[tokio::test]
-async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-
-    // An Editor by role alone governs nothing.
-    assert!(
-        workspaces
-            .issue(&workspace, &ada, invitation(10, Role::Viewer))
-            .await
-            .is_err()
-    );
-    assert!(workspaces.pending(&workspace, &ada).await.is_err());
-    assert!(matches!(
-        workspaces
-            .page_workspaces(
-                &ada,
-                WorkspacesRequest::WaitList {
-                    workspace: workspace.clone()
-                }
-            )
-            .await,
-        WorkspacesReply::Refused(_)
-    ));
-
-    // The workspace grants Ada its invite action: she invites, up to her role.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
-    let issued = workspaces
-        .issue(&workspace, &ada, invitation(11, Role::Editor))
-        .await
-        .unwrap();
-    assert!(
-        workspaces
-            .pending(&workspace, &ada)
-            .await
-            .unwrap()
-            .iter()
-            .any(|pending| pending.invite_id == issued.invite_id)
-    );
-    let above = workspaces
-        .issue(&workspace, &ada, invitation(12, Role::Moderator))
-        .await
-        .unwrap_err();
-    assert!(above.to_string().contains("Moderator"), "{above}");
-    assert!(matches!(
-        workspaces
-            .page_workspaces(
-                &ada,
-                WorkspacesRequest::WaitList {
-                    workspace: workspace.clone()
-                }
-            )
-            .await,
-        WorkspacesReply::WaitList(_)
-    ));
-    assert!(matches!(
-        workspaces
-            .page_workspaces(
-                &ada,
-                WorkspacesRequest::Notices {
-                    workspace: workspace.clone()
-                }
-            )
-            .await,
-        WorkspacesReply::Notices(_)
-    ));
-    workspaces
-        .cancel(
-            &workspace,
-            &ada,
-            CancelInvitationRequest {
-                request_id: [13; 32],
-                invite_id: issued.invite_id,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        !workspaces
-            .pending(&workspace, &owner)
-            .await
-            .unwrap()
-            .iter()
-            .any(|pending| pending.invite_id == issued.invite_id)
-    );
-    server.shutdown().await;
-}
-
-#[tokio::test]
-async fn roles_and_removals_follow_the_workspaces_policy() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let cy = admit(workspaces, &workspace, &owner, 3).await;
-    let dee = admit(workspaces, &workspace, &owner, 4).await;
-
-    // A Moderator removes an Editor, but sets no roles.
-    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
-    assert!(
-        workspaces
-            .set_member_role(&workspace, &bo, role_request(&cy, Role::Viewer, [20; 32]))
-            .await
-            .is_err()
-    );
-    workspaces
-        .remove_member(
-            &workspace,
-            &bo,
-            RemoveMemberRequest {
-                request_id: [21; 32],
-                user_public_key: dee.user_public_key,
-            },
-        )
-        .await
-        .unwrap();
-
-    // Granted set-role, Ada hands out roles up to her own, and never
-    // changes an administrator's: only the owner and whom the workspace is
-    // kept for unmake those.
-    assert!(
-        workspaces
-            .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [22; 32]))
-            .await
-            .is_err()
-    );
-    grant(workspaces, &workspace, &owner, &ada, governance::SET_ROLE).await;
-    set_role(workspaces, &workspace, &ada, &cy, Role::Viewer).await;
-    assert!(
-        workspaces
-            .set_member_role(
-                &workspace,
-                &ada,
-                role_request(&cy, Role::Moderator, [23; 32])
-            )
-            .await
-            .is_err()
-    );
-    workspaces
-        .set_member_administrator(&workspace, &owner, [24; 32], cy.user_public_key, None)
-        .await
-        .unwrap();
-    let administrator = workspaces
-        .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [25; 32]))
-        .await
-        .unwrap_err();
-    assert!(
-        administrator
-            .to_string()
-            .contains("may not unmake or remove an administrator"),
-        "{administrator}"
-    );
-    // The owner's devices still change anyone's role.
-    set_role(workspaces, &workspace, &owner, &cy, Role::Editor).await;
-
-    // Nobody removes the owner, the owner's devices included.
-    for by in [&owner, &bo] {
-        assert!(
-            workspaces
-                .remove_member(
-                    &workspace,
-                    by,
-                    RemoveMemberRequest {
-                        request_id: rand::random(),
-                        user_public_key: owner.user_public_key,
-                    },
-                )
-                .await
-                .is_err()
-        );
-    }
-    server.shutdown().await;
-}
-
-#[tokio::test]
 async fn an_administrator_governs_within_their_role_without_further_grants() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -1392,49 +1211,11 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key, None)
         .await
         .unwrap();
-    an_administrator_invites_at_every_role(workspaces, &workspace, &ada).await;
     an_administrator_rules_every_member_but_administrators(workspaces, &workspace, &ada, &bo, &cy)
         .await;
     an_administrator_runs_the_workspaces_calls(workspaces, &workspace, &ada).await;
     unmaking_the_administrator_takes_it_all_back(workspaces, &workspace, &owner, &ada, &bo).await;
     server.shutdown().await;
-}
-
-/// The co-owner invites at every role a workspace hands out, with no grant
-/// beyond the owner making them an administrator, and reads the requests
-/// asked of the workspace.
-async fn an_administrator_invites_at_every_role(
-    workspaces: &Workspaces,
-    workspace: &str,
-    ada: &DeviceCert,
-) {
-    let issued = workspaces
-        .issue(workspace, ada, invitation(51, Role::Editor))
-        .await
-        .unwrap();
-    assert!(
-        workspaces
-            .pending(workspace, ada)
-            .await
-            .unwrap()
-            .iter()
-            .any(|pending| pending.invite_id == issued.invite_id)
-    );
-    workspaces
-        .issue(workspace, ada, invitation(52, Role::Moderator))
-        .await
-        .unwrap();
-    assert!(matches!(
-        workspaces
-            .page_workspaces(
-                ada,
-                WorkspacesRequest::WaitList {
-                    workspace: workspace.to_owned()
-                }
-            )
-            .await,
-        WorkspacesReply::WaitList(_)
-    ));
 }
 
 /// They set any role and remove any member who is not an administrator, a

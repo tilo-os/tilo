@@ -122,40 +122,6 @@ pub(super) struct State {
     requirement: Requirement,
     terminal: Option<GuardedUpdate>,
 }
-#[cfg(test)]
-impl State {
-    pub(super) fn selected(selection: [u8; 32]) -> Self {
-        Self {
-            requirement: Requirement {
-                version: 1,
-                selection_digest: Digest(selection),
-            },
-            terminal: None,
-        }
-    }
-    pub(super) fn selection(&self) -> &[u8; 32] {
-        &self.requirement.selection_digest.0
-    }
-    pub(super) fn complete(
-        &mut self,
-        invocation: InvocationId,
-        output: [u8; 32],
-        basis: [u8; 32],
-        len: u32,
-    ) -> Result<(), String> {
-        if !(1..=65536).contains(&len) || self.terminal.is_some() {
-            return Err("invalid guarded terminal transition".into());
-        }
-        self.terminal = Some(GuardedUpdate::GuardedReadSucceeded {
-            invocation,
-            selection_digest: self.requirement.selection_digest.clone(),
-            output_digest: Digest(output),
-            basis_digest: Digest(basis),
-            output_bytes: len,
-        });
-        Ok(())
-    }
-}
 pub(super) fn unavailable(invocation: InvocationId) -> InvocationUpdate {
     InvocationUpdate::Failed{invocation,error:tilo_actions::ActionFailure{code:"action_read_payload_unavailable".into(),message:"The retained read payload is unavailable; this invocation will not be executed again.".into(),details:None,retryable:false}}
 }

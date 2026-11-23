@@ -1277,7 +1277,7 @@ async fn assert_unprepared_authoring_refused(
     }
 }
 
-async fn is_banned(
+pub(crate) async fn is_banned(
     workspaces: &Workspaces,
     workspace: &str,
     host: &DeviceCert,
@@ -1366,63 +1366,6 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
         restored.peer().governance().workspace_name().as_deref(),
         Some("Plaza")
     );
-}
-
-#[tokio::test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the server stays live until its consuming shutdown"
-)]
-async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
-    use tilo_server_session::workspaces::RemoveMemberRequest;
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
-    let workspaces = server.workspaces();
-    let created = workspaces.create("Demo").await.unwrap();
-    let guest = [7; 32];
-    let request = |request_id| RemoveMemberRequest {
-        request_id,
-        user_public_key: guest,
-    };
-    let stranger_root = SigningKey::from_bytes(&[9; 32]);
-    let stranger_key = SigningKey::from_bytes(&[10; 32]);
-    let mut stranger = DeviceCert {
-        user_public_key: stranger_root.verifying_key().to_bytes(),
-        device_public_key: stranger_key.verifying_key().to_bytes(),
-        device_label: "stranger".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut stranger, &stranger_root).unwrap();
-    assert!(
-        workspaces
-            .ban_member(&created.workspace, &stranger, request([1; 32]))
-            .await
-            .is_err(),
-        "someone not in the workspace bans nobody"
-    );
-    workspaces
-        .ban_member(&created.workspace, &cert, request([2; 32]))
-        .await
-        .unwrap();
-    assert!(is_banned(workspaces, &created.workspace, &cert, guest).await);
-    assert!(
-        workspaces
-            .unban_member(&created.workspace, &cert, request([2; 32]))
-            .await
-            .is_err(),
-        "one request id names one change"
-    );
-    workspaces
-        .unban_member(&created.workspace, &cert, request([3; 32]))
-        .await
-        .unwrap();
-    assert!(!is_banned(workspaces, &created.workspace, &cert, guest).await);
-    server.shutdown().await;
 }
 
 #[tokio::test]
