@@ -140,7 +140,7 @@ fn workspace_signed_through(
             .receive(
                 workspace_id,
                 tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
-                postcard::from_bytes(bytes).expect("a workspace change"),
+                postcard::from_bytes(&bytes).expect("a workspace change"),
                 now,
             )
             .expect("this device takes the workspace as its governor has it");
@@ -191,15 +191,11 @@ impl TwoSessions {
         let written = self
             .owner
             .owner()
-            .with_outgoing(self.workspace_id, self.now, |_, outgoing| {
-                outgoing
-                    .entries()
-                    .map(|entry| {
-                        postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string())
-                    })
-                    .collect::<Result<Vec<neighbour_wire::NeighbourMsg>, String>>()
-            })
-            .expect("the owner's device published the change");
+            .frames(self.workspace_id)
+            .into_iter()
+            .map(|bytes| postcard::from_bytes(&bytes).map_err(|error| error.to_string()))
+            .collect::<Result<Vec<neighbour_wire::NeighbourMsg>, String>>()
+            .expect("the device's write is a frame");
         assert!(
             !written.is_empty(),
             "the owner's device published something"
@@ -265,7 +261,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         .expect("the workspace admits her device");
     let admitted: Vec<neighbour_wire::NeighbourMsg> = governor
         .outgoing()
-        .map(|(bytes, _)| postcard::from_bytes(bytes).expect("a workspace change"))
+        .map(|(bytes, _)| postcard::from_bytes(&bytes).expect("a workspace change"))
         .collect();
     for engine in [&a_engine, &b_engine] {
         for message in &admitted {
@@ -1084,7 +1080,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
                 .receive(
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
-                    postcard::from_bytes(bytes).expect("a workspace change"),
+                    postcard::from_bytes(&bytes).expect("a workspace change"),
                     now,
                 )
                 .expect("this device takes the workspace's change");
@@ -1280,7 +1276,7 @@ fn a_second_device(
                 .receive(
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
-                    postcard::from_bytes(bytes).expect("a workspace change"),
+                    postcard::from_bytes(&bytes).expect("a workspace change"),
                     now,
                 )
                 .expect("the workspace's change is taken");
@@ -1372,12 +1368,10 @@ fn her_device_takes(
     .expect("this computer's engine opens");
     let written = mine
         .owner()
-        .with_outgoing(workspace_id, now, |_, outgoing| {
-            outgoing
-                .entries()
-                .map(|entry| postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string()))
-                .collect::<Result<Vec<_>, String>>()
-        })
+        .frames(workspace_id)
+        .into_iter()
+        .map(|bytes| postcard::from_bytes(&bytes).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, String>>()
         .expect("this computer's device published the change");
     assert!(!written.is_empty(), "the change is the workspace's to send");
     for message in written {

@@ -1,5 +1,4 @@
 //! Reads of only the changes since a revision the reader holds.
-use super::*;
 use crate::owner::{CommittedDocument, History, Holding};
 use automerge::ObjType;
 use tilo_automerge::ApplyIncoming as _;

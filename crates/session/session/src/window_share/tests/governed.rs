@@ -253,7 +253,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
                     .receive(
                         workspace_id,
                         TransportOrigin::RetainedServerDelta(first.device_public_key),
-                        postcard::from_bytes(bytes).expect("a workspace change"),
+                        postcard::from_bytes(&bytes).expect("a workspace change"),
                         now,
                     )
                     .expect("a device takes the workspace as its host has it");
@@ -317,15 +317,9 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     let now = tilo_clock::wall();
     let written: Vec<NeighbourMsg> = second_engine
         .owner()
-        .with_outgoing(workspace_id, now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| entry.bytes().to_vec())
-                .collect::<Vec<_>>())
-        })
-        .expect("the second device's ownership of the workspace")
-        .iter()
-        .map(|bytes| postcard::from_bytes(bytes).expect("a frame of the workspace"))
+        .frames(workspace_id)
+        .into_iter()
+        .map(|bytes| postcard::from_bytes(&bytes).expect("a frame of the workspace"))
         .filter(|frame| matches!(frame, NeighbourMsg::SyncResp { .. }))
         .collect();
     assert!(

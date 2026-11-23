@@ -18,7 +18,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
     // The member's chat change, as the owner's turn hears it, and the hash it carries.
     fn edit(
         view: &crate::owner::NativeCommittedView,
-        now: SystemTime,
+        _now: SystemTime,
         topic: &str,
     ) -> Result<(collab_types::SignedOp, [u8; 32]), String> {
         let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();

@@ -267,12 +267,12 @@ impl TestWorkspace {
 
     /// Every message a device starting from nothing needs from this one: the
     /// workspace as it stands and a checkpoint of each record, encoded.
-    pub fn outgoing(&self) -> Vec<(Vec<u8>, Retention)> {
+    pub fn outgoing(&self) -> std::vec::IntoIter<(Vec<u8>, Retention)> {
         self.changes()
     }
 
     /// The same messages, as what a device that has some of the workspace lacks.
-    pub fn changes(&self) -> Vec<(Vec<u8>, Retention)> {
+    pub fn changes(&self) -> std::vec::IntoIter<(Vec<u8>, Retention)> {
         let now = self.now();
         self.peer
             .clone()
@@ -284,7 +284,8 @@ impl TestWorkspace {
                 let (_, retention) = neighbour_wire::retention(&message, false)?;
                 Some((postcard::to_stdvec(&message).ok()?, retention))
             })
-            .collect()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {

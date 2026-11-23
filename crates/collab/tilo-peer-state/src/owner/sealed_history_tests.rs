@@ -2,10 +2,10 @@
 //! wherever it writes: alone, offline or linked, so a change is never refused
 //! for how long its record's history grew.
 use super::*;
+use crate::owner::SealedHistoryKeys;
 use crate::owner::testing::member_key;
-use crate::owner::{SealedHistoryKeys, WorkspaceDocumentWrite};
 use automerge::{ActorId, ChangeHash};
-use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKind};
+use collab_types::{ContentRetention, EncryptionMetadata, OpKind};
 use key_group::ContentKeys;
 use std::collections::BTreeSet;
 use std::sync::Arc;

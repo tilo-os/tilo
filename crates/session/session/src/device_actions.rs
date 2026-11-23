@@ -549,7 +549,7 @@ mod tests {
                             tilo_peer_state::TransportOrigin::RetainedServerDelta(
                                 cert.device_public_key,
                             ),
-                            postcard::from_bytes(bytes).expect("a workspace change"),
+                            postcard::from_bytes(&bytes).expect("a workspace change"),
                             now,
                         )
                         .expect("this device takes the workspace as its governor has it");

@@ -450,6 +450,7 @@ mod tests {
             generation: 0,
             continuity: 0,
             publication: None,
+            frames: Vec::new(),
         };
         let mut record = NativeAuthorityStorage {
             revision,
