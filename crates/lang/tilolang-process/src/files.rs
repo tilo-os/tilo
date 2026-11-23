@@ -22,6 +22,29 @@ use tilolang_tilo::runtime::blob::{
 /// truth where nobody is at the computer, and what an action can do instead.
 pub const NO_CHOOSER: &str = "nobody is at this computer to choose a file; name the file instead";
 
+/// This device's home folder: what a `~` at the front of a path names.
+#[must_use]
+pub fn home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// The path a program named as a real one: `~` and `~/…` are this device's home folder, as the
+/// shell reads them, and everything else stands as it is.
+#[must_use]
+pub fn resolve(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        return home().unwrap_or_else(|| std::path::PathBuf::from("~"));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = home() {
+            return home.join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
 /// What a person choosing a file is told on a device that keeps no content store: the file
 /// could not be kept, which is what they need to know, not the name of what is missing.
 pub const NO_CONTENT_STORE: &str = "this computer cannot keep the file you chose; try again later";
@@ -234,7 +257,7 @@ fn wait<T>(answers: &std::sync::mpsc::Receiver<T>) -> Result<T, String> {
 }
 
 /// One entry of a folder, as `host.FileEntry` reads it.
-pub use tilolang_tilo::runtime::files::Entry;
+pub use tilolang_tilo::runtime::files::{Entry, TrashEntry};
 
 /// The entry `path` is, as `host.FileEntry` reads it: what its folder shows, its size, when its
 /// content last changed, and whether its name is hidden.
@@ -271,6 +294,7 @@ fn entry(path: &std::path::Path) -> Result<Entry, String> {
 ///
 /// Why it cannot be read (it is not a folder, the sandbox refuses it, it is gone).
 pub fn list(path: &std::path::Path) -> Result<Vec<Entry>, String> {
+    let path = &resolve(&path.to_string_lossy());
     let reading =
         std::fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut entries = Vec::new();
@@ -292,6 +316,7 @@ pub fn list(path: &std::path::Path) -> Result<Vec<Entry>, String> {
 ///
 /// Why the disk could not be asked (the sandbox refuses it, it is unreadable).
 pub fn stat(path: &std::path::Path) -> Result<Option<Entry>, String> {
+    let path = &resolve(&path.to_string_lossy());
     match std::fs::metadata(path) {
         Ok(_) => entry(path).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -305,7 +330,385 @@ pub fn stat(path: &std::path::Path) -> Result<Option<Entry>, String> {
 ///
 /// Why they cannot be read (it is a folder, the sandbox refuses it, it is gone).
 pub fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let path = &resolve(&path.to_string_lossy());
     std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Make the folder `path`, answering the entry it made.
+///
+/// # Errors
+///
+/// Why it cannot be made (it exists, its parent is not there, the name is empty).
+pub fn mkdir(path: &str) -> Result<Entry, String> {
+    let path = resolve(path);
+    std::fs::create_dir(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    entry(&path)
+}
+
+/// Write `bytes` as the new file `path`, answering the entry it made.
+///
+/// # Errors
+///
+/// Why it cannot be written (it exists, its folder is gone, the name is empty).
+pub fn write(path: &str, bytes: &[u8]) -> Result<Entry, String> {
+    use std::io::Write as _;
+    let path = resolve(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    entry(&path)
+}
+
+/// Rename the entry at `path` to `name` in its own folder.
+///
+/// # Errors
+///
+/// Why it cannot be renamed (the name is taken, it has no folder, it is gone).
+pub fn rename(path: &str, name: &str) -> Result<Entry, String> {
+    let path = resolve(path);
+    let folder = path
+        .parent()
+        .ok_or_else(|| format!("{} has no folder", path.display()))?;
+    let to = folder.join(name);
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    std::fs::rename(&path, &to).map_err(|error| format!("{}: {error}", path.display()))?;
+    entry(&to)
+}
+
+/// The entry at `path` moved into `folder`, or copied there when `copy` is set.
+fn place(path: &str, folder: &str, copy: bool) -> Result<Entry, String> {
+    let from = resolve(path);
+    let folder = resolve(folder);
+    let name = from
+        .file_name()
+        .ok_or_else(|| format!("{} has no name", from.display()))?
+        .to_owned();
+    let to = folder.join(name);
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    if copy {
+        copy_tree(&from, &to)?;
+    } else if std::fs::rename(&from, &to).is_err() {
+        // Across devices a move is a copy and a removal of what it left.
+        copy_tree(&from, &to)?;
+        remove_tree(&from)?;
+    }
+    entry(&to)
+}
+
+/// Copy the file or folder at `from` to `to`, which must not exist.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    let meta = from
+        .symlink_metadata()
+        .map_err(|error| format!("{}: {error}", from.display()))?;
+    if meta.is_dir() {
+        std::fs::create_dir(to).map_err(|error| format!("{}: {error}", to.display()))?;
+        let reading =
+            std::fs::read_dir(from).map_err(|error| format!("{}: {error}", from.display()))?;
+        for item in reading {
+            let item = item.map_err(|error| format!("{}: {error}", from.display()))?;
+            copy_tree(&item.path(), &to.join(item.file_name()))?;
+        }
+        Ok(())
+    } else if meta.file_type().is_symlink() {
+        let target =
+            std::fs::read_link(from).map_err(|error| format!("{}: {error}", from.display()))?;
+        std::os::unix::fs::symlink(target, to).map_err(|error| format!("{}: {error}", to.display()))
+    } else {
+        std::fs::copy(from, to)
+            .map(|_| ())
+            .map_err(|error| format!("{}: {error}", from.display()))
+    }
+}
+
+/// Remove the file or folder at `path` for good.
+fn remove_tree(path: &std::path::Path) -> Result<(), String> {
+    let meta = path
+        .symlink_metadata()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Move the entry at `path` into `folder`.
+///
+/// # Errors
+///
+/// Why it cannot be moved (a name is taken, the folder is gone).
+pub fn move_entry(path: &str, folder: &str) -> Result<Entry, String> {
+    place(path, folder, false)
+}
+
+/// Copy the entry at `path` into `folder`, folder and all.
+///
+/// # Errors
+///
+/// Why it cannot be copied (a name is taken, the folder is gone).
+pub fn copy(path: &str, folder: &str) -> Result<Entry, String> {
+    place(path, folder, true)
+}
+
+/// Remove the entry at `path` for good, answering whether anything was there.
+///
+/// # Errors
+///
+/// Why it cannot be removed (it is in use, its parent is not writable).
+pub fn remove(path: &str) -> Result<bool, String> {
+    let path = resolve(path);
+    match path.symlink_metadata() {
+        Ok(_) => {
+            remove_tree(&path)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// This device's trash: the folders its files and their receipts stand in.
+fn trash_dirs() -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|data| !data.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| home().map(|home| home.join(".local/share")))
+        .ok_or_else(|| "this device has no data folder".to_owned())?;
+    let root = data.join("Trash");
+    let files = root.join("files");
+    let info = root.join("info");
+    for folder in [&files, &info] {
+        std::fs::create_dir_all(folder)
+            .map_err(|error| format!("{}: {error}", folder.display()))?;
+    }
+    Ok((files, info))
+}
+
+/// The date the freedesktop trash writes: the instant as `YYYY-MM-DDThh:mm:ss`, in UTC.
+fn trash_date(seconds: i64) -> String {
+    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// The days since 1970-01-01 as a calendar date (Howard Hinnant's civil calendar).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (y + i64::from(m <= 2), m, d)
+}
+
+/// The days since 1970-01-01 of a calendar date, as [`civil_from_days`] reads back.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Percent-encode a path as the freedesktop trash's `Path=` holds it.
+fn trash_escape(path: &str) -> String {
+    let mut out = String::new();
+    for byte in path.bytes() {
+        let keep = byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~');
+        if keep {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Percent-decode the trash's `Path=`.
+fn trash_unescape(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The instant a trash receipt says the entry was deleted at, as seconds since the epoch; 0
+/// when the receipt says nothing this reads.
+fn deleted_at(receipt: &str) -> i64 {
+    let Some(stamp) = receipt
+        .lines()
+        .find_map(|line| line.strip_prefix("DeletionDate="))
+        .map(str::trim)
+    else {
+        return 0;
+    };
+    let Some((date, time)) = stamp.split_once('T') else {
+        return 0;
+    };
+    let mut parts = date.split('-').filter_map(|part| part.parse::<i64>().ok());
+    let (Some(y), Some(m), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+        return 0;
+    };
+    let mut clock = time.split(':').filter_map(|part| part.parse::<i64>().ok());
+    let (hours, minutes, seconds) = (
+        clock.next().unwrap_or(0),
+        clock.next().unwrap_or(0),
+        clock.next().unwrap_or(0),
+    );
+    days_from_civil(y, m, d) * 86_400 + hours * 3600 + minutes * 60 + seconds
+}
+
+/// The receipt of the trashed entry `name`: where it came from and when.
+fn receipt(info: &std::path::Path, name: &str) -> Option<(String, i64)> {
+    let text = std::fs::read_to_string(info.join(format!("{name}.trashinfo"))).ok()?;
+    let original = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Path="))
+        .map(trash_unescape)?;
+    Some((original, deleted_at(&text)))
+}
+
+/// The trashed entry `name` in `files`, `info` beside it.
+fn trash_entry(files: &std::path::Path, info: &std::path::Path, name: &str) -> Option<TrashEntry> {
+    let path = files.join(name);
+    if path.symlink_metadata().is_err() {
+        return None;
+    }
+    let (original, deleted) = receipt(info, name).unwrap_or_default();
+    Some(TrashEntry {
+        name: name.to_owned(),
+        path: path.to_string_lossy().into_owned(),
+        original,
+        deleted,
+    })
+}
+
+/// Put the entry at `path` in this device's trash, answering where it went.
+///
+/// # Errors
+///
+/// Why it cannot be trashed (it is gone, the trash cannot be reached, its receipt cannot be
+/// written).
+pub fn trash(path: &str) -> Result<TrashEntry, String> {
+    let from = resolve(path);
+    let name = from
+        .file_name()
+        .ok_or_else(|| format!("{} has no name", from.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let (files, info) = trash_dirs()?;
+    let mut candidate = name.clone();
+    let mut suffix = 1_u32;
+    while files.join(&candidate).symlink_metadata().is_ok()
+        || info.join(format!("{candidate}.trashinfo")).exists()
+    {
+        candidate = format!("{name}.{suffix}");
+        suffix = suffix.saturating_add(1);
+    }
+    let original = from.to_string_lossy().into_owned();
+    // The receipt is written before the entry moves, so an entry is never in the trash without
+    // the place to put it back.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
+    std::fs::write(
+        info.join(format!("{candidate}.trashinfo")),
+        format!(
+            "[Trash Info]\nPath={}\nDeletionDate={}\n",
+            trash_escape(&original),
+            trash_date(now)
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    if std::fs::rename(&from, files.join(&candidate)).is_err() {
+        copy_tree(&from, &files.join(&candidate))?;
+        remove_tree(&from)?;
+    }
+    Ok(TrashEntry {
+        name: candidate,
+        path: files.join(&candidate).to_string_lossy().into_owned(),
+        original,
+        deleted: now,
+    })
+}
+
+/// What this device's trash holds, newest first.
+///
+/// # Errors
+///
+/// Why it cannot be read.
+pub fn trash_entries() -> Result<Vec<TrashEntry>, String> {
+    let (files, info) = trash_dirs()?;
+    let reading = std::fs::read_dir(&info).map_err(|error| format!("{}: {error}", info.display()))?;
+    let mut entries = Vec::new();
+    for item in reading {
+        let Ok(item) = item else {
+            continue;
+        };
+        let name = item.file_name().to_string_lossy().into_owned();
+        let Some(name) = name.strip_suffix(".trashinfo") else {
+            continue;
+        };
+        if let Some(entry) = trash_entry(&files, &info, name) {
+            entries.push(entry);
+        }
+    }
+    entries.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.name.cmp(&b.name)));
+    Ok(entries)
+}
+
+/// Restore the trashed entry `name` to where it came from, answering the entry it made there.
+///
+/// # Errors
+///
+/// Why it cannot be restored (it is gone, where it stood is taken, its receipt is unreadable).
+pub fn restore(name: &str) -> Result<Entry, String> {
+    let (files, info) = trash_dirs()?;
+    let name = name.strip_suffix(".trashinfo").unwrap_or(name);
+    let (original, _) = receipt(&info, name)
+        .ok_or_else(|| format!("{} is not in this device's trash", name))?;
+    let to = resolve(&original);
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    let from = files.join(name);
+    if std::fs::rename(&from, &to).is_err() {
+        copy_tree(&from, &to)?;
+        remove_tree(&from)?;
+    }
+    let _ = std::fs::remove_file(info.join(format!("{name}.trashinfo")));
+    entry(&to)
 }
 
 /// The folders this instance watches, and the action each runs when one changes.
@@ -366,7 +769,8 @@ impl Watches {
     /// Why it cannot be watched (it is not a folder, the sandbox refuses it, no watcher can be
     /// made for it).
     pub fn watch(&self, path: &str, run: &str, actor: &str) -> Result<String, String> {
-        let folder = std::path::Path::new(path);
+        let folder = resolve(path);
+        let folder = folder.as_path();
         let meta = std::fs::metadata(folder).map_err(|error| format!("{path}: {error}"))?;
         if !meta.is_dir() {
             return Err(format!("{path} is not a folder"));

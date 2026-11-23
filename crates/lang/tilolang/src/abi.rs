@@ -428,6 +428,17 @@ imports! {
     FileStat = "file_stat" ([H] -> [H]);
     FileReadPath = "file_read_path" ([H] -> [H]);
     FileWatch = "file_watch" ([H, H] -> [H]);
+    // A folder made, a file written, an entry renamed or moved or copied, one removed, one put
+    // in this device's trash, the trash read and an entry restored from it.
+    FileMkdir = "file_mkdir" ([H] -> [H]);
+    FileWrite = "file_write" ([H, H] -> [H]);
+    FileRename = "file_rename" ([H, H] -> [H]);
+    FileMove = "file_move" ([H, H] -> [H]);
+    FileCopy = "file_copy" ([H, H] -> [H]);
+    FileRemove = "file_remove" ([H] -> [H]);
+    FileTrash = "file_trash" ([H] -> [H]);
+    FileTrashEntries = "file_trash_entries" ([] -> [H]);
+    FileRestore = "file_restore" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);

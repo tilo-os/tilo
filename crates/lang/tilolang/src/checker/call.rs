@@ -2641,7 +2641,22 @@ impl Checker<'_> {
         // A folder on this device, within what the app was granted: its entries, one entry, the
         // bytes a path holds, and a watch that runs an action when the folder changes. They
         // read the disk, so an action declares `uses files` and a view calls none of them.
-        if matches!(name.name.as_str(), "list" | "stat" | "read" | "watch") {
+        if matches!(
+            name.name.as_str(),
+            "list"
+                | "stat"
+                | "read"
+                | "watch"
+                | "mkdir"
+                | "write"
+                | "rename"
+                | "move"
+                | "copy"
+                | "remove"
+                | "trash"
+                | "trash_entries"
+                | "restore"
+        ) {
             return self.file_device_method(name, args, span);
         }
         let (held, imp, what, of) = match name.name.as_str() {
@@ -2721,11 +2736,22 @@ impl Checker<'_> {
             "list" => "`File.list(path)`: a folder's entries, within what the app was granted",
             "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
             "read" => "`File.read(path)`: the bytes a path holds",
-            _ => {
-                "`File.watch(path, run)`: one of this package's actions, run when the folder changes"
-            }
+            "watch" => "`File.watch(path, run)`: one of this package's actions, run when the folder changes",
+            "mkdir" => "`File.mkdir(path)`: a folder made, within what the app was granted",
+            "write" => "`File.write(path, bytes)`: a new file holding those bytes",
+            "rename" => "`File.rename(path, name)`: the entry renamed in its own folder",
+            "move" => "`File.move(path, folder)`: the entry moved into that folder",
+            "copy" => "`File.copy(path, folder)`: a copy of the entry in that folder",
+            "remove" => "`File.remove(path)`: the entry removed for good, folder and all",
+            "trash" => "`File.trash(path)`: the entry put in this device's trash",
+            "trash_entries" => "`File.trash_entries()`: what this device's trash holds",
+            _ => "`File.restore(name)`: the trashed entry named, put back where it came from",
         };
-        let wanted = if method == "watch" { 2 } else { 1 };
+        let wanted = match method {
+            "trash_entries" => 0,
+            "watch" | "write" | "rename" | "move" | "copy" => 2,
+            _ => 1,
+        };
         if args.len() != wanted {
             self.err("E022", span, form.to_owned());
             for a in args {
@@ -2747,32 +2773,53 @@ impl Checker<'_> {
             span,
             &format!("`File.{method}`"),
         );
-        let path = self.expr_as(&args[0].value, &Ty::Text);
         let entry = || super::platform::host_ty("FileEntry");
+        let trashed = || super::platform::host_ty("TrashEntry");
+        let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Text));
+        if method == "trash_entries" {
+            return Ex::host(
+                Imp::FileTrashEntries,
+                Vec::new(),
+                result(Ty::List(Box::new(trashed()))),
+            );
+        }
+        let path = self.expr_as(&args[0].value, &Ty::Text);
         match method {
             "list" => Ex::host(
                 Imp::FileList,
                 vec![path],
-                Ty::Result(Box::new(Ty::List(Box::new(entry()))), Box::new(Ty::Text)),
+                result(Ty::List(Box::new(entry()))),
             ),
             "stat" => Ex::host(
                 Imp::FileStat,
                 vec![path],
-                Ty::Result(Box::new(Ty::Option(Box::new(entry()))), Box::new(Ty::Text)),
+                result(Ty::Option(Box::new(entry()))),
             ),
-            "read" => Ex::host(
-                Imp::FileReadPath,
-                vec![path],
-                Ty::Result(Box::new(Ty::Bytes), Box::new(Ty::Text)),
-            ),
-            _ => {
+            "read" => Ex::host(Imp::FileReadPath, vec![path], result(Ty::Bytes)),
+            "watch" => {
                 let run = self.expr_as(&args[1].value, &Ty::Text);
-                Ex::host(
-                    Imp::FileWatch,
-                    vec![path, run],
-                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
-                )
+                Ex::host(Imp::FileWatch, vec![path, run], result(Ty::Text))
             }
+            "mkdir" => Ex::host(Imp::FileMkdir, vec![path], result(entry())),
+            "write" => {
+                let bytes = self.expr_as(&args[1].value, &Ty::Bytes);
+                Ex::host(Imp::FileWrite, vec![path, bytes], result(entry()))
+            }
+            "rename" => {
+                let name = self.expr_as(&args[1].value, &Ty::Text);
+                Ex::host(Imp::FileRename, vec![path, name], result(entry()))
+            }
+            "move" => {
+                let folder = self.expr_as(&args[1].value, &Ty::Text);
+                Ex::host(Imp::FileMove, vec![path, folder], result(entry()))
+            }
+            "copy" => {
+                let folder = self.expr_as(&args[1].value, &Ty::Text);
+                Ex::host(Imp::FileCopy, vec![path, folder], result(entry()))
+            }
+            "remove" => Ex::host(Imp::FileRemove, vec![path], result(Ty::Bool)),
+            "trash" => Ex::host(Imp::FileTrash, vec![path], result(trashed())),
+            _ => Ex::host(Imp::FileRestore, vec![path], result(entry())),
         }
     }
 

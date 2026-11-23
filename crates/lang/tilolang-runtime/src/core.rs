@@ -28,8 +28,10 @@ use Imp::{
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileBook, FileBookCover, FileBookInfo, FileFiles, FileList, FileOfBytes, FileReadPath,
-    FileStat, FileWatch, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
+    FileAt, FileBook, FileBookCover, FileBookInfo, FileCopy, FileFiles, FileList, FileMkdir,
+    FileMove, FileOfBytes, FileOfText, FilePart, FileReadPath, FileRemove, FileRename, FileRestore,
+    FileSize, FileStat, FileText, FileTrash, FileTrashEntries, FileWatch, FileWrite, FileZip,
+    FilterLit,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
     FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FontFamilies, FloatMin,
@@ -458,6 +460,13 @@ impl Core {
         })
     }
 
+    pub fn bytes(&self, h: i32) -> HResult<Vec<u8>> {
+        self.with_val(h, |v| match v {
+            Value::Bytes(b) => Ok((**b).clone()),
+            other => trap(format!("expected bytes, got {}", other.kind_name())),
+        })
+    }
+
     pub fn module_of_frame(&self) -> HResult<crate::ids::ModuleHash> {
         Ok(self.frames.borrow().top()?.module.clone())
     }
@@ -601,7 +610,10 @@ impl Core {
             SheetNumbers => self.sheet_numbers(a),
             SheetRecords => self.sheet_records(a),
             SheetEntry => self.sheet_entry(a),
-            FileList | FileStat | FileReadPath | FileWatch => self.file_device_import(imp, a),
+            FileList | FileStat | FileReadPath | FileWatch | FileMkdir | FileWrite | FileRename
+            | FileMove | FileCopy | FileRemove | FileTrash | FileTrashEntries | FileRestore => {
+                self.file_device_import(imp, a)
+            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

@@ -436,6 +436,99 @@ pub trait Platform {
         let _ = token;
     }
 
+    /// Make the folder `path`: what `File.mkdir` writes.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be made (it exists, it is not granted).
+    fn make_folder(&self, path: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Write `bytes` as the new file `path`: what `File.write` writes.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be written (it exists, it is not granted).
+    fn write_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = (path, bytes);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Rename the entry at `path` to `name` in its own folder: what `File.rename` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be renamed.
+    fn rename_file(&self, path: &str, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = (path, name);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Move the entry at `path` into `folder`: what `File.move` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be moved.
+    fn move_file(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = (path, folder);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Copy the entry at `path` into `folder`: what `File.copy` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be copied.
+    fn copy_file(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = (path, folder);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Remove the entry at `path` for good: what `File.remove` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be removed.
+    fn remove_file(&self, path: &str) -> Result<bool, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Put the entry at `path` in this device's trash: what `File.trash` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be trashed.
+    fn trash_file(&self, path: &str) -> Result<tilolang_runtime::files::TrashEntry, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// What this device's trash holds: what `File.trash_entries` reads.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be read.
+    fn trash_entries(&self) -> Result<Vec<tilolang_runtime::files::TrashEntry>, String> {
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Restore the trashed entry `name` to where it came from: what `File.restore` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be restored.
+    fn restore_file(&self, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = name;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -536,6 +629,46 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn unwatch(&self, token: &str) {
         self.0.unwatch_folder(token);
+    }
+
+    fn mkdir(&self, path: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.make_folder(path)
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.write_file(path, bytes)
+    }
+
+    fn rename(&self, path: &str, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.rename_file(path, name)
+    }
+
+    fn move_entry(
+        &self,
+        path: &str,
+        folder: &str,
+    ) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.move_file(path, folder)
+    }
+
+    fn copy(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.copy_file(path, folder)
+    }
+
+    fn remove(&self, path: &str) -> Result<bool, String> {
+        self.0.remove_file(path)
+    }
+
+    fn trash(&self, path: &str) -> Result<tilolang_runtime::files::TrashEntry, String> {
+        self.0.trash_file(path)
+    }
+
+    fn trash_entries(&self) -> Result<Vec<tilolang_runtime::files::TrashEntry>, String> {
+        self.0.trash_entries()
+    }
+
+    fn restore(&self, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.restore_file(name)
     }
 }
 

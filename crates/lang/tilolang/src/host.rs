@@ -627,6 +627,21 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ("hidden", "Bool", "Whether its name starts with a dot."),
         ],
     },
+    ValueType {
+        name: "TrashEntry",
+        id: "host-trash-entry",
+        doc: "One entry of this device's trash, as `File.trash_entries` answers it.",
+        fields: &[
+            ("name", "Text", "What it is called in the trash."),
+            ("path", "Text", "The path the trashed file has now."),
+            ("original", "Text", "Where it stood when it was trashed."),
+            (
+                "deleted",
+                "Time",
+                "When it was trashed; 0 when the trash does not say.",
+            ),
+        ],
+    },
 ];
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read

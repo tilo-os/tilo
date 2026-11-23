@@ -591,6 +591,16 @@ tilo_test_env::scenario! {
         assert!(codes(named).contains(&"E022".to_owned()), "a watch takes its path and action by position");
     }
 
+    phase a_write_to_the_disk_declares_the_same_use;
+    {
+        let made = "type N {\n    body: RichText\n}\naction make(n: N) uses files {\n    match File.mkdir(\"~/Books\") {\n        .ok(e) => { n.body = RichText(e.name) },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(made), Vec::<String>::new());
+        let undeclared = made.replace(" uses files", "");
+        assert_eq!(codes(&undeclared), ["E121"], "the disk is an outside read");
+        let trashed = "type N {\n    body: RichText\n}\naction drop(n: N) uses files {\n    match File.trash_entries() {\n        .ok(items) => { n.body = RichText(\"{items.len}\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(trashed), Vec::<String>::new());
+    }
+
     phase a_view_reads_none_of_the_disk;
     {
         let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { text(\"{entries.len}\") },\n        .err(why) => { text(why) }\n    }\n}\n";

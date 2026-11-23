@@ -725,6 +725,64 @@ impl Platform for HostPlatform {
         self.watches.unwatch(token);
     }
 
+    fn make_folder(&self, path: &str) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::mkdir(path)
+    }
+
+    fn write_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::write(path, bytes)
+    }
+
+    fn rename_file(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::rename(path, name)
+    }
+
+    fn move_file(
+        &self,
+        path: &str,
+        folder: &str,
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::move_entry(path, folder)
+    }
+
+    fn copy_file(
+        &self,
+        path: &str,
+        folder: &str,
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::copy(path, folder)
+    }
+
+    fn remove_file(&self, path: &str) -> Result<bool, String> {
+        crate::files::remove(path)
+    }
+
+    fn trash_file(
+        &self,
+        path: &str,
+    ) -> Result<tilolang_tilo::runtime::files::TrashEntry, String> {
+        crate::files::trash(path)
+    }
+
+    fn trash_entries(&self) -> Result<Vec<tilolang_tilo::runtime::files::TrashEntry>, String> {
+        crate::files::trash_entries()
+    }
+
+    fn restore_file(
+        &self,
+        name: &str,
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::restore(name)
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }
