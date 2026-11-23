@@ -245,7 +245,7 @@ d-tnkopk2m = Sitzungen
     .doc = Jede Sitzung, die diese App gemacht hat, als die Ressourcen behalten, die sie sind; `playing` nennt die eine.
 
 d-wout6rgv = Katalog
-    .doc = `youtube` oder `off`: welchen Katalog die App fragt.
+    .doc = `youtube`, `spotify` oder `off`: welchen Katalog die App fragt.
 
 d-olobgipa = Suchstatus
     .doc = Was der letzte Abruf des Katalogs tut und warum er scheiterte.

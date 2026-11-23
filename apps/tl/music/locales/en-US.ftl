@@ -245,7 +245,7 @@ d-tnkopk2m = Sessions
     .doc = Every session this app made, kept as the resources they are; `playing` names the one.
 
 d-wout6rgv = Catalogue
-    .doc = `youtube` or `off`: which catalogue the app asks.
+    .doc = `youtube`, `spotify` or `off`: which catalogue the app asks.
 
 d-olobgipa = Search state
     .doc = What the catalogue's last fetch is doing, and why it failed.

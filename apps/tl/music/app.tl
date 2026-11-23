@@ -175,7 +175,7 @@ type Library (title: name) {
     /// What plays there, as people read it.
     spotify_now: Text = ""
     spotify_playing: Bool = false
-    /// `youtube` or `off`: which catalogue the app asks.
+    /// `youtube`, `spotify` or `off`: which catalogue the app asks.
     catalogue: Text = "youtube"
     /// What the catalogue's last fetch is doing, and why it failed.
     search_state: Text = ""
