@@ -439,3 +439,41 @@ tilo_test_env::scenario! {
         assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
     }
 }
+
+tilo_test_env::scenario! {
+    /// `uses files`: an action reads the device's folders — a listing, one entry, a path's bytes
+    /// and a watch that runs an action — and a view reads none of them.
+    fn reading_the_devices_folders_is_declared_with_uses_files;
+
+    phase an_action_reading_the_disk_declares_uses_files;
+    {
+        let listed = "type N {\n    body: RichText\n}\naction scan(n: N) uses files {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { for e in entries { n.body = RichText(\"{e.name} {e.path} {e.size} {e.modified} {e.folder} {e.hidden}\") } },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(listed), Vec::<String>::new());
+        let undeclared = listed.replace(" uses files", "");
+        assert_eq!(codes(&undeclared), ["E121"], "the disk is an outside read");
+    }
+
+    phase one_entry_and_a_paths_bytes_are_read_through_the_result;
+    {
+        let stat = "type N {\n    body: RichText\n}\naction one(n: N) uses files {\n    match File.stat(\"~/Books/a.epub\") {\n        .ok(found) => { if let e = found { n.body = RichText(\"{e.size} {e.modified}\" ) } },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(stat), Vec::<String>::new());
+        let read = "type N {\n    body: RichText\n}\naction bytes(n: N) uses files {\n    match File.read(\"~/Books/a.epub\") {\n        .ok(b) => { n.body = RichText(\"{b.len()}\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(read), Vec::<String>::new());
+        let not_bytes = "type N {\n    body: RichText\n}\naction bytes(n: N) uses files {\n    File.read(\"~/Books/a.epub\")\n}\n";
+        assert_eq!(codes(not_bytes), ["E020"], "what it answers is a Result, not the bytes");
+    }
+
+    phase a_watch_names_one_of_the_packages_actions;
+    {
+        let watched = "type N {\n    body: RichText\n}\naction scan(n: N) uses files {\n    n.body = RichText(\"\")\n}\naction again(n: N) uses files {\n    File.watch(\"~/Books\", \"scan\")\n}\n";
+        assert_eq!(codes(watched), Vec::<String>::new());
+        let named = "type N {\n    body: RichText\n}\naction again(n: N) uses files {\n    File.watch(path: \"~/Books\", run: \"scan\")\n}\n";
+        assert!(codes(named).contains(&"E022".to_owned()), "a watch takes its path and action by position");
+    }
+
+    phase a_view_reads_none_of_the_disk;
+    {
+        let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { text(\"{entries.len}\") },\n        .err(why) => { text(why) }\n    }\n}\n";
+        assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
+    }
+}

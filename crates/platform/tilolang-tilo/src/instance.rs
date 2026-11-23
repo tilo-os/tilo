@@ -183,7 +183,9 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformBlobs, PlatformClipboard, PlatformWeb, PlatformWords};
+pub use platform::{
+    Platform, PlatformBlobs, PlatformClipboard, PlatformFiles, PlatformWeb, PlatformWords,
+};
 
 /// How an instance starts.
 pub struct Config {
@@ -927,6 +929,8 @@ impl Instance {
             .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
         host.runtime()
             .set_clipboard(PlatformClipboard(Rc::clone(&self.platform)));
+        host.runtime()
+            .set_device_files(PlatformFiles(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

@@ -508,6 +508,10 @@ struct HostPlatform {
     clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
+    /// The member the instance acts for: whose changes a watched folder's action makes.
+    person: String,
+    /// The folders this instance watches, shared with the frames that run their actions.
+    watches: Rc<crate::files::Watches>,
 }
 
 impl Platform for HostPlatform {
@@ -682,6 +686,29 @@ impl Platform for HostPlatform {
         self.clipboard
             .as_ref()
             .and_then(|clipboard| clipboard.paste(types))
+    }
+
+    fn list_files(&self, path: &str) -> Result<Vec<tilolang_tilo::runtime::files::Entry>, String> {
+        crate::files::list(std::path::Path::new(path))
+    }
+
+    fn stat_file(
+        &self,
+        path: &str,
+    ) -> Result<Option<tilolang_tilo::runtime::files::Entry>, String> {
+        crate::files::stat(std::path::Path::new(path))
+    }
+
+    fn read_file_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        crate::files::read_bytes(std::path::Path::new(path))
+    }
+
+    fn watch_folder(&self, path: &str, run: &str) -> Result<String, String> {
+        self.watches.watch(path, run, &self.person)
+    }
+
+    fn unwatch_folder(&self, token: &str) {
+        self.watches.unwatch(token);
     }
 
     fn waker(&self) -> Waker {
@@ -948,6 +975,9 @@ pub struct Hosted {
     /// The content store the app's files are kept in, which the session opened for it: the bytes
     /// of the file its launch named are read from here, as its own `file.text()` reads them.
     files: Option<tilo_content::ContentStore>,
+    /// The folders this instance watches for `File.watch`, shared with the platform that
+    /// registered them: each turn runs the action of a folder that changed.
+    watches: Rc<crate::files::Watches>,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -1002,6 +1032,7 @@ impl Hosted {
         let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &store);
         let personal = PersonalDocument::open(&spec.app, &spec.person, &store);
+        let watches = Rc::new(crate::files::Watches::new(Arc::clone(&wake)));
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
@@ -1015,6 +1046,8 @@ impl Hosted {
             chooser: kept.chooser.clone(),
             clipboard: kept.clipboard.clone(),
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
+            person: spec.person.clone(),
+            watches: Rc::clone(&watches),
         };
         let mut instance = Instance::new(
             Config {
@@ -1079,6 +1112,7 @@ impl Hosted {
             early: Vec::new(),
             opening: None,
             files: kept.content.clone(),
+            watches,
         }
     }
 
@@ -1156,6 +1190,8 @@ impl Hosted {
     /// stop reading as typing. `None` when neither waits.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        // A watch wakes the host from the platform's own watcher when its folder changes: nothing
+        // here waits for it.
         [self.instance.wakes_in(), self.presence.wakes_in()]
             .into_iter()
             .flatten()
@@ -1232,6 +1268,40 @@ impl Hosted {
         self.instance.stage(Some(scenario));
     }
 
+    /// Run the action of each watched folder that changed since the last frame, as the member
+    /// the app runs for. Whether any ran: a watch is the folder's own change of listing, and the
+    /// action it runs reads the folder again for what changed inside it.
+    fn run_watches(&self) -> bool {
+        let due = self.watches.take_changed();
+        if due.is_empty() {
+            return false;
+        }
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let root = match host.root_of(&self.spec.app) {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::warn!(app = self.spec.app, %error, "a watched folder has no root to act on");
+                return false;
+            }
+        };
+        let mut ran = false;
+        for (run, actor) in due {
+            let actor = tilolang_tilo::runtime::Actor::Member(MemberId::person(actor.as_str()));
+            match host
+                .runtime()
+                .invoke_action(&actor, (run.as_str(), vec![Value::resource(&root)]))
+            {
+                Ok(_) => ran = true,
+                Err(error) => {
+                    tracing::warn!(app = self.spec.app, %error, "a watched folder's action failed");
+                }
+            }
+        }
+        ran
+    }
+
     /// One frame: what the connection delivered taken in, what the person did run (its writes
     /// sent to the store as it ran), what the broker delivered run, and the surface published.
     /// Whether anything changed.
@@ -1255,6 +1325,8 @@ impl Hosted {
         changed |= events.len() != before;
         self.presence.show(&mut self.instance);
         changed |= self.instance.update();
+        // A watched folder that changed runs its action now, as the person's own step.
+        changed |= self.run_watches();
         let chose = self.chosen();
         changed |= chose;
         if let Some(why) = self.instance.take_stage_failure() {

@@ -450,6 +450,43 @@ pub fn list_document_apps(path: &str) -> Result<Vec<DocumentApp>, String> {
     .map(|reply| reply.documents)
 }
 
+/// The app that opens the file `name` whose first bytes are `head`: what its bytes say it is
+/// first, then its extension, then the installed apps' own claims on that kind. Only a Tilo
+/// app answers: handing a file to a program of the desktop is the person's own, never an
+/// app's.
+///
+/// One decision for every caller that opens a file by its content — Files' page, an agent's
+/// open and a tilolang app's — so no caller keeps a table of types of its own.
+///
+/// # Errors
+///
+/// Why the session could not say which apps it installed.
+pub fn document_app_for(head: &[u8], name: &str) -> Result<Option<DocumentApp>, String> {
+    document_app_for_with(head, name, &list_document_apps)
+}
+
+/// [`document_app_for`], with the apps asked through `apps` (`list_document_apps` in a running
+/// session): a test stands a catalogue of its own in.
+///
+/// # Errors
+///
+/// What `apps` answers.
+pub fn document_app_for_with(
+    head: &[u8],
+    name: &str,
+    apps: &dyn Fn(&str) -> Result<Vec<DocumentApp>, String>,
+) -> Result<Option<DocumentApp>, String> {
+    let Some(extension) = tilo_content_types::opened_extension(head, name) else {
+        return Ok(None);
+    };
+    // A name no file can have, so the session reads its extension and the type that extension
+    // declares, and no name of the person's stands for it.
+    let kind = format!("file.{extension}");
+    Ok(apps(&kind)?
+        .into_iter()
+        .find(|app| app.source == Some(AppKind::Tilo)))
+}
+
 pub fn open_document(path: &str, app: Option<&str>) -> Result<(), String> {
     open_tool(
         ToolIntent::OpenDocument {

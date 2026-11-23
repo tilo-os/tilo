@@ -24,6 +24,9 @@ pub enum Effect {
     Notify,
     /// The person's clipboard: a copy reaches their device, and a paste reads what is on it now.
     Clipboard,
+    /// The device's own files, read or changed through `File`'s folder calls: what a disk holds
+    /// now, which no replay can compute again.
+    Files,
 }
 
 impl Effect {
@@ -33,6 +36,7 @@ impl Effect {
         Self::Time,
         Self::Notify,
         Self::Clipboard,
+        Self::Files,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -42,6 +46,7 @@ impl Effect {
             Self::Time => "time",
             Self::Notify => "notify",
             Self::Clipboard => "clipboard",
+            Self::Files => "files",
         }
     }
 
@@ -52,6 +57,7 @@ impl Effect {
             Self::Time => "the clock and the person's zone",
             Self::Notify => "telling a person something",
             Self::Clipboard => "the person's clipboard",
+            Self::Files => "the files on this device",
         }
     }
 

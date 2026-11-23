@@ -467,14 +467,12 @@ fn opening_app(
     name: &str,
     apps: &dyn Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String>,
 ) -> Option<String> {
-    let extension = ui::content::opened_extension(head, name)?;
-    // A name no file can have, so the session reads its extension and the type that extension
-    // declares, and no name of the person's stands for it.
-    let kind = format!("file.{extension}");
-    apps(&kind)
-        .ok()?
-        .into_iter()
-        .find(|app| app.source == Some(runtime_portal::tools::AppKind::Tilo))
+    // The one decision every caller opening a file by its content makes
+    // ([`runtime_portal::tools::document_app_for`]): the bytes and then the name say which
+    // kind of file it is, and the installed apps' manifests say which of them opens it.
+    runtime_portal::tools::document_app_for_with(head, name, apps)
+        .ok()
+        .flatten()
         .map(|app| app.id)
 }
 

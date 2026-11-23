@@ -304,6 +304,10 @@ imports! {
     (FileOfBytes, "file_of_bytes", "ii", "i"),
     (FileAt, "file_at", "ii", "i"),
     (FileZip, "file_zip", "ii", "i"),
+    (FileList, "file_list", "i", "i"),
+    (FileStat, "file_stat", "i", "i"),
+    (FileReadPath, "file_read_path", "i", "i"),
+    (FileWatch, "file_watch", "ii", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 

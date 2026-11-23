@@ -75,6 +75,10 @@ tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
 tilo-clipboard = { version = "0.1.0", path = "../tilo-clipboard" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# The device's own folders, watched the way the platform watches them: inotify, FSEvents or
+# ReadDirectoryChangesW where it has one, and a poll only where it has not.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
+notify.workspace = true
 
 [dev-dependencies]
 # The fake broker these tests and examples run instances against, as the apps'
