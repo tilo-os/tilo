@@ -781,3 +781,244 @@ fn a_critical_battery_locks_the_session_and_publishes_its_notice() {
         "{reading}"
     );
 }
+
+const PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
+
+struct FakePowerProfiles {
+    active: String,
+    profiles: Vec<String>,
+}
+
+#[zbus::interface(name = "net.hadess.PowerProfiles")]
+impl FakePowerProfiles {
+    #[zbus(property)]
+    fn active_profile(&self) -> String {
+        self.active.clone()
+    }
+
+    #[zbus(property)]
+    fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+        self.profiles
+            .iter()
+            .map(|name| {
+                std::collections::HashMap::from([
+                    (
+                        "Profile".to_owned(),
+                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                            name.as_str(),
+                        ))
+                        .expect("profile"),
+                    ),
+                    (
+                        "Driver".to_owned(),
+                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                            "platform_profile",
+                        ))
+                        .expect("driver"),
+                    ),
+                ])
+            })
+            .collect()
+    }
+}
+
+struct CountingSystem {
+    power_reads: std::sync::atomic::AtomicUsize,
+    changes: Mutex<Vec<tilo_system_service::device::Change>>,
+}
+
+impl tilo_system_service::device::System for CountingSystem {
+    fn power(&self) -> tilo_system_service::model::Power {
+        self.power_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tilo_system_service::model::Power::default()
+    }
+
+    fn user_switching(&self) -> bool {
+        false
+    }
+
+    fn update(&self) -> tilo_system_service::update::Update {
+        tilo_system_service::update::Update::default()
+    }
+
+    fn time(&self) -> tilo_system_service::model::Time {
+        tilo_system_service::model::Time::default()
+    }
+
+    fn keyboard_light(&self) -> tilo_system_service::model::KeyboardLight {
+        tilo_system_service::model::KeyboardLight::default()
+    }
+
+    fn change(&self, change: &tilo_system_service::device::Change) -> Result<(), String> {
+        self.changes.lock().expect("changes").push(change.clone());
+        Ok(())
+    }
+
+    fn locate(&self) -> Result<settings_store::day_schedule::Location, String> {
+        Err("no fix".into())
+    }
+
+    fn nearest_zone(&self, _location: settings_store::day_schedule::Location) -> Option<String> {
+        None
+    }
+}
+
+fn start_bus_with_profiles(
+    runtime: &tokio::runtime::Runtime,
+    active: &str,
+    profiles: &[&str],
+) -> (Connection, Connection) {
+    let active = active.to_owned();
+    let profiles: Vec<String> = profiles.iter().map(|&name| name.to_owned()).collect();
+    runtime.block_on(async move {
+        let (server, client) = tokio::net::UnixStream::pair().expect("socketpair");
+        let server = Builder::unix_stream(server)
+            .server(Guid::generate())
+            .expect("server")
+            .p2p()
+            .serve_at(
+                LOGIND_PATH,
+                FakeLogind {
+                    calls: Shared::default(),
+                    verdict: "yes".into(),
+                },
+            )
+            .expect("logind")
+            .serve_at(UPOWER_PATH, FakeUPower { lid_closed: false })
+            .expect("upower")
+            .serve_at(DISPLAY_PATH, FakeDisplayDevice { percentage: 80.0 })
+            .expect("display device")
+            .serve_at(PROFILES_PATH, FakePowerProfiles { active, profiles })
+            .expect("power profiles")
+            .build();
+        let client = Builder::unix_stream(client).p2p().build();
+        let (server, client) = tokio::join!(server, client);
+        (server.expect("server"), client.expect("client"))
+    })
+}
+
+fn emit_active_profile(runtime: &tokio::runtime::Runtime, server: &Connection, active: &str) {
+    let active = active.to_owned();
+    runtime.block_on(async move {
+        let iface = server
+            .object_server()
+            .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+            .await
+            .expect("power profiles iface");
+        iface.get_mut().await.active = active;
+        iface
+            .get()
+            .await
+            .active_profile_changed(iface.signal_emitter())
+            .await
+            .expect("ActiveProfile changed");
+    });
+}
+
+fn emit_profiles(runtime: &tokio::runtime::Runtime, server: &Connection, profiles: &[&str]) {
+    let profiles: Vec<String> = profiles.iter().map(|&name| name.to_owned()).collect();
+    runtime.block_on(async move {
+        let iface = server
+            .object_server()
+            .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+            .await
+            .expect("power profiles iface");
+        iface.get_mut().await.profiles = profiles;
+        iface
+            .get()
+            .await
+            .profiles_changed(iface.signal_emitter())
+            .await
+            .expect("Profiles changed");
+    });
+}
+
+/// Live `power-profiles-daemon` property changes over D-Bus reach the session's
+/// `power` reading through the shared `PowerLink` without polling, and
+/// `power#set-power-mode` validates against that live list.
+#[test]
+fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_system_service::device::{Change, System};
+    use tilo_system_service::model::PowerMode;
+
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("tilo-power-profiles-test")
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (server, client) =
+        start_bus_with_profiles(&runtime, "balanced", &["balanced", "power-saver"]);
+
+    let link = PowerLink::new(quiet());
+    let power_service = SessionPower::with_connection(client, link.clone()).expect("power service");
+    let wake = tilo_service::LoopWake::default();
+    let fake_system = Arc::new(CountingSystem {
+        power_reads: AtomicUsize::new(0),
+        changes: Mutex::new(Vec::new()),
+    });
+    let system_service = tilo_session::system_service(
+        Arc::clone(&fake_system) as Arc<dyn System>,
+        Some(wake.handle()),
+        Some(&link),
+    )
+    .expect("system service");
+
+    let mut session = crate::common::headless(Options {
+        services: vec![Box::new(power_service), Box::new(system_service)],
+        wake,
+        power: Some(link),
+        user: "ada".to_owned(),
+        verifier: Arc::new(Sesame),
+        ..Options::default()
+    });
+
+    until(&mut session, |session| {
+        session
+            .read(tilo_system_service::POWER)
+            .is_some_and(|power| {
+                power["mode"] == serde_json::json!("balanced")
+                    && power["modes"] == serde_json::json!(["balanced", "saver"])
+            })
+    });
+
+    emit_active_profile(&runtime, &server, "power-saver");
+    until(&mut session, |session| {
+        session
+            .read(tilo_system_service::POWER)
+            .is_some_and(|power| power["mode"] == serde_json::json!("saver"))
+    });
+
+    emit_profiles(&runtime, &server, &["performance", "balanced"]);
+    until(&mut session, |session| {
+        session
+            .read(tilo_system_service::POWER)
+            .is_some_and(|power| power["modes"] == serde_json::json!(["performance", "balanced"]))
+    });
+
+    let mut perf = serde_json::Map::new();
+    perf.insert("mode".to_owned(), serde_json::json!("performance"));
+    assert!(
+        session
+            .invoke(tilo_system_service::POWER, "set-power-mode", &perf)
+            .is_ok()
+    );
+    session.settle_services();
+    assert_eq!(
+        *fake_system.changes.lock().expect("changes"),
+        vec![Change::PowerMode(PowerMode::Performance)]
+    );
+
+    let mut saver = serde_json::Map::new();
+    saver.insert("mode".to_owned(), serde_json::json!("saver"));
+    assert_eq!(
+        session.invoke(tilo_system_service::POWER, "set-power-mode", &saver),
+        Err(tilo_actions::ApiError::InvalidArguments(
+            "this device offers no power mode saver".to_owned()
+        ))
+    );
+    assert_eq!(fake_system.power_reads.load(Ordering::SeqCst), 0);
+}
