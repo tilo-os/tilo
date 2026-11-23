@@ -344,6 +344,10 @@ pub(crate) struct DevicesView {
     serde::Deserialize,
     tilo_resource::JsonSchema,
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "what the fabric says of this device now: independent facts"
+)]
 pub(crate) struct PersonalDeviceView {
     /// The fabric id, which names the device in the section's actions.
     pub id: String,

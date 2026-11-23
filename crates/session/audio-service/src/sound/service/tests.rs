@@ -46,7 +46,7 @@ impl Fake {
                 playback_streams: vec![AudioStream {
                     id: 70,
                     serial: 70,
-                    application: "Music".into(),
+                    app: "Music".into(),
                     media_name: None,
                     playback: true,
                     target_id: Some(40),
