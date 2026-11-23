@@ -31337,26 +31337,26 @@
       "tl.so.tilo.notes.Note.tag.Arguments": {
         "type": "object",
         "properties": {
-          "name": {
+          "tag": {
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "tag"
         ],
-        "description": "Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of\nthat name yet: a name is how a person, an agent and a script know a tag."
+        "description": "Gives a note the tag `tag`, and lists the tag in the notebook when it lists none of that\nname yet: a name is how a person, an agent and a script know a tag."
       },
       "tl.so.tilo.notes.Note.untag.Arguments": {
         "type": "object",
         "properties": {
-          "name": {
+          "tag": {
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "tag"
         ],
-        "description": "Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it\nagain for another note; deleting it from the notebook takes it off every note."
+        "description": "Takes the tag `tag` off a note. The notebook keeps listing it, so a person finds it again\nfor another note; deleting it from the notebook takes it off every note."
       },
       "tl.so.tilo.notes.Note.find_text.Arguments": {
         "type": "object",

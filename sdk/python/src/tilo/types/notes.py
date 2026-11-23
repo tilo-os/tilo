@@ -82,12 +82,12 @@ AddTextArgs = TypedDict("AddTextArgs", {
 """The arguments of `add_text`."""
 
 TagArgs = TypedDict("TagArgs", {
-    "name": "str",
+    "tag": "str",
 })
 """The arguments of `tag`."""
 
 UntagArgs = TypedDict("UntagArgs", {
-    "name": "str",
+    "tag": "str",
 })
 """The arguments of `untag`."""
 
@@ -267,17 +267,17 @@ class Note(Resource):
         """Runs `add_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add_text", items)
 
-    def tag(self, *, name: str) -> None:
-        """Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag."""
-        return self.action("tag", name=name)
+    def tag(self, *, tag: str) -> None:
+        """Gives a note the tag `tag`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag."""
+        return self.action("tag", tag=tag)
 
     def tag_many(self, items: list[TagArgs]) -> list[dict[str, Any]]:
         """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("tag", items)
 
-    def untag(self, *, name: str) -> None:
-        """Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note."""
-        return self.action("untag", name=name)
+    def untag(self, *, tag: str) -> None:
+        """Takes the tag `tag` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note."""
+        return self.action("untag", tag=tag)
 
     def untag_many(self, items: list[UntagArgs]) -> list[dict[str, Any]]:
         """Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""

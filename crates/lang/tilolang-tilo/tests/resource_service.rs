@@ -545,5 +545,11 @@ fn a_read_that_answers_a_list_gives_its_value() {
     let found = output
         .value
         .unwrap_or_else(|| panic!("the read answers the paragraphs it found: {output:?}"));
-    assert_eq!(found.as_array().map(Vec::len), Some(1), "{found}");
+    let matches = found.as_array().unwrap_or_else(|| panic!("a list: {found}"));
+    assert_eq!(matches.len(), 1, "{found}");
+    assert_eq!(
+        matches[0].get("words").and_then(Json::as_str),
+        Some("- passport"),
+        "a found paragraph is written by its fields' names: {found}"
+    );
 }

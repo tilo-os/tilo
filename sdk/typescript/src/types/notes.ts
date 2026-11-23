@@ -59,12 +59,12 @@ export interface AddTextArgs {
 
 /** The arguments of `tag`. */
 export interface TagArgs {
-  name: string;
+  tag: string;
 }
 
 /** The arguments of `untag`. */
 export interface UntagArgs {
-  name: string;
+  tag: string;
 }
 
 /** The arguments of `react`. */
@@ -192,15 +192,15 @@ export interface Note extends tilo.Resource {
   }): Promise<void>;
   /** Runs `add_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   add_textMany(items: AddTextArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag. */
+  /** Gives a note the tag `tag`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag. */
   tag(args: {
-    name: string;
+    tag: string;
   }): Promise<void>;
   /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note. */
+  /** Takes the tag `tag` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note. */
   untag(args: {
-    name: string;
+    tag: string;
   }): Promise<void>;
   /** Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   untagMany(items: UntagArgs[]): Promise<tilo.ActionAnswer[]>;
