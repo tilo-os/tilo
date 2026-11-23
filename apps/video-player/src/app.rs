@@ -166,9 +166,8 @@ fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPl
     let mut player = VideoPlayer::new()
         .with_engine(engine)
         .with_test_id(VIDEO_SURFACE);
-    if mode.is_live() {
-        player.enable_mpris("tilo_video_player", "Video Player");
-    }
+    // The session's media-controls service publishes the Playback a view plays; a Rust app's
+    // own player no longer publishes a desktop media session of its own.
     configure_player_settings(&mut player, preferences);
     player
 }
