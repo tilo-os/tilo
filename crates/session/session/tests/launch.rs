@@ -856,18 +856,28 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
         .expect("the window's own control is pressed");
 
     // The press reaches the app on the connection that described it, as the control's own context
-    // menu, not as a point aimed at.
-    let pressed = FloatingSurfaceHostMessage::PressTarget {
-        name: "Documents".to_owned(),
-        role: "ListItem".to_owned(),
-        identity: None,
-        action: TargetAction::ShowContextMenu,
+    // menu, not as a point aimed at. Where the input before it went is the session's own reading
+    // of the window, which this walk of its frames leaves out.
+    let documents_pressed = |told: &FloatingSurfaceHostMessage| {
+        matches!(
+            told,
+            FloatingSurfaceHostMessage::PressTarget {
+                name,
+                role,
+                identity,
+                action,
+                ..
+            } if name == "Documents"
+                && role == "ListItem"
+                && identity.is_none()
+                && *action == TargetAction::ShowContextMenu
+        )
     };
     let told = host_frames(&mut session, &mut connection, |told| {
-        told.contains(&pressed)
+        told.iter().any(documents_pressed)
     });
     assert!(
-        told.contains(&pressed),
+        told.iter().any(documents_pressed),
         "the app is told which of its controls was pressed, and how: {told:?}"
     );
 }

@@ -357,6 +357,7 @@ fn read_messages(
             role,
             identity,
             action,
+            ..
         }) = serde_json::from_slice(&body)
         {
             frame.lock_recover().presses.push_back(Press {

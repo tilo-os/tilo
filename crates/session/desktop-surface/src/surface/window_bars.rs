@@ -36,9 +36,9 @@ pub(super) struct Bars {
     searches: Vec<(u64, SearchOpening)>,
     /// Connections that closed: what they declared goes with them.
     gone: Vec<u64>,
-    /// What the person did in the bars, by connection, waiting for the session to write it to the
-    /// app.
-    events: Vec<(u64, ToolbarEvent)>,
+    /// What the person did in the bars, by the tab whose window it was for and its connection,
+    /// waiting for the session to write it to the app.
+    events: Vec<(u64, u64, ToolbarEvent)>,
     /// The name each app gives what its window shows (its bar's location: a note's title, a
     /// folder's path), by tab, as the bar last read it. A window's name is what it shows, so it
     /// stands in front of the window's own title everywhere the tab is named.
@@ -61,6 +61,9 @@ pub(super) struct Bars {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetPress {
     pub connection: u64,
+    /// The tab whose window shows the control: where the input before the press went, so the
+    /// press comes after it.
+    pub tab: u64,
     pub name: String,
     pub role: String,
     pub identity: Option<String>,
@@ -193,6 +196,7 @@ impl DesktopHandle {
         };
         let press = TargetPress {
             connection: *connection,
+            tab,
             name: target.name.clone(),
             role: target.role.clone(),
             identity: None,
@@ -255,6 +259,7 @@ impl DesktopHandle {
             };
             let press = TargetPress {
                 connection: *connection,
+                tab,
                 name: target.name.clone(),
                 role: target.role.clone(),
                 identity: None,
@@ -291,6 +296,7 @@ impl DesktopHandle {
             };
             let press = TargetPress {
                 connection: *connection,
+                tab,
                 name: target.name.clone(),
                 role: target.role.clone(),
                 identity: target.identity.clone(),
@@ -326,8 +332,8 @@ impl DesktopHandle {
     }
 
     /// What the person did in the bars for the apps in processes of their own since the last call,
-    /// by connection.
-    pub fn take_bar_events(&self) -> Vec<(u64, ToolbarEvent)> {
+    /// by the tab whose window it was for and its connection.
+    pub fn take_bar_events(&self) -> Vec<(u64, u64, ToolbarEvent)> {
         std::mem::take(&mut self.shared.borrow_mut().bars.events)
     }
 }

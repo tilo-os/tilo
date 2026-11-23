@@ -437,7 +437,7 @@ impl Session {
         // of it.
         #[cfg(target_os = "linux")]
         if let Some(tabs) = &self.tabs {
-            tabs.deliver_presses_now(&self.shared.desktop);
+            tabs.deliver_presses_now(&self.shared.desktop, &self.compositor);
         }
         let answered = answering.elapsed();
         self.compositor

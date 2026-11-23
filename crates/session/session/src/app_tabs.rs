@@ -301,9 +301,9 @@ impl AppTabs {
     /// ahead of the input the person makes after it, so a bar's New event whose field the typing
     /// goes into has run before the first key is served, never a frame behind it.
     #[cfg(target_os = "linux")]
-    pub(crate) fn deliver_presses_now(&self, desktop: &ShellDesktop) {
-        write_bar_events(desktop, &self.links);
-        write_target_presses(desktop, &self.links);
+    pub(crate) fn deliver_presses_now(&self, desktop: &ShellDesktop, compositor: &Compositor) {
+        write_bar_events(desktop, compositor, &self.links);
+        write_target_presses(desktop, compositor, &self.links);
     }
 
     /// End the loop's wait when an app connects, so its window's first ask is
@@ -1385,7 +1385,7 @@ impl Answers<'_> {
     /// Write what the person did in the windows' bars to the app whose connection declared the
     /// parts there.
     fn deliver_bar_events(&self) {
-        write_bar_events(self.desktop, self.links);
+        write_bar_events(self.desktop, &*self.compositor, self.links);
     }
 
     /// Write the controls pressed in the windows' own content to the apps
@@ -1393,25 +1393,25 @@ impl Answers<'_> {
     /// ([`ui::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]),
     /// which answer as an assistive technology's activation does.
     fn deliver_target_presses(&self) {
-        write_target_presses(self.desktop, self.links);
+        write_target_presses(self.desktop, &*self.compositor, self.links);
     }
 }
 
 /// Write what the person did in the windows' bars to the app whose connection declared the parts
 /// there.
-fn write_bar_events(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
+fn write_bar_events(desktop: &ShellDesktop, compositor: &Compositor, links: &BTreeMap<u64, Link>) {
     let events = desktop.with_policy(|policy| policy.handle().take_bar_events());
-    for (connection, event) in events {
+    for (tab, connection, event) in events {
         let Some(link) = links.get(&connection) else {
             continue;
         };
-        // The app had been sent no input of this session's when the person used its bar: it
-        // runs the event with the next input it reads.
+        // In its place among the window's own input: what the person typed before using the
+        // bar is read before what the bar did.
         tell(
             &link.writer,
             &FloatingSurfaceHostMessage::ToolbarEvent {
                 event,
-                after_input: None,
+                after_input: input_before(desktop, compositor, tab),
             },
             &link.app,
         );
@@ -1420,7 +1420,11 @@ fn write_bar_events(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
 
 /// Write the controls pressed in the windows' own content to the apps whose connections described
 /// them, which answer as an assistive technology's activation does.
-fn write_target_presses(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
+fn write_target_presses(
+    desktop: &ShellDesktop,
+    compositor: &Compositor,
+    links: &BTreeMap<u64, Link>,
+) {
     let presses = desktop.with_policy(|policy| policy.handle().take_target_presses());
     for press in presses {
         let Some(link) = links.get(&press.connection) else {
@@ -1433,10 +1437,20 @@ fn write_target_presses(desktop: &ShellDesktop, links: &BTreeMap<u64, Link>) {
                 role: press.role,
                 identity: press.identity,
                 action: press.action,
+                // In its place among the window's own input: a save pressed as the person's
+                // typing is still on its way reads every character typed before it.
+                after_input: input_before(desktop, compositor, press.tab),
             },
             &link.app,
         );
     }
+}
+
+/// The serial of the newest input the shell sent the window drawing `tab`'s content, which a
+/// press in that window comes after: `None` while the window received none, or has none.
+fn input_before(desktop: &ShellDesktop, compositor: &Compositor, tab: u64) -> Option<u32> {
+    let window = desktop.with_policy(|policy| policy.window_of_tab(tab));
+    compositor.last_input_serial(window?)
 }
 
 /// An app asked of a window this session shows in no tab: it has none open,

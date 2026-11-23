@@ -28,7 +28,7 @@ pub struct WindowParts {
     cleared: Vec<TabId>,
     offers: HashMap<TabId, (u64, WindowOffer)>,
     offers_cleared: Vec<TabId>,
-    outbox: Vec<(u64, ToolbarEvent)>,
+    outbox: Vec<(TabId, u64, ToolbarEvent)>,
     hosted_seen: HashMap<TabId, (HostedWindow, u64)>,
     hosted_outbox: Vec<(TabId, ToolbarEvent)>,
     /// The shell's own items in each tab's overflow menu.
@@ -217,13 +217,14 @@ impl WindowParts {
         if connection == IN_PROCESS {
             self.hosted_outbox.push((tab, event));
         } else {
-            self.outbox.push((connection, event));
+            self.outbox.push((tab, connection, event));
         }
         true
     }
 
-    /// What goes back to apps in processes of their own, by connection.
-    pub fn take_outbox(&mut self) -> Vec<(u64, ToolbarEvent)> {
+    /// What goes back to apps in processes of their own, by the tab whose window it was for
+    /// and its connection.
+    pub fn take_outbox(&mut self) -> Vec<(TabId, u64, ToolbarEvent)> {
         std::mem::take(&mut self.outbox)
     }
 

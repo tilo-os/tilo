@@ -241,19 +241,28 @@ impl AppHandler {
 }
 
 impl AppHandler {
-    /// Tell the app how far the compositor's input reached it, to run in its place among the
-    /// window's own input: only the Wayland host delivers a serial.
+    /// The serial of the input the event loop handed the window with the event now, to run what
+    /// the shell wrote after it in its place among the window's own input: only the Wayland host
+    /// delivers a serial.
     #[cfg(target_os = "linux")]
-    fn follow_handled_input(&mut self) {
-        if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
-            self.app.input_handled(serial);
-        }
+    fn input_serial(&self) -> Option<u32> {
+        winit::platform::wayland::delivered_input_serial()
     }
 
     /// Only the Wayland host delivers an input serial, so every other host has handed the app
     /// the whole of its input already; the callers stay the same on every target.
     #[cfg(not(target_os = "linux"))]
-    fn follow_handled_input(&self) {}
+    fn input_serial(&self) -> Option<u32> {
+        None
+    }
+
+    /// The input with the shell's `serial` was routed to the window: what the shell pressed
+    /// after it runs now, before what the window handles next.
+    fn note_input_handled(&mut self, serial: Option<u32>) {
+        if let Some(serial) = serial {
+            self.app.input_handled(serial);
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -3307,9 +3316,17 @@ impl AppHandler {
             Duration::MAX
         };
         let mut backlog = std::mem::take(&mut self.input_backlog);
-        backlog.route(budget, wake_ends, crate::time::now, |window_id, event| {
-            self.platform_window_event(window_id, event);
-        });
+        backlog.route(
+            budget,
+            wake_ends,
+            crate::time::now,
+            |window_id, event, serial| {
+                // The input reached the window now, never while it waited: a control the shell
+                // pressed after it runs behind what the event did, not behind the queue.
+                self.platform_window_event(window_id, event);
+                self.note_input_handled(serial);
+            },
+        );
         self.input_backlog = backlog;
     }
 
@@ -3860,15 +3877,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        // What the person did in the window's bar before this input runs first.
-        self.follow_handled_input();
         // Input waits in line; anything else goes now, after what may still go first.
         if input_backlog::InputBacklog::waits_in_line(&event) {
-            self.input_backlog.push(window_id, event);
+            // What the event loop handed the window with this event, routed with it.
+            let serial = self.input_serial();
+            self.input_backlog.push(window_id, event, serial);
             self.route_input_backlog(false);
         } else {
             self.route_input_backlog(true);
+            let serial = self.input_serial();
             self.platform_window_event(window_id, event);
+            self.note_input_handled(serial);
         }
     }
 
@@ -4028,8 +4047,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.layout.layout_dirty = true;
             request_primary_redraw();
         }
-        // The wake's input is all handled: what the person did in the bar after it runs.
-        self.follow_handled_input();
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();
             request_primary_redraw();

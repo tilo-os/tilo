@@ -37,6 +37,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             toolbars.take_outbox(),
             vec![(
+                7,
                 41,
                 ToolbarEvent::Commit {
                     text: "rust".into()
@@ -81,7 +82,7 @@ tilo_test_env::scenario! {
         );
         let outbox = toolbars.take_outbox();
         assert_eq!(outbox.len(), 4);
-        assert!(outbox.iter().all(|(connection, _)| *connection == 52));
+        assert!(outbox.iter().all(|(tab, connection, _)| *tab == 3 && *connection == 52));
         assert!(toolbars.disconnected(52));
         assert!(toolbars.window_offer(3).is_none());
         assert_eq!(toolbars.offers_cleared, vec![3]);
@@ -103,13 +104,13 @@ tilo_test_env::scenario! {
         toolbars.sync_groups([&mut window]);
         assert_eq!(
             toolbars.take_outbox(),
-            vec![(61, ToolbarEvent::Floating { floating: true })]
+            vec![(5, 61, ToolbarEvent::Floating { floating: true })]
         );
         window.set_floating(false);
         toolbars.sync_groups([&mut window]);
         assert_eq!(
             toolbars.take_outbox(),
-            vec![(61, ToolbarEvent::Floating { floating: false })]
+            vec![(5, 61, ToolbarEvent::Floating { floating: false })]
         );
     }
 }

@@ -71,7 +71,7 @@ impl WindowBarRuntime {
     /// Whether the window handled the input with the serial `serial`: serials grow by one per
     /// event and wrap.
     #[cfg(feature = "native")]
-    fn handled(&self, serial: u32) -> bool {
+    pub(super) fn handled(&self, serial: u32) -> bool {
         self.handled_input
             .is_some_and(|handled| handled.wrapping_sub(serial) < 1 << 31)
     }
@@ -223,14 +223,14 @@ impl App {
     }
 
     /// The window handled the input with the serial `serial`, and everything before it: what
-    /// the person did in the bar after it runs now, before the window handles the input after.
+    /// the person did in the bar after it, and the controls the shell pressed after it, run
+    /// now, before the window handles the input after.
     #[cfg(feature = "native")]
     pub fn input_handled(&mut self, serial: u32) {
         let bar = &mut self.floating.window_bar;
-        if bar.handled_input == Some(serial) {
-            return;
+        if bar.handled_input != Some(serial) {
+            bar.handled_input = Some(serial);
         }
-        bar.handled_input = Some(serial);
         while let Some((after, _)) = self.floating.window_bar.held.front()
             && self.floating.window_bar.handled(*after)
         {
@@ -238,6 +238,7 @@ impl App {
                 self.run_bar_event(&event);
             }
         }
+        self.deliver_held_presses();
     }
 
     /// Run what the person did in the window's bar: the bar's search and History here, the

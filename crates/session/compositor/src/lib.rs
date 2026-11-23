@@ -2096,6 +2096,14 @@ impl Compositor {
         self.data.state.window_rect(id)
     }
 
+    /// The serial of the newest key or pointer button delivered to the window `id` (a
+    /// [`WindowInfo::id`]), or `None` while it received none: a control the shell presses in
+    /// that window comes after that input.
+    #[must_use]
+    pub fn last_input_serial(&self, id: u64) -> Option<u32> {
+        self.data.state.last_input_serial.get(&id).copied()
+    }
+
     /// The frames the client of the window whose [`WindowInfo::id`] is `id` committed since it
     /// opened: a window that keeps showing the same thing keeps its count, so two reads that agree
     /// say the window drew nothing between them.

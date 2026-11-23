@@ -250,6 +250,10 @@ pub struct State {
     /// The surface a press is held on, by its index in `surfaces`: it keeps the pointer until
     /// the press ends, over windows too, as a client keeps the pointer it was pressed on.
     pressed_surface: Option<usize>,
+    /// The serial of the newest key or pointer button delivered to each window, by its
+    /// [`WindowInfo`] id: the input a control the shell presses afterwards comes after, so what
+    /// the person typed before the press is read before it.
+    pub(crate) last_input_serial: std::collections::BTreeMap<u64, u32>,
     /// The seats beside the person's: an agent's, a viewer's (§ seats).
     pub(crate) seats: crate::seats::Seats,
     /// A seat's keys are the app-facing seat's for this delivery: no surface takes them, and
@@ -429,6 +433,10 @@ impl State {
         self.shm_state.update_formats(formats);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compositor's state is built in one place, each field beside what it holds"
+    )]
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
@@ -467,6 +475,7 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             pressed_surface: None,
+            last_input_serial: std::collections::BTreeMap::new(),
             seats: crate::seats::Seats::default(),
             seat_keys_only: false,
             protocols,
@@ -1160,6 +1169,10 @@ impl State {
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]). `at` is when the
     /// device says the key changed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one routing pass: the filter's answer, then the surface or the client it names"
+    )]
     pub(crate) fn key(
         &mut self,
         keycode: u32,
@@ -1264,26 +1277,25 @@ impl State {
                 FilterResult::Intercept((index, key))
             },
         );
-        match routed {
-            Some((index, key)) => {
-                if let Some(surface) = self.surfaces.get_mut(index) {
-                    surface.key(&key);
-                }
+        if let Some((index, key)) = routed {
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.key(&key);
             }
+        } else {
             // A press no surface took reached the client that has the keyboard: its next
             // commit answers it.
-            None => {
-                if pressed
-                    && let Some(focus) = self
-                        .seat
-                        .get_keyboard()
-                        .and_then(|seat| seat.current_focus())
-                {
-                    self.key_delivered(&focus, keycode);
-                    self.note_input_on(&focus);
-                    if moves_caret.get() {
-                        self.note_caret_may_move();
-                    }
+            let focus = self
+                .seat
+                .get_keyboard()
+                .and_then(|seat| seat.current_focus());
+            if let Some(focus) = &focus {
+                self.note_input_serial(focus, serial.into());
+            }
+            if pressed && let Some(focus) = focus {
+                self.key_delivered(&focus, keycode);
+                self.note_input_on(&focus);
+                if moves_caret.get() {
+                    self.note_caret_may_move();
                 }
             }
         }
@@ -1603,12 +1615,14 @@ impl State {
             },
         );
         pointer.frame(self);
-        if pressed
-            && let Some(focus) = self
-                .seat
-                .get_pointer()
-                .and_then(|seat| seat.current_focus())
-        {
+        let focus = self
+            .seat
+            .get_pointer()
+            .and_then(|seat| seat.current_focus());
+        if let Some(focus) = &focus {
+            self.note_input_serial(focus, serial.into());
+        }
+        if pressed && let Some(focus) = focus {
             self.note_input_on(&focus);
         }
         if !pressed {
@@ -2725,6 +2739,14 @@ impl State {
     pub(crate) fn note_input_on(&mut self, surface: &WlSurface) {
         if let Some(window) = window_id_of(&root_surface(surface)) {
             self.note_app_input(window);
+        }
+    }
+
+    /// Note `serial` as the newest input delivered to the window drawing `surface`: the input a
+    /// control the shell presses in that window comes after.
+    fn note_input_serial(&mut self, surface: &WlSurface, serial: u32) {
+        if let Some(window) = window_id_of(&root_surface(surface)) {
+            self.last_input_serial.insert(window, serial);
         }
     }
 
