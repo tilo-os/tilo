@@ -2,13 +2,17 @@
 //! modules the tests run. Replace `Meta` JSON here with the compiler's output when it lands.
 #![allow(dead_code, reason = "each test file uses part of the fixtures")]
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
 use tilolang_runtime::abi::IMPORTS;
+use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::ids::RunId;
 use tilolang_runtime::{
-    ActionInfo, Actor, AmStore, Authority, DEFAULT_LIMITS, Decision, EngineLimits, Meta,
-    ModuleHash, PackageId, Runtime, SimpleAuthority, Value,
+    ActionInfo, Actor, AmStore, Authority, DEFAULT_LIMITS, Decision, EngineLimits, InvokeOutcome,
+    Meta, ModuleHash, PackageId, RunOutcome, Runtime, SimpleAuthority, Value,
 };
 
 /// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
@@ -352,6 +356,82 @@ pub fn counter_meta() -> Meta {
     }))
 }
 
+/// The host's dispatch in these tests: every call the runtime sends on is kept, and an asked one
+/// waits as the call `call-<n>` until the test answers it with [`Runtime::answer_call`], as the
+/// app that holds the resource would.
+#[derive(Clone, Default)]
+pub struct Dispatch {
+    calls: Rc<RefCell<Vec<Invocation>>>,
+}
+
+impl Dispatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The calls sent on, in the order they were made.
+    pub fn calls(&self) -> Vec<Invocation> {
+        self.calls.borrow().clone()
+    }
+
+    /// The calls made so far.
+    pub fn len(&self) -> usize {
+        self.calls.borrow().len()
+    }
+
+    /// The call a run waits on: the last one sent.
+    pub fn waiting(&self) -> Invocation {
+        self.calls
+            .borrow()
+            .last()
+            .cloned()
+            .expect("a call was sent")
+    }
+
+    /// The action and its arguments, in parameter order, of the call the run waits on.
+    pub fn asked(&self) -> (String, Vec<Value>) {
+        match self.waiting() {
+            Invocation::Action { action, args, .. } => {
+                (action, args.into_iter().map(|(_, value)| value).collect())
+            }
+            other => panic!("the run waits on no action: {other:?}"),
+        }
+    }
+
+    /// Run the action the run waits on, as the app that holds it would, and answer `run` with
+    /// what it came to: what the dispatch does when the person allows the call.
+    pub fn allow(&self, rt: &Runtime, run: &RunId) -> RunOutcome {
+        let (action, args) = self.asked();
+        let answer = match rt.invoke_action(&me(), (action, args)) {
+            Ok(InvokeOutcome::Done(value)) => Invoked::Done(value),
+            Ok(other) => panic!("the asked action did not run: {other:?}"),
+            Err(error) => Invoked::Failed(error.to_string()),
+        };
+        rt.answer_call(run, answer).expect("the run goes on")
+    }
+
+    /// Refuse the call the run waits on, as the dispatch does when the person declines: the run
+    /// ends and what it wrote is taken back.
+    pub fn decline(&self, rt: &Runtime, run: &RunId) -> tilolang_runtime::RuntimeError {
+        rt.answer_call(run, Invoked::Refused("declined by me".to_owned()))
+            .expect_err("a declined call ends the run")
+    }
+}
+
+impl Invoker for Dispatch {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        let mut calls = self.calls.borrow_mut();
+        calls.push(invocation.clone());
+        let n = calls.len();
+        match invocation {
+            Invocation::Action { asks: true, .. } => Invoked::Pending(format!("call-{n}")),
+            // The tests' packages run their own actions; a call nobody is asked about is not one
+            // this test host runs.
+            _ => Invoked::Refused(format!("the test dispatch runs no call {n} unasked")),
+        }
+    }
+}
+
 /// A runtime over `store` with the counter package loaded.
 pub struct World {
     pub rt: Runtime,
@@ -359,6 +439,8 @@ pub struct World {
     pub auth: TestAuthority,
     pub counter: PackageId,
     pub me: Actor,
+    /// What the host sends its calls to.
+    pub dispatch: Dispatch,
 }
 
 impl World {
@@ -369,6 +451,8 @@ impl World {
     pub fn with(store: &AmStore, limits: EngineLimits) -> Self {
         let auth = TestAuthority::new();
         let rt = Runtime::with_limits(store.clone(), auth.clone(), limits).unwrap();
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         let counter = rt.load_package(&counter_wasm(), counter_meta()).unwrap();
         Self {
             rt,
@@ -376,6 +460,24 @@ impl World {
             auth,
             counter,
             me: me(),
+            dispatch,
+        }
+    }
+
+    /// A world as [`World::new`], but whose host has no dispatch: a call that needs a person's
+    /// yes is refused, since nobody here can be asked.
+    pub fn bare() -> Self {
+        let store = AmStore::new();
+        let auth = TestAuthority::new();
+        let rt = Runtime::with_limits(store.clone(), auth.clone(), DEFAULT_LIMITS).unwrap();
+        let counter = rt.load_package(&counter_wasm(), counter_meta()).unwrap();
+        Self {
+            rt,
+            store,
+            auth,
+            counter,
+            me: me(),
+            dispatch: Dispatch::new(),
         }
     }
 

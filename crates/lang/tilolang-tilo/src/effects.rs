@@ -11,7 +11,7 @@ use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
 use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
-use tilolang_runtime::{Actor, AgentBlock, Resolution, RunOutcome, UiNode};
+use tilolang_runtime::{Actor, AgentBlock, Resolution, UiNode};
 
 use crate::host::Host;
 use crate::publish::Caller;
@@ -53,16 +53,15 @@ pub enum HostEffect {
     /// included.
     #[effect(kind = "read", returns)]
     Catalogue,
-    /// Decide a suggestion.
+    /// Decide a proposal.
     ///
-    /// Approve or decline what an agent suggested and is waiting on: a suggested invocation
-    /// (the id `run-block` or a verb answered with), or a run waiting for approval (the run id
-    /// answered with). Approving runs the action once, whoever asks and however
-    /// many devices answer. Only a person decides: an agent cannot approve what it suggested.
+    /// Approve or decline an invocation an agent proposed, waiting as its own record on the
+    /// resource it is about. Approving runs the action once, whoever asks and however many
+    /// devices answer. Only a person decides: an agent cannot approve what it proposed.
     #[effect(kind = "outside")]
     #[effect(returns, destructive)]
     Resolve {
-        #[param("The suggested invocation's id, or the waiting run's id")]
+        #[param("The proposed invocation's id")]
         target: String,
         #[param("`approve` or `decline`")]
         decision: String,
@@ -779,45 +778,21 @@ impl Host {
         decision: &str,
     ) -> Result<ActionOutput, String> {
         let resolution = match decision.trim() {
-            "approve" => Resolution::Approve,
+            "approve" => Resolution::Approve { choice: None },
             "decline" => Resolution::Decline,
             other => return Err(format!("`{other}` is not approve or decline")),
         };
-        let as_invocation = self
+        // Only a proposal is decided here: a call that asked waits on its own record, which the
+        // dispatch answers.
+        let invocation = self
             .invocation_ref(target)
-            .filter(|invocation| self.store().contains(invocation));
-        if let Some(invocation) = as_invocation {
-            let state = self
-                .runtime()
-                .resolve_invocation(&invocation, approver, resolution)
-                .map_err(|error| error.to_string())?;
-            return Ok(output(json!({"kind": "invocation", "state": state})));
-        }
-        match self
+            .filter(|invocation| self.store().contains(invocation))
+            .ok_or_else(|| format!("`{target}` is no proposed invocation"))?;
+        let state = self
             .runtime()
-            .resolve(&target.to_owned(), approver, resolution)
-            .map_err(|error| error.to_string())?
-        {
-            RunOutcome::Done(value) => Ok(output(
-                json!({"kind": "run", "state": "done", "result": self.runtime().project(&value)}),
-            )),
-            RunOutcome::Suspended(suggestion) => {
-                let shown = json!({
-                    "kind": "run",
-                    "state": "suspended",
-                    "run": suggestion.run,
-                    "waiting_on": suggestion.action,
-                });
-                self.inner
-                    .suspended
-                    .borrow_mut()
-                    .push_back(crate::host::Waiting {
-                        suggestion,
-                        invocation: None,
-                    });
-                Ok(output(shown))
-            }
-        }
+            .resolve_invocation(&invocation, approver, resolution)
+            .map_err(|error| error.to_string())?;
+        Ok(output(json!({"kind": "invocation", "state": state})))
     }
 
     /// The resource a recorded invocation named by `id` is, for a caller that holds its id.

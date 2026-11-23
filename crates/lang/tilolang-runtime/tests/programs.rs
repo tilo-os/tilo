@@ -175,9 +175,21 @@ mod cases {
             assert_eq!(w.notes.len(), 3);
         }
 
-        phase an_action_the_agent_may_not_take_alone_asks_and_the_program_waits;
+        phase an_action_the_agent_may_not_take_alone_stops_the_program_and_writes_nothing;
         {
+            use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
+            /// The task host's answer to a call a person must be asked about: no program waits
+            /// inside its run.
+            struct Asks;
+            impl Invoker for Asks {
+                fn invoke(&self, _: &Invocation) -> Invoked {
+                    Invoked::Refused("asked".to_owned())
+                }
+            }
+
             let w = world();
+            w.rt.set_invoker(Asks);
             let mut session = Session::new();
             let reply = session.run(
                 &w.rt,
@@ -187,10 +199,10 @@ mod cases {
                     w.list_literal()
                 ),
             );
-            let ProgramOutcome::Suspended(asked) = &reply.outcome else {
-                panic!("the action did not ask: {:?}", reply.outcome);
+            let ProgramOutcome::Failed(why) = &reply.outcome else {
+                panic!("the action stops the program: {:?}", reply.outcome);
             };
-            assert_eq!(asked.action, w.todo.action("new_task"));
+            assert!(why.contains("asked"), "{why}");
             assert_eq!(reply.output, ["before"]);
             assert!(w.todo_titles().is_empty());
         }

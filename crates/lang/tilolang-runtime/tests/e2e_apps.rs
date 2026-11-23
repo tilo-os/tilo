@@ -116,6 +116,8 @@ mod cases {
         sink: MemorySink,
         /// Each loaded package by the name it declares, so a test that names an app reads its id.
         ids: Vec<(String, PackageId)>,
+        /// What the host sends its calls to, as a session's dispatch does.
+        dispatch: Dispatch,
     }
 
     fn world(apps: &Apps, store: &AmStore) -> World {
@@ -123,6 +125,8 @@ mod cases {
         let rt = Runtime::new(store.clone(), auth.clone()).unwrap();
         let sink = MemorySink::new();
         rt.set_sink(sink.clone());
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         let ids = [
             &apps.discussion,
             &apps.notes,
@@ -143,6 +147,7 @@ mod cases {
             auth,
             sink,
             ids,
+            dispatch,
         }
     }
 
@@ -399,10 +404,11 @@ mod cases {
             .unwrap_or_else(|| panic!("no button `{label}` in\n{}", dump(tree)))
     }
 
-    fn suggested(out: InvokeOutcome) -> tilolang_runtime::Suggestion {
+    /// The call the dispatch was asked about, when a press or a block asked.
+    fn asked(out: InvokeOutcome) -> String {
         match out {
-            InvokeOutcome::Suggested(s) => s,
-            other => panic!("expected a suggestion, got {other:?}"),
+            InvokeOutcome::Asked(call) => call,
+            other => panic!("expected an ask, got {other:?}"),
         }
     }
 
@@ -658,7 +664,7 @@ mod cases {
             assert_eq!(authors_of(view.tree()), [agent("helper"), person("ada")]);
         }
 
-        phase a_block_applying_letters_send_is_suggested_and_confirming_it_delivers_the_letter;
+        phase a_block_proposing_letters_send_shows_its_view_and_approving_it_delivers_the_letter;
         {
             let apps = apps();
             let w = world(&apps, &AmStore::new());
@@ -683,10 +689,14 @@ mod cases {
             let own = node_with(editor.tree(), "ui.MenuItem", "label", "Send")
                 .key
                 .clone();
-            let own = suggested(editor.fire(&own, "choose").unwrap());
-            assert_eq!(own.chain.len(), 1);
+            asked(editor.fire(&own, "choose").unwrap());
+            assert_eq!(
+                w.dispatch.asked().0,
+                apps.letters.action("send"),
+                "the letter's own Send asks through the dispatch"
+            );
 
-            let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
+            let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
             post(&w, &apps, &conv, &agent("helper"), "Shall I send it?", &src);
             let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
             let found = embeds(view.tree());
@@ -696,7 +706,7 @@ mod cases {
                 panic!("the card names its invocation resource: {}", dump(inv));
             };
             let record = card.target.clone();
-            assert_eq!(text_prop(inv, "state"), "suggested");
+            assert_eq!(text_prop(inv, "state"), "asked");
             assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
             assert_eq!(text_prop(inv, "action"), "send");
             assert_eq!(text_prop(inv, "app"), "test.letters");
@@ -709,7 +719,7 @@ mod cases {
             );
             assert!(w.rt.pending_outbox().is_empty(), "asking sends nothing");
 
-            // A re-render shows the same suggestion rather than making another.
+            // A re-render shows the same proposal rather than making another.
             post(&w, &apps, &conv, &person("ada"), "Looks right", "");
             assert!(view.is_stale(), "a new message re-renders the thread");
             view.poll_patches().unwrap();
@@ -717,7 +727,7 @@ mod cases {
             assert_eq!(text_prop(again, "run"), run);
 
             let state =
-                w.rt.resolve_invocation(&record, &me(), Resolution::Approve)
+                w.rt.resolve_invocation(&record, &me(), Resolution::Approve { choice: None })
                     .unwrap();
             assert_eq!(state, "done");
             assert!(
@@ -733,7 +743,7 @@ mod cases {
                 title_texts(view.tree())
                     .iter()
                     .all(|h| h != "Send to bo@example.org"),
-                "a decided suggestion no longer shows its proposal"
+                "a decided proposal no longer shows its view"
             );
 
             let pending = w.rt.pending_outbox();
@@ -791,7 +801,7 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let letters = w.create("Letters");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
-        let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
+        let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
         let message = post(&w, &apps, &conv, &agent("helper"), "", &src);
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let record = invocation_of(&w, &apps, &message);
@@ -852,12 +862,18 @@ mod cases {
         let found = embeds(chat_view.tree());
         assert_eq!(state(found[0]), "view");
         let button = of_kind(found[0], "ui.Button")[0].key.clone();
-        let s = suggested(chat_view.press(&button).unwrap());
-        assert_eq!(s.action, apps.todo.action("remove"));
+        asked(chat_view.press(&button).unwrap());
+        assert_eq!(w.dispatch.asked().0, apps.todo.action("remove"));
+        let tilolang_runtime::delegate::Invocation::Action { author, asks, .. } =
+            w.dispatch.waiting()
+        else {
+            panic!("the ask is an action");
+        };
+        assert!(asks);
         assert_eq!(
-            s.chain,
-            vec![ModuleHash::written_by(&person("stranger"))],
-            "the chain names the actor who wrote the block"
+            author,
+            Some(ModuleHash::written_by(&person("stranger"))),
+            "the dispatch names the actor who wrote the block"
         );
         assert_eq!(items(&w, &list, "items").len(), 2, "asking changed nothing");
 
@@ -972,7 +988,7 @@ mod cases {
             w.rt.read_invocation(&invocation_of(&w, &apps, &message))
                 .unwrap();
         assert_eq!(record.author, mallory);
-        assert_eq!(record.state, "suggested", "her code has no grants");
+        assert_eq!(record.state, "asked", "her code has no grants");
         assert!(items(&w, &list, "items").is_empty());
 
         // The action has no author to fill in, and an actor is not something a caller
@@ -1008,7 +1024,7 @@ mod cases {
     }
 
     #[test]
-    fn confirming_a_suggestion_on_another_replica_runs_it_once_and_both_replicas_show_done() {
+    fn approving_a_proposal_on_another_device_runs_it_once_and_both_show_done() {
         let apps = apps();
         let (mut a, mut b) = (AmStore::new(), AmStore::new());
         let (wa, wb) = (world(&apps, &a), world(&apps, &b));
@@ -1020,7 +1036,7 @@ mod cases {
         for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
             editor.edit(key, &Value::text(text)).unwrap();
         }
-        let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
+        let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
         let message = post(&wa, &apps, &conv, &agent("helper"), "Shall I?", &src);
         let record = invocation_of(&wa, &apps, &message);
         let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
@@ -1045,30 +1061,27 @@ mod cases {
         };
         assert_eq!(
             card_for(&guest),
-            ("suggested".to_owned(), Some(Value::Bool(false)))
+            ("asked".to_owned(), Some(Value::Bool(false)))
         );
-        assert_eq!(
-            card_for(&bo),
-            ("suggested".to_owned(), Some(Value::Bool(true)))
-        );
+        assert_eq!(card_for(&bo), ("asked".to_owned(), Some(Value::Bool(true))));
         let err = wb
             .rt
-            .resolve_invocation(&record, &guest, Resolution::Approve)
+            .resolve_invocation(&record, &guest, Resolution::Approve { choice: None })
             .unwrap_err();
         assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
-        assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "suggested");
+        assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "asked");
         assert!(wb.rt.pending_outbox().is_empty());
 
         // Someone with authority confirms on B: it runs there, once.
         assert_eq!(
             wb.rt
-                .resolve_invocation(&record, &bo, Resolution::Approve)
+                .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
                 .unwrap(),
             "done"
         );
         assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
         assert_eq!(wb.rt.pending_outbox().len(), 1);
-        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "suggested");
+        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
         assert!(wa.rt.pending_outbox().is_empty(), "A has not heard yet");
 
         a.sync_with(&mut b).unwrap();
@@ -1099,7 +1112,7 @@ mod cases {
 
         let again = wa
             .rt
-            .resolve_invocation(&record, &bo, Resolution::Approve)
+            .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
             .unwrap_err();
         assert!(matches!(again, RuntimeError::NotPending(_)), "{again}");
     }
@@ -1755,23 +1768,24 @@ mod cases {
 
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
-        let mut out = match view.press(&button).unwrap() {
-            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
-            InvokeOutcome::Done(v) => RunOutcome::Done(v),
-            InvokeOutcome::Denied => panic!("the press was denied"),
+        let InvokeOutcome::Waits { run, .. } = view.press(&button).unwrap() else {
+            panic!("the cleanup asks for the foreign changes");
         };
         let mut asked = Vec::new();
         let finished = loop {
-            match out {
-                RunOutcome::Suspended(s) => {
-                    assert_eq!(
-                        s.chain,
-                        vec![m.w.id_of(&apps.today).clone()],
-                        "Today wrote these invocations"
-                    );
-                    asked.push(s.action.clone());
-                    out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
-                }
+            let tilolang_runtime::delegate::Invocation::Action { action, author, .. } =
+                m.w.dispatch.waiting()
+            else {
+                panic!("the cleanup waits on no action");
+            };
+            assert_eq!(
+                author,
+                Some(m.w.id_of(&apps.today).clone()),
+                "Today wrote these invocations"
+            );
+            asked.push(action);
+            match m.w.dispatch.allow(&m.w.rt, &run) {
+                RunOutcome::Waits { .. } => {}
                 RunOutcome::Done(v) => break v,
             }
         };
@@ -1835,23 +1849,18 @@ mod cases {
         );
 
         let cleanup = apps.today.action("morning_cleanup");
-        let mut out = match m
-            .w
-            .rt
-            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
-            .unwrap()
-        {
-            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
-            InvokeOutcome::Done(v) => RunOutcome::Done(v),
-            InvokeOutcome::Denied => panic!("the cleanup was denied"),
+        let InvokeOutcome::Waits { run, .. } =
+            m.w.rt
+                .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+                .unwrap()
+        else {
+            panic!("the cleanup asks for the foreign note");
         };
         let mut asked = Vec::new();
         let finished = loop {
-            match out {
-                RunOutcome::Suspended(s) => {
-                    asked.push(s.action.clone());
-                    out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
-                }
+            asked.push(m.w.dispatch.asked().0);
+            match m.w.dispatch.allow(&m.w.rt, &run) {
+                RunOutcome::Waits { .. } => {}
                 RunOutcome::Done(v) => break v,
             }
         };

@@ -2,8 +2,10 @@
 //! what happened to an action a block applied: the host creates and changes these resources, and code
 //! only reads them. Every module sees the package as `host`.
 
-use crate::meta::{EnumMeta, FieldMeta, PackageMeta, TypeMeta, VariantMeta};
-use crate::types::MergeKind;
+use crate::meta::{
+    ActionMeta, DefaultMeta, EnumMeta, FieldMeta, PackageMeta, ParamMeta, TypeMeta, VariantMeta,
+};
+use crate::types::{EffectClass, MergeKind};
 
 pub const HOST_APP: &str = "tilo.host";
 pub const INVOCATION_TYPE: &str = "host-invocation";
@@ -14,6 +16,8 @@ pub const NOTICE_BODY: &str = "notice-body";
 pub const NOTICE_OPENS: &str = "notice-opens";
 pub const NOTICE_SEEN: &str = "notice-seen";
 pub const LINK_HOW_TYPE: &str = "host-link-how";
+/// The action a person answers an asked invocation with.
+pub const RESOLVE_ACTION: &str = "resolve";
 
 /// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload fields. `try
 /// act(args)` builds one from an invocation's outcome.
@@ -668,6 +672,50 @@ fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> 
     }
 }
 
+/// The action a person answers an asked invocation with, on its record. The host declares it and
+/// runs no code of it: a call is the record's own verb, sent to the app its workspace publishes,
+/// which answers it there (`tilolang_runtime::published`).
+fn resolve_action() -> ActionMeta {
+    let param = |name: &str, ty: &str, default: Option<DefaultMeta>| ParamMeta {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        default,
+        place: false,
+        entry: false,
+        label: None,
+    };
+    ActionMeta {
+        id: RESOLVE_ACTION.to_string(),
+        name: RESOLVE_ACTION.to_string(),
+        doc: "Answer an invocation that waits on you: approve it, approve it and stop asking, or decline it.".to_string(),
+        params: vec![
+            param("i", "Invocation", None),
+            param("resolution", "Text", None),
+            param("choice", "Option<Int>", Some(DefaultMeta::none())),
+        ],
+        result: Some("Text".to_string()),
+        class: EffectClass::Outside,
+        proposal: None,
+        reaches: Vec::new(),
+        label: "Resolve".to_string(),
+        icon: None,
+        role: None,
+        scenario: false,
+        did: None,
+        present: None,
+        toggles: None,
+        key: None,
+        group: None,
+        uses: Vec::new(),
+        guard: false,
+        applies: false,
+        invokes: false,
+        carries: false,
+        outside: Vec::new(),
+        opens: Vec::new(),
+    }
+}
+
 pub fn host_meta() -> PackageMeta {
     PackageMeta {
         app: HOST_APP.to_string(),
@@ -685,13 +733,13 @@ pub fn host_meta() -> PackageMeta {
                 field(
                     "state",
                     "Text",
-                    "done, suggested, declined, failed or denied.",
+                    "done, asked, declined, failed or denied.",
                 ),
                 field("result", "Text", "The result, or why it failed."),
                 field(
                     "run",
                     "Text",
-                    "The suggestion's run on the device that made it.",
+                    "The call the run waits on, for one that waits.",
                 ),
                 field(
                     "target",
@@ -747,6 +795,7 @@ pub fn host_meta() -> PackageMeta {
             }
         }))
         .collect(),
+        actions: vec![resolve_action()],
         enums: HOST_ENUMS
             .iter()
             .map(|e| EnumMeta {

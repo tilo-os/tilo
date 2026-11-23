@@ -5,8 +5,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
-        Value,
+        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Value,
     };
 
     /// A list of counts, and the rule over it: the only place the rule is written.
@@ -92,6 +91,7 @@ view bigs(b: lib.Bag) {
         lib: App,
         caller: App,
         bag: ResourceRef,
+        dispatch: Dispatch,
     }
 
     fn world() -> World {
@@ -99,6 +99,8 @@ view bigs(b: lib.Bag) {
         let caller = App::compile(CALLER, &[lib.meta().clone()]);
         let auth = SimpleAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth).unwrap();
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         lib.load(&rt);
         caller.load(&rt);
         let bag = rt.create_root("Bag").unwrap();
@@ -107,6 +109,7 @@ view bigs(b: lib.Bag) {
             lib,
             caller,
             bag,
+            dispatch,
         }
     }
 
@@ -148,14 +151,12 @@ view bigs(b: lib.Bag) {
             let w = world();
             w.add(20);
             w.add(1);
-            let InvokeOutcome::Suggested(asked) = w.start() else {
+            let InvokeOutcome::Waits { run, .. } = w.start() else {
                 panic!("the other package's action asks");
             };
-            assert_eq!(asked.action, w.lib.action("drop_big"));
+            assert_eq!(w.dispatch.asked().0, w.lib.action("drop_big"));
             assert_eq!(w.items(), 2, "asking changes nothing");
-            let out =
-                w.rt.resolve(&asked.run, &me(), Resolution::Approve)
-                    .unwrap();
+            let out = w.dispatch.allow(&w.rt, &run);
             assert_eq!(
                 out,
                 RunOutcome::Done(Value::Int(1)),

@@ -53,7 +53,7 @@ use crate::runtime::ids::MemberId;
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
     ActionRef, Actor, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink,
-    Patch, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
+    Patch, RefValue, Resolution, ResourceRef, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use facts::Facts;
@@ -400,7 +400,6 @@ pub struct Instance {
     /// How many paragraphs were asked for: what tells an ask for the paragraph shown last apart
     /// from the one before, so it is shown again.
     reveals: u64,
-    ask: Option<crate::host::Waiting>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
     /// The outside services the package's types with an origin are kept in step with.
@@ -519,7 +518,6 @@ impl Instance {
             pressed_shows: Vec::new(),
             revealing: None,
             reveals: 0,
-            ask: None,
             settle_due: false,
             sink: Some(
                 config
@@ -1353,64 +1351,6 @@ impl Instance {
         self.flush();
     }
 
-    /// Ask the person about what a run waits on them for since the last frame. Whether the Ask
-    /// bar changed.
-    fn take_suspended(&mut self) -> bool {
-        // An ask whose record somebody decided elsewhere (through the API, on another device)
-        // waits on nobody: the bar goes.
-        let decided = self
-            .ask
-            .as_ref()
-            .and_then(|waiting| waiting.invocation.as_ref())
-            .zip(self.host())
-            .is_some_and(|(invocation, host)| {
-                host.runtime()
-                    .read_invocation(invocation)
-                    .is_ok_and(|record| record.state != "suggested")
-            });
-        if decided {
-            self.ask = None;
-            self.out.push(ToUi::Ask(None));
-        }
-        let Some(waiting) = self.host().and_then(|host| host.take_suspended()) else {
-            return decided;
-        };
-        self.commit_planned();
-        self.ask(waiting);
-        true
-    }
-
-    /// Show the Ask bar for `suggestion`, a run of this window's own.
-    fn ask_for(&mut self, suggestion: Suggestion) {
-        self.ask(crate::host::Waiting {
-            suggestion,
-            invocation: None,
-        });
-    }
-
-    /// Show the Ask bar for what `waiting` waits on.
-    fn ask(&mut self, waiting: crate::host::Waiting) {
-        let suggestion = &waiting.suggestion;
-        let action = self
-            .host()
-            .and_then(|host| {
-                host.find_in_packages(|package| {
-                    package
-                        .meta
-                        .actions
-                        .iter()
-                        .find(|action| action.id == suggestion.action)
-                        .map(crate::runtime::platform::label_of)
-                })
-            })
-            .unwrap_or_else(|| suggestion.action.clone());
-        self.out.push(ToUi::Ask(Some(ui::Ask {
-            action,
-            invoker: self.names.name(&suggestion.invoker),
-        })));
-        self.ask = Some(waiting);
-    }
-
     /// Show what a person's press made, and what search hits or agents asked the window to
     /// show.
     fn take_open_requests(&mut self) -> bool {
@@ -1780,10 +1720,9 @@ impl Instance {
                 self.request_rows(level, &list, range, (open.as_deref(), menu.as_deref()));
                 Ok(())
             }
-            ToApp::Answer(answer) => {
-                self.answer(answer);
-                Ok(())
-            }
+            // A window draws no asking of its own: the shell's one asking view answers what was
+            // asked, through the dispatch.
+            ToApp::Answer(_) => Ok(()),
             // No page call waits for an answer yet: the window's page runs nothing the app's
             // actions ask of it.
             ToApp::PageAnswer { .. } => Ok(()),
@@ -1958,10 +1897,9 @@ impl Instance {
                 });
                 Ok(())
             }
-            Ok(InvokeOutcome::Suggested(suggestion)) => {
-                self.ask_for(suggestion);
-                Ok(())
-            }
+            // It waits on a call it made through the dispatch, or on a person's yes to one: the
+            // record it waits in is drawn by the shell's one asking view, and the answer runs it.
+            Ok(InvokeOutcome::Waits { .. } | InvokeOutcome::Asked(_)) => Ok(()),
             Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
             Err(error) => Err(Words::Plain(error.to_string())),
         }
@@ -2137,11 +2075,12 @@ impl Instance {
                 });
                 Ok(())
             }
-            Ok(InvokeOutcome::Suggested(suggestion)) => {
+            // It waits on a call it made through the dispatch, or on a person's yes to one: the
+            // record it waits in is drawn by the shell's one asking view, and the answer runs it.
+            Ok(InvokeOutcome::Waits { .. } | InvokeOutcome::Asked(_)) => {
                 pending.forget();
                 self.form = None;
                 self.out.push(ToUi::Form(None));
-                self.ask_for(suggestion);
                 Ok(())
             }
             Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
@@ -2373,7 +2312,7 @@ impl Instance {
             })
             .ok_or_else(|| Words::phrase("tilolang-open-failed"))?;
         let resolution = if approve {
-            Resolution::Approve
+            Resolution::Approve { choice: None }
         } else {
             Resolution::Decline
         };
@@ -2381,40 +2320,6 @@ impl Instance {
             .resolve_invocation(&target, &self.me_actor(), resolution)
             .map(|_| ())
             .map_err(|error| Words::Plain(error.to_string()))
-    }
-
-    fn answer(&mut self, answer: ui::Answer) {
-        let (Some(waiting), Some(host)) = (self.ask.take(), self.host()) else {
-            return;
-        };
-        let suggestion = waiting.suggestion;
-        let resolution = match answer {
-            ui::Answer::Decline => Resolution::Decline,
-            ui::Answer::Allow | ui::Answer::Always => {
-                if answer == ui::Answer::Always {
-                    for author in &suggestion.chain {
-                        host.authority().trust(author);
-                    }
-                }
-                Resolution::Approve
-            }
-        };
-        // A recorded ask is decided as its record, so every replica reads the answer.
-        let decided = match &waiting.invocation {
-            Some(invocation) => host
-                .runtime()
-                .resolve_invocation(invocation, &self.me_actor(), resolution)
-                .map(drop),
-            None => host
-                .runtime()
-                .resolve(&suggestion.run, &self.me_actor(), resolution)
-                .map(drop),
-        };
-        if let Err(error) = decided {
-            self.notice(Words::Plain(error.to_string()), ui::NoticeKind::Error);
-        }
-        self.out.push(ToUi::Ask(None));
-        self.commit_planned();
     }
 
     /// What follows an action a person ran from a control: a destructive one offers Undo,
@@ -2584,7 +2489,6 @@ impl Instance {
             let _phase = tilo_resource::profiling::Phase::start("instance.receive");
             self.receive()
         };
-        let asked = self.take_suspended();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
@@ -2606,15 +2510,8 @@ impl Instance {
         let members = self.follow_members();
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
-        let changed = received
-            || asked
-            || opened
-            || pulled
-            || settled
-            || lenses
-            || person
-            || members
-            || timed;
+        let changed =
+            received || opened || pulled || settled || lenses || person || members || timed;
         // A view runs where something reached it: what a change told its store, a state it
         // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
         let changed = {

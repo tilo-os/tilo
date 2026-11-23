@@ -34,7 +34,7 @@ mod cases {
             };
 
             assert!(
-                matches!(send(), InvokeOutcome::Suggested(_)),
+                matches!(send(), InvokeOutcome::Asked(_)),
                 "outside effects ask by default"
             );
             assert!(w.rt.pending_outbox().is_empty());

@@ -1,5 +1,6 @@
-//! Runs: an action that calls another action journals the call, an Ask suspends the run,
-//! resolving replays it from the journal, and the journaled calls are not executed again.
+//! Runs: an action that calls another action journals the call, a call that needs a person's yes
+//! waits through the dispatch, answering it replays the run from the journal, and the journaled
+//! calls are not executed again.
 
 #[cfg(test)]
 mod cases {
@@ -7,9 +8,7 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::{
-        InvokeOutcome, ModelHost, Pending, Resolution, RunOutcome, Runtime, Store, Value,
-    };
+    use tilolang_runtime::{InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, Store, Value};
 
     fn incs(w: &World, c: &tilolang_runtime::ResourceRef) -> usize {
         w.rt.history(&c.doc)
@@ -81,25 +80,21 @@ mod cases {
             assert_eq!(invocations(&w, &c).len(), 2);
         }
 
-        phase a_run_that_waits_for_an_answer_goes_on_under_an_invocation_of_its_own;
+        phase a_run_that_waits_for_its_calls_is_one_action_across_the_answers;
         {
             let (w, c) = world();
-            let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
+            let InvokeOutcome::Waits { run, .. } = run(&w, "ask", vec![Value::resource(&c)]) else {
                 panic!("the stranger's call asks first");
             };
-            let RunOutcome::Suspended(second) =
-                w.rt.resolve(&first.run, &w.me, Resolution::Approve)
-                    .unwrap()
-            else {
+            let RunOutcome::Waits { .. } = w.dispatch.allow(&w.rt, &run) else {
                 panic!("the second call asks too");
             };
-            w.rt.resolve(&second.run, &w.me, Resolution::Approve)
-                .unwrap();
+            w.dispatch.allow(&w.rt, &run);
             let calls = invocations(&w, &c);
             assert_eq!(calls.len(), 2);
-            assert_ne!(
+            assert_eq!(
                 calls[0], calls[1],
-                "the wait split the run: what it does on from the answer is an action of its own"
+                "the whole run stays one action across the answers"
             );
         }
     }
@@ -128,57 +123,54 @@ mod cases {
     }
 
     tilo_test_env::scenario! {
-        fn a_run_asks_is_journaled_and_replays;
+        fn a_run_waits_on_an_asked_call_and_answers_it;
 
-        phase an_ask_suspends_and_resolving_replays_without_repeating_work;
+        phase an_asked_call_waits_and_the_answer_resumes_without_repeating_work;
         {
             let (w, c) = world();
             let args = vec![Value::resource(&c)];
 
             let got = run(&w, "ask", args);
-            let InvokeOutcome::Suggested(first) = got else {
+            let InvokeOutcome::Waits { run, call } = got else {
                 panic!("the first foreign invoke must ask: {got:?}");
             };
-            assert_eq!(first.action, "inc");
+            assert_eq!(w.dispatch.len(), 1, "the call went through the dispatch");
+            assert_eq!(w.dispatch.asked().0, "inc");
             assert_eq!(incs(&w, &c), 0);
 
-            let RunOutcome::Suspended(second) =
-                w.rt.resolve(&first.run, &w.me, Resolution::Approve)
-                    .unwrap()
-            else {
+            let RunOutcome::Waits { call: next, .. } = w.dispatch.allow(&w.rt, &run) else {
                 panic!("the second foreign invoke must ask too");
             };
-            assert_eq!(second.run, first.run);
+            assert_eq!(next, format!("call-2"));
+            assert_eq!(call, "call-1");
             assert_eq!(
                 incs(&w, &c),
                 1,
                 "the replay answered the first invoke from the journal instead of running it again"
             );
 
-            let out =
-                w.rt.resolve(&second.run, &w.me, Resolution::Approve)
-                    .unwrap();
+            let out = w.dispatch.allow(&w.rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::Int(2)));
             assert_eq!(incs(&w, &c), 2);
         }
 
-        phase a_declined_step_is_journaled_and_the_run_goes_on;
+        phase a_declined_call_ends_the_run_and_takes_back_its_writes;
         {
             let (w, c) = world();
-            let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
-                panic!("expected a suggestion");
+            let InvokeOutcome::Waits { run, .. } = run(&w, "ask", vec![Value::resource(&c)]) else {
+                panic!("expected a wait");
             };
-            let RunOutcome::Suspended(second) =
-                w.rt.resolve(&first.run, &w.me, Resolution::Decline)
-                    .unwrap()
-            else {
-                panic!("the run continues to its second invoke");
-            };
-            let out =
-                w.rt.resolve(&second.run, &w.me, Resolution::Approve)
-                    .unwrap();
-            assert_eq!(out, RunOutcome::Done(Value::Int(1)));
-            assert_eq!(incs(&w, &c), 1);
+            let error = w.dispatch.decline(&w.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert_eq!(incs(&w, &c), 0, "nothing of the declined run stands");
+            let mut store = w.store.clone();
+            assert!(
+                store.load_journal(&run).unwrap().unwrap().finished,
+                "the run ended"
+            );
         }
 
         phase trusting_the_author_lets_the_run_without_asking;
@@ -190,13 +182,14 @@ mod cases {
                 run(&w, "ask", vec![Value::resource(&c)]),
                 InvokeOutcome::Done(Value::Int(2))
             );
+            assert_eq!(w.dispatch.len(), 0, "no call needed a person");
         }
 
-        phase a_suspended_run_survives_a_restart;
+        phase a_waiting_run_survives_a_restart;
         {
             let (w, c) = world();
-            let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
-                panic!("expected a suggestion");
+            let InvokeOutcome::Waits { run, .. } = run(&w, "ask", vec![Value::resource(&c)]) else {
+                panic!("expected a wait");
             };
             let store = w.store.clone();
             drop(w);
@@ -208,30 +201,34 @@ mod cases {
                     (stranger_wasm(), stranger_meta()),
                 ],
             );
-            let me = me();
-            let RunOutcome::Suspended(second) =
-                rt.resolve(&first.run, &me, Resolution::Approve).unwrap()
-            else {
-                panic!("expected the second suggestion");
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
+            let RunOutcome::Waits { .. } = dispatch.allow(&rt, &run) else {
+                panic!("expected the second call to ask");
             };
-            let out = rt.resolve(&second.run, &me, Resolution::Approve).unwrap();
+            let out = dispatch.allow(&rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::Int(2)));
         }
 
         phase the_journal_is_persisted_through_the_store;
         {
             let (w, c) = world();
-            let InvokeOutcome::Suggested(s) = run(&w, "ask", vec![Value::resource(&c)]) else {
-                panic!("expected a suggestion");
+            let InvokeOutcome::Waits { run, call } = run(&w, "ask", vec![Value::resource(&c)]) else {
+                panic!("expected a wait");
             };
             let mut store = w.store;
-            let journal = store.load_journal(&s.run).unwrap().unwrap();
+            let journal = store.load_journal(&run).unwrap().unwrap();
             assert_eq!(journal.action.as_deref(), Some("ask"));
             assert!(journal.entries.is_empty());
-            let Pending::Ask(pending) = journal.pending.unwrap() else {
-                panic!("the run waits for a person");
+            let Some(Pending::Call {
+                call: waiting,
+                action,
+            }) = journal.pending
+            else {
+                panic!("the run waits on a call");
             };
-            assert_eq!(pending.action, "inc");
+            assert_eq!(waiting, call);
+            assert_eq!(action, "inc");
         }
     }
 
@@ -252,11 +249,11 @@ mod cases {
         let (w, c) = world();
         let calls = Rc::new(Cell::new(0));
         w.rt.set_model_host(CountingModel(Rc::clone(&calls)));
-        let InvokeOutcome::Suggested(s) = run(&w, "m", vec![Value::resource(&c)]) else {
-            panic!("expected a suggestion");
+        let InvokeOutcome::Waits { run, .. } = run(&w, "m", vec![Value::resource(&c)]) else {
+            panic!("expected a wait");
         };
         assert_eq!(calls.get(), 1);
-        let out = w.rt.resolve(&s.run, &w.me, Resolution::Approve).unwrap();
+        let out = w.dispatch.allow(&w.rt, &run);
         assert_eq!(out, RunOutcome::Done(Value::text("classify:hello")));
         assert_eq!(calls.get(), 1, "the replay used the journaled answer");
     }

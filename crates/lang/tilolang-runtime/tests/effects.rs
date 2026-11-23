@@ -10,8 +10,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::run::{Clock, JournalEntry};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
-        Store, Value,
+        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Store, Value,
     };
 
     /// Two hours ahead of UTC: their midnight is 22:00 UTC.
@@ -137,6 +136,8 @@ action start(b: demo.Board) -> Time uses time {
             demo.load(&rt);
             runner.load(&rt);
             let board = rt.create("Board").unwrap();
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
 
             let out = rt
                 .invoke_action(
@@ -144,13 +145,13 @@ action start(b: demo.Board) -> Time uses time {
                     (runner.action("start"), vec![Value::resource(&board)]),
                 )
                 .unwrap();
-            let InvokeOutcome::Suggested(first) = out else {
+            let InvokeOutcome::Waits { run, .. } = out else {
                 panic!("the other package's action must ask: {out:?}");
             };
 
             // The moment the run started is in its journal before it goes on.
             let journal = store
-                .load_journal(&first.run)
+                .load_journal(&run)
                 .unwrap()
                 .expect("a suspended run's journal");
             assert_eq!(
@@ -164,7 +165,7 @@ action start(b: demo.Board) -> Time uses time {
 
             // Tomorrow, the run resumed reads the moment it started, not the host's.
             clock.set("2026-07-01T15:30:00Z");
-            let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
+            let out = dispatch.allow(&rt, &run);
             assert_eq!(
                 out,
                 RunOutcome::Done(Value::text("2026-06-30T09:00:00Z")),
@@ -183,6 +184,8 @@ action start(b: demo.Board) -> Time uses time {
             writer.load(&rt);
             let doc = rt.create("Doc").unwrap();
             let board = rt.create("Board").unwrap();
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
             let (doc_changes, board_changes) = (
                 rt.history(&doc.doc).unwrap().len(),
                 rt.history(&board.doc).unwrap().len(),
@@ -197,7 +200,7 @@ action start(b: demo.Board) -> Time uses time {
                     ),
                 )
                 .unwrap();
-            let InvokeOutcome::Suggested(first) = out else {
+            let InvokeOutcome::Waits { run, .. } = out else {
                 panic!("the other package's action must ask: {out:?}");
             };
             // What it wrote before the call is a change of its own, made before the call runs, so
@@ -205,7 +208,7 @@ action start(b: demo.Board) -> Time uses time {
             assert_eq!(text(&rt, &doc), "opened");
             assert_eq!(marks(&rt, &board), 0, "the call waits on the person");
             let journal = store
-                .load_journal(&first.run)
+                .load_journal(&run)
                 .unwrap()
                 .expect("a suspended run's journal");
             assert_eq!(
@@ -214,7 +217,7 @@ action start(b: demo.Board) -> Time uses time {
                 "the run wrote once, and its journal says so"
             );
 
-            let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
+            let out = dispatch.allow(&rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::Unit));
             // The call's change stands, and the caller's replay did not write the first word again
             // or take the call back: one change each, not two of the first.

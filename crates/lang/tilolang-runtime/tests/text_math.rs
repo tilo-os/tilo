@@ -93,8 +93,9 @@ action flag(b: Bool) -> Text { return b.to_text() }";
             let aref = (self.app.action(action), args);
             match self.rt.invoke_action(&me(), aref).unwrap() {
                 InvokeOutcome::Done(v) => v,
-                InvokeOutcome::Suggested(s) => panic!("{action} stopped to ask {}", s.action),
+                InvokeOutcome::Asked(call) => panic!("{action} stopped to ask {call}"),
                 InvokeOutcome::Denied => panic!("{action} was denied"),
+                InvokeOutcome::Waits { .. } => panic!("{action} stopped to wait on a call"),
             }
         }
 

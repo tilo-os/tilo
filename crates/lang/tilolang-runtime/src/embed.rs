@@ -12,7 +12,7 @@
 //!   that resource is shown; the child says what it shows.
 //! * `invocation`: the block was an action application. Nothing runs here: the child is an
 //!   `invocation` node drawn from the recorded resource (`state` of `pending` before the host
-//!   has recorded one, then `done`, `suggested`, `declined`, `failed` or `denied`, plus
+//!   has recorded one, then `done`, `asked`, `declined`, `failed` or `denied`, plus
 //!   `action`, `app`, `result`, the `invocation` reference and `can_resolve`), holding the
 //!   action's proposal view while it is a suggestion and the action has one.
 //! * `data`: the block was a value; the child is its default rendering.
@@ -338,7 +338,7 @@ impl Core {
     }
 
     /// Draw the invocation the host recorded for an action block. This only reads: the action
-    /// ran, or was suggested, when the message was posted.
+    /// ran, or was asked, when the message was posted.
     fn invocation_card(
         &self,
         cx: &Build<'_>,
@@ -369,7 +369,7 @@ impl Core {
             props.push(("result", Value::text(&rec.result)));
         }
         let mut children = Vec::new();
-        if rec.state == "suggested" {
+        if rec.state == "asked" {
             props.push(("run", Value::text(&rec.run)));
             props.push((
                 "can_resolve",
@@ -404,7 +404,7 @@ impl Core {
             .into_iter()
             .map(|link| link.of)
             .filter_map(|at| match self.read_invocation(&at) {
-                Ok(rec) if rec.state == "suggested" => Some((at, rec)),
+                Ok(rec) if rec.state == "asked" => Some((at, rec)),
                 _ => None,
             })
             .collect()

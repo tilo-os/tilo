@@ -13,7 +13,7 @@ mod cases {
     use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest, WebResponse};
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Store, Value,
     };
 
     const DEMO: &str = r#"app so.tilo.feeddemo "Feed demo"
@@ -104,6 +104,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
         reader: App,
         feed: ResourceRef,
         board: ResourceRef,
+        dispatch: Dispatch,
     }
 
     fn world(web: &FakeWeb) -> World {
@@ -112,6 +113,8 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
         let store = AmStore::new();
         let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
         rt.set_web(web.clone());
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         demo.load(&rt);
         reader.load(&rt);
         let feed = rt.create("Feed").unwrap();
@@ -122,6 +125,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             reader,
             feed,
             board,
+            dispatch,
         }
     }
 
@@ -195,7 +199,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
                     ),
                 )
                 .unwrap();
-            let InvokeOutcome::Suggested(first) = out else {
+            let InvokeOutcome::Waits { run, .. } = out else {
                 panic!("the other package's action must ask: {out:?}");
             };
             assert_eq!(
@@ -205,7 +209,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             );
             let journal = world
                 .store
-                .load_journal(&first.run)
+                .load_journal(&run)
                 .unwrap()
                 .expect("a suspended run's journal");
             assert!(
@@ -214,10 +218,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
                 journal.entries
             );
 
-            let out = world
-                .rt
-                .resolve(&first.run, &me(), Resolution::Approve)
-                .unwrap();
+            let out = world.dispatch.allow(&world.rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::text("hello")));
             assert_eq!(
                 web.requests().len(),

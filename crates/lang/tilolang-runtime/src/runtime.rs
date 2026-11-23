@@ -845,11 +845,13 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
-    /// Answer the call the run `run` waits on ([`crate::exec::Core::answer_call`]).
+    /// Answer the call the run `run` waits on ([`crate::exec::Core::answer_call`]): what it came
+    /// to, or a refusal, which ends the run and takes back what it wrote.
     ///
     /// # Errors
     ///
-    /// `NotPending` when the run waits on no call; otherwise as running it on.
+    /// `NotPending` when the run waits on no call; `Denied` when the answer refuses the run;
+    /// otherwise as running it on.
     pub fn answer_call(
         &self,
         run: &RunId,

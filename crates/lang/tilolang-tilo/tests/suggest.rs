@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
     {
         let (ada, task) = workspace();
         let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
-        assert_eq!(record.state, "suggested");
+        assert_eq!(record.state, "asked");
         assert_eq!(
             record.target.as_ref().map(ResourceRef::id_string),
             Some(target(&task).id_string())
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
                 .unwrap(),
             "done"
         );
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
         assert!(
             ada.host
                 .runtime()
-                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
                 .is_err()
         );
     }
@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&due.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+                .resolve_invocation(&due.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
                 .unwrap(),
             "done"
         );
@@ -264,7 +264,7 @@ tilo_test_env::scenario! {
         assert_eq!(card.props.get("proposed"), Some(&Value::Bool(true)));
         assert_eq!(
             card.props.get("state"),
-            Some(&Value::text("suggested")),
+            Some(&Value::text("asked")),
             "the card asks"
         );
         // The card says which record deciding it resolves, and that Ada may decide: what the
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
         // Decided, the card and the row's line go away.
         ada.host
             .runtime()
-            .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+            .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
             .unwrap();
         ada.commit();
         let page = ada.host.open_resource(&target(&task), None).unwrap();

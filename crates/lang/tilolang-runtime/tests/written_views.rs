@@ -54,6 +54,7 @@ mod cases {
         store: AmStore,
         auth: TestAuthority,
         views: ResourceRef,
+        dispatch: Dispatch,
     }
 
     impl Person {
@@ -65,6 +66,8 @@ mod cases {
             for app in [&apps.mail, &apps.chat, &apps.views] {
                 auth.trust(&app.load(&rt));
             }
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
             let views = rt.create_root("Views").unwrap();
             Self {
                 who: person(who),
@@ -72,6 +75,7 @@ mod cases {
                 store,
                 auth,
                 views,
+                dispatch,
             }
         }
 
@@ -347,13 +351,20 @@ view unread_mail(m: mail.Mail) {\n\
                 .unwrap();
         let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
         match view.press(&button).unwrap() {
-            InvokeOutcome::Suggested(s) => assert_eq!(
-                s.chain,
-                vec![tilolang_runtime::ModuleHash::written_by(writer)],
-                "the chain names who wrote the view"
-            ),
+            InvokeOutcome::Asked(_) => {}
             other => panic!("an untrusted author's view asks first, not {other:?}"),
         }
+        let tilolang_runtime::delegate::Invocation::Action { author, asks, .. } =
+            p.dispatch.waiting()
+        else {
+            panic!("the press asks for an action");
+        };
+        assert!(asks, "the dispatch is told a person must be asked");
+        assert_eq!(
+            author,
+            Some(tilolang_runtime::ModuleHash::written_by(writer)),
+            "the dispatch names who wrote the view"
+        );
         assert_eq!(unread(), unread_before, "asking changed nothing");
         p.auth.trust_actor(writer);
         let view =

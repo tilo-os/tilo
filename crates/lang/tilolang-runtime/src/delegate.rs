@@ -121,7 +121,8 @@ pub enum Invoked {
     Done(Value),
     /// It ran and failed, and changed nothing.
     Failed(String),
-    /// Policy refused it: the program gets the reason as an error value.
+    /// Policy refused it: the program gets the reason as an error value. An answer to a call a
+    /// run waits on ([`crate::Core::answer_call`]) refuses the run itself: nothing of it stands.
     Refused(String),
     /// It went to the app that holds the resource as the call named here, which answers it
     /// later: a run that made it waits on that answer ([`crate::Core::answer_call`]).

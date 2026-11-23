@@ -735,15 +735,16 @@ view span_label(span: Duration) {
             assert_eq!(sheet.rt.read(&holder, "secs").unwrap(), Value::Int(5400));
         }
 
-        phase a_program_keeps_a_duration_and_handles_sent_duration_actions;
+        phase a_program_keeps_a_duration_it_gets_back_from_a_call;
         {
             use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
             use tilolang_runtime::program::{ProgramOutcome, Session};
 
-            struct AlwaysSent;
-            impl Invoker for AlwaysSent {
+            /// What the host's app answers a call: no seconds passed.
+            struct NoSeconds;
+            impl Invoker for NoSeconds {
                 fn invoke(&self, _: &Invocation) -> Invoked {
-                    Invoked::Sent
+                    Invoked::Done(Value::Int(0))
                 }
             }
 
@@ -762,17 +763,17 @@ view span_label(span: Duration) {
             );
             assert_eq!(shown.output, ["90m 5400"]);
 
-            sheet.rt.set_invoker(AlwaysSent);
+            sheet.rt.set_invoker(NoSeconds);
             let call = format!(
                 "let d = time.since_hour(@time.Board:{})\nprint(\"{{d}} {{d.seconds()}}\")",
                 sheet.board.id_string()
             );
-            let sent = session.run(&sheet.rt, &agent, &call);
+            let answered = session.run(&sheet.rt, &agent, &call);
             assert!(
-                matches!(sent.outcome, ProgramOutcome::Done),
-                "a sent action returning Duration produces 0s rather than trapping: {sent:?}"
+                matches!(answered.outcome, ProgramOutcome::Done),
+                "the answer to the call is the Duration the program goes on with: {answered:?}"
             );
-            assert_eq!(sent.output, ["0s 0"]);
+            assert_eq!(answered.output, ["0s 0"]);
         }
 
         phase an_int_export_accepts_a_flag_while_a_duration_refuses_it;

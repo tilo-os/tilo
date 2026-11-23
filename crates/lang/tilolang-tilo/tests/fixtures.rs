@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, ViewInstance};
@@ -160,6 +161,19 @@ impl Clone for Workspace {
     }
 }
 
+/// The host's dispatch in these tests: a call that needs a person's yes waits as its own
+/// record, and no other call is sent here, since every package is loaded as the host's own.
+struct Dispatch;
+
+impl Invoker for Dispatch {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        match invocation {
+            Invocation::Action { asks: true, .. } => Invoked::Pending("call".to_owned()),
+            _ => Invoked::Refused("this test host runs no call unasked".to_owned()),
+        }
+    }
+}
+
 /// One member's machine: a copy of the workspace and a host over it.
 pub struct Replica {
     pub name: String,
@@ -203,6 +217,7 @@ impl Replica {
             access,
         )
         .unwrap();
+        host.runtime().set_foreign_invoker(Dispatch);
         let loaded = packages
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())

@@ -26,6 +26,9 @@ pub struct Callees {
     pub published: HashSet<String>,
     /// The resource each of the session's loose actions is published on, by the action's id.
     pub addresses: BTreeMap<String, String>,
+    /// The workspace the call is made in: what a dispatch serving more than one routes it by, so a
+    /// call reaches a record in another workspace the person belongs to.
+    pub workspace: Option<String>,
 }
 
 impl Callees {
@@ -41,14 +44,18 @@ impl Callees {
             .apps
             .get(app)
             .ok_or_else(|| Answered::Refused(format!("this code may use no app {app}")))?;
-        if self.published.contains(app) {
+        let mut call = if self.published.contains(app) {
             published_call(meta, invocation, &self.addresses, |r| self.published_id(r))
         } else if self.native.is(app) {
             native_call(&self.apps, meta, self.native.record(app), invocation)
         } else {
             call_of(&self.apps, meta, invocation)
         }
-        .map_err(Answered::Failed)
+        .map_err(Answered::Failed)?;
+        if let (Some(workspace), Some(fields)) = (&self.workspace, call.as_object_mut()) {
+            fields.insert("workspace".to_owned(), json!(workspace));
+        }
+        Ok(call)
     }
 
     /// What `answer`, the app's answer to `invocation`, is to the code that made it.
@@ -64,7 +71,9 @@ impl Callees {
                 .map_or_else(Invoked::Failed, Invoked::Done),
             Answered::Failed(why) => Invoked::Failed(why),
             Answered::Refused(why) => Invoked::Refused(why),
-            Answered::Asks(why) => Invoked::Asks(why),
+            // A program's host answers every call before the program goes on, so a call the
+            // person is asked about cannot wait there: the program is told it was asked.
+            Answered::Asks(why) => Invoked::Refused(format!("asked: {why}")),
         }
     }
 

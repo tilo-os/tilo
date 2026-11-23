@@ -1,12 +1,10 @@
-//! A proposal another action calls. The caller reaches outside through it, so a person is asked
-//! once: allowed, the proposal runs inside the caller and queues its effect, without asking
-//! again; refused, nothing runs. A caller the workspace lets run on its own leaves the proposal to
-//! ask for itself, and allowing that runs it inside the caller too.
+//! An action another action calls that reaches outside: a person is asked once, and the call they
+//! allow runs inside the caller. A call they decline ends the caller and takes back what it wrote.
 
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, Resolution, RunOutcome, Runtime, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, RunOutcome, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.post "Post"
 
@@ -58,12 +56,15 @@ default view letters for Box
         auth: TestAuthority,
         rt: Runtime,
         letter: Value,
+        dispatch: Dispatch,
     }
 
     fn post() -> Post {
         let app = App::compile(SOURCE, &[]);
         let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         auth.trust(&app.load(&rt));
         let root = rt.create_root("Box").unwrap();
         let letter = returned_ref(
@@ -81,25 +82,8 @@ default view letters for Box
             auth,
             rt,
             letter: Value::resource(&letter),
+            dispatch,
         }
-    }
-
-    /// The reply, which asks before anything leaves: what it asks about.
-    fn replied(p: &Post, asks: &str) -> tilolang_runtime::Suggestion {
-        let asked = match p
-            .rt
-            .invoke_action(
-                &me(),
-                (p.app.action("reply").as_str(), vec![p.letter.clone()]),
-            )
-            .unwrap()
-        {
-            InvokeOutcome::Suggested(asked) => asked,
-            other => panic!("the reply asks before the letter leaves: {other:?}"),
-        };
-        assert_eq!(asked.action, p.app.action(asks), "the ask is the {asks}'s");
-        assert!(p.rt.pending_outbox().is_empty(), "asking sends nothing");
-        asked
     }
 
     fn field(rt: &Runtime, letter: &Value, name: &str) -> Value {
@@ -110,13 +94,52 @@ default view letters for Box
     }
 
     tilo_test_env::scenario! {
-        fn a_proposal_another_action_calls_runs_once_the_person_allows_it;
+        fn a_call_another_action_makes_that_reaches_outside_asks_once;
+
+        phase the_whole_reply_asks_through_the_dispatch_and_changes_nothing;
+        {
+            let p = post();
+            let asked = p
+                .rt
+                .invoke_action(
+                    &me(),
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                )
+                .unwrap();
+            let InvokeOutcome::Asked(_) = asked else {
+                panic!("the reply asks before anything leaves: {asked:?}");
+            };
+            assert_eq!(
+                p.dispatch.asked().0,
+                p.app.action("reply"),
+                "the dispatch is asked about the reply itself"
+            );
+            assert!(p.rt.pending_outbox().is_empty(), "asking sends nothing");
+            assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(false));
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
+        }
 
         phase allowed_once_it_sends_from_inside_the_reply;
         {
             let p = post();
-            let asked = replied(&p, "reply");
-            let out = p.rt.resolve(&asked.run, &me(), Resolution::Approve).unwrap();
+            p.auth.grant_outside(&p.app.action("reply"));
+            let InvokeOutcome::Waits { run, .. } = p
+                .rt
+                .invoke_action(
+                    &me(),
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                )
+                .unwrap()
+            else {
+                panic!("the send inside the reply asks");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("send"));
+            assert_eq!(
+                field(&p.rt, &p.letter, "answered"),
+                Value::Bool(true),
+                "the reply ran up to the send"
+            );
+            let out = p.dispatch.allow(&p.rt, &run);
             assert!(
                 matches!(out, RunOutcome::Done(_)),
                 "the one answer covers the send the reply makes: {out:?}"
@@ -128,65 +151,50 @@ default view letters for Box
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
         }
 
-        phase refused_nothing_runs;
-        {
-            let p = post();
-            let asked = replied(&p, "reply");
-            p.rt.resolve(&asked.run, &me(), Resolution::Decline).unwrap();
-            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
-            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
-            assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(false));
-        }
-
-        phase allowed_through_the_record_the_person_sees;
-        {
-            let p = post();
-            let asked = replied(&p, "reply");
-            // The host records what its person is asked as the invocation their window shows.
-            p.rt.record_suggestion(&me(), &asked.action, asked.args.clone(), &asked)
-                .unwrap();
-            let Value::Ref(r) = &p.letter else {
-                panic!("a letter is a resource")
-            };
-            let waiting = p.rt.proposals_of(&r.target);
-            assert_eq!(waiting.len(), 1, "the ask waits on the letter it is about");
-            let state = p
-                .rt
-                .resolve_invocation(&waiting[0].0, &me(), Resolution::Approve)
-                .unwrap();
-            assert_eq!(state, "done", "one Allow is the whole answer");
-            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter waits in the outbox");
-            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
-            assert!(
-                p.rt.proposals_of(&r.target).is_empty(),
-                "nothing is left to answer"
-            );
-        }
-
-        phase a_reply_let_run_leaves_the_send_to_ask_and_allowing_it_sends;
+        phase refused_nothing_runs_and_the_replys_writes_are_taken_back;
         {
             let p = post();
             p.auth.grant_outside(&p.app.action("reply"));
-            let asked = replied(&p, "send");
+            let InvokeOutcome::Waits { run, .. } = p
+                .rt
+                .invoke_action(
+                    &me(),
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                )
+                .unwrap()
+            else {
+                panic!("the send inside the reply asks");
+            };
+            let error = p.dispatch.decline(&p.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
             assert_eq!(
                 field(&p.rt, &p.letter, "answered"),
-                Value::Bool(true),
-                "the reply ran up to the send"
+                Value::Bool(false),
+                "what the reply wrote before it asked is taken back"
             );
-            let out = p.rt.resolve(&asked.run, &me(), Resolution::Approve).unwrap();
-            assert!(matches!(out, RunOutcome::Done(_)), "the reply finishes: {out:?}");
-            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter waits in the outbox");
-            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
         }
 
-        phase a_reply_let_run_whose_send_is_refused_sends_nothing;
+        phase a_trusted_send_runs_without_asking;
         {
             let p = post();
             p.auth.grant_outside(&p.app.action("reply"));
-            let asked = replied(&p, "send");
-            p.rt.resolve(&asked.run, &me(), Resolution::Decline).unwrap();
-            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
-            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
+            p.auth.grant_outside(&p.app.action("send"));
+            let out = p
+                .rt
+                .invoke_action(
+                    &me(),
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                )
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 0, "no call needed a person");
+            assert_eq!(p.rt.pending_outbox().len(), 1);
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
     }
 }

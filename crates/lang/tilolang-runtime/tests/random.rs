@@ -7,7 +7,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Store, Value,
     };
 
     const DICE: &str = r#"app so.tilo.dice "Dice"
@@ -143,6 +143,8 @@ action start(b: board.Board) -> Int uses random {
             board_app.load(&rt);
             runner.load(&rt);
             let board = rt.create("Board").unwrap();
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
             let out = rt
                 .invoke_action(
                     &me(),
@@ -152,14 +154,14 @@ action start(b: board.Board) -> Int uses random {
                     ),
                 )
                 .unwrap();
-            let InvokeOutcome::Suggested(first) = out else {
+            let InvokeOutcome::Waits { run, .. } = out else {
                 panic!("the other package's action must ask: {out:?}");
             };
 
             // The number the run drew is in its journal before it goes on, and the action it asked
             // for has not run yet.
             let journal = store
-                .load_journal(&first.run)
+                .load_journal(&run)
                 .unwrap()
                 .expect("a suspended run's journal");
             // The entry is the number drawn below the range's width; `random.int(1, 1000)` adds the
@@ -171,7 +173,7 @@ action start(b: board.Board) -> Int uses random {
             assert_eq!(marks(&rt, &board), 0);
 
             // Resumed, it reads the number it drew the first time, not a new one.
-            let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
+            let out = dispatch.allow(&rt, &run);
             assert_eq!(
                 out,
                 RunOutcome::Done(Value::Int(drawn)),

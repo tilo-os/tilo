@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
             .runtime()
             .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), &add_block(&ada, "milk"))
             .unwrap();
-        assert_eq!(state(untrusted), "suggested");
+        assert_eq!(state(untrusted), "asked");
         // Someone the workspace does not know is refused outright.
         let stranger = ada
             .host
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
                     &send,
                 )
                 .unwrap();
-            assert_eq!(state(block), "suggested", "{who}");
+            assert_eq!(state(block), "asked", "{who}");
         }
     }
 }

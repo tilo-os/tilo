@@ -32,7 +32,10 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     let Value::Ref(draft) = &drafts[0] else {
         panic!("a draft is a reference");
     };
-    let source = format!("letters.send(@letters.Draft:{})", draft.target.id_string());
+    let source = format!(
+        "suggest letters.send(@letters.Draft:{})",
+        draft.target.id_string()
+    );
     let tilolang_runtime::AgentBlock::Invocation { record, resource } = ada
         .host
         .runtime()
@@ -44,7 +47,7 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     else {
         panic!("a send is an invocation");
     };
-    assert_eq!(record.state, "suggested");
+    assert_eq!(record.state, "asked");
     ada.commit();
     (ada, resource)
 }
@@ -64,7 +67,7 @@ tilo_test_env::scenario! {
             replica
                 .host
                 .runtime()
-                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who)), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who)), Resolution::Approve { choice: None })
                 .unwrap();
             replica.commit();
         }
@@ -101,7 +104,7 @@ tilo_test_env::scenario! {
             ada.host.runtime().resolve_invocation(
                 &invocation,
                 &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-                Resolution::Approve,
+                Resolution::Approve { choice: None },
             )
         };
         approve(&ada).unwrap();
@@ -126,7 +129,7 @@ tilo_test_env::scenario! {
         ada.host.runtime().set_sink(sink.clone());
         ada.host
             .runtime()
-            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
             .unwrap();
         ada.commit();
         // Another process of this device marked it as being handed over, and stopped.
@@ -163,7 +166,7 @@ tilo_test_env::scenario! {
         // Approving the send queues the letter: carrying it out reaches outside the document.
         ada.host
             .runtime()
-            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
+            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
             .unwrap();
         ada.commit();
         assert!(
@@ -172,222 +175,4 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it;
-    {
-        let (mut ada, mut grace, invocation) = server_workspace();
-        let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
-        ada.host.runtime().set_sink(by_ada.clone());
-        grace.host.runtime().set_sink(by_grace.clone());
-        // Ada answers: the run goes on from its journal, and the post it already queued stays one.
-        assert_eq!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
-                .unwrap(),
-            "done"
-        );
-        ada.commit();
-        // Grace holds no journal of the run: she runs the whole action again, posting once more,
-        // and reaches the same ask. Answering that goes on from the journal she made.
-        assert_eq!(
-            grace
-                .host
-                .runtime()
-                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), Resolution::Approve)
-                .unwrap(),
-            "suggested"
-        );
-        grace.commit();
-        assert_eq!(
-            grace
-                .host
-                .runtime()
-                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), Resolution::Approve)
-                .unwrap(),
-            "done"
-        );
-        grace.commit();
-        ada.sync_with(&grace);
-        for replica in [&mut ada, &mut grace] {
-            replica.host.settle_outbox().unwrap();
-            replica.commit();
-        }
-        ada.sync_with(&grace);
-        for replica in [&mut ada, &mut grace] {
-            replica.host.settle_outbox().unwrap();
-            replica.commit();
-        }
-        let mut posted = Vec::new();
-        let mut sealed = Vec::new();
-        for (capability, payload) in by_ada.delivered().into_iter().chain(by_grace.delivered()) {
-            match capability.as_str() {
-                "post" => posted.push(payload),
-                "smtp.send" => sealed.push(payload),
-                other => panic!("nothing else leaves: {other}"),
-            }
-        }
-        assert_eq!(posted.len(), 1, "the post leaves once: {posted:?}");
-        assert_eq!(sealed.len(), 1, "the letter is sealed once: {sealed:?}");
-        assert_eq!(ada.host.store().outbox_pending().len(), 0);
-        assert_eq!(grace.host.store().outbox_pending().len(), 0);
-    }
-}
-
-/// A server app: a post that goes out at once, and the ask for who records it.
-const SERVER: &str = r#"app test.server "Server" (icon: .mail, category: .office)
-
-type Draft {
-    to: Text
-    sent: Bool = false
-    sealed: Bool = false
-}
-
-type Letters {
-    drafts: Collection<Draft>
-}
-
-root Letters
-
-default view letters for Letters
-
-default view draft for Draft
-
-view draft(d: Draft) {
-    text(d.to)
-}
-
-view letters(letters: Letters) {
-    std.list(letters.drafts) { (d, at) ->
-        ui.ListItem(item: d, presence: at) {
-            text(d.to)
-        }
-    }
-}
-
-/// Starts a letter.
-action new_draft(letters: Letters) -> Draft (icon: .plus) {
-    letters.drafts.insert(Draft(to: "bo@example.org"))
-}
-
-/// Posts the letter, then asks who records it: what went out is out while a person decides.
-action post_and_record(d: Draft) {
-    d.sent = true
-    outside("post", (d.to,))
-    document(d)
-}
-
-/// Seals the posted letter in the archive.
-action document(d: Draft) {
-    outside("smtp.send", (d.to,))
-    d.sealed = true
-}
-"#;
-const SERVER_APP: &str = "test.server";
-const WORKSPACE: &str = "workspace";
-
-/// `who`'s access in the server workspace: an editor of it, allowed to post, so the action runs
-/// up to the effect it queues before the ask about recording the letter.
-fn server_access(
-    meta: &tilolang_runtime::meta::Meta,
-    who: &str,
-) -> tilo_action_policy::MemberAccess {
-    use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-    };
-    let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
-    for member in ["ada", "grace"] {
-        policy.members.insert(member.to_owned(), Role::Editor);
-    }
-    let post = meta
-        .actions
-        .iter()
-        .find(|action| action.name == "post_and_record")
-        .expect("the server posts");
-    let node = TreePath::workspace(WORKSPACE)
-        .app(SERVER_APP)
-        .kind(meta.kind_of("Draft"))
-        .action(&post.id);
-    let owner = Grantee::person("sol");
-    policy.grants.extend([Grant::new(
-        "posts",
-        Grantee::person(who),
-        node,
-        KindSet::OUTSIDE,
-        Answer::Allow,
-        owner,
-    )]);
-    MemberAccess::person(policy, who)
-}
-
-/// Two replicas of a server workspace: ada posted a letter, and recording it waits on a person.
-fn server_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
-    // The ids the app compiles to: every replica loads the same lock, so they agree on them.
-    let (_, probe) = Replica::new("probe", Workspace::new(), &[(SERVER, "")]);
-    let meta = probe[0].meta.clone();
-    let ids = probe[0].ids.clone();
-    let packages = [(SERVER, ids.as_str())];
-    let (ada, _) = Replica::access(
-        "ada",
-        Workspace::new(),
-        &packages,
-        Some(server_access(&meta, "ada")),
-    );
-    let letters = ada.host.root_of(SERVER_APP).unwrap();
-    ada.commit();
-    let new_draft = meta
-        .actions
-        .iter()
-        .find(|action| action.name == "new_draft")
-        .unwrap();
-    ada.host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            (new_draft.id.as_str(), vec![Value::resource(&letters)]),
-        )
-        .unwrap();
-    ada.commit();
-    let Value::List(drafts) = ada.host.runtime().read(&letters, "drafts").unwrap() else {
-        panic!("the letters app lists its drafts");
-    };
-    let Value::Ref(draft) = &drafts[0] else {
-        panic!("a draft is a reference");
-    };
-    let draft = tilolang_runtime::ResourceRef::clone(&draft.target);
-    let post = meta
-        .actions
-        .iter()
-        .find(|action| action.name == "post_and_record")
-        .unwrap();
-    let args = vec![Value::resource(&draft)];
-    let InvokeOutcome::Suggested(suggestion) = ada
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            (post.id.as_str(), args.clone()),
-        )
-        .unwrap()
-    else {
-        panic!("recording the post asks first");
-    };
-    let invocation = ada
-        .host
-        .runtime()
-        .record_suggestion(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            post.id.as_str(),
-            args,
-            &suggestion,
-        )
-        .unwrap();
-    ada.commit();
-    let grace = Replica::access(
-        "grace",
-        ada.doc.fork(),
-        &packages,
-        Some(server_access(&meta, "grace")),
-    )
-    .0;
-    (ada, grace, invocation)
 }

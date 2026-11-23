@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{InvokeOutcome, Resolution, RunOutcome, Value};
+    use tilolang_runtime::{InvokeOutcome, Value};
 
     struct Setup {
         w: World,
@@ -37,61 +37,28 @@ mod cases {
             let theirs =
                 w.rt.open_view(&w.me, "vs", vec![Value::resource(&c)])
                     .unwrap();
-            let InvokeOutcome::Suggested(s) = theirs.press("btn").unwrap() else {
+            let InvokeOutcome::Asked(_) = theirs.press("btn").unwrap() else {
                 panic!("a foreign invocation from a stranger's view must ask");
             };
-            assert_eq!(s.action, "inc");
-            assert_eq!(s.chain, vec![stranger]);
+            let asked = w.dispatch.waiting();
+            let tilolang_runtime::delegate::Invocation::Action {
+                action, author, asks, ..
+            } = asked
+            else {
+                panic!("the ask is an action");
+            };
+            assert_eq!(action, "inc");
+            assert!(asks, "the dispatch is told a person must be asked");
+            assert_eq!(
+                author,
+                Some(stranger.clone()),
+                "the dispatch names the code that asked"
+            );
             assert_eq!(
                 w.rt.read(&c, "value").unwrap(),
                 Value::Int(1),
                 "asking changes nothing"
             );
-        }
-
-        phase approving_a_suggestion_runs_it_and_records_who_approved;
-        {
-            let Setup { w, stranger, c } = setup();
-            let theirs =
-                w.rt.open_view(&w.me, "vs", vec![Value::resource(&c)])
-                    .unwrap();
-            let InvokeOutcome::Suggested(s) = theirs.press("btn").unwrap() else {
-                panic!("expected a suggestion");
-            };
-            let out =
-                w.rt.resolve(
-                    &s.run,
-                    &person("boss"),
-                    Resolution::Approve,
-                )
-                .unwrap();
-            assert_eq!(out, RunOutcome::Done(Value::Unit));
-            assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
-
-            let notes = w.rt.history(&c.doc).unwrap();
-            let n = notes.iter().find(|n| n.action == "inc").unwrap();
-            assert_eq!(n.invoker, Some(person("me")));
-            assert_eq!(n.approved_by, Some(person("boss")));
-            assert_eq!(n.chain, vec![stranger.0], "history names the whole chain");
-
-            assert!(
-                w.rt.resolve(&s.run, &w.me, Resolution::Approve).is_err(),
-                "answered once"
-            );
-        }
-
-        phase declining_a_suggestion_changes_nothing;
-        {
-            let Setup { w, c, .. } = setup();
-            let theirs =
-                w.rt.open_view(&w.me, "vs", vec![Value::resource(&c)])
-                    .unwrap();
-            let InvokeOutcome::Suggested(s) = theirs.press("btn").unwrap() else {
-                panic!("expected a suggestion");
-            };
-            let out = w.rt.resolve(&s.run, &w.me, Resolution::Decline).unwrap();
-            assert!(matches!(out, RunOutcome::Done(Value::Error(_))), "{out:?}");
-            assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(0));
         }
 
         phase revoking_trust_changes_the_decision_at_the_next_invocation;
@@ -103,7 +70,7 @@ mod cases {
 
             assert!(matches!(
                 theirs.press("btn").unwrap(),
-                InvokeOutcome::Suggested(_)
+                InvokeOutcome::Asked(_)
             ));
 
             w.auth.trust(&stranger);
@@ -115,7 +82,7 @@ mod cases {
 
             w.auth.revoke(&stranger);
             assert!(
-                matches!(theirs.press("btn").unwrap(), InvokeOutcome::Suggested(_)),
+                matches!(theirs.press("btn").unwrap(), InvokeOutcome::Asked(_)),
                 "the same open view, the same button: revoked at once"
             );
             assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
@@ -127,6 +94,22 @@ mod cases {
                 InvokeOutcome::Denied,
                 "deny wins"
             );
+        }
+
+        phase a_host_with_no_dispatch_refuses_the_call;
+        {
+            let w = World::bare();
+            w.rt.load_package(&stranger_wasm(), stranger_meta()).unwrap();
+            let c = w.counter();
+            let theirs =
+                w.rt.open_view(&w.me, "vs", vec![Value::resource(&c)])
+                    .unwrap();
+            assert_eq!(
+                theirs.press("btn").unwrap(),
+                InvokeOutcome::Denied,
+                "nobody here can be asked"
+            );
+            assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(0));
         }
 
         phase a_direct_call_by_a_person_is_allowed;

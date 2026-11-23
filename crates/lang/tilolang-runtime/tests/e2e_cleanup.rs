@@ -4,8 +4,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
-        Value,
+        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Value,
     };
 
     const TODO: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
@@ -18,6 +17,7 @@ mod cases {
         cleanup: App,
         cleanup_id: tilolang_runtime::PackageId,
         list: ResourceRef,
+        dispatch: Dispatch,
     }
 
     fn world() -> World {
@@ -27,6 +27,8 @@ mod cases {
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         todo.load(&rt);
         let cleanup_id = cleanup.load(&rt);
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         let list = rt.create("TodoList").unwrap();
         World {
             rt,
@@ -35,6 +37,7 @@ mod cases {
             cleanup,
             cleanup_id,
             list,
+            dispatch,
         }
     }
 
@@ -111,24 +114,19 @@ mod cases {
             w.add("b", false);
             w.add("c", true);
 
-            let InvokeOutcome::Suggested(first) = w.start() else {
+            let InvokeOutcome::Waits { run, .. } = w.start() else {
                 panic!("a foreign action from an untrusted package asks");
             };
-            assert_eq!(first.action, w.todo.action("remove"));
+            assert_eq!(w.dispatch.asked().0, w.todo.action("remove"));
             assert_eq!(w.titles(), ["a", "b", "c"], "asking changes nothing");
 
-            let RunOutcome::Suspended(second) =
-                w.rt.resolve(&first.run, &me(), Resolution::Approve)
-                    .unwrap()
-            else {
+            let RunOutcome::Waits { .. } = w.dispatch.allow(&w.rt, &run) else {
                 panic!("the second finished item asks too");
             };
             assert_eq!(w.titles(), ["b", "c"], "the first removal ran once");
             assert_eq!(w.removes(), 1);
 
-            let out =
-                w.rt.resolve(&second.run, &me(), Resolution::Approve)
-                    .unwrap();
+            let out = w.dispatch.allow(&w.rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::Int(2)));
             assert_eq!(w.titles(), ["b"]);
             assert_eq!(
@@ -138,16 +136,19 @@ mod cases {
             );
         }
 
-        phase a_declined_removal_leaves_the_item_and_the_run_goes_on;
+        phase a_declined_removal_leaves_the_item_and_ends_the_run;
         {
             let w = world();
             w.add("a", true);
-            let InvokeOutcome::Suggested(s) = w.start() else {
-                panic!("expected a suggestion");
+            let InvokeOutcome::Waits { run, .. } = w.start() else {
+                panic!("expected a wait");
             };
-            let out = w.rt.resolve(&s.run, &me(), Resolution::Decline).unwrap();
-            assert!(matches!(out, RunOutcome::Done(Value::Int(1))), "{out:?}");
-            assert_eq!(w.titles(), ["a"]);
+            let error = w.dispatch.decline(&w.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert_eq!(w.titles(), ["a"], "the declined run changes nothing");
         }
 
         phase trusting_the_cleanup_package_runs_it_without_asking;
@@ -158,11 +159,12 @@ mod cases {
             w.auth.trust(&w.cleanup_id);
             assert_eq!(w.start(), InvokeOutcome::Done(Value::Int(1)));
             assert_eq!(w.titles(), ["b"]);
+            assert_eq!(w.dispatch.len(), 0, "no call needed a person");
         }
     }
 
     #[test]
-    fn the_cleanup_view_button_runs_the_action() {
+    fn the_cleanup_view_button_asks_before_it_removes() {
         let w = world();
         w.add("a", true);
         let view =
@@ -173,12 +175,10 @@ mod cases {
             )
             .unwrap();
         let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
-        let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
+        let InvokeOutcome::Asked(_) = view.press(&button).unwrap() else {
             panic!("the action asks before it removes");
         };
-        assert_eq!(s.action, w.todo.action("remove"));
-        let out = w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
-        assert_eq!(out, RunOutcome::Done(Value::Int(1)));
-        assert!(w.titles().is_empty());
+        assert_eq!(w.dispatch.asked().0, w.todo.action("remove"));
+        assert_eq!(w.titles(), ["a"], "asking changes nothing");
     }
 }

@@ -1205,11 +1205,16 @@ impl Core {
         &self,
         aref: &ActionRef,
     ) -> Option<Result<crate::delegate::Invocation, RuntimeError>> {
-        if self
+        // A package with code runs its own actions; the host declares actions it does not run,
+        // which are the resource's own verbs, as an app the session serves publishes them.
+        let declared = self
             .registry
             .borrow()
             .action_package(&aref.action)
-            .is_some()
+            .map(|pkg| pkg.meta.app.clone());
+        if declared
+            .as_deref()
+            .is_some_and(|app| app != tilolang::HOST_APP)
         {
             return None;
         }
@@ -1218,7 +1223,16 @@ impl Core {
         };
         let id = target.target.id_string();
         let published = self.published.borrow();
-        let verb = published.get(&id, &aref.action)?;
+        let Some(verb) = published.get(&id, &aref.action) else {
+            // Declared by the host and published by no resource here: nothing in this host can
+            // run it, and saying so is better than a module that is not there.
+            return declared.is_some().then(|| {
+                Err(RuntimeError::Package(format!(
+                    "`{}` is answered by the app its workspace publishes, and this host publishes none",
+                    aref.action
+                )))
+            });
+        };
         // The verb's parameters as its app declares them, after the resource the address names
         // (`send(to: List, attached: List, text: Text)`); the resource is the target, never an argument.
         let args: Vec<(String, Value)> = verb
@@ -1831,11 +1845,16 @@ impl Core {
     }
 
     /// Answer the call the run `run` made of another app's action and waits on with `answer`,
-    /// and run on from it: the code gets the result, or the refusal or failure as an error value.
+    /// and run on from it: the code gets the result, or the failure as an error value.
+    ///
+    /// A refusal is the invocation as a whole not happening — the person whose yes it waited on
+    /// said no — so nothing of the run stands: what it wrote is taken back out, and the run ends
+    /// refused.
     ///
     /// # Errors
     ///
-    /// `NotPending` when the run waits on no call; otherwise as running it on.
+    /// `NotPending` when the run waits on no call; `Denied` when the answer refuses the run;
+    /// otherwise as running it on.
     pub fn answer_call(
         &self,
         run: &RunId,
@@ -1846,10 +1865,22 @@ impl Core {
         let Some(Pending::Call { action, .. }) = journal.pending.take() else {
             return Err(RuntimeError::NotPending(run.clone()));
         };
+        if let Invoked::Refused(reason) = answer {
+            journal.finished = true;
+            journal.entries.push(JournalEntry::Denied {
+                action,
+                reason: reason.clone(),
+            });
+            self.store.borrow_mut().save_journal(run, &journal)?;
+            if !journal.invocation.is_empty() {
+                self.store.borrow_mut().abort_run(&journal.invocation);
+            }
+            return Err(RuntimeError::Denied(reason));
+        }
         journal.entries.push(match answer {
             Invoked::Done(result) => JournalEntry::Invoked { action, result },
             Invoked::Failed(reason) => JournalEntry::Failed { action, reason },
-            Invoked::Refused(reason) => JournalEntry::Denied { action, reason },
+            Invoked::Refused(_) => unreachable!("a refusal ended the run above"),
             Invoked::Pending(_) => return Err(RuntimeError::NotPending(run.clone())),
         });
         self.store.borrow_mut().save_journal(run, &journal)?;

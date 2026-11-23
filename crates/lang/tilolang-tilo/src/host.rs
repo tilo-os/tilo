@@ -155,11 +155,15 @@ pub struct RootView {
     pub view: Option<String>,
 }
 
-/// A run that waits on a person's answer: what it asks, and the record of the invocation that
-/// asked it, which the answer decides, when one was recorded.
+/// A call a run made through the dispatch and waits on: the invocation it went out under, and
+/// the run that waits, when the action it was made in runs as one (`None` for a press, whose
+/// call the dispatch runs on its own).
 pub struct Waiting {
-    pub suggestion: tilolang_runtime::Suggestion,
-    pub invocation: Option<ResourceRef>,
+    /// The invocation the child call went out under, as [`Runtime::answer_call`] resumes the
+    /// run with its answer.
+    pub call: String,
+    /// The run that waits on the answer; `None` when the call is the whole of the work.
+    pub run: Option<tilolang_runtime::ids::RunId>,
 }
 
 pub(crate) struct HostInner {
@@ -646,29 +650,14 @@ impl HostInner {
             InvokeOutcome::Done(value) if !matches!(value, Value::Unit) => {
                 returned.insert(action.to_owned(), value.clone());
             }
-            // A refusal, and a step waiting for a person, leave nothing: what the plan made
-            // before the step, if anything, is written after this ([`Self::plan_in_mirror`]).
-            InvokeOutcome::Done(_) | InvokeOutcome::Suggested(_) | InvokeOutcome::Denied => {
+            // It waits: what it made is answered when the call it waits on comes back.
+            InvokeOutcome::Done(_)
+            | InvokeOutcome::Denied
+            | InvokeOutcome::Waits { .. }
+            | InvokeOutcome::Asked(_) => {
                 returned.remove(action);
             }
         }
-    }
-
-    /// The resource the action `action` made before it stopped at a step a person must answer
-    /// first, of the type it declares it returns. `None` for an action that returns no
-    /// resource, or that made none of that type.
-    fn made_by(
-        &self,
-        action: &tilolang_runtime::meta::ActionMeta,
-        declared: &tilolang_runtime::meta::Meta,
-    ) -> Option<ResourceRef> {
-        let result = action.result.clone()?;
-        let ty = declared.type_named(&result)?.id.clone();
-        self.store
-            .take_made()
-            .into_iter()
-            .filter(|made| made.ty == ty)
-            .find(|made| self.store.type_of_id(&made.id_string()).as_deref() == Some(ty.as_str()))
     }
 
     /// Whether the action `action` can run on the published resource `resource` now: whether it
@@ -838,32 +827,21 @@ impl HostInner {
                 }
                 .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);
-                // An action that stopped at a step a person must answer first answers what it
-                // made before it stopped of the type it returns: the program goes on with it.
-                if matches!(outcome, InvokeOutcome::Suggested(_))
-                    && let Some(made) = self.made_by(action, &package.meta)
-                {
-                    self.returned
-                        .borrow_mut()
-                        .insert(request.action_id.to_owned(), Value::resource(&made));
-                }
                 match outcome {
                     InvokeOutcome::Done(_) => {}
-                    // An action that needs a person's approval is not refused: it is recorded as
-                    // a suggested invocation, the answer an agent gets and a person decides.
-                    // The person's own call is asked of them on their window's Ask bar, and
-                    // their answer decides the record.
-                    InvokeOutcome::Suggested(suggestion) => {
-                        let invocation = self
-                            .runtime
-                            .record_suggestion(&invoker, request.action_id, args, &suggestion)
-                            .map_err(|error| error.to_string())?;
-                        if invoker == self.viewer && request.caller.is_none_or(|c| !c.agent) {
-                            self.stopped.replace(Some(Waiting {
-                                suggestion,
-                                invocation: Some(invocation),
-                            }));
-                        }
+                    // It waits on a call it made through the dispatch: the run goes on with the
+                    // answer, and the plan is the change it wrote before waiting. A press's call
+                    // answers nobody, and the dispatch runs it.
+                    InvokeOutcome::Waits { run, call } => {
+                        self.stopped.replace(Some(Waiting {
+                            call,
+                            run: Some(run),
+                        }));
+                    }
+                    // It needs a person's yes first: the call went through the dispatch, which
+                    // records it as an asked invocation and answers with the result.
+                    InvokeOutcome::Asked(call) => {
+                        self.stopped.replace(Some(Waiting { call, run: None }));
                     }
                     InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
                 }
@@ -1223,7 +1201,11 @@ impl Host {
         let mut output = tilo_actions::ActionOutput::default();
         resources_named(app, value, &mut output.resources);
         if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
-            let owner = |app: &str| self.inner.package_of(app).map(|package| package.meta.clone());
+            let owner = |app: &str| {
+                self.inner
+                    .package_of(app)
+                    .map(|package| package.meta.clone())
+            };
             output.value = Some(argument_json(&owner, &package.meta, value, &ty)?);
         }
         Ok(output)

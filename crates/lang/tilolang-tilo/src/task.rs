@@ -115,7 +115,8 @@ pub enum Answered {
     Failed(String),
     /// The policy refused it.
     Refused(String),
-    /// It waits on the person's answer.
+    /// The person is asked before it runs: a task's program goes on with a refusal saying so,
+    /// since no program waits inside its run.
     Asks(String),
 }
 
@@ -435,7 +436,7 @@ impl TaskSession {
     /// Run `source`, written by `author`, as one step of the task; see the module docs for
     /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
     /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,
-    /// `state` one of `done`, `preview`, `suspended`, `rejected`, `failed`.
+    /// `state` one of `done`, `preview`, `rejected`, `failed`.
     pub fn run(&self, source: &str, confirm: bool, author: &Actor) -> Json {
         if !confirm {
             let saved = self.session.borrow().clone();
@@ -491,9 +492,6 @@ impl TaskSession {
         let (state, detail) = match reply.outcome {
             ProgramOutcome::Done => ("done", Json::Null),
             ProgramOutcome::Rejected(lines) => ("rejected", json!(lines)),
-            ProgramOutcome::Suspended(suggestion) => {
-                ("suspended", json!({"action": suggestion.action}))
-            }
             ProgramOutcome::Failed(reason) => ("failed", json!(reason)),
             // Every read is answered while the program runs; one left over is a fault.
             ProgramOutcome::NeedsReads(asked) => (

@@ -14,12 +14,15 @@ mod cases {
         auth: SimpleAuthority,
         todo: App,
         list: ResourceRef,
+        dispatch: Dispatch,
     }
 
     fn world() -> World {
         let todo = App::compile(TODO, &[]);
         let auth = SimpleAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
         todo.load(&rt);
         let list = rt.create("TodoList").unwrap();
         for title in ["milk", "eggs"] {
@@ -38,6 +41,7 @@ mod cases {
             auth,
             todo,
             list,
+            dispatch,
         }
     }
 
@@ -92,11 +96,17 @@ mod cases {
                 panic!("a view block renders");
             };
             let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
-            let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
+            let InvokeOutcome::Asked(_) = view.press(&button).unwrap() else {
                 panic!("code from a stranger has no grants");
             };
-            assert_eq!(s.action, w.todo.action("add"));
-            assert_eq!(s.chain.len(), 1);
+            assert_eq!(w.dispatch.asked().0, w.todo.action("add"));
+            assert!(
+                matches!(
+                    w.dispatch.waiting(),
+                    tilolang_runtime::delegate::Invocation::Action { asks: true, .. }
+                ),
+                "the dispatch is told a person must be asked"
+            );
         }
 
         phase a_data_block_returns_its_value;
@@ -127,7 +137,7 @@ mod cases {
         let BlockOutput::Action(out) = w.rt.run_block(&me(), &block).unwrap() else {
             panic!("an action block");
         };
-        assert!(matches!(out, InvokeOutcome::Suggested(_)), "{out:?}");
+        assert!(matches!(out, InvokeOutcome::Asked(_)), "{out:?}");
 
         let module = tilolang_runtime::ModuleHash::of_bytes(&block.wasm);
         w.auth.trust(&module);
