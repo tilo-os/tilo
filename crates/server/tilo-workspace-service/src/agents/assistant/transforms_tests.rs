@@ -30,16 +30,15 @@ use crate::workspaces::fixtures::{governor, test_host};
 use crate::workspaces::governed;
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 
-/// An agent engine that holds every agent's key: what makes this device one that answers its
+/// An agent engine that acts as every agent: what makes this device one that answers its
 /// workspaces' agents, and so runs their transforms.
 struct Keys;
 
 impl AgentEngine for Keys {
-    fn holds<'a>(
+    fn acts_as<'a>(
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(std::future::ready(true))
     }

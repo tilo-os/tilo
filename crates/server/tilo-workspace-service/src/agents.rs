@@ -845,28 +845,37 @@ async fn agent_caller(
     })
 }
 
-/// The agents' keys an engine holds apart from its keeper's: on a host, the approved signing
-/// sessions of its roster. A device makes an agent's key from its keeper's root, so only the
-/// keeper's devices hold one there.
-struct EngineKeys(Roster);
+/// Which agents an engine acts as: on a host, those its roster approved a signing session for;
+/// on a person's device, those whose key the device makes from a root it holds. The agent's own
+/// record says whose it is.
+struct EngineKeys {
+    roster: Roster,
+    workspaces: crate::workspaces::WeakWorkspaces,
+}
 
 impl crate::work::AgentEngine for EngineKeys {
-    fn holds<'a>(
+    fn acts_as<'a>(
         &'a self,
         workspace: &'a str,
         agent: &'a str,
-        keeper: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(async move {
-            let (Roster::Hosted(server, sessions), Some(workspace)) =
-                (&self.0, WorkspaceId::parse(workspace))
+            let (Some(workspaces), Some(id)) =
+                (self.workspaces.upgrade(), WorkspaceId::parse(workspace))
             else {
                 return false;
             };
-            server
-                .session_device(sessions, workspace, agent, keeper)
+            let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+            let Ok(Some(agents)) = workspaces
+                .read_resource::<WorkspaceAgents>(workspace, (AGENTS_OWNER, record.as_str()))
                 .await
-                .is_some()
+            else {
+                return false;
+            };
+            let Some(agent) = agents.agents.iter().find(|its| its.id.0 == agent) else {
+                return false;
+            };
+            agent_caller(&self.roster, id, agent, [0; 32]).await.is_ok()
         })
     }
 }
@@ -951,7 +960,10 @@ impl ServerAgents {
         roster: Roster,
     ) -> Self {
         // The device takes the turns of its workspaces' agents that are its own from now on.
-        workspaces.run_agents(Arc::new(EngineKeys(roster.clone())));
+        workspaces.run_agents(Arc::new(EngineKeys {
+            roster: roster.clone(),
+            workspaces: workspaces.downgrade(),
+        }));
         let agents = Self {
             workspaces,
             actions,
@@ -1324,17 +1336,15 @@ impl ServerAgents {
         if !self.works(&turn.agent) {
             return None;
         }
-        let keeper = match tilo_action_policy::PersonId::parse(&turn.agent.acts_for) {
-            Ok(keeper) => keeper.root(),
-            Err(error) => {
-                tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent names no keeper by their root, and nobody answers for it");
-                return None;
-            }
-        };
-        let Some(keeper) = keeper else {
-            tracing::warn!(%workspace, agent = %turn.agent.id.0, "an agent names no keeper by their root, and nobody answers for it");
+        // An agent answers only for a keeper it names by their root; which device takes its
+        // turn is the turn's own rule (`work::takes_turn`, by `AgentEngine::acts_as`).
+        let keeper = tilo_action_policy::PersonId::parse(&turn.agent.acts_for)
+            .map_err(|error| error.to_string())
+            .and_then(|keeper| keeper.root().ok_or_else(|| "no root".to_owned()));
+        if let Err(error) = keeper {
+            tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent names no keeper by their root, and nobody answers for it");
             return None;
-        };
+        }
         let (app, record) = match &turn.ask {
             Ask::Message { part, .. } => (CHAT, part),
             Ask::Issue { record, .. } => (TASKS, record),
@@ -1344,10 +1354,7 @@ impl ServerAgents {
             format!("agents.agent:{agent}#answer"),
             json!({ "place": place }),
         )
-        .acting_as(crate::work::Actor::Agent {
-            agent: agent.clone(),
-            acts_for: keeper,
-        })
+        .acting_as(crate::work::Actor::Agent(agent.clone()))
         .about(app, record.clone());
         match crate::work::takes_turn(&self.workspaces, workspace, &ask).await {
             Ok(claim) => Some(Arc::new(claim)),
