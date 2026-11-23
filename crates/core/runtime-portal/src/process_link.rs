@@ -1081,6 +1081,7 @@ mod tests {
                     content: None,
                     chooser: None,
                     clipboard: None,
+                    tools: None,
                 },
             }
             .send(&session)

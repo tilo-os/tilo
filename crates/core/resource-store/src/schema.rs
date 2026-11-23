@@ -278,6 +278,8 @@ fn collected(item: &FieldType) -> impl Iterator<Item = &FieldType> {
         item => std::slice::from_ref(item),
     }
     .iter()
+}
+
 /// The records the surface's own record holds one of in a field (`stored = "record"`), each by
 /// the name its record keeps the field under ([`own_type`]) and the kind it is.
 fn held_records(surface: &Surface) -> Vec<(String, String)> {
