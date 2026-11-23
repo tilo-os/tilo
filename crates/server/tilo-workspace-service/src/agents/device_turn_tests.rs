@@ -110,6 +110,13 @@ impl AgentKeys for Keys {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn made(
+        &self,
+        _key: &[u8; 32],
+    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+        None
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

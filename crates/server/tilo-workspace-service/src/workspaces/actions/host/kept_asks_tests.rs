@@ -1306,6 +1306,13 @@ mod agents_kinds {
         ) -> Result<(), String> {
             Err("no keys in unit test".to_owned())
         }
+
+        fn made(
+            &self,
+            _key: &[u8; 32],
+        ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+            None
+        }
     }
 
     fn seed_settle_fixtures(
@@ -1702,6 +1709,13 @@ mod agents_kinds {
             _request: &mut InvokeRequest,
         ) -> Result<(), String> {
             Ok(())
+        }
+
+        fn made(
+            &self,
+            _key: &[u8; 32],
+        ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+            None
         }
     }
 
