@@ -390,8 +390,8 @@ block-devices = { path = "../../system/block-devices" }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
-# The sound resource's specs, for the audio service the session starts.
-tilo-audio-service = { path = "../audio-service", default-features = false }
+# The sound resource's specs and system sound cues, for the audio service the session starts.
+tilo-audio-service = { path = "../audio-service", default-features = false, features = ["sounds"] }
 # The desktop services the session starts on the buses; screen shares
 # stream the frames the session captured.
 tilo-portal = { path = "../portal", features = ["pipewire"] }
