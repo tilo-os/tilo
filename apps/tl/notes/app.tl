@@ -568,9 +568,9 @@ action export_notebook(nb: Notebook) -> File (icon: .download) {
     File.zip("Notes.zip", files_under(nb, .none, "", pages))
 }
 
-/// The notebook as one Markdown document: each note a heading one level deeper than the note it
-/// stands under (six at the deepest), its body beneath, and the notes under it after it — the
-/// notebook read as one text, in the order the tree keeps it.
+/// The notebook as one Markdown document, where each note is a heading one level deeper than
+/// the note it stands under (six at the deepest), its body beneath it and the notes under it
+/// after it, read as one text in the order the tree keeps it.
 action export_notebook_markdown(nb: Notebook) -> File (icon: .download) {
     File.of_text("Notes.md", notebook_markdown(nb))
 }

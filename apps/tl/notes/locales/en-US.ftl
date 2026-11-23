@@ -271,7 +271,7 @@ d-cdjz7d5y = Export notebook
     .doc = The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it.
 
 d-hjwb45bx = Export notebook markdown
-    .doc = The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it.
+    .doc = The notebook as one Markdown document, where each note is a heading one level deeper than the note it stands under (six at the deepest), its body beneath it and the notes under it after it, read as one text in the order the tree keeps it.
 
 d-t4nxxtng = Import markdown
     .doc = Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
