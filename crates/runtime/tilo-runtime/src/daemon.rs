@@ -120,7 +120,15 @@ fn running(profile: &Path) -> io::Result<Status> {
         .unwrap_or_else(Instant::now);
     loop {
         match probe(&socket) {
-            Ok(status) => return Ok(status),
+            // The computer's first command founds its person, as `tilo`'s does.
+            Ok(status) => {
+                if !tilo_api::daemon::system_daemon() {
+                    tilo_api::daemon::this_computer()
+                        .and_then(|place| place.found())
+                        .map_err(io::Error::other)?;
+                }
+                return Ok(status);
+            }
             Err(error) if Instant::now() >= deadline => {
                 return Err(io::Error::other(format!(
                     "Tilo isn't answering at {} ({error}): {}",
@@ -278,17 +286,13 @@ fn serve_device(
     native: &Native,
     stop: &crate::device::serve::Stop,
 ) -> io::Result<()> {
-    // Before a person's certificate names this computer's key, a computer of one account's
-    // founds its person; Tilo OS's device, and one handed a ticket, are served with the key alone,
-    // the ticket spent on the way, and the person's services start once a certificate names it.
+    // Before a person's certificate names this computer's key, it is served with the key alone:
+    // a ticket it was handed is spent on the way, and the person's services start once a
+    // certificate names it, from a login or a person its own account starts (`devices#found`).
     if !device.claimed() {
-        if crate::device::services::founds_a_person() {
-            crate::device::services::found_a_person()?;
-        } else {
-            device.spend_handed_ticket();
-            if !device.until_claimed(stop) {
-                return Ok(());
-            }
+        device.spend_handed_ticket();
+        if !device.until_claimed(stop) {
+            return Ok(());
         }
     }
     // A device a ticket made enters through the server the ticket named until its copy of the

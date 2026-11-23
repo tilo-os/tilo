@@ -24,7 +24,9 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_device_identity::login::{Device, LOG_IN, PROVIDER, Place, RESOURCE};
+use tilo_device_identity::login::{
+    ALREADY_A_PERSONS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+};
 use tilo_lock::MutexRecover as _;
 
 use super::ticket::{
@@ -274,6 +276,26 @@ impl DeviceOnly {
         receipt
     }
 
+    /// Start a new person on this device ([`FOUND`]), as its own account asks: their root is kept
+    /// here and certifies this device's key, and the daemon serves them from then on. Answers the
+    /// person's id.
+    fn found(&self) -> Result<String, String> {
+        let own = self.1.as_ref().is_some_and(|seated| {
+            seated.seat.admitted == tilo_api::daemon::admission::Admitted::Device
+        });
+        if !own {
+            return Err("only this device's own account starts a person on it".to_owned());
+        }
+        if self.claimed() {
+            return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
+        }
+        super::services::found_a_person(self.keys())
+            .map_err(|error| format!("this device could not make a new person: {error}"))?;
+        self.person()
+            .map(hex::encode)
+            .ok_or_else(|| "the new person's certificate does not name this device".to_owned())
+    }
+
     /// Log this device in with the ticket `args` name, as `tilo login` does.
     async fn log_in(&self, args: &Value) -> anyhow::Result<Value> {
         let (ticket, agent, label) = login_asked(args)?;
@@ -364,6 +386,16 @@ impl ActionProvider for DeviceOnly {
                 });
                 Pending::ready(Ok(receipt))
             }
+            FOUND => Pending::ready(
+                self.found()
+                    .map(|person| {
+                        self.keep(
+                            invocation,
+                            succeeded(invocation, serde_json::json!({ "person": person })),
+                        )
+                    })
+                    .map_err(|reason| ActionCallError::Refused { reason }),
+            ),
             _ => Pending::ready(Err(self.needs_a_person())),
         }
     }

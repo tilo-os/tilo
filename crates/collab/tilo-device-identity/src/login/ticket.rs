@@ -36,6 +36,12 @@ pub const CERTIFY: &str = "certify";
 pub const ISSUE: &str = "issue";
 /// The action a daemon answers on its own workspace: log in with a ticket another device issued.
 pub const LOG_IN: &str = "logIn";
+/// The action a daemon answers while no person's certificate names its device: start a new
+/// person, whose root this device keeps and whose certificate names it. Asked by the device's own
+/// account alone: a laptop's first `tilo` command, a phone's "start new".
+pub const FOUND: &str = "found";
+/// What [`FOUND`] is refused with on a device a person's certificate names already.
+pub const ALREADY_A_PERSONS: &str = "this device is a person's already";
 /// The action a device of the person's that holds their root calls on the host that serves a
 /// sign-in ticket: the tab waiting for them.
 pub const PENDING: &str = "pending";

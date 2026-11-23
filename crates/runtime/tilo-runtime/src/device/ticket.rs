@@ -28,8 +28,8 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Device, Direction, Entry, ISSUE, LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE,
-    Reached, Report, TICKET_LIFETIME_NS, Ticket,
+    ALREADY_A_PERSONS, APPROVE, Device, Direction, Entry, FOUND, ISSUE, LOG_IN, PENDING, PROVIDER,
+    Place, REPORTED, RESOURCE, Reached, Report, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -70,10 +70,10 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
 }
 
 /// [`catalogue`] with only what a device answers before its person's services run: what it is,
-/// and logging it in with a ticket.
+/// logging it in with a ticket, and starting a new person on it.
 #[must_use]
 pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| matches!(action, INFO | LOG_IN))
+    catalogue_of(query, |action| matches!(action, INFO | LOG_IN | FOUND))
 }
 
 /// The `devices` resource and those of its actions `keep` keeps.
@@ -182,6 +182,13 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                     "How the devices list this computer.",
                 ),
             ],
+        ))),
+        row(Some(descriptor(
+            FOUND,
+            "Start a new person",
+            "Make a new person on this device, whose root it keeps: for a device no one has set \
+                 up, by its own account.",
+            &[],
         ))),
     ];
     let rows = rows
@@ -530,7 +537,7 @@ impl Tickets {
             && request.target.address.resource == RESOURCE
             && matches!(
                 request.target.address.action.as_str(),
-                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED
+                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | FOUND
             )
     }
 
@@ -550,6 +557,11 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
+        if action == FOUND {
+            return Pending::ready(Err(ActionCallError::refused(format!(
+                "{ALREADY_A_PERSONS}: it serves them"
+            ))));
+        }
         if action == INFO {
             let update = succeeded(invocation, device_info(&self.0.place, &self.0.key));
             let state = InvocationState::new(invocation, update);

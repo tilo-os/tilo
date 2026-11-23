@@ -733,6 +733,108 @@ fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person
     );
 }
 
+/// A device nobody set up founds no person by itself: it stays its device alone until its own
+/// account starts one (`devices#found`), as a laptop's first command does through the place every
+/// client finds the daemon at. Another account may not, and a device with a person starts no
+/// other.
+#[test]
+fn a_device_founds_its_person_only_when_its_own_account_asks() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::{Value, json};
+    use std::sync::atomic::Ordering;
+    const OWN: u32 = 990;
+    const OTHER: u32 = 1000;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let root = home.root().to_owned();
+    let keys = tilo_device_identity::IdentityPaths::under(root.join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let device = hex::encode(key.verifying_key().to_bytes());
+    let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(OWN, false),
+    ));
+    let native = std::sync::Arc::new(super::Native::new(
+        crate::device::unclaimed::DeviceOnly::new(key, place),
+        test_peer,
+        admission,
+    ));
+    let sockets = root.join("sockets");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let listener =
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+            .unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let daemon = tilo_api::daemon::DaemonPlace::at(&sockets, &root.join("login"));
+    let ask = |uid: u32, request: Value| {
+        PEER.store(uid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(daemon.native()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the device answers");
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let found = |uid: u32| {
+        let answer = ask(
+            uid,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_do", "arguments": {"path": "devices#found"}}}),
+        );
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (answer["result"]["isError"] == true, text)
+    };
+
+    let fresh = ask(OWN, json!({"native": "account#who"}));
+    assert_eq!(
+        fresh["person"],
+        Value::Null,
+        "nothing founds a person by itself: {fresh}"
+    );
+    assert_eq!(fresh["claimed"], false, "{fresh}");
+
+    let (refused, why) = found(OTHER);
+    assert!(refused, "another account started a person: {why}");
+    assert!(why.contains("own account"), "{why}");
+    assert_eq!(ask(OWN, json!({"native": "account#who"}))["claimed"], false);
+
+    // The laptop's first command: through the place every client finds the daemon at.
+    PEER.store(OWN, Ordering::SeqCst);
+    daemon.found().unwrap();
+    let who = ask(OWN, json!({"native": "account#who"}));
+    let person = who["person"].as_str().expect("a person now").to_owned();
+    assert_eq!(who["claimed"], true, "{who}");
+    assert_eq!(who["device"], device, "{who}");
+
+    let (refused, why) = found(OWN);
+    assert!(refused, "a device with a person started another: {why}");
+    assert!(
+        why.contains(tilo_device_identity::login::ALREADY_A_PERSONS),
+        "{why}"
+    );
+    daemon
+        .found()
+        .expect("a command on a device with a person goes on as that person");
+    assert_eq!(
+        ask(OWN, json!({"native": "account#who"}))["person"],
+        person,
+        "the person stays the one first started"
+    );
+}
+
 /// The account a test's next native connection comes from, as the daemon reads it.
 static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -922,26 +1024,21 @@ fn a_daemon_in_this_process_stops_and_starts_again_on_its_device() {
             .create(path)
             .unwrap();
     };
-    let (home, run, profile, credentials) = (
+    let (home, run, profile) = (
         dir.path().join("home"),
         dir.path().join("run"),
         dir.path().join("profile"),
-        dir.path().join("credentials"),
     );
-    for path in [&home, &run, &profile, &credentials] {
+    for path in [&home, &run, &profile] {
         private(path);
     }
-    // A device handed a ticket it cannot spend waits for its person, answering its own actions.
-    std::fs::write(
-        credentials.join(crate::device::unclaimed::TICKET_CREDENTIAL),
-        "not a ticket",
-    )
-    .unwrap();
+    // A device nobody set up founds no person by itself: it waits for one, answering its own
+    // actions.
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("HOME", &home)
         .set("XDG_RUNTIME_DIR", &run)
         .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
-        .set("CREDENTIALS_DIRECTORY", &credentials)
+        .remove("CREDENTIALS_DIRECTORY")
         .remove("TILO_RUNTIME_PROFILE");
     for start in ["first", "again"] {
         let running = super::Running::start(&profile).unwrap();
@@ -965,6 +1062,18 @@ fn a_daemon_in_this_process_stops_and_starts_again_on_its_device() {
             .expect("the device answers at once");
         let info: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_ne!(info["result"]["isError"], true, "{start} start: {info}");
+        writeln!(writer, "{}", serde_json::json!({"native": "account#who"})).unwrap();
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("the device says who asks");
+        let who: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            who["person"],
+            serde_json::Value::Null,
+            "{start} start: {who}"
+        );
+        assert_eq!(who["claimed"], false, "{start} start: {who}");
         // `tilo status` asks the same endpoint what the device holds, as a connection's first
         // line too.
         let status = std::os::unix::net::UnixStream::connect(&socket).unwrap();

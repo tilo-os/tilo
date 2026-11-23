@@ -6,10 +6,9 @@
 //! keeps its person's workspaces as a member, entering them through the server its copy of the
 //! person's own workspace names ([`super::home`]). A computer that holds the person's root acts as
 //! the identity founded on it (`tilo login --new-identity`), in a workspace founded here whose
-//! member list names the person as its owner. A computer of one account's that has neither, and
-//! was handed no ticket, founds its person at its first start ([`found_a_person`]); Tilo OS's
-//! system tree, and a computer handed a ticket, are served with the device key alone until a
-//! person's certificate names it ([`super::unclaimed`]). Here the daemon
+//! member list names the person as its owner. A computer with neither is served with the device
+//! key alone until a person's certificate names it ([`super::unclaimed`]): a ticket logs it in, or
+//! its own account starts a new person on it (`devices#found`, [`found_a_person`]). Here the daemon
 //! launches the installed apps through the platform launcher (`crate::apps`), records the grants
 //! people give apps for other apps' actions as changes to the workspace's member list, serves
 //! route keys for its workspaces (`channels`) and routes offloadable actions through the
@@ -167,29 +166,14 @@ impl Identity {
     }
 }
 
-/// Whether this daemon founds its person at its start, while no person's certificate names its
-/// key: on a computer of one account's (not Tilo OS's system tree) that was handed no ticket, as a
-/// laptop's first `tilo` command is.
-#[must_use]
-pub(crate) fn founds_a_person() -> bool {
-    let handed = std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|dir| {
-        Path::new(&dir)
-            .join(super::unclaimed::TICKET_CREDENTIAL)
-            .exists()
-    });
-    !handed
-        && tilo_identity::provisioning::collaboration_identity_root()
-            != Path::new(tilo_device_identity::persist::SYSTEM_IDENTITY_ROOT)
-}
-
-/// Found this computer's person: their root, kept here, certifies this device's key.
+/// Found this computer's person: their root, kept here, certifies this device's key in `keys`.
 ///
 /// # Errors
 /// The identity cannot be made or kept.
-pub(crate) fn found_a_person() -> io::Result<()> {
+pub(crate) fn found_a_person(keys: &tilo_device_identity::IdentityPaths) -> io::Result<()> {
     tilo_identity::provisioning::ensure_foreign_collaboration_identity(
         &tilo_identity::store::identity_dir_from_env()?,
-        &tilo_identity::provisioning::collaboration_identity_paths(),
+        keys,
         tilo_identity::provisioning::IdentityStorage::for_session(),
     )?;
     Ok(())

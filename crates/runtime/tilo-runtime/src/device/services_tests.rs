@@ -342,7 +342,7 @@ pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
 /// Found a person on this computer, whose root it has, as a computer is set up explicitly
 /// before its daemon serves anyone, as a daemon of one account's does at its first start.
 pub(crate) fn found_here() {
-    super::found_a_person().unwrap();
+    super::found_a_person(&tilo_identity::provisioning::collaboration_identity_paths()).unwrap();
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.

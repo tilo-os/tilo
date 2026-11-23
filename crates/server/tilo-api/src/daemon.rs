@@ -332,12 +332,15 @@ impl DaemonPlace {
     }
 
     /// Wait until the daemon answers at `socket`, starting the service once when no daemon
-    /// keeps the device: one that runs (still starting, or taking a login up) is waited for.
+    /// keeps the device: one that runs (still starting, or taking a login up) is waited for. A
+    /// person's own computer that no person's certificate names yet founds its person here, once
+    /// its daemon answers, as its first command always has; Tilo OS's device waits for a sign-in.
     fn wait_for(&self, socket: &Path, within: Duration) -> Result<(), String> {
         let deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
         let mut started = false;
+        let mut founding = !self.system;
         loop {
             if tilo_files::native::socket::connect(socket).is_ok() {
                 return Ok(());
@@ -345,6 +348,10 @@ impl DaemonPlace {
             if !started && !self.alive() {
                 started = true;
                 service::start()?;
+            }
+            if founding && tilo_files::native::socket::connect(&self.native()).is_ok() {
+                founding = false;
+                self.found()?;
             }
             if Instant::now() >= deadline {
                 return Err(format!(
@@ -355,6 +362,46 @@ impl DaemonPlace {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+impl DaemonPlace {
+    /// Ask the daemon to found this computer's person ([`tilo_device_identity::login::FOUND`]),
+    /// as a person's own computer's first command does. A device a person's certificate names
+    /// already refuses it, which is no failure here: that person is served.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or could not found the person.
+    pub fn found(&self) -> Result<(), String> {
+        use std::io::{BufRead as _, Write as _};
+        let mut native = tilo_files::native::socket::connect(&self.native())
+            .map_err(|error| error.to_string())?;
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {
+                "path": format!(
+                    "{}#{}",
+                    tilo_device_identity::login::RESOURCE,
+                    tilo_device_identity::login::FOUND
+                ),
+                "args": {},
+            }},
+        });
+        writeln!(native, "{line}").map_err(|error| error.to_string())?;
+        let mut answer = String::new();
+        std::io::BufReader::new(native)
+            .read_line(&mut answer)
+            .map_err(|error| error.to_string())?;
+        let refused = answer.contains(r#""error""#) || answer.contains(r#""isError":true"#);
+        if refused && !answer.contains(tilo_device_identity::login::ALREADY_A_PERSONS) {
+            return Err(format!(
+                "Tilo could not set up this computer's person: {}",
+                answer.trim()
+            ));
+        }
+        Ok(())
     }
 }
 
