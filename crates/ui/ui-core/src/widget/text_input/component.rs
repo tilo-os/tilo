@@ -61,6 +61,13 @@ pub struct TextInputProps {
     /// (a caret on the canvas).
     #[component(event)]
     pub cancel: Event,
+    /// The field's text went from empty to non-empty: the first change, carrying the text it
+    /// holds now. An entry makes the item it names here, from the first keystroke.
+    #[component(event(value = String))]
+    pub begin: Event,
+    /// The field lost the keyboard: an entry left empty is taken away by what listens.
+    #[component(event)]
+    pub blur: Event,
     /// A caret on a surface rather than a field in a form: no well and no fill, only
     /// as wide as what it holds, growing as the words are typed. The canvas's caret.
     pub caret: bool,
@@ -84,6 +91,8 @@ impl Default for TextInputProps {
             submit: Event::None,
             select: Event::None,
             cancel: Event::None,
+            begin: Event::None,
+            blur: Event::None,
             caret: false,
         }
     }
@@ -131,6 +140,8 @@ impl Described for TextInput {
             submit,
             select,
             cancel,
+            begin,
+            blur,
             caret,
         } = props;
         let read_only = read_only || text.is_some();
@@ -179,6 +190,8 @@ impl Described for TextInput {
         if !submit.is_none() {
             input = input.on_submit(move |text| submit.fire(Some(Value::Text(text.to_owned()))));
         }
+        input.set_begin_event(begin);
+        input.set_blur_event(blur);
         input = input.with_selection_event(select);
         input.set_cancel_event(cancel);
         if caret {
@@ -206,6 +219,8 @@ impl Described for TextInput {
             submit,
             select,
             cancel,
+            begin,
+            blur,
             caret,
         } = props;
         let read_only = read_only || text.is_some();
@@ -258,6 +273,8 @@ impl Described for TextInput {
         self.enter_submits = self.enter_submits || title || entry;
         self.set_selection_event(select);
         self.set_cancel_event(cancel);
+        self.set_begin_event(begin);
+        self.set_blur_event(blur);
         true
     }
 }

@@ -3,6 +3,8 @@
 
 d-so-tilo-notes = Notes
 
+d-so-tilo-notes-keywords = note, memo, memos, notebook, journal, markdown, notepad, textedit, apple notes, google keep, onenote, obsidian, notiz, notizbuch, aufzeichnungen, zettel, merkzettel, tagebuch, notizen machen
+
 d-mavvhka7 = Note
     .doc = A note: a title, a body, the note it stands under, the tags people gave it and the reactions they left on it.
     .noun = { $count ->

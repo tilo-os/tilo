@@ -1,6 +1,6 @@
 use so.tilo.lang.chat as chat
 use so.tilo.notes as notes
-use so.tilo.lang.tasks as tasks
+use so.tilo.tasks as tasks
 
 /// Scenarios: the shell as people meet it, in the states its views are for. Each fills
 /// the layout's own fields (the ones the session writes, which a scenario may set) and the
@@ -1864,7 +1864,7 @@ fn installed_apps() -> List<device.App> {
             icon: "message-square",
             category: "work",
         ),
-        device.App(key: "so.tilo.lang.tasks", name: "Tasks", icon: "list-checks", category: "work"),
+        device.App(key: "so.tilo.tasks", name: "Tasks", icon: "list-checks", category: "work"),
         device.App(key: "so.tilo.settings", name: "Settings", icon: "settings", category: "system"),
     ]
 }
@@ -1933,7 +1933,7 @@ scenario "a layout of places" -> Layout {
         LayoutPlace(
             key: "n-1",
             strip: narrow,
-            shows: "so.tilo.lang.tasks",
+            shows: "so.tilo.tasks",
             resource: tasks.tasks.id(),
             title: "Tasks",
             name: "Tasks",

@@ -124,6 +124,19 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
             names.push(name);
         }
     }
+    // The other words people know it by, in every language it ships: the header's own, then each
+    // catalogue's `d-<app>-keywords`, without repeats.
+    let mut keywords = meta.keywords.clone();
+    for (_, catalogue) in &last.source.locales {
+        for word in tilolang::messages::keywords_word(catalogue, &meta.app).unwrap_or_default() {
+            if !keywords
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&word))
+            {
+                keywords.push(word);
+            }
+        }
+    }
     let title = meta.title.to_lowercase();
     let resource_types = meta
         .types
@@ -139,7 +152,7 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
         }),
         tagline: meta.tagline.clone().unwrap_or_default(),
         names,
-        keywords: meta.keywords.clone(),
+        keywords,
         resource_types,
         offers: offers(meta),
         window_kind: meta.resource_type(),
@@ -234,6 +247,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.tl"), text).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_fleet_reads_keywords_in_every_language() {
+        let dir = package(
+            "app t.notes \"Notes\" (\n    keywords: [\"note\", \"memo\"],\n)\n\n\
+             type Notebook {\n    notes: List<Text>\n}\n\n\
+             root notebook: Notebook\n\n\
+             default view notebook for Notebook\n\n\
+             view notebook(nb: Notebook) {\n    text(\"Notes\")\n}\n",
+        );
+        std::fs::create_dir_all(dir.path().join("locales")).unwrap();
+        std::fs::write(
+            dir.path().join("locales/de-DE.ftl"),
+            "d-t-notes = Notizen\n\nd-t-notes-keywords = Notizen, Merkzettel\n",
+        )
+        .unwrap();
+        let entry = fleet(dir.path(), &[])
+            .expect("the package reads")
+            .expect("it declares an app");
+        assert_eq!(
+            entry.keywords,
+            ["note", "memo", "Notizen", "Merkzettel"],
+            "the catalogues' keywords join the header's, once each"
+        );
     }
 
     #[test]

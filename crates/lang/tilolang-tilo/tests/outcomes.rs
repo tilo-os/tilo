@@ -15,14 +15,18 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = crate::fixtures::TASKS_SOURCE;
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item.
 fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
     let (ada, packages) = Replica::new(
         "ada",
         Workspace::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+        &[
+            crate::fixtures::AGENT,
+            (DISCUSSION, DISCUSSION_IDS),
+            (TODO, TODO_IDS),
+        ],
     );
     let meta = packages.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
@@ -44,7 +48,14 @@ fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
         },
         other => panic!("no items: {other:?}"),
     };
-    let grace = ada.fork("grace", &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)]);
+    let grace = ada.fork(
+        "grace",
+        &[
+            crate::fixtures::AGENT,
+            (DISCUSSION, DISCUSSION_IDS),
+            (TODO, TODO_IDS),
+        ],
+    );
     (ada, grace, meta, first)
 }
 

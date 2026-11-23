@@ -3,6 +3,8 @@
 
 d-so-tilo-mail = Mail
 
+d-so-tilo-mail-keywords = email, e-mail, mail, inbox, mailbox, gmail, imap, smtp, apple mail, evolution, geary, kmail, kontact, emails, post, posteingang, briefe, postfach, mailprogramm, elektronische post, e-mails
+
 d-weesm3yb = Account
     .doc = What the server of one of the workspace's mail accounts holds.
     .noun = { $count ->

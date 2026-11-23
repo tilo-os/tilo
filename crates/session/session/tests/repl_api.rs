@@ -998,7 +998,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
             .map(|inner| {
                 Box::new(Withholding {
                     inner,
-                    withheld: "tl.so.tilo.lang.tasks.Task",
+                    withheld: "tl.so.tilo.tasks.Task",
                     ids: std::cell::RefCell::new(None),
                 }) as Box<dyn tilo_service::Service>
             })

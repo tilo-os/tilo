@@ -52,7 +52,7 @@ action write(all: Journal, title: Text, body: Text) -> Entry {
 }
 "#;
 
-const TODO: &str = "so.tilo.lang.tasks";
+const TODO: &str = "so.tilo.tasks";
 
 /// The task's world: Tasks and the journal in one host, Notes, Chat and Board in another, each
 /// filled by its first scenario, and a task of them all whose programs run in a host of its own.

@@ -103,6 +103,7 @@ impl Convert<'_> {
                 None => props.remove(EDITS),
             };
         }
+        props.remove(crate::runtime::view::BEGIN_BIND);
         wire::Node {
             kind: node.kind.clone(),
             key: node.key.clone(),

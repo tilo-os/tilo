@@ -134,7 +134,7 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(session:
         "Discussion is no app of the session's: {apps:?}"
     );
     // The part itself rides in the apps made with it.
-    for app in ["so.tilo.lang.tasks", "so.tilo.notes"] {
+    for app in ["so.tilo.tasks", "so.tilo.notes"] {
         let found = app_catalogue::apps::read_one_from_env(app)
             .ok()
             .flatten()

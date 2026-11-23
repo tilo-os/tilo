@@ -494,6 +494,20 @@ impl ContextMenuArea {
         let offered = entries
             .iter()
             .any(|entry| !matches!(entry.item, MenuItem::Separator | MenuItem::Caption(_)));
+        // What the menu adds itself — the row that asks what is typed, and the send row after
+        // it — is nobody's answer to what was asked for at this place: with nothing of the
+        // owner's to offer, a menu that is waiting for its entries stands aside rather than
+        // opening on those rows alone and never taking the ones that come.
+        let waiting = !offered
+            && self
+                .waits
+                .as_ref()
+                .is_some_and(|waits| waits(self.content.as_ref(), at_pointer));
+        if waiting {
+            self.opening = None;
+            self.pending = Some((anchor, at_pointer));
+            return false;
+        }
         let mut menu = ContextMenu::new();
         self.runs.clear();
         self.presses.clear();
@@ -526,16 +540,10 @@ impl ContextMenuArea {
             Some(at) => Opening::Pointer(at),
             None => Opening::Item,
         });
-        // Nothing offered, and no agent to tell: no menu, unless what it offers is on its way.
+        // Nothing offered and nothing of the menu's own to show (no row that asks what is
+        // typed): no menu.
         if menu.items().is_empty() {
             self.opening = None;
-            if self
-                .waits
-                .as_ref()
-                .is_some_and(|waits| waits(self.content.as_ref(), at_pointer))
-            {
-                self.pending = Some((anchor, at_pointer));
-            }
             return false;
         }
         menu.focus_first_action();
@@ -1511,5 +1519,57 @@ mod tests {
         });
         assert!(!area.open_at(Point::new(5.0, 5.0), true));
         assert!(!area.is_open());
+    }
+
+    /// A row whose menu the host has not answered yet opens no menu: not even the rows the menu
+    /// adds itself — the one that asks what is typed, and the send row after it — which would
+    /// show a menu of nothing and never take the row's commands. It opens where it was asked
+    /// once the row comes.
+    #[test]
+    fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        crate::shared_selection::set_send_host_available(true);
+        let arrived = Rc::new(Cell::new(false));
+        let area = ContextMenuArea::new(Box::new(Spacer::fixed(300.0)), {
+            let arrived = Rc::clone(&arrived);
+            move |_| {
+                if arrived.get() {
+                    vec![MenuEntry::new("Delete", || {})]
+                } else {
+                    Vec::new()
+                }
+            }
+        })
+        .waiting_on({
+            let arrived = Rc::clone(&arrived);
+            move |_, _| !arrived.get()
+        });
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            area,
+            (400, 400),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let at = Point::new(100.0, 100.0);
+        let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+        crate::widget::context_menu::note_input(&press);
+        harness.send(&crate::synthetic_input::cursor_moved(at.x, at.y));
+        harness.send(&press);
+        assert!(
+            !harness.root::<ContextMenuArea>().is_open(),
+            "the menu waits for the row rather than opening on the rows it adds itself"
+        );
+        // The app answers with the row, and the frame that lays it out opens the menu on it.
+        arrived.set(true);
+        harness.relayout();
+        let area = harness.root::<ContextMenuArea>();
+        assert!(area.is_open(), "the menu opened on the row that came");
+        assert_eq!(
+            area.menu().items().first().and_then(MenuItem::label),
+            Some("Delete")
+        );
+        crate::shared_selection::set_send_host_available(false);
     }
 }

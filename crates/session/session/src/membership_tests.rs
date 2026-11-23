@@ -1821,7 +1821,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
     );
     let today = "so.tilo.lang.today";
     // Today's "Always" for Tasks' action: a grant naming the app, given by the person.
-    let scope = AnswerScope::action("so.tilo.lang.tasks", "tasks", "clear_done");
+    let scope = AnswerScope::action("so.tilo.tasks", "tasks", "clear_done");
     let (kind, allow) = (ActionKind::Undoable, Answer::Allow);
     let grant = answer_grant(
         WORKSPACE,
@@ -1837,7 +1837,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         person,
         app_id: today.into(),
         agent_session: None,
-        target_app: "so.tilo.lang.tasks".into(),
+        target_app: "so.tilo.tasks".into(),
         resource_label: "Tasks".into(),
         action_label: "Delete finished tasks".into(),
         kind,

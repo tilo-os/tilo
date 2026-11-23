@@ -152,6 +152,7 @@ impl Checker<'_> {
             param,
             at,
             action,
+            binds: _,
         } = &show.kind
         else {
             return;

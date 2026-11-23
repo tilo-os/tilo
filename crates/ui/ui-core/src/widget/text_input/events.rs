@@ -65,6 +65,18 @@ impl TextInput {
         self.selection_event = Some(event);
     }
 
+    /// Tell `event` when the field's text goes from empty to non-empty, carrying what it holds
+    /// now: the first change, which makes the item a list's entry names.
+    pub fn set_begin_event(&mut self, event: crate::component::Event) {
+        self.begin_event = event;
+    }
+
+    /// Tell `event` when the field loses the keyboard: an entry left empty is taken away by what
+    /// listens, so no empty item is left behind.
+    pub fn set_blur_event(&mut self, event: crate::component::Event) {
+        self.blur_event = event;
+    }
+
     /// Tell the reader the selection settled, as [`Self::with_selection_event`] describes it.
     pub(super) fn report_selection(&self) {
         let Some(event) = self.selection_event.clone() else {

@@ -20,7 +20,7 @@ use tilolang_runtime::{Actor, ids::MemberId};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
 
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const SOURCE: &str = include_str!("../../../../apps/tl/tasks/app.tl");

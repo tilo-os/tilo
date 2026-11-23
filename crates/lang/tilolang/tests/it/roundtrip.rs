@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
 
     phase the_app_header_names_the_ids_the_app_had_before_and_they_reach_the_metadata;
     {
-        let src = "app so.tilo.lang.tasks \"Tasks\" (category: .office, previously: so.tilo.lang.todo)\n\ntype N {\n    a: Int\n}\n";
+        let src = "app so.tilo.tasks \"Tasks\" (category: .office, previously: so.tilo.lang.todo)\n\ntype N {\n    a: Int\n}\n";
         let module = parse(src).expect("parses");
         assert_eq!(module.app.previously, vec!["so.tilo.lang.todo".to_owned()]);
         assert_eq!(print_module(&module), src);
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
             compiled.meta.previously,
             vec!["so.tilo.lang.todo".to_owned()]
         );
-        let several = "app so.tilo.lang.tasks \"Tasks\" (previously: [so.tilo.lang.todo, so.tilo.todo])\n\ntype N {\n    a: Int\n}\n";
+        let several = "app so.tilo.tasks \"Tasks\" (previously: [so.tilo.lang.todo, so.tilo.todo])\n\ntype N {\n    a: Int\n}\n";
         let module = parse(several).expect("parses");
         assert_eq!(module.app.previously.len(), 2);
         assert_eq!(print_module(&module), several);

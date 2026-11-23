@@ -593,6 +593,19 @@ impl Core {
                 })?;
                 ret_void()
             }
+            Imp::UiBindBegin => {
+                let node = self.node_index(a.h(0)?)?;
+                let field = self.text(a.h(1)?)?;
+                self.with_view(|vs| {
+                    vs.nodes
+                        .get_mut(node)
+                        .ok_or("unknown ui node")?
+                        .props
+                        .insert(crate::view::BEGIN_BIND.to_owned(), Value::Text(field));
+                    Ok(())
+                })?;
+                ret_void()
+            }
             Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAction => self.offer_action(a.h(0)?, a.h(1)?, a.h(2)?),

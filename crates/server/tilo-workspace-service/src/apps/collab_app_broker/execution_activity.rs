@@ -1079,8 +1079,8 @@ mod anchor_tests {
             // An edit naming the field it writes by its `field` argument writes it in the
             // resource it is offered on.
             let (edit, resource) = published(
-                "tl:so.tilo.lang.tasks:root/i1",
-                "tl.so.tilo.lang.tasks.Task",
+                "tl:so.tilo.tasks:root/i1",
+                "tl.so.tilo.tasks.Task",
                 "edit-text",
                 vec![
                     ActionParam::required_owned("field", ParamType::Text, "Field"),
@@ -1090,7 +1090,7 @@ mod anchor_tests {
             let edited = argument(&serde_json::json!({ "field": "title", "value": "Book film" }));
             assert_eq!(
                 text_range(&anchor_of(&edit, &resource, Some(&edited))),
-                ("title".into(), "tl:so.tilo.lang.tasks:root/i1".into(), 0, 9),
+                ("title".into(), "tl:so.tilo.tasks:root/i1".into(), 0, 9),
             );
             let resource = tilo_actions::ActionResource {
                 id: "so.tilo.tasks/issues/7d2b".into(),

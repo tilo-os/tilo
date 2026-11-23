@@ -15,9 +15,9 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = crate::fixtures::TASKS_SOURCE;
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const LETTERS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.tl");
-const LETTERS_IDS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
+const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
+const APP: &str = "so.tilo.tasks";
 const WORKSPACE: &str = "workspace";
 
 fn agent() -> Caller {
@@ -66,7 +66,11 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let (ada, packages) = Replica::access(
         "ada",
         Workspace::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+        &[
+            crate::fixtures::AGENT,
+            (DISCUSSION, DISCUSSION_IDS),
+            (TODO, TODO_IDS),
+        ],
         Some(access(vec![answer])),
     );
     let meta = &packages.last().unwrap().meta;
@@ -111,7 +115,7 @@ tilo_test_env::scenario! {
         let (ada, _) = Replica::access(
             "ada",
             Workspace::new(),
-            &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+            &[crate::fixtures::AGENT, (DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
             Some(access(Vec::new())),
         );
         ada.host.root_of(APP).unwrap();

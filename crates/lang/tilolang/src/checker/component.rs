@@ -1027,7 +1027,15 @@ impl Checker<'_> {
                     param,
                     at,
                     action,
-                } => self.component_event(n, d, event, (param.as_ref(), at.as_ref()), action),
+                    binds,
+                } => self.component_event(
+                    n,
+                    d,
+                    event,
+                    (param.as_ref(), at.as_ref()),
+                    action,
+                    binds.as_ref(),
+                ),
                 _ => content.push(s.clone()),
             }
         }
@@ -1074,6 +1082,7 @@ impl Checker<'_> {
         event: &ast::Ident,
         params: (Option<&ast::EventParam>, Option<&ast::EventParam>),
         action: &ast::Expr,
+        binds: Option<&ast::Ident>,
     ) {
         let Some(e) = d.event(&event.name) else {
             self.err(
@@ -1095,11 +1104,121 @@ impl Checker<'_> {
         };
         let act = self.event_action(d, e, params, action);
         if !act.ty.is_error() {
+            self.bind_begun(n, event, action, binds);
             self.emit(host(
                 Imp::UiOn,
                 vec![Ex::local(n, Ty::View), Ex::str(&event.name), act],
             ));
         }
+    }
+
+    /// A `begin` handler says which field of the record its action makes the field edits from then
+    /// on (`binds .title`): refused without one, and refused for a field the returned type does not
+    /// hold as text.
+    fn bind_begun(
+        &mut self,
+        n: LocalId,
+        event: &ast::Ident,
+        action: &ast::Expr,
+        binds: Option<&ast::Ident>,
+    ) {
+        if event.name != "begin" {
+            if let Some(field) = binds {
+                self.err(
+                    "E063",
+                    field.span,
+                    format!(
+                        "`binds` says the field a `begin` handler makes the fields edit; `on {}` makes nothing",
+                        event.name
+                    ),
+                );
+            }
+            return;
+        }
+        let Some(field) = binds else {
+            self.err(
+                "E063",
+                event.span,
+                "an `on begin` handler says the field the record it makes is edited at: `on begin(text: Text): add(...) binds .title`",
+            );
+            return;
+        };
+        let Some(result) = self.declared_result_of(action) else {
+            self.err(
+                "E063",
+                action.span,
+                "an `on begin` handler runs an action whose record it makes, as `add_subtask(t, text)`",
+            );
+            return;
+        };
+        match result {
+            Ty::Record(key) => {
+                let Some(info) = self.env.type_info(&key) else {
+                    return;
+                };
+                match info.field(&field.name) {
+                    Some(held) if held.ty == Ty::Text => {}
+                    Some(_) => self.err(
+                        "E063",
+                        field.span,
+                        format!(
+                            "`binds .{}` is not text on `{}`: the field a `begin` binds is a `Text` field",
+                            field.name, info.key.name
+                        ),
+                    ),
+                    None => {
+                        let texts: Vec<String> = info
+                            .fields
+                            .iter()
+                            .filter(|f| f.ty == Ty::Text)
+                            .map(|f| format!("`{}`", f.name))
+                            .collect();
+                        self.err(
+                            "E063",
+                            field.span,
+                            format!(
+                                "`{}` has no field `{}`; its text fields: {}",
+                                info.key.name,
+                                field.name,
+                                texts.join(", ")
+                            ),
+                        );
+                    }
+                }
+                if !field.name.is_empty() {
+                    self.emit(host(
+                        Imp::UiBindBegin,
+                        vec![Ex::local(n, Ty::View), Ex::str(&field.name)],
+                    ));
+                }
+            }
+            other if !other.is_error() => {
+                let what = self.show(&other);
+                self.err(
+                    "E063",
+                    action.span,
+                    format!(
+                        "an `on begin` handler's action makes a record, which the field then edits; this one answers a {what}"
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// The declared type an action expression answers, when it is a call of a declared action.
+    fn declared_result_of(&self, action: &ast::Expr) -> Option<Ty> {
+        let ast::ExprKind::Call { callee, .. } = &action.kind else {
+            return None;
+        };
+        let ast::ExprKind::Ident(name) = &callee.kind else {
+            return None;
+        };
+        self.env
+            .callables
+            .iter()
+            .find(|c| c.name == *name && c.kind == crate::resolve::CKind::Action)
+            .map(|c| c.result.clone())
     }
 
     /// What an event does: an action reference, which holds the value's place until the host puts it

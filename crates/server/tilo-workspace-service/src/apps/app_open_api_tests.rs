@@ -24,7 +24,7 @@ impl crate::apps::services::LauncherServices for PressedOpens {
             "so.tilo.word-processor",
             "so.tilo.chat",
             "so.tilo.notes",
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
         ]
         .into_iter()
         .map(|app| crate::apps::services::LaunchableApplication {

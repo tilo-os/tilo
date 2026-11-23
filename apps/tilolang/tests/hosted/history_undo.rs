@@ -3,7 +3,7 @@
 
 use super::Session;
 
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 
 fn titled(title: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();

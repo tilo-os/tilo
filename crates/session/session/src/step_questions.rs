@@ -481,7 +481,7 @@ mod tests {
             let mut asked = request(None);
             asked.handle = handle.into();
             asked.app_id = "so.tilo.lang.today".into();
-            asked.target_app = "so.tilo.lang.tasks".into();
+            asked.target_app = "so.tilo.tasks".into();
             asked.action_label = "Delete finished tasks".into();
             asked.kind = ActionKind::Undoable;
             asked.scope = Some("ignored for an app".into());
@@ -491,7 +491,7 @@ mod tests {
             assert_eq!(pending[0].app_id.as_deref(), Some("so.tilo.lang.today"));
             let shown: StepQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
             assert_eq!(shown.agent, "so.tilo.lang.today");
-            assert_eq!(shown.target.as_deref(), Some("so.tilo.lang.tasks"));
+            assert_eq!(shown.target.as_deref(), Some("so.tilo.tasks"));
             assert_eq!(
                 shown.kind,
                 ActionKind::Undoable,

@@ -637,7 +637,7 @@ fn captures() -> Vec<PublishedActions> {
     );
     let resource =
         tilo_actions::ResourceSpec::new("tasks", "tl.Tasks.task", "Tasks").with_action(capture);
-    vec![PublishedActions::of("so.tilo.lang.tasks", "", &[resource])]
+    vec![PublishedActions::of("so.tilo.tasks", "", &[resource])]
 }
 
 tilo_test_env::scenario! {
@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
         let Some(Target::Invoke(invoke)) = search.take_choice() else {
             panic!("the capture runs the app's own action");
         };
-        assert_eq!(invoke.app, "so.tilo.lang.tasks");
+        assert_eq!(invoke.app, "so.tilo.tasks");
         assert_eq!(invoke.address.action.as_str(), "new_task");
         assert_eq!(
             invoke.arguments.get("title"),
