@@ -30,10 +30,11 @@
 //! ([`Processes::policy_changed`]): a viewer's window offers no change they cannot make.
 //!
 //! A process is started through the platform's launcher ([`spawn_host`]; on Linux the launch kind
-//! "tilolang process", `tilo-launcher tilolang-process`), keyed by its workspace, its app and the
-//! runtimes it runs on, with the storage of that workspace and app. It stays once the last of its
-//! calls ended, which it says on its socket, and ends when nothing called it for [`IDLE`]: a person
-//! who closes an app and opens it again finds it running.
+//! "tilolang process", `tilo-launcher tilolang-process`; on macOS the tilolang runtime's binary in a
+//! Seatbelt sandbox), keyed by its workspace, its app and the runtimes it runs on, with the storage
+//! of that workspace and app. It stays once the last of its calls ended, which it says on its
+//! socket, and ends when nothing called it for [`IDLE`]: a person who closes an app and opens it
+//! again finds it running.
 //!
 //! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a process runs is
 //! verified as a launch verifies it and handed to the process on its socket ([`Processes::reinstalled`]):
@@ -49,7 +50,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::device_processes::{
     FromDevice, HandedFds, HandedInstance, MediaChange, Running, ToDevice,
 };
@@ -59,7 +59,7 @@ use runtime_portal::process_link::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::package_runs::{installed_apps, runs_in_process, verified_installed};
+use super::package_runs::{Verified, installed_apps, runs_in_process, verified_installed};
 
 /// Hand the process behind `socket` the instance `request` with its connections, keeping them
 /// to hand to another process should this one have ended.
@@ -217,7 +217,16 @@ impl Instance {
 pub(crate) type Has = dyn Fn(&str) -> bool + Send + Sync;
 
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
-type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
+type Verifies = dyn Fn(&str, &str) -> Result<Verified, String> + Send + Sync;
+
+/// What starts a host here ([`spawn_host`]): `tilo-launcher`, which builds its sandbox, on Linux.
+#[cfg(target_os = "linux")]
+pub type Launcher = PathBuf;
+
+/// What starts a host here ([`spawn_host`]): the installed packages, whose tilolang runtime the
+/// host runs from in its Seatbelt sandbox, on macOS.
+#[cfg(target_os = "macos")]
+pub type Launcher = package_store::Catalog;
 
 /// Who plays what: what the system's media controls are told, and which process and instance
 /// plays each Playback, so a control the person presses reaches it.
@@ -259,7 +268,7 @@ pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
     data_home: PathBuf,
     /// The platform's launcher, which starts each process in its sandbox ([`spawn_host`]).
-    launcher: PathBuf,
+    launcher: Launcher,
     verifies: Box<Verifies>,
     /// Records each app started, through the device's package cache ([`super::packages::opened`]).
     opened: Box<Opened>,
@@ -278,7 +287,7 @@ impl Processes {
     /// The processes this device starts through `launcher`, keeping what they keep under the
     /// person's data home.
     #[must_use]
-    pub fn new(launcher: PathBuf) -> Arc<Self> {
+    pub fn new(launcher: Launcher) -> Arc<Self> {
         let data_home =
             tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         Self::with(data_home, launcher, Box::new(verified_installed))
@@ -286,7 +295,7 @@ impl Processes {
 
     /// Processes over `data_home`, started through `launcher` and running what `verifies` verified.
     #[must_use]
-    pub fn with(data_home: PathBuf, launcher: PathBuf, verifies: Box<Verifies>) -> Arc<Self> {
+    pub fn with(data_home: PathBuf, launcher: Launcher, verifies: Box<Verifies>) -> Arc<Self> {
         Self::recording(
             data_home,
             launcher,
@@ -298,7 +307,7 @@ impl Processes {
     /// [`Self::with`], recording each app it starts with `opened`.
     fn recording(
         data_home: PathBuf,
-        launcher: PathBuf,
+        launcher: Launcher,
         verifies: Box<Verifies>,
         opened: Box<Opened>,
     ) -> Arc<Self> {
@@ -1003,7 +1012,7 @@ impl Processes {
     ) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
         let earlier = self.earlier(key);
-        let (ours, mut child) = spawn_host(
+        let (ours, started) = spawn_host(
             &self.launcher,
             key,
             &storage,
@@ -1013,7 +1022,7 @@ impl Processes {
             page,
         )?;
         let tag = format!("{} {}", key.workspace, key.app);
-        let said = child.stderr.take().map(|stderr| {
+        let said = started.stderr.map(|stderr| {
             std::thread::Builder::new()
                 .name("tilolang-process-err".into())
                 .spawn(move || last_lines(stderr, &tag))
@@ -1023,13 +1032,13 @@ impl Processes {
         tracing::info!(
             workspace = %key.workspace,
             app = %key.app,
-            pid = child.id(),
+            pid = started.pid,
             "tilolang process started"
         );
         let (processes, followed, key) = (Arc::clone(self), Arc::clone(&socket), key.clone());
         std::thread::Builder::new()
             .name("tilolang-process".into())
-            .spawn(move || processes.follow(&key, generation, &followed, child, said))?;
+            .spawn(move || processes.follow(&key, generation, &followed, started.wait, said))?;
         Ok(Host {
             socket,
             instances: HashMap::new(),
@@ -1046,7 +1055,7 @@ impl Processes {
         key: &HostKey,
         generation: u64,
         followed: &OwnedFd,
-        mut child: runtime_portal::process_link::Child,
+        wait: Wait,
         said: Said,
     ) {
         // Why the process says it exits; none when it ended without saying (killed, crashed).
@@ -1071,7 +1080,7 @@ impl Processes {
                 }
             }
         }
-        let status = child.wait();
+        let status = wait();
         let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
         // Its error output ends with it: what it said last is all read by now.
         let last = said
@@ -1156,24 +1165,31 @@ impl Processes {
     }
 }
 
+/// What waits for a started host to end, and answers how it ended.
+type Wait = Box<dyn FnOnce() -> std::io::Result<std::process::ExitStatus> + Send>;
+
+/// A host as it started: its process, its error output, and what waits for its end.
+struct Started {
+    pid: u32,
+    /// Read here: what it said last is why it ended when it could not say so itself.
+    stderr: Option<Box<dyn std::io::Read + Send>>,
+    wait: Wait,
+}
+
 /// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
 /// kept (the directory, and where the host sees it beneath its mount), on its process link: the
 /// one place a host is started, and the only one that names the platform. On Linux the launcher
 /// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
 /// its sandbox; a `page` window's patch connection and page link go to it as descriptors 3 and 4,
 /// and it keeps the link while the window runs.
-/// On Windows the link names the process it is handed to, and every connection an instance is
-/// given later goes to that process alone.
+#[cfg(target_os = "linux")]
 fn spawn_host(
-    launcher: &Path,
+    launcher: &Launcher,
     key: &HostKey,
     storage: &Path,
     earlier: Option<(&Path, &Path)>,
     page: Option<(OwnedFd, OwnedFd)>,
-) -> std::io::Result<(
-    runtime_portal::process_link::Descriptor,
-    runtime_portal::process_link::Child,
-)> {
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     let mut command = std::process::Command::new(launcher);
     command
         .arg(launcher::run::tilolang_process::SUBCOMMAND)
@@ -1198,12 +1214,86 @@ fn spawn_host(
             false,
         );
     }
-    // Read here: what it said last is why it ended when it could not say so itself. (A Windows
-    // link pipes it always.)
     command.stderr(std::process::Stdio::piped());
     let spawned = runtime_portal::process_link::spawn(command);
     drop(page);
-    spawned
+    let (link, mut child) = spawned?;
+    let stderr = child
+        .stderr
+        .take()
+        .map(|stderr| Box::new(stderr) as Box<dyn std::io::Read + Send>);
+    Ok((
+        link,
+        Started {
+            pid: child.id(),
+            stderr,
+            wait: Box::new(move || child.wait()),
+        },
+    ))
+}
+
+/// [`spawn_host`] on macOS: the tilolang runtime's own binary, from the installed runtime package
+/// the host runs on (verified as a launch verifies it), in a deny-default Seatbelt sandbox that
+/// reads the runtime, keeps its storage and reaches nothing else: no network, no service socket,
+/// no other app's storage. Its link and a `page` window's connections are inherited at their own
+/// numbers, named in its environment. An earlier version of an app on a Mac kept nothing a host
+/// converts, so none is granted.
+#[cfg(target_os = "macos")]
+fn spawn_host(
+    launcher: &Launcher,
+    key: &HostKey,
+    storage: &Path,
+    _earlier: Option<(&Path, &Path)>,
+    page: Option<(OwnedFd, OwnedFd)>,
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
+    use runtime_portal::process_link::{FD_ENV, PAGE_ENV, STORAGE_ENV};
+    use std::ffi::OsString;
+    let runtime = crate::apps::installed_runtime(launcher, &key.runtime)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let (ours, theirs) = runtime_portal::process_link::pair()?;
+    let (said, says) = std::io::pipe()?;
+    let mut inherit_fds = vec![theirs.as_raw_fd()];
+    let mut env = vec![(OsString::from(STORAGE_ENV), storage.as_os_str().to_owned())];
+    match &page {
+        Some((patch, page)) => {
+            inherit_fds.extend([patch.as_raw_fd(), page.as_raw_fd()]);
+            env.push((
+                OsString::from(PAGE_ENV),
+                OsString::from(format!("{},{}", patch.as_raw_fd(), page.as_raw_fd())),
+            ));
+        }
+        None => env.push((
+            OsString::from(FD_ENV),
+            OsString::from(theirs.as_raw_fd().to_string()),
+        )),
+    }
+    let request = launcher_macos::LaunchRequest {
+        package_id: key.app.clone(),
+        executable: runtime.join(launcher::manifest::TILOLANG_BIN),
+        args: Vec::new(),
+        payload_dir: runtime.clone(),
+        runtime_dir: None,
+        container_dir: storage.to_path_buf(),
+        capabilities: launcher::capabilities::CapabilityPlan::default(),
+        egress: launcher::egress_proxy::EgressDecision::Blocked,
+        inherit_fds,
+        stderr: Some(says.as_raw_fd()),
+        env,
+        trust: launcher_macos::TrustRequirement::DeveloperId,
+    };
+    let launched = launcher_macos::launch(&request).map_err(std::io::Error::other);
+    // The host holds its own ends now.
+    drop((theirs, says, page));
+    let mut launched = launched?;
+    let pid = u32::try_from(launched.pid()).map_err(|_| std::io::ErrorKind::InvalidData)?;
+    Ok((
+        ours,
+        Started {
+            pid,
+            stderr: Some(Box::new(said)),
+            wait: Box::new(move || launched.wait()),
+        },
+    ))
 }
 
 /// The hash of an encoded module: whether a process runs that build already.
@@ -1311,350 +1401,366 @@ mod tests {
         }
     }
 
+    /// A launcher that starts nothing.
+    fn no_launcher() -> Launcher {
+        #[cfg(target_os = "linux")]
+        return PathBuf::from("/nonexistent");
+        #[cfg(target_os = "macos")]
+        return package_store::Catalog::at(PathBuf::from("/nonexistent"), None);
+    }
+
     fn processes(data_home: PathBuf) -> Arc<Processes> {
         Processes::with(
             data_home,
-            PathBuf::from("/nonexistent"),
+            no_launcher(),
             Box::new(|_, _| Err("no package store here".to_owned())),
         )
     }
 
-    /// The variable that makes this test binary the process the test launcher starts, and the
-    /// pipe it says what it was handed on.
-    const LAUNCHED_ENV: &str = "TILO_TEST_TILOLANG_PROCESS_SAYS";
-    const LAUNCHED_TEST: &str = "device::processes::tests::the_process_the_tests_launcher_starts";
-    const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
-    const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000a2";
+    /// The processes a launcher starts: a script that starts this test binary, which says what it
+    /// was handed. A Mac starts the runtime package's own binary from its catalog instead.
+    #[cfg(target_os = "linux")]
+    mod launched {
+        use super::*;
 
-    /// What the process the test launcher started was handed: the launcher's arguments, the
-    /// instance, and which of its connections came with it.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Handed {
-        args: String,
-        request: InstanceRequest,
-        window: bool,
-        content: bool,
-    }
+        /// The variable that makes this test binary the process the test launcher starts, and the
+        /// pipe it says what it was handed on.
+        const LAUNCHED_ENV: &str = "TILO_TEST_TILOLANG_PROCESS_SAYS";
+        const LAUNCHED_TEST: &str =
+            "device::processes::tests::launched::the_process_the_tests_launcher_starts";
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
+        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000a2";
 
-    /// Run as the process the test launcher starts: read the first message on the link the
-    /// daemon handed it, and say what it held on the pipe its test reads.
-    #[test]
-    fn the_process_the_tests_launcher_starts() {
-        use std::os::fd::AsFd as _;
-        let Some(says) = std::env::var_os(LAUNCHED_ENV) else {
-            return;
-        };
-        let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
-        let Some(ToProcess::Instance { request, fds }) = ToProcess::receive(&link).unwrap() else {
-            panic!("the process is handed an instance first");
-        };
-        let handed = Handed {
-            args: std::env::var("TILO_TEST_LAUNCHER_ARGS").unwrap(),
-            request: *request,
-            window: fds.window.is_some(),
-            content: fds.content.is_some(),
-        };
-        std::fs::write(says, serde_json::to_vec(&handed).unwrap()).unwrap();
-    }
+        /// What the process the test launcher started was handed: the launcher's arguments, the
+        /// instance, and which of its connections came with it.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Handed {
+            args: String,
+            request: InstanceRequest,
+            window: bool,
+            content: bool,
+        }
 
-    /// A device whose launcher starts this test binary as each process, which says on a pipe what
-    /// it was handed, and that runs `NOTES` alone: any other app does not verify.
-    struct Device {
-        dir: tempfile::TempDir,
-        processes: Arc<Processes>,
-        _launcher: tilo_test_env::StandIn,
-    }
+        /// Run as the process the test launcher starts: read the first message on the link the
+        /// daemon handed it, and say what it held on the pipe its test reads.
+        #[test]
+        fn the_process_the_tests_launcher_starts() {
+            use std::os::fd::AsFd as _;
+            let Some(says) = std::env::var_os(LAUNCHED_ENV) else {
+                return;
+            };
+            let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
+            let Some(ToProcess::Instance { request, fds }) = ToProcess::receive(&link).unwrap()
+            else {
+                panic!("the process is handed an instance first");
+            };
+            let handed = Handed {
+                args: std::env::var("TILO_TEST_LAUNCHER_ARGS").unwrap(),
+                request: *request,
+                window: fds.window.is_some(),
+                content: fds.content.is_some(),
+            };
+            std::fs::write(says, serde_json::to_vec(&handed).unwrap()).unwrap();
+        }
 
-    impl Device {
-        fn new() -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let says = dir.path().join("says");
-            let pipe = std::ffi::CString::new(says.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: a NUL-terminated path this test owns.
-            assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
-            let launcher = tilo_test_env::stand_in(
-                dir.path().join("tilo-launcher"),
-                &format!(
-                    "export TILO_TEST_LAUNCHER_ARGS=\"$*\" {LAUNCHED_ENV}='{says}'\nexec '{exe}' --exact {LAUNCHED_TEST} --nocapture --quiet\n",
-                    says = says.display(),
-                    exe = std::env::current_exe().unwrap().display(),
-                ),
-            )
-            .unwrap();
-            let processes = Processes::with(
-                dir.path().join("data"),
-                launcher.path().to_owned(),
-                Box::new(|_, app| {
-                    if app != NOTES {
-                        return Err(format!("{app} is not installed here"));
-                    }
-                    Ok(VerifiedInstance {
-                        runtime: "tilolang@1".to_owned(),
-                        app_runtime: "tilo@1".to_owned(),
-                        publisher: [7; 32],
-                        module: runtime_portal::process_link::Module::default(),
-                    })
-                }),
-            );
-            Self {
-                dir,
-                processes,
-                _launcher: launcher,
+        /// A device whose launcher starts this test binary as each process, which says on a pipe what
+        /// it was handed, and that runs `NOTES` alone: any other app does not verify.
+        struct Device {
+            dir: tempfile::TempDir,
+            processes: Arc<Processes>,
+            _launcher: tilo_test_env::StandIn,
+        }
+
+        impl Device {
+            fn new() -> Self {
+                let dir = tempfile::tempdir().unwrap();
+                let says = dir.path().join("says");
+                let pipe = std::ffi::CString::new(says.as_os_str().as_encoded_bytes()).unwrap();
+                // SAFETY: a NUL-terminated path this test owns.
+                assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+                let launcher = tilo_test_env::stand_in(
+                    dir.path().join("tilo-launcher"),
+                    &format!(
+                        "export TILO_TEST_LAUNCHER_ARGS=\"$*\" {LAUNCHED_ENV}='{says}'\nexec '{exe}' --exact {LAUNCHED_TEST} --nocapture --quiet\n",
+                        says = says.display(),
+                        exe = std::env::current_exe().unwrap().display(),
+                    ),
+                )
+                .unwrap();
+                let processes = Processes::with(
+                    dir.path().join("data"),
+                    launcher.path().to_owned(),
+                    Box::new(|_, app| {
+                        if app != NOTES {
+                            return Err(format!("{app} is not installed here"));
+                        }
+                        Ok(crate::device::package_runs::Verified {
+                            runtime: "tilolang@1".to_owned(),
+                            app_runtime: "tilo@1".to_owned(),
+                            module: runtime_portal::process_link::Module::default(),
+                        })
+                    }),
+                );
+                Self {
+                    dir,
+                    processes,
+                    _launcher: launcher,
+                }
+            }
+
+            /// What the process its launcher started says it was handed, once it says it.
+            fn handed(&self) -> Handed {
+                let says = self.dir.path().join("says");
+                let (told, telling) = std::sync::mpsc::channel();
+                std::thread::spawn(move || told.send(std::fs::read(says)));
+                let said = telling
+                    .recv_timeout(std::time::Duration::from_secs(120))
+                    .expect("the process says what it was handed")
+                    .unwrap();
+                serde_json::from_slice(&said).unwrap()
+            }
+
+            /// The processes as the person's shell reaches them, in [`WORKSPACE`] alone: each ask
+            /// on a packet socket handed to them as the daemon's dispatch hands the one a shell's
+            /// admitted connection carried.
+            fn shell(&self) -> runtime_portal::device_processes::Device {
+                let handing = self.processes.for_the_shell(
+                    Box::new(|workspace| workspace == WORKSPACE),
+                    Arc::new(NoOrigins),
+                );
+                runtime_portal::device_processes::Device::over(Arc::new(
+                    move || -> std::io::Result<OwnedFd> {
+                        let (ours, theirs) = runtime_portal::packet::pair()?;
+                        handing(theirs);
+                        Ok(ours)
+                    },
+                ))
             }
         }
 
-        /// What the process its launcher started says it was handed, once it says it.
-        fn handed(&self) -> Handed {
-            let says = self.dir.path().join("says");
-            let (told, telling) = std::sync::mpsc::channel();
-            std::thread::spawn(move || told.send(std::fs::read(says)));
-            let said = telling
-                .recv_timeout(std::time::Duration::from_secs(120))
-                .expect("the process says what it was handed")
-                .unwrap();
-            serde_json::from_slice(&said).unwrap()
+        fn connection() -> (OwnedFd, OwnedFd) {
+            runtime_portal::process_link::pair().unwrap()
         }
 
-        /// The processes as the person's shell reaches them, in [`WORKSPACE`] alone: each ask
-        /// on a packet socket handed to them as the daemon's dispatch hands the one a shell's
-        /// admitted connection carried.
-        fn shell(&self) -> runtime_portal::device_processes::Device {
-            let handing = self.processes.for_the_shell(
-                Box::new(|workspace| workspace == WORKSPACE),
-                Arc::new(NoOrigins),
-            );
-            runtime_portal::device_processes::Device::over(Arc::new(
-                move || -> std::io::Result<OwnedFd> {
-                    let (ours, theirs) = runtime_portal::packet::pair()?;
-                    handing(theirs);
-                    Ok(ours)
-                },
-            ))
-        }
-    }
+        /// The apps these tests hand over reach no outside service.
+        struct NoOrigins;
 
-    fn connection() -> (OwnedFd, OwnedFd) {
-        runtime_portal::process_link::pair().unwrap()
-    }
+        impl Origins for NoOrigins {
+            fn connection(&self, _: &str, _: &str) -> Result<Option<OwnedFd>, String> {
+                Ok(None)
+            }
 
-    /// The apps these tests hand over reach no outside service.
-    struct NoOrigins;
-
-    impl Origins for NoOrigins {
-        fn connection(&self, _: &str, _: &str) -> Result<Option<OwnedFd>, String> {
-            Ok(None)
+            fn attach(&self, app: &str, origin: &str, _: &str, _: &OwnedFd) -> Result<(), String> {
+                Err(format!("{app} reaches no outside service called {origin}"))
+            }
         }
 
-        fn attach(&self, app: &str, origin: &str, _: &str, _: &OwnedFd) -> Result<(), String> {
-            Err(format!("{app} reaches no outside service called {origin}"))
-        }
-    }
-
-    fn handed(app: &str, workspace: &str) -> (HandedInstance, HandedFds, Vec<OwnedFd>) {
-        let (patch, patch_peer) = connection();
-        let (collaboration, collaboration_peer) = connection();
-        let (identity, identity_peer) = connection();
-        let (content, content_peer) = connection();
-        let instance = HandedInstance {
-            app: app.to_owned(),
-            workspace: workspace.to_owned(),
-            instance: 7,
-            person: "ada".to_owned(),
-            document: None,
-            reveal: None,
-            open: None,
-            access: None,
-            locale: runtime_portal::process_link::Locale::default(),
-            link_home: None,
-        };
-        let fds = HandedFds {
-            patch: Some(patch),
-            collaboration,
-            identity,
-            content: Some(content),
-            chooser: None,
-            clipboard: None,
-            tools: None,
-        };
-        (
-            instance,
-            fds,
-            vec![patch_peer, collaboration_peer, identity_peer, content_peer],
-        )
-    }
-
-    /// A window's instance the shell hands over on its link runs in the process the daemon starts
-    /// for its workspace and app, with the window's connections, and the daemon
-    /// lists that process as running it.
-    #[test]
-    fn a_window_instance_handed_over_the_shell_link_runs_in_the_daemons_process() {
-        let device = Device::new();
-        let daemon = device.shell();
-        let (instance, fds, _peers) = handed(NOTES, WORKSPACE);
-        assert!(
-            daemon.hand_over(instance, fds).unwrap(),
-            "the daemon starts the process of the workspace and app"
-        );
-        assert_eq!(
-            daemon.running().unwrap(),
-            vec![Running {
-                workspace: WORKSPACE.to_owned(),
-                app: NOTES.to_owned(),
-                instances: vec![7],
-            }],
-            "the daemon's process runs the window's instance"
-        );
-        let handed = device.handed();
-        assert!(
-            handed.args.starts_with("tilolang-process ")
-                && handed.args.contains(&format!("{WORKSPACE}/{NOTES}")),
-            "the launcher starts a tilolang process with the storage of the workspace and app: {}",
-            handed.args
-        );
-        assert_eq!(
-            (
-                handed.request.app.as_str(),
-                handed.request.workspace.as_str(),
-                handed.request.instance,
-                handed.request.person.as_str(),
-                handed.request.shows,
-            ),
-            (
-                NOTES,
-                WORKSPACE,
-                7,
-                "ada",
-                runtime_portal::process_link::Shows::View
-            ),
-            "the process runs the window's instance, for the person at it"
-        );
-        assert!(
-            handed.window && handed.content,
-            "the window's own connections reach the process"
-        );
-    }
-
-    /// The desktop's media controls follow what the daemon's processes play over the shell's
-    /// connection, and a control for a Playback nothing here plays reaches no process.
-    #[test]
-    fn the_desktops_media_controls_follow_the_daemons_processes() {
-        use runtime_portal::device_processes::MediaChange;
-        let device = Device::new();
-        let daemon = device.shell();
-        let following = daemon.follow_media().unwrap();
-        let key = HostKey {
-            workspace: WORKSPACE.to_owned(),
-            app: NOTES.to_owned(),
-            alone: None,
-            runtime: "tilolang@1".to_owned(),
-            app_runtime: "tilo@1".to_owned(),
-        };
-        let view = MediaView {
-            id: "playback-1".to_owned(),
-            identity: "Video".to_owned(),
-            title: "Undersea cables".to_owned(),
-            artist: String::new(),
-            art_url: String::new(),
-            playing: true,
-            position_us: 0,
-            length_us: 60_000_000,
-            volume: 1.0,
-            rate: 1.0,
-            can_next: false,
-            can_prev: false,
-        };
-        device.processes.media(&key, 7, Some(view.clone()));
-        assert_eq!(
-            FromDevice::receive(&following).unwrap(),
-            Some(FromDevice::Media(MediaChange::Playing(view))),
-            "what an app plays reaches the desktop's controls"
-        );
-        device.processes.media(&key, 7, None);
-        assert_eq!(
-            FromDevice::receive(&following).unwrap(),
-            Some(FromDevice::Media(MediaChange::Stopped(
-                "playback-1".to_owned()
-            ))),
-            "a Playback that stopped leaves them"
-        );
-        assert!(
-            !daemon
-                .media_command("playback-1", MediaCommand::Toggle)
-                .unwrap(),
-            "a control for a Playback nothing plays reaches no process"
-        );
-    }
-
-    /// A daemon no desktop session asks starts a process the same way: a call that shows nothing
-    /// runs in the process of its workspace and app.
-    #[test]
-    fn a_process_starts_on_a_daemon_with_no_session() {
-        let device = Device::new();
-        let (collaboration, _collaboration) = connection();
-        let (identity, _identity) = connection();
-        let started = device
-            .processes
-            .hand_over_now(Instance {
-                app: NOTES.to_owned(),
-                workspace: WORKSPACE.to_owned(),
-                instance: 9,
+        fn handed(app: &str, workspace: &str) -> (HandedInstance, HandedFds, Vec<OwnedFd>) {
+            let (patch, patch_peer) = connection();
+            let (collaboration, collaboration_peer) = connection();
+            let (identity, identity_peer) = connection();
+            let (content, content_peer) = connection();
+            let instance = HandedInstance {
+                app: app.to_owned(),
+                workspace: workspace.to_owned(),
+                instance: 7,
                 person: "ada".to_owned(),
-                patch: None,
-                collaboration,
-                identity,
-                origin: None,
-                content: None,
-                chooser: None,
-                clipboard: None,
-                tools: None,
                 document: None,
                 reveal: None,
                 open: None,
                 access: None,
                 locale: runtime_portal::process_link::Locale::default(),
                 link_home: None,
-            })
-            .unwrap();
-        assert!(started, "the daemon starts the process itself");
-        let handed = device.handed();
-        assert_eq!(
+            };
+            let fds = HandedFds {
+                patch: Some(patch),
+                collaboration,
+                identity,
+                content: Some(content),
+                chooser: None,
+                clipboard: None,
+                tools: None,
+            };
             (
-                handed.request.workspace.as_str(),
-                handed.request.app.as_str(),
-                handed.request.instance,
-                handed.request.shows,
-            ),
-            (
-                WORKSPACE,
-                NOTES,
-                9,
-                runtime_portal::process_link::Shows::Nothing
-            ),
-            "the call runs in its workspace's process and shows nothing"
-        );
-        assert!(!handed.window, "a call that shows nothing has no window");
-    }
-
-    /// A hand-over for a workspace the device has none of the person's, or for an app that does
-    /// not verify there, is refused, naming why, and starts nothing.
-    #[test]
-    fn a_hand_over_the_caller_may_not_make_is_refused() {
-        let device = Device::new();
-        let daemon = device.shell();
-        for (app, workspace, why) in [
-            (NOTES, ELSEWHERE, "has no workspace"),
-            ("so.tilo.unknown", WORKSPACE, "is not installed here"),
-        ] {
-            let (instance, fds, _peers) = handed(app, workspace);
-            let refused = daemon.hand_over(instance, fds).unwrap_err();
-            assert_eq!(
-                refused.kind(),
-                std::io::ErrorKind::PermissionDenied,
-                "{refused}"
-            );
-            assert!(refused.to_string().contains(why), "{refused}");
+                instance,
+                fds,
+                vec![patch_peer, collaboration_peer, identity_peer, content_peer],
+            )
         }
-        assert!(daemon.running().unwrap().is_empty(), "nothing started");
+
+        /// A window's instance the shell hands over on its link runs in the process the daemon starts
+        /// for its workspace and app, with the window's connections, and the daemon
+        /// lists that process as running it.
+        #[test]
+        fn a_window_instance_handed_over_the_shell_link_runs_in_the_daemons_process() {
+            let device = Device::new();
+            let daemon = device.shell();
+            let (instance, fds, _peers) = handed(NOTES, WORKSPACE);
+            assert!(
+                daemon.hand_over(instance, fds).unwrap(),
+                "the daemon starts the process of the workspace and app"
+            );
+            assert_eq!(
+                daemon.running().unwrap(),
+                vec![Running {
+                    workspace: WORKSPACE.to_owned(),
+                    app: NOTES.to_owned(),
+                    instances: vec![7],
+                }],
+                "the daemon's process runs the window's instance"
+            );
+            let handed = device.handed();
+            assert!(
+                handed.args.starts_with("tilolang-process ")
+                    && handed.args.contains(&format!("{WORKSPACE}/{NOTES}")),
+                "the launcher starts a tilolang process with the storage of the workspace and app: {}",
+                handed.args
+            );
+            assert_eq!(
+                (
+                    handed.request.app.as_str(),
+                    handed.request.workspace.as_str(),
+                    handed.request.instance,
+                    handed.request.person.as_str(),
+                    handed.request.shows,
+                ),
+                (
+                    NOTES,
+                    WORKSPACE,
+                    7,
+                    "ada",
+                    runtime_portal::process_link::Shows::View
+                ),
+                "the process runs the window's instance, for the person at it"
+            );
+            assert!(
+                handed.window && handed.content,
+                "the window's own connections reach the process"
+            );
+        }
+
+        /// The desktop's media controls follow what the daemon's processes play over the shell's
+        /// connection, and a control for a Playback nothing here plays reaches no process.
+        #[test]
+        fn the_desktops_media_controls_follow_the_daemons_processes() {
+            use runtime_portal::device_processes::MediaChange;
+            let device = Device::new();
+            let daemon = device.shell();
+            let following = daemon.follow_media().unwrap();
+            let key = HostKey {
+                workspace: WORKSPACE.to_owned(),
+                app: NOTES.to_owned(),
+                alone: None,
+                runtime: "tilolang@1".to_owned(),
+                app_runtime: "tilo@1".to_owned(),
+            };
+            let view = MediaView {
+                id: "playback-1".to_owned(),
+                identity: "Video".to_owned(),
+                title: "Undersea cables".to_owned(),
+                artist: String::new(),
+                art_url: String::new(),
+                playing: true,
+                position_us: 0,
+                length_us: 60_000_000,
+                volume: 1.0,
+                rate: 1.0,
+                can_next: false,
+                can_prev: false,
+            };
+            device.processes.media(&key, 7, Some(view.clone()));
+            assert_eq!(
+                FromDevice::receive(&following).unwrap(),
+                Some(FromDevice::Media(MediaChange::Playing(view))),
+                "what an app plays reaches the desktop's controls"
+            );
+            device.processes.media(&key, 7, None);
+            assert_eq!(
+                FromDevice::receive(&following).unwrap(),
+                Some(FromDevice::Media(MediaChange::Stopped(
+                    "playback-1".to_owned()
+                ))),
+                "a Playback that stopped leaves them"
+            );
+            assert!(
+                !daemon
+                    .media_command("playback-1", MediaCommand::Toggle)
+                    .unwrap(),
+                "a control for a Playback nothing plays reaches no process"
+            );
+        }
+
+        /// A daemon no desktop session asks starts a process the same way: a call that shows nothing
+        /// runs in the process of its workspace and app.
+        #[test]
+        fn a_process_starts_on_a_daemon_with_no_session() {
+            let device = Device::new();
+            let (collaboration, _collaboration) = connection();
+            let (identity, _identity) = connection();
+            let started = device
+                .processes
+                .hand_over_now(Instance {
+                    app: NOTES.to_owned(),
+                    workspace: WORKSPACE.to_owned(),
+                    instance: 9,
+                    person: "ada".to_owned(),
+                    patch: None,
+                    collaboration,
+                    identity,
+                    origin: None,
+                    content: None,
+                    chooser: None,
+                    clipboard: None,
+                    tools: None,
+                    document: None,
+                    reveal: None,
+                    open: None,
+                    access: None,
+                    locale: runtime_portal::process_link::Locale::default(),
+                    link_home: None,
+                })
+                .unwrap();
+            assert!(started, "the daemon starts the process itself");
+            let handed = device.handed();
+            assert_eq!(
+                (
+                    handed.request.workspace.as_str(),
+                    handed.request.app.as_str(),
+                    handed.request.instance,
+                    handed.request.shows,
+                ),
+                (
+                    WORKSPACE,
+                    NOTES,
+                    9,
+                    runtime_portal::process_link::Shows::Nothing
+                ),
+                "the call runs in its workspace's process and shows nothing"
+            );
+            assert!(!handed.window, "a call that shows nothing has no window");
+        }
+
+        /// A hand-over for a workspace the device has none of the person's, or for an app that does
+        /// not verify there, is refused, naming why, and starts nothing.
+        #[test]
+        fn a_hand_over_the_caller_may_not_make_is_refused() {
+            let device = Device::new();
+            let daemon = device.shell();
+            for (app, workspace, why) in [
+                (NOTES, ELSEWHERE, "has no workspace"),
+                ("so.tilo.unknown", WORKSPACE, "is not installed here"),
+            ] {
+                let (instance, fds, _peers) = handed(app, workspace);
+                let refused = daemon.hand_over(instance, fds).unwrap_err();
+                assert_eq!(
+                    refused.kind(),
+                    std::io::ErrorKind::PermissionDenied,
+                    "{refused}"
+                );
+                assert!(refused.to_string().contains(why), "{refused}");
+            }
+            assert!(daemon.running().unwrap().is_empty(), "nothing started");
+        }
     }
 
     /// A process reads what an earlier version of its app kept of the person's workspace, and
@@ -1724,12 +1830,11 @@ mod tests {
         let store = Arc::clone(&installed);
         let processes = Processes::with(
             std::env::temp_dir(),
-            PathBuf::from("/nonexistent"),
+            no_launcher(),
             Box::new(move |_, _| {
-                Ok(VerifiedInstance {
+                Ok(Verified {
                     runtime: "tilolang@1".to_owned(),
                     app_runtime: "tilo@1".to_owned(),
-                    publisher: [7; 32],
                     module: store.lock().unwrap().clone().ok_or("it does not verify")?,
                 })
             }),
@@ -1931,6 +2036,7 @@ mod tests {
     /// tilolang process kind, and granted less than an app's: its own storage, and nothing the
     /// workspace's apps kept on this device. It is handed its task and nothing after it, so it
     /// ends with the task, and the device follows it until it has: nothing else keeps it.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_tasks_host_starts_through_the_launcher_granted_less_than_an_app() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2030,6 +2136,7 @@ mod tests {
     /// tilolang process on the runtimes the app's package names, granted none of what the app
     /// kept, and holding the view's patch connection and the page's link. The device answers its
     /// end of that link, the window answers on it, and closing it ends the window.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_page_window_starts_through_the_launcher_and_ends_with_its_link() {
         use std::io::{Read as _, Write as _};
@@ -2057,10 +2164,9 @@ mod tests {
             home.path().to_path_buf(),
             launcher,
             Box::new(|_, app| {
-                Ok(VerifiedInstance {
+                Ok(Verified {
                     runtime: "tilolang/0.1.0+tilolang".to_owned(),
                     app_runtime: format!("tilo-runtime/2026.10.1+{app}"),
-                    publisher: [0; 32],
                     module: runtime_portal::process_link::Module::default(),
                 })
             }),
@@ -2210,5 +2316,147 @@ mod tests {
             Some("bad \u{FFFD}\u{FFFD} bytes")
         );
         assert_eq!(kept.back().map(String::as_str), Some("after"));
+    }
+
+    /// On a Mac, a host runs the tilolang runtime's binary from the installed runtime package in
+    /// its sandbox: it keeps what it keeps in its own storage, and reads nothing another app's host
+    /// keeps beside it. The runtime here is a probe that tries both and says which it could.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_macs_host_keeps_its_own_storage_and_reads_no_other_apps() {
+        use std::process::Command;
+        use tilo_test_env::SpawnUnderEnvLock as _;
+        const PROBE: &str = r#"
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+int main(void) {
+    const char *own = getenv("TILO_TILOLANG_PROCESS_STORAGE");
+    if (!own) return 3;
+    char path[4096];
+    snprintf(path, sizeof path, "%s/kept", own);
+    int kept = open(path, O_CREAT | O_WRONLY, 0600);
+    if (kept < 0 || write(kept, "kept", 4) != 4) return 4;
+    close(kept);
+    snprintf(path, sizeof path, "%s/../so.tilo.mail/secret", own);
+    if (open(path, O_RDONLY) >= 0) return 5;
+    return 0;
+}
+"#;
+        let temp = tempfile::tempdir().unwrap();
+        // Seatbelt sees resolved paths (`/var` is `/private/var`).
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let source = root.join("probe.c");
+        std::fs::write(&source, PROBE).unwrap();
+        let payload = root.join("runtime");
+        let binary = payload.join(launcher::manifest::TILOLANG_BIN);
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        for command in [
+            Command::new("cc")
+                .arg("-O0")
+                .arg("-o")
+                .arg(&binary)
+                .arg(&source)
+                .status_locked(),
+            Command::new("/usr/bin/codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(&binary)
+                .status_locked(),
+        ] {
+            assert!(command.unwrap().success());
+        }
+        let identity = tilolang_cli::identity_at(&root.join("publisher.json")).unwrap();
+        let manifest = format!(
+            r#"[package]
+id = "so.tilo.runtime.tilolang"
+name = "tilolang runtime"
+category = "System"
+version = "0.1.0"
+kind = "runtime"
+provides = "tilolang/1"
+platforms = ["macos"]
+platform-reason = "Its binaries are Mac binaries."
+
+[package.isa]
+aarch64 = "aarch64"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+type = "cli"
+bin = "{}"
+"#,
+            hex::encode(identity.public_key_bytes()),
+            launcher::manifest::TILOLANG_BIN,
+        );
+        let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&manifest).unwrap();
+        let packed = tilo_app_package::pack::pack(&payload, &manifest, &identity).unwrap();
+        let tapp = root.join("runtime.tapp");
+        tilo_app_package::tapp::write_file(
+            &tapp,
+            &packed.meta,
+            Some(&packed as &dyn tilo_app_package::BlobSource),
+            tilo_app_package::tapp::WriteOptions::replace(),
+        )
+        .unwrap();
+        let store = root.join("store");
+        package_store::PackageStore::at(&store)
+            .install(
+                std::io::BufReader::new(std::fs::File::open(&tapp).unwrap()),
+                |_| {
+                    Ok(package_store::Admission {
+                        pinned: false,
+                        attested_by: String::new(),
+                        source: "a test".to_owned(),
+                        held: false,
+                    })
+                },
+                None,
+            )
+            .unwrap();
+
+        // Mail's host kept something; Notes' host starts beside it.
+        let processes = root.join("tilo/tilolang-processes/workspace");
+        let mail = processes.join("so.tilo.mail");
+        std::fs::create_dir_all(&mail).unwrap();
+        std::fs::write(mail.join("secret"), "mail's").unwrap();
+        let storage = processes.join(NOTES);
+        std::fs::create_dir_all(&storage).unwrap();
+        let mut key = key("workspace", NOTES);
+        key.runtime = "tilolang/1".to_owned();
+        let (_link, started) = spawn_host(
+            &package_store::Catalog::at(&store, None),
+            &key,
+            &storage,
+            None,
+            None,
+        )
+        .expect("the host starts from the installed runtime");
+        let mut said = String::new();
+        if let Some(mut stderr) = started.stderr {
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut said);
+        }
+        let status = (started.wait)().unwrap();
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "the host keeps its own storage (4 if not) and reads no other app's (5 if it does): \
+             {said}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(storage.join("kept")).unwrap(),
+            "kept"
+        );
     }
 }

@@ -1,9 +1,12 @@
 //! The tilolang apps a test's device has installed, the way a person's computer has them: each
 //! `apps/tl/<name>` built from this tree into a signed `.tapp` and installed into the device's app
-//! store, and the two signed runtime bundles they name (the tilolang host, `tilolang-process`, and
-//! the Tilo runtime holding the libraries it and the launcher's sandbox shim load), from a
-//! publisher the device's launcher trusts. A view of one then starts as on a computer: the daemon
-//! starts `tilo-launcher tilolang-process` under bubblewrap, on those bundles.
+//! store, and the runtimes they name. On Linux those are two signed runtime bundles (the tilolang
+//! host, `tilolang-process`, and the Tilo runtime holding the libraries it and the launcher's
+//! sandbox shim load), from a publisher the device's launcher trusts, and a view of one starts as
+//! on a computer: the daemon starts `tilo-launcher tilolang-process` under bubblewrap, on those
+//! bundles. On macOS the tilolang runtime is the signed runtime package Tilo.app carries,
+//! installed into the same store (`tilolang-process` and the GStreamer it loads, relocated beside
+//! it as `dist/macos` ships them), and the daemon starts its binary in a Seatbelt sandbox.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -26,31 +29,15 @@ fn packages() -> PathBuf {
 /// A package does not compile, a program the bundles carry was not built by the run, or a file
 /// cannot be written.
 pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, OsString)> {
-    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
-    let host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
-
-    let bundles = runtime_bundle::Identity::generate();
-    let signer = root.join("runtime-publisher.json");
-    std::fs::write(&signer, bundles.to_json_bytes()).unwrap();
-    let version = |runtime: &'static str| runtime.split_once('/').unwrap().1;
-    bundle(
-        data,
-        version(package::DEFAULT_TILOLANG_RUNTIME),
-        &signer,
-        &[],
-        &[host.clone()],
-    );
-    bundle(
-        data,
-        version(package::DEFAULT_TILO_RUNTIME),
-        &signer,
-        &native_closure(&[&host, &launcher]),
-        &[],
-    );
-    let trusted = root.join("trusted-publishers.txt");
-    std::fs::write(&trusted, format!("{}\n", bundles.public_key_hex())).unwrap();
-
     let store = root.join("apps");
+    #[cfg(target_os = "linux")]
+    let mut env = runtime_bundles(root, data);
+    #[cfg(target_os = "macos")]
+    let mut env = {
+        let _ = data;
+        runtime_package(root, &store);
+        Vec::new()
+    };
     let publisher = tilolang_cli::identity_at(&root.join("publisher.json")).unwrap();
     let source = root.join("tl");
     for app in apps {
@@ -75,26 +62,60 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
         )
         .unwrap_or_else(|error| panic!("{app} builds: {error}"));
         // The app is built last, after the packages it is made with; only it is installed.
-        let built = built.last().unwrap();
-        let tapp = std::fs::File::open(&built.tapp).unwrap();
-        let from = built.tapp.display().to_string();
-        package_store::PackageStore::at(&store)
-            .install(
-                std::io::BufReader::new(tapp),
-                move |_| {
-                    Ok(package_store::Admission {
-                        pinned: false,
-                        attested_by: String::new(),
-                        source: from,
-                        held: false,
-                    })
-                },
-                None,
-            )
-            .unwrap_or_else(|error| panic!("{app} installs: {error}"));
+        install_tapp(&store, &built.last().unwrap().tapp);
     }
+    env.push(("TILO_APPS_DATA_DIR", store.into()));
+    env
+}
+
+/// Install the package at `tapp` into the app store at `store`.
+fn install_tapp(store: &Path, tapp: &Path) {
+    let from = tapp.display().to_string();
+    let file = std::fs::File::open(tapp).unwrap();
+    package_store::PackageStore::at(store)
+        .install(
+            std::io::BufReader::new(file),
+            move |_| {
+                Ok(package_store::Admission {
+                    pinned: false,
+                    attested_by: String::new(),
+                    source: from,
+                    held: false,
+                })
+            },
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{} installs: {error}", tapp.display()));
+}
+
+/// The runtime bundles the apps name, under `data`'s runtimes, signed by a publisher of `root`'s:
+/// answers the environment that names the launcher and that publisher.
+#[cfg(target_os = "linux")]
+fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
+    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    let host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
+
+    let bundles = runtime_bundle::Identity::generate();
+    let signer = root.join("runtime-publisher.json");
+    std::fs::write(&signer, bundles.to_json_bytes()).unwrap();
+    let version = |runtime: &'static str| runtime.split_once('/').unwrap().1;
+    bundle(
+        data,
+        version(package::DEFAULT_TILOLANG_RUNTIME),
+        &signer,
+        &[],
+        &[host.clone()],
+    );
+    bundle(
+        data,
+        version(package::DEFAULT_TILO_RUNTIME),
+        &signer,
+        &native_closure(&[&host, &launcher]),
+        &[],
+    );
+    let trusted = root.join("trusted-publishers.txt");
+    std::fs::write(&trusted, format!("{}\n", bundles.public_key_hex())).unwrap();
     vec![
-        ("TILO_APPS_DATA_DIR", store.into()),
         ("TILO_LAUNCHER_BIN", launcher.into()),
         (
             launcher::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
@@ -103,6 +124,105 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
     ]
 }
 
+/// The tilolang runtime package the apps name, as Tilo.app carries it, installed into the app
+/// store at `store`: this build's `tilolang-process` and the GStreamer closure it loads, staged
+/// beside it by `dist/macos/collection_local_runtime.py` and signed ad hoc, as a developer's Mac
+/// runs them.
+#[cfg(target_os = "macos")]
+fn runtime_package(root: &Path, store: &Path) {
+    let host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
+    let payload = root.join("tilolang-runtime");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let staged = std::process::Command::new("python3")
+        .arg(repo.join("dist/macos/collection_local_runtime.py"))
+        .arg("tilolang")
+        .arg("--binary")
+        .arg(&host)
+        .arg("--out")
+        .arg(&payload)
+        .status_locked()
+        .unwrap();
+    assert!(staged.success(), "the tilolang runtime is staged");
+    // Relocating a library rewrites it: each is signed again, the binary last.
+    let mut signed = Vec::new();
+    for dir in ["Frameworks", "PlugIns", "Helpers"] {
+        files_under(&payload.join("lib/gstreamer").join(dir), &mut signed);
+    }
+    signed.push(payload.join(launcher::manifest::TILOLANG_BIN));
+    for file in signed {
+        let status = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&file)
+            .status_locked()
+            .unwrap();
+        assert!(status.success(), "{} is signed", file.display());
+    }
+    let identity = tilolang_cli::identity_at(&root.join("runtime-publisher.json")).unwrap();
+    let version = package::DEFAULT_TILOLANG_RUNTIME.split_once('/').unwrap().1;
+    let manifest = format!(
+        r#"[package]
+id = "so.tilo.runtime.tilolang"
+name = "tilolang runtime"
+category = "System"
+version = "0.1.0"
+kind = "runtime"
+provides = "tilolang/{version}"
+platforms = ["macos"]
+platform-reason = "Its binaries are Mac binaries."
+
+[package.isa]
+aarch64 = "aarch64"
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+type = "cli"
+bin = "{bin}"
+"#,
+        publisher = hex::encode(identity.public_key_bytes()),
+        bin = launcher::manifest::TILOLANG_BIN,
+    );
+    let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&manifest).unwrap();
+    let packed = tilo_app_package::pack::pack(&payload, &manifest, &identity).unwrap();
+    let tapp = root.join("tilolang-runtime.tapp");
+    tilo_app_package::tapp::write_file(
+        &tapp,
+        &packed.meta,
+        Some(&packed as &dyn tilo_app_package::BlobSource),
+        tilo_app_package::tapp::WriteOptions::replace(),
+    )
+    .unwrap();
+    install_tapp(store, &tapp);
+}
+
+/// Every file below `dir`, into `files`.
+#[cfg(target_os = "macos")]
+fn files_under(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            files_under(&entry.path(), files);
+        } else if kind.is_file() {
+            files.push(entry.path());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 /// A runtime bundle `version` under `data`'s runtimes, of this machine's loader, the libraries
 /// `libs` and the programs `bins`, signed by the publisher at `signer`.
 fn bundle(data: &Path, version: &str, signer: &Path, libs: &[PathBuf], bins: &[PathBuf]) {
@@ -120,6 +240,7 @@ fn bundle(data: &Path, version: &str, signer: &Path, libs: &[PathBuf], bins: &[P
     .unwrap_or_else(|error| panic!("the runtime bundle {version}: {error}"));
 }
 
+#[cfg(target_os = "linux")]
 /// The shared objects `executables` load, as this machine's loader resolves them: what a bundle
 /// built here carries so they run inside a sandbox.
 fn native_closure(executables: &[&Path]) -> Vec<PathBuf> {

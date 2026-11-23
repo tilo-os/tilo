@@ -53,7 +53,9 @@ fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStrea
 /// One app's connections to the host's services, handshaken with its
 /// identity before the app holds any of them.
 pub(crate) struct ServiceConnections {
-    collab: UnixStream,
+    /// `None` for a window whose instance a tilolang process runs: it holds none of the app's
+    /// data.
+    collab: Option<UnixStream>,
     identity: UnixStream,
     blobs: Option<UnixStream>,
 }
@@ -75,13 +77,35 @@ impl ServiceConnections {
         workspace: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
+        Self::open(app_id, workspace, sockets, true)
+    }
+
+    /// [`Self::connect`] with no collaboration connection: a tilolang window's, whose instance
+    /// its app's process runs with the app's own.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn connect_without_collab(
+        app_id: &str,
+        workspace: &str,
+        sockets: &ServiceSockets<'_>,
+    ) -> io::Result<Self> {
+        Self::open(app_id, workspace, sockets, false)
+    }
+
+    fn open(
+        app_id: &str,
+        workspace: &str,
+        sockets: &ServiceSockets<'_>,
+        collab: bool,
+    ) -> io::Result<Self> {
         if app_id.trim().is_empty() || app_id.len() > 4096 || workspace.len() > 4096 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "app identity is empty",
             ));
         }
-        let collab = tilo_files::native::socket::connect(sockets.collab)?;
+        let collab = collab
+            .then(|| tilo_files::native::socket::connect(sockets.collab))
+            .transpose()?;
         let mut identity = tilo_files::native::socket::connect(sockets.identity)?;
         identity.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         let handshake = serde_json::to_vec(&tilo_identity_client::wire::Handshake {
@@ -103,7 +127,7 @@ impl ServiceConnections {
     #[must_use]
     pub(crate) fn fds(&self) -> Vec<RawFd> {
         [
-            Some(&self.collab),
+            self.collab.as_ref(),
             Some(&self.identity),
             self.blobs.as_ref(),
         ]
@@ -119,12 +143,14 @@ impl ServiceConnections {
         let mut env = vec![
             ("TILO_PACKAGE_ID", app_id.to_owned()),
             ("TILO_WORKSPACE_ID", workspace.to_owned()),
-            ("TILO_SVC_COLLAB_FD", self.collab.as_raw_fd().to_string()),
             (
                 "TILO_SVC_IDENTITY_FD",
                 self.identity.as_raw_fd().to_string(),
             ),
         ];
+        if let Some(collab) = &self.collab {
+            env.push(("TILO_SVC_COLLAB_FD", collab.as_raw_fd().to_string()));
+        }
         if let Some(blobs) = &self.blobs {
             env.push(("TILO_SVC_BLOBS_FD", blobs.as_raw_fd().to_string()));
         }

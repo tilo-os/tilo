@@ -44,8 +44,7 @@ app="$mountpoint/Tilo.app"
 contents="$app/Contents"
 agent="$contents/Library/LaunchAgents/so.tilo.runtime.plist"
 for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
-            "$contents/MacOS/tilo-runtime-update" \
-            "$contents/MacOS/tilolang-process"; do
+            "$contents/MacOS/tilo-runtime-update"; do
   [ -f "$path" ] && [ -x "$path" ] || fail "missing executable ${path#"$mountpoint"/}"
   [ "$(lipo -archs "$path" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || fail "${path#"$mountpoint"/} is not universal"

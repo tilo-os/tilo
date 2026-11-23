@@ -11,10 +11,16 @@
 //! app inherits its service connections already handshaken with its
 //! identity, so a sandbox that denies it every socket path still
 //! collaborates.
+//!
+//! A tilolang app's window runs no instance of its own: the instance runs in the app's tilolang
+//! process ([`crate::device::processes`]), started as on Linux, where agents and other devices
+//! call its actions. The window takes its patch connection on its process link and holds none of
+//! the app's data (no collaboration connection), exactly as a Linux session's window.
 
 use super::{Apps, Launch, Sockets};
 use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
+use runtime_portal::process_link::Packet as _;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;
 
@@ -47,20 +53,29 @@ pub(super) fn launch(
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
     }
+    // A tilolang app's instance runs in its app's process; the window shows it.
+    let hosted = manifest
+        .entrypoint
+        .runtime
+        .as_deref()
+        .is_some_and(launcher::manifest::is_tilolang)
+        .then(|| hosted_window(apps, app, workspace))
+        .transpose()?;
     let container =
         launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
             .map_err(|error| {
                 format!("refusing to launch {}: its container: {error}", app.app_id)
             })?;
-    let services = ServiceConnections::connect(
-        &app.app_id,
-        workspace,
-        &ServiceSockets {
-            collab: &sockets.collab,
-            identity: &sockets.identity,
-            blobs: &sockets.blobs,
-        },
-    )
+    let service_sockets = ServiceSockets {
+        collab: &sockets.collab,
+        identity: &sockets.identity,
+        blobs: &sockets.blobs,
+    };
+    let services = if hosted.is_some() {
+        ServiceConnections::connect_without_collab(&app.app_id, workspace, &service_sockets)
+    } else {
+        ServiceConnections::connect(&app.app_id, workspace, &service_sockets)
+    }
     .map_err(|error| format!("could not connect {} to its services: {error}", app.app_id))?;
     let chooser = Chooser::start(&app.app_id)
         .map_err(|error| format!("could not give {} a file chooser: {error}", app.app_id))?;
@@ -87,6 +102,20 @@ pub(super) fn launch(
             OsString::from(launcher::manifest::APP_MODULE_ENV),
             app.payload_root.clone().into_os_string(),
         ));
+    }
+    if let Some(hosted) = &hosted {
+        inherit_fds.push(hosted.window_link.as_raw_fd());
+        env.extend(
+            [
+                (
+                    runtime_portal::process_link::FD_ENV,
+                    hosted.window_link.as_raw_fd().to_string(),
+                ),
+                (runtime_portal::process_link::HOSTED_ENV, "1".to_owned()),
+                ("TILO_CONTINUITY_INSTANCE", hosted.instance.to_string()),
+            ]
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
     }
     if let Some(runtime) = runtime.as_deref() {
         env.extend(gstreamer_env(runtime));
@@ -117,6 +146,7 @@ pub(super) fn launch(
         capabilities,
         egress,
         inherit_fds,
+        stderr: None,
         env,
         trust: launcher_macos::TrustRequirement::DeveloperId,
     };
@@ -125,9 +155,73 @@ pub(super) fn launch(
     drop(services);
     drop(chooser.app_end);
     drop(capture.app_end);
+    let link = hosted.map(|hosted| hosted.link);
     let pid = u32::try_from(launched.pid())
         .map_err(|_| format!("{} started with an invalid pid", app.app_id))?;
-    Ok(Launch { pid, app: launched })
+    Ok(Launch {
+        pid,
+        app: launched,
+        _link: link,
+    })
+}
+
+/// A tilolang window's instance, running in its app's process, and the window's link.
+struct HostedWindow {
+    /// The window's instance: the one its patch connection is for.
+    instance: u64,
+    /// This process's end of the window's link, which its patch connection went on.
+    link: runtime_portal::process_link::Descriptor,
+    /// The window's end, which it inherits.
+    window_link: runtime_portal::process_link::Descriptor,
+}
+
+/// Start the instance of a window of `app` in `workspace` in the app's tilolang process, and put
+/// its patch connection on the window's link before the window starts to read it.
+fn hosted_window(apps: &Apps, app: &InstalledApp, workspace: &str) -> Result<HostedWindow, String> {
+    let origin = apps.origin_connection(&app.app_id, workspace)?;
+    let window = apps.instances.open_window(&app.app_id, workspace, origin)?;
+    let (link, window_link) = runtime_portal::process_link::pair()
+        .map_err(|error| format!("{}'s window link: {error}", app.app_id))?;
+    runtime_portal::process_link::ToProcess::Patch {
+        instance: window.instance,
+        patch: window.patch,
+    }
+    .send(&link)
+    .map_err(|error| format!("{}'s window link: {error}", app.app_id))?;
+    Ok(HostedWindow {
+        instance: window.instance,
+        link,
+        window_link,
+    })
+}
+
+/// The installed tilolang app `installed`, verified as a launch of it verifies it, on a tilolang
+/// runtime installed here: what its tilolang process is handed
+/// ([`crate::device::package_runs`]).
+///
+/// # Errors
+/// It does not verify, is no tilolang app, or its runtime is not installed or does not verify.
+pub(crate) fn verified_tilolang(
+    installed: &package_store::registry::InstalledPackage,
+) -> Result<crate::device::package_runs::Verified, String> {
+    verify_package(installed)?;
+    let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
+        .map_err(|error| error.to_string())?;
+    let runtime = manifest
+        .entrypoint
+        .runtime
+        .clone()
+        .filter(|runtime| launcher::manifest::is_tilolang(runtime))
+        .ok_or_else(|| format!("{} is no tilolang app", installed.id))?;
+    let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+    installed_runtime(&catalog, &runtime)?;
+    let module = runtime_portal::process_link::Module::read(&installed.payload_root)
+        .map_err(|error| format!("its module: {error}"))?;
+    Ok(crate::device::package_runs::Verified {
+        app_runtime: manifest.runtime.clone().unwrap_or_default(),
+        runtime,
+        module,
+    })
 }
 
 /// Install the runtime packages the running Tilo.app carries (`Contents/Resources/runtimes/<package
@@ -382,7 +476,20 @@ fn runtime_payload(
     app: &InstalledApp,
     runtime: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
+    installed_runtime(catalog, runtime)
+        .map_err(|why| format!("refusing to launch {}: {why}", app.app_id))
+}
+
+/// The payload of the installed runtime package that provides `runtime` (`<name>/<version>`),
+/// proven as an app's own payload is: what a tilolang process runs from, and a window on that
+/// runtime.
+///
+/// # Errors
+/// No installed package provides it, or the one that does fails [`verify_package`].
+pub(crate) fn installed_runtime(
+    catalog: &package_store::Catalog,
+    runtime: &str,
+) -> Result<std::path::PathBuf, String> {
     let provides = |package: &package_store::registry::InstalledPackage| {
         let manifest = std::fs::read_to_string(&package.manifest_path)
             .ok()
@@ -394,15 +501,11 @@ fn runtime_payload(
     };
     let package = catalog
         .list()
-        .map_err(|error| refuse(error.to_string()))?
+        .map_err(|error| error.to_string())?
         .into_iter()
         .find(provides)
-        .ok_or_else(|| {
-            refuse(format!(
-                "the runtime it runs on, {runtime}, is not installed"
-            ))
-        })?;
-    verify_package(&package).map_err(|why| refuse(format!("its runtime {runtime}: {why}")))?;
+        .ok_or_else(|| format!("the runtime it runs on, {runtime}, is not installed"))?;
+    verify_package(&package).map_err(|why| format!("its runtime {runtime}: {why}"))?;
     Ok(package.payload_root)
 }
 

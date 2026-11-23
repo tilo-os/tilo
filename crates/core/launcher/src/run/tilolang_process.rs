@@ -12,11 +12,10 @@ use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::manifest::TILOLANG_BIN as BIN;
+
 /// The subcommand the session starts a tilolang host with.
 pub const SUBCOMMAND: &str = "tilolang-process";
-
-/// The host's binary in the tilolang runtime bundle, which a page window runs too.
-pub const BIN: &str = "bin/tilolang-process";
 
 /// Where the host sees its storage.
 pub const STORAGE_MOUNT: &str = "/run/tilolang-process/storage";
@@ -228,7 +227,7 @@ pub fn verified_instance(
         .entrypoint
         .runtime
         .clone()
-        .filter(|runtime| is_tilolang(runtime))
+        .filter(|runtime| crate::manifest::is_tilolang(runtime))
         .ok_or_else(not_tilolang)?;
     let app_runtime = manifest.runtime.clone().ok_or_else(not_tilolang)?;
     let module = runtime_portal::process_link::Module::read(payload_root)?;
@@ -238,14 +237,6 @@ pub fn verified_instance(
         publisher,
         module,
     })
-}
-
-/// Whether `runtime` (`<name>/<version>`) is a tilolang runtime.
-#[must_use]
-pub fn is_tilolang(runtime: &str) -> bool {
-    runtime
-        .split_once('/')
-        .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
 }
 
 /// Start the tilolang host `launch` on `socket` and wait for it to end; or, handed a `page`

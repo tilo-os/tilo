@@ -73,9 +73,9 @@ for target in "${targets[@]}"; do
   grep -qx "$target" <<<"$installed_targets" \
     || { printf 'missing Rust target %s; run: rustup target add %s\n' "$target" "$target" >&2; exit 1; }
 done
-# tilolang-process runs every installed tilolang app, which the runtime launches from the tilolang
-# runtime package over the app's own payload, and hosts a workspace's instances of each, which the
-# daemon starts from beside itself.
+# tilolang-process, in the tilolang runtime package, runs every installed tilolang app's window
+# over the app's own payload and hosts a workspace's instances of each; the daemon starts both
+# from the installed package.
 cargo build --locked --release \
   -p tilo-runtime --bin tilo-runtime -p store --bin store \
   -p runtime-update --bin tilo-runtime-update \
@@ -93,14 +93,13 @@ mkdir -p "$contents/MacOS" "$contents/Library/LaunchAgents"
 lipo -create -output "$contents/MacOS/Tilo" \
   "$cargo_target"/aarch64-apple-darwin/release/store \
   "$cargo_target"/x86_64-apple-darwin/release/store
-for binary in tilo-runtime tilo-runtime-update tilolang-process; do
+for binary in tilo-runtime tilo-runtime-update; do
   lipo -create -output "$contents/MacOS/$binary" \
     "$cargo_target/aarch64-apple-darwin/release/$binary" \
     "$cargo_target/x86_64-apple-darwin/release/$binary"
 done
 for binary in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
-              "$contents/MacOS/tilo-runtime-update" \
-              "$contents/MacOS/tilolang-process"; do
+              "$contents/MacOS/tilo-runtime-update"; do
   [ "$(lipo -archs "$binary" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || { printf '%s is not universal\n' "$binary" >&2; exit 1; }
 done
@@ -130,8 +129,6 @@ fi
   "$contents/MacOS/tilo-runtime"
 "${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.update \
   "$contents/MacOS/tilo-runtime-update"
-"${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.tilolang-process \
-  "$contents/MacOS/tilolang-process"
 
 # The tilolang runtime package. The arm64 tilolang-process and the closure it loads are relocated
 # side by side, refused if the closure is not the reviewed one; the x86_64 slice plays no video.

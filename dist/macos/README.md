@@ -15,7 +15,6 @@ Tilo.app/Contents/
   MacOS/Tilo                          the store binary (CFBundleExecutable), universal
   MacOS/tilo-runtime                  the runtime, universal
   MacOS/tilo-runtime-update           the self-updater, universal
-  MacOS/tilolang-process              the tilolang host the daemon starts, universal
   Resources/runtimes/<root>.tapp      the tilolang runtime package, named by its package root
   Resources/runtime-bundle-trusted-publishers.txt
                                       the runtime publishers this Mac trusts

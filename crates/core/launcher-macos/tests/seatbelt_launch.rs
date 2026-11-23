@@ -98,6 +98,7 @@ fn request_with(f: &Fixture, exe: &Path, op: &str, arg: OsString) -> LaunchReque
         capabilities: CapabilityPlan::empty(),
         egress: EgressDecision::Blocked,
         inherit_fds: Vec::new(),
+        stderr: None,
         env: Vec::new(),
         trust: TrustRequirement::DeveloperId,
     }

@@ -15,6 +15,19 @@ pub use tilo_app_package::view::{
 /// payload on macOS.
 pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
 
+/// The one binary of the tilolang runtime, in its package: a tilolang app's window, the host of
+/// its instances, and a page window, each in the role it is started for.
+pub const TILOLANG_BIN: &str = "bin/tilolang-process";
+
+/// Whether `runtime` (`<name>/<version>`, an entrypoint's runtime) is a tilolang runtime: a
+/// package naming one is a tilolang app, whose instances a tilolang host runs.
+#[must_use]
+pub fn is_tilolang(runtime: &str) -> bool {
+    runtime
+        .split_once('/')
+        .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
+}
+
 /// A service requirement written as a manifest would (`"required@1"`).
 #[cfg(test)]
 pub(crate) fn service_req(raw: &str) -> ServiceReq {

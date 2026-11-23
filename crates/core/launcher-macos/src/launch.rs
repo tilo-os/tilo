@@ -73,6 +73,9 @@ pub struct LaunchRequest {
     pub egress: EgressDecision,
     /// Pre-connected service descriptors, inherited at the same numbers.
     pub inherit_fds: Vec<RawFd>,
+    /// Where the process writes its error output, in place of the launcher's own: what a caller
+    /// that follows the process reads why it ended from.
+    pub stderr: Option<RawFd>,
     /// Extra environment. Under Seatbelt the container variables (`HOME`, `XDG_*`, `TMPDIR`) are set
     /// last and cannot be overridden.
     pub env: Vec<(OsString, OsString)>,
@@ -222,11 +225,16 @@ fn start_app_sandboxed(
     let argv = app_argv(executable, &request.args);
     let fixed: Vec<(String, String)> = surface_env(&request.payload_dir);
     let env = environment(&request.env, &fixed);
-    let pid = spawn(executable, &argv, &env, &request.inherit_fds, true).map_err(|source| {
-        LaunchError::Spawn {
-            program: executable.to_path_buf(),
-            source,
-        }
+    let pid = spawn(
+        executable,
+        &argv,
+        &env,
+        (&request.inherit_fds, request.stderr),
+        true,
+    )
+    .map_err(|source| LaunchError::Spawn {
+        program: executable.to_path_buf(),
+        source,
     })?;
     if let Err(detail) = verify_process(pid, &request.trust) {
         kill_and_reap(pid);
@@ -298,7 +306,7 @@ fn start_seatbelted(
         Path::new(SANDBOX_EXEC),
         &argv,
         &env,
-        &request.inherit_fds,
+        (&request.inherit_fds, request.stderr),
         false,
     )
     .map_err(|source| LaunchError::Spawn {
@@ -435,7 +443,7 @@ fn spawn(
     program: &Path,
     argv: &[OsString],
     env: &BTreeMap<OsString, OsString>,
-    inherit_fds: &[RawFd],
+    (inherit_fds, stderr): (&[RawFd], Option<RawFd>),
     suspended: bool,
 ) -> io::Result<libc::pid_t> {
     let program = c_string(program.as_os_str())?;
@@ -505,6 +513,14 @@ fn spawn(
                 check(posix_spawn_file_actions_addinherit_np(
                     &raw mut actions,
                     *fd,
+                ))?;
+            }
+            // The error output the caller reads, at 2: a dup2 action keeps it across the spawn.
+            if let Some(stderr) = stderr {
+                check(libc::posix_spawn_file_actions_adddup2(
+                    &raw mut actions,
+                    stderr,
+                    2,
                 ))?;
             }
             let mut pid: libc::pid_t = 0;
@@ -583,6 +599,7 @@ mod tests {
             capabilities: CapabilityPlan::empty(),
             egress: EgressDecision::Blocked,
             inherit_fds: Vec::new(),
+            stderr: None,
             env: Vec::new(),
             trust,
         }

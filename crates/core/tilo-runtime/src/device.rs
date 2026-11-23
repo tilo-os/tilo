@@ -49,7 +49,7 @@ mod keep;
 pub(crate) mod layout;
 pub(crate) mod local;
 pub(crate) mod migrate;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod package_runs;
 #[cfg(unix)]
 pub mod packages;
@@ -57,7 +57,7 @@ pub mod packages;
 mod page_ticket_tests;
 pub mod peer;
 pub(crate) mod presence;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod processes;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;

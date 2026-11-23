@@ -808,10 +808,12 @@ int main(void) {
 /// collaboration service attests it as exactly that, once, from this process alone: opened for the
 /// caller its view was opened for (a visitor at a page here), or showing nothing. The connection is
 /// the instance's; who acts is the caller it carries. An app that is no tilolang app installed here
-/// opens no view, and nothing starts for it.
-#[cfg(target_os = "linux")]
+/// opens no view, and nothing starts for it. A window the daemon launched itself is attested as
+/// that window: shown, and opened for the member at it rather than for a caller.
+#[cfg(unix)]
 #[test]
 fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
+    use super::instances::Shows;
     use std::io::Read as _;
     use tilo_actions::remote::Caller;
     let (_temp, root) = canonical_temp();
@@ -823,7 +825,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
 
     let _view = apps
         .instances
-        .connect(VIEWER, WORKSPACE, 7, Some(visitor.clone()))
+        .connect(VIEWER, WORKSPACE, 7, Shows::View(visitor.clone()))
         .unwrap();
     let (mut broker_end, _) = listener.accept().unwrap();
     let mut named = [0; 256];
@@ -857,13 +859,31 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
         "a second connection naming it is no launch"
     );
 
-    let _no_view = apps.instances.connect(VIEWER, WORKSPACE, 8, None).unwrap();
+    let _no_view = apps
+        .instances
+        .connect(VIEWER, WORKSPACE, 8, Shows::Nothing)
+        .unwrap();
     let launch = apps
         .authenticated_launch(ours, VIEWER, WORKSPACE, Some(8))
         .unwrap()
         .expect("the instance that shows nothing is attested");
     assert!(launch.windowless, "it shows nothing");
     assert_eq!(launch.opened_for, None, "and was opened for nobody");
+
+    let _window = apps
+        .instances
+        .connect(VIEWER, WORKSPACE, 9, Shows::Window)
+        .unwrap();
+    let launch = apps
+        .authenticated_launch(ours, VIEWER, WORKSPACE, Some(9))
+        .unwrap()
+        .expect("the instance of the daemon's window is attested");
+    assert_eq!(launch.continuation_instance, Some(9));
+    assert!(!launch.windowless, "it shows the window");
+    assert_eq!(
+        launch.opened_for, None,
+        "the member at the window acts in it"
+    );
 
     let refused = apps
         .open_view(&visitor, VIEWER, WORKSPACE, None, None)

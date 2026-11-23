@@ -4,7 +4,19 @@
 //! What a host is handed is read from the installation verified here, never from what an app
 //! says of itself ([`super::processes`]).
 
-use launcher::run::tilolang_process::VerifiedInstance;
+/// What a tilolang host is handed for one installed tilolang app, read from its installation
+/// verified as a launch of it verifies it.
+#[derive(Debug)]
+pub struct Verified {
+    /// The tilolang runtime its entrypoint names, `tilolang/<version>`.
+    pub runtime: String,
+    /// The Tilo runtime it names, `tilo-runtime/<version>`: what a host on Linux runs on beside the
+    /// tilolang runtime. A Mac's tilolang runtime carries everything it loads, so there it only
+    /// tells hosts apart.
+    pub app_runtime: String,
+    /// Its module, from the verified payload.
+    pub module: runtime_portal::process_link::Module,
+}
 
 /// Whether the installed app `app` is a tilolang app: its manifest's entrypoint runs a tilolang
 /// runtime. Read only to decide how its windows are launched; what a process runs is read from the
@@ -16,7 +28,7 @@ pub fn runs_in_process(app: &str) -> bool {
         .flatten()
         .and_then(|installed| launcher::manifest::read_manifest(&installed.manifest_path).ok())
         .and_then(|manifest| manifest.entrypoint.runtime)
-        .is_some_and(|runtime| launcher::run::tilolang_process::is_tilolang(&runtime))
+        .is_some_and(|runtime| launcher::manifest::is_tilolang(&runtime))
 }
 
 /// An installed tilolang app as an agent task's programs reach it: its package, verified as a
@@ -31,6 +43,7 @@ pub struct TaskPackage {
 /// program names an app by what its package declares (its actions, its roots), which only the
 /// package itself holds: a program is compiled against its declarations, not against the surface
 /// it publishes.
+#[cfg(target_os = "linux")]
 #[must_use]
 pub fn task_packages() -> Vec<TaskPackage> {
     let apps = match app_catalogue::apps::read_from_env() {
@@ -61,6 +74,7 @@ pub fn task_packages() -> Vec<TaskPackage> {
 ///
 /// # Errors
 /// No tilolang app installed here runs on runtimes this device has.
+#[cfg(target_os = "linux")]
 pub fn task_runtimes() -> Result<(String, String), String> {
     let apps = app_catalogue::apps::read_from_env()
         .map_err(|error| format!("the installed apps are not known: {error}"))?;
@@ -117,8 +131,11 @@ pub fn origin_of(app: &str) -> Result<Option<(String, bool)>, String> {
     }
 }
 
-/// `app`, installed here, verified as a launch verifies it.
-pub(super) fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
+/// `app`, installed here, verified as `tilo-launcher` verifies a launch.
+#[cfg(target_os = "linux")]
+pub(super) fn verified_package(
+    app: &str,
+) -> Result<launcher::run::tilolang_process::VerifiedInstance, String> {
     let installed = package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))?;
@@ -131,14 +148,29 @@ pub(super) fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
     .map_err(|error| error.to_string())
 }
 
-/// `app`, installed here, verified as a launch verifies it, on runtimes installed here.
-pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<VerifiedInstance, String> {
-    let verified = verified_package(app)?;
-    if !verified.runs_here() {
-        return Err(format!(
-            "{app} names runtimes not installed here ({}, {})",
-            verified.runtime, verified.app_runtime
-        ));
-    }
-    Ok(verified)
+/// `app`, installed here, verified as a launch verifies it, on runtimes installed here: on Linux
+/// as `tilo-launcher` verifies a launch, on macOS as the daemon verifies an app it launches
+/// (`crate::apps`). An app installed for runtimes since replaced runs nowhere until it is built
+/// again.
+pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified, String> {
+    #[cfg(target_os = "linux")]
+    return {
+        let verified = verified_package(app)?;
+        if !verified.runs_here() {
+            return Err(format!(
+                "{app} names runtimes not installed here ({}, {})",
+                verified.runtime, verified.app_runtime
+            ));
+        }
+        Ok(Verified {
+            runtime: verified.runtime,
+            app_runtime: verified.app_runtime,
+            module: verified.module,
+        })
+    };
+    #[cfg(target_os = "macos")]
+    return package_store::find_installed(app)
+        .map_err(|error| format!("the package store cannot be read: {error}"))?
+        .ok_or_else(|| format!("{app} is not installed"))
+        .and_then(|installed| crate::apps::verified_tilolang(&installed));
 }

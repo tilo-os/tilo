@@ -3,7 +3,7 @@
 //! app names, lays the view out for whoever opened it. Nothing here stands in for the app, its
 //! runtimes or the sandbox: they are the ones a person's computer starts.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{PageAction, PageAddress};
