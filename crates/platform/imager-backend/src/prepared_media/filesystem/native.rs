@@ -200,14 +200,11 @@ fn writable(pin: &PinnedDirectory) -> io::Result<()> {
 /// Errors when the status cannot be read or the filesystem is mounted read-only; directory access is
 /// not checked.
 pub fn check_writable_directory(file: &std::fs::File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: valid held descriptor and writable statvfs storage.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful syscall initialized status.
-    if unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY != 0 {
+    let status = rustix::fs::fstatvfs(file)?;
+    if status
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
         return Err(changed("Granted media filesystem is read-only"));
     }
     Ok(())

@@ -578,21 +578,9 @@ pub(in crate::setup::home_capture) fn measure(
     {
         return Err(refused("Installed artifact name changed"));
     }
-    use std::os::unix::fs::FileExt;
-    let mut buffer = [0u8; 64 * 1024];
-    let mut offset = 0u64;
-    let mut hash = Sha256::new();
-    while offset < before.len() {
-        check_cancel(cancel)?;
-        let limit = usize::try_from((before.len() - offset).min(buffer.len() as u64))
-            .map_err(io::Error::other)?;
-        let count = file.read_at(&mut buffer[..limit], offset)?;
-        if count == 0 {
-            return Err(refused("Installed archive truncated"));
-        }
-        hash.update(&buffer[..count]);
-        offset += count as u64;
-    }
+    let hash = crate::setup::file_digest::exact(file, before.len(), Some(cancel), || {
+        refused("Installed archive truncated")
+    })?;
     let after = file.metadata()?;
     if (
         before.dev(),
@@ -626,7 +614,7 @@ pub(in crate::setup::home_capture) fn measure(
         dev: before.dev(),
         ino: before.ino(),
         len: before.len(),
-        ciphertext_digest: hash.finalize().into(),
+        ciphertext_digest: hash,
     })
 }
 

@@ -20,10 +20,7 @@ use std::{
     io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 /// Only a normal first installed account; UID mapping needs an authenticated identity transport and
@@ -48,16 +45,7 @@ fn source_uid_matches(uid: u32) -> bool {
     cfg!(test) || uid == ORIGINAL_UID
 }
 
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "migration cancelled",
-        ))
-    } else {
-        Ok(())
-    }
-}
+use crate::migration::check_cancel;
 
 fn operation_path(home: &Path, operation: &str) -> PathBuf {
     let mut directory = home.to_path_buf();

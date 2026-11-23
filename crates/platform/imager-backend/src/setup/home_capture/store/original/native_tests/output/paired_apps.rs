@@ -140,15 +140,12 @@ pub(super) fn complete_and_restore(
             .is_some()
     );
     let original_read = read.output_original_home(&cancel).unwrap();
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: genuine retained original source descriptor and writable output.
-    assert_eq!(
-        unsafe { libc::fstatvfs(original_read.as_raw_fd(), status.as_mut_ptr()) },
-        0
+    let status = rustix::fs::fstatvfs(&original_read).unwrap();
+    assert!(
+        status
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
     );
-    // SAFETY: successful fstatvfs initialized the entire value.
-    assert_ne!(unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY, 0);
     let before_state = source_state(&original_read);
     drop(original_read);
     let outcome = transaction.export_applications_and_verify(Zeroizing::new(PASSWORD.to_vec()));

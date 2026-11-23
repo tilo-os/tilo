@@ -51,12 +51,7 @@ fn invalid() -> io::Error {
         "Original-source consumer proof syntax is invalid",
     )
 }
-fn digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
+use crate::record::is_hex_sha256 as digest;
 impl ConsumerCapability {
     /// Validate bounded closed proof syntax only. The enclosing authenticated
     /// image and actual installed qualification are separate authority checks.

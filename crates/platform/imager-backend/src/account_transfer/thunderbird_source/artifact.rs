@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::io::{self, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use accounts::AccountId;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
@@ -69,17 +69,7 @@ fn as_io(error: ConnectionError) -> io::Error {
     }
 }
 
-fn cancelled() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "migration cancelled")
-}
-
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(cancelled())
-    } else {
-        Ok(())
-    }
-}
+use crate::migration::check_cancel;
 
 /// What the header names: the selection's accounts and folders, the files each folder's mail is
 /// read from, and the selected address books and calendars. No message bytes: those follow in the

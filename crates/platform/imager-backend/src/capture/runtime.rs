@@ -38,12 +38,7 @@ impl CaptureServicePins {
         ) {
             return Err(failure("Packaged capture worker protocol is incompatible"));
         }
-        let digest = |value: &str| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        };
+        let digest = crate::record::is_hex_sha256;
         if self.schema != 1
             || self.arch != std::env::consts::ARCH
             || self.package_id != PACKAGE

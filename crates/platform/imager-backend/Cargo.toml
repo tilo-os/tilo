@@ -105,7 +105,7 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-process = { path = "../../platform/tilo-process" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 block-devices = { path = "../../system/block-devices", features = ["udisks"] }

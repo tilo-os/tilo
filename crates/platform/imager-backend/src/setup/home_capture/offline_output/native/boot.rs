@@ -13,7 +13,6 @@ use crate::setup::migration::PinnedDirectory;
 use block_devices::udisks::{ReadOnlyFilesystem, Udisks};
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::PathBuf;
 use std::sync::{
@@ -179,13 +178,12 @@ fn attest_root(root: &File, partition: &File, number: &str, expected_id: u64) ->
         return Err(refused("Selected boot mounted root differs"));
     }
     unique_mount(number, expected_id)?;
-    let mut flags: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: retained directory FD and correctly sized writable native buffer.
-    if unsafe { libc::fstatvfs(root.as_raw_fd(), &raw mut flags) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let safety = libc::ST_RDONLY | libc::ST_NODEV | libc::ST_NOSUID | libc::ST_NOEXEC;
-    if flags.f_flag & safety != safety {
+    let flags = rustix::fs::fstatvfs(root)?;
+    let safety = rustix::fs::StatVfsMountFlags::RDONLY
+        | rustix::fs::StatVfsMountFlags::NODEV
+        | rustix::fs::StatVfsMountFlags::NOSUID
+        | rustix::fs::StatVfsMountFlags::NOEXEC;
+    if !flags.f_flag.contains(safety) {
         return Err(refused("Selected boot mount is not strictly readonly"));
     }
     Ok(())

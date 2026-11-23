@@ -617,18 +617,13 @@ fn import_commit(
 }
 
 fn extra_capacity(target: &PinnedDirectory, required: u64) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
     if required == 0 {
         return Ok(());
     }
     let required = required
         .checked_add(16 * 1024 * 1024)
         .ok_or_else(|| changed("Extra-data target allowance overflows"))?;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    if unsafe { libc::fstatvfs(target.file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let status = unsafe { status.assume_init() };
+    let status = rustix::fs::fstatvfs(&target.file)?;
     let available = u128::from(status.f_bavail) * u128::from(status.f_frsize);
     target.validate_destination()?;
     if available < u128::from(required) {
@@ -642,22 +637,14 @@ fn extra_capacity(target: &PinnedDirectory, required: u64) -> io::Result<()> {
 #[cfg(test)]
 mod extra_capacity_tests {
     use super::*;
-    use std::{
-        fs,
-        os::{fd::AsRawFd, unix::fs::PermissionsExt},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
     #[test]
     fn actual_target_extra_data_capacity_refuses_before_mutation() {
         let root = tempfile::tempdir().unwrap();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(root.path().join("sentinel"), b"original target").unwrap();
         let pin = PinnedDirectory::open_absolute(root.path()).unwrap();
-        let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        assert_eq!(
-            unsafe { libc::fstatvfs(pin.file.as_raw_fd(), status.as_mut_ptr()) },
-            0
-        );
-        let status = unsafe { status.assume_init() };
+        let status = rustix::fs::fstatvfs(&pin.file).unwrap();
         let free =
             u64::try_from(u128::from(status.f_bavail) * u128::from(status.f_frsize)).unwrap();
         assert!(

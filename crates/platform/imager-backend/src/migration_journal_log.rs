@@ -272,7 +272,39 @@ impl Log {
             validate(parent, name, &validation_file, identity)
         })
     }
+    /// Build a log over an already opened and validated journal file.
+    pub(crate) fn from_open(
+        parent: Arc<PinnedDirectory>,
+        name: OsString,
+        file: FileLock,
+        identity: Metadata,
+    ) -> Self {
+        Self {
+            file,
+            sequence: 0,
+            parent,
+            name,
+            identity,
+            failed: false,
+        }
+    }
+
+    /// The directory holding this journal.
+    pub(crate) fn parent(&self) -> &Arc<PinnedDirectory> {
+        &self.parent
+    }
+
     pub fn append<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
+        self.append_with(|file, seq| write_record(file, seq, record), || Ok(()))
+    }
+
+    /// [`Self::append`] with a check run after the frames are written and
+    /// before they are synced, for callers' own crash and persistence hooks.
+    pub fn append_with(
+        &mut self,
+        records: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
+        before_sync: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         use super::migration_journal::{PersistenceBoundary, persistence_result};
         if self.failed {
             return Err(changed("journal persistence already failed"));
@@ -280,12 +312,7 @@ impl Log {
         let result = (|| {
             persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
             persistence_result(
-                append_synced(
-                    &mut self.file,
-                    &mut self.sequence,
-                    |file, seq| write_record(file, seq, record),
-                    || Ok(()),
-                ),
+                append_synced(&mut self.file, &mut self.sequence, records, before_sync),
                 PersistenceBoundary::JournalReplacementUncertain,
             )
         })();

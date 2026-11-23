@@ -21,12 +21,7 @@ pub struct ConsumerCapability {
 impl ConsumerCapability {
     /// Check bounded proof syntax; authentication belongs to the image selection.
     pub fn validate(&self) -> io::Result<()> {
-        let digest = |value: &str| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        };
+        let digest = crate::record::is_hex_sha256;
         if self.schema != 1
             || self.archive_protocol != ARCHIVE_PROTOCOL
             || self.seed_protocol != SEED_PROTOCOL

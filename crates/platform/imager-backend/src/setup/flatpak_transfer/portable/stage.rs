@@ -393,7 +393,6 @@ fn check_allocation(
     pin: &Arc<PinnedDirectory>,
     grant: &StageGrant<'_>,
 ) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
     let mut required = source.staging_estimate;
     if let Some(state) = &source.selected_state {
         required = required
@@ -428,13 +427,7 @@ fn check_allocation(
             }
         }
     }
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: held descriptor and complete writable native stat storage.
-    if unsafe { libc::fstatvfs(pin.file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the entire result.
-    let stat = unsafe { stat.assume_init() };
+    let stat = rustix::fs::fstatvfs(&pin.file)?;
     let free = stat
         .f_bavail
         .checked_mul(stat.f_frsize)

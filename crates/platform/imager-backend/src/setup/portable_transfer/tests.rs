@@ -983,13 +983,7 @@ fn retained_archive_index_uses_exact_private_runs_and_refuses_insufficient_resto
         b"actual archive data"
     );
     review.verify_existing_tree(&tree.root, &cancel).unwrap();
-    use std::os::fd::AsRawFd;
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    assert_eq!(
-        unsafe { libc::fstatvfs(pin.file.as_raw_fd(), stats.as_mut_ptr()) },
-        0
-    );
-    let stats = unsafe { stats.assume_init() };
+    let stats = rustix::fs::fstatvfs(&pin.file).unwrap();
     let actual_free = stats.f_bavail.checked_mul(stats.f_frsize).unwrap();
     assert!(
         super::super::migration_review::InventoryScratch::review_for_restore(
@@ -1034,12 +1028,7 @@ fn authenticated_fragmented_sparse_archive_refuses_stored_bytes_only_restore_bud
     fs::create_dir(&workspace).unwrap();
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
     let pin = PinnedDirectory::open_absolute(&workspace).unwrap();
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    assert_eq!(
-        unsafe { libc::fstatvfs(pin.file.as_raw_fd(), stats.as_mut_ptr()) },
-        0
-    );
-    let block = unsafe { stats.assume_init() }.f_frsize;
+    let block = rustix::fs::fstatvfs(&pin.file).unwrap().f_frsize;
     assert!(
         block >= 4096,
         "native qualification requires allocation blocks at least4KiB"
@@ -1088,11 +1077,7 @@ fn authenticated_fragmented_sparse_archive_refuses_stored_bytes_only_restore_bud
         ImportReview::review(&package, PASSWORD, Purpose::Home, limits(), &cancel).unwrap();
     assert_eq!(ordinary.info().logical_bytes, logical);
     drop(ordinary);
-    assert_eq!(
-        unsafe { libc::fstatvfs(pin.file.as_raw_fd(), stats.as_mut_ptr()) },
-        0
-    );
-    let stats = unsafe { stats.assume_init() };
+    let stats = rustix::fs::fstatvfs(&pin.file).unwrap();
     let free = stats.f_bavail.checked_mul(block).unwrap();
     // More than enough for stored payload and actual index runs, less than the
     //256MiB covered by separated one-byte extents. No logical holes are reserved.
@@ -1264,12 +1249,7 @@ fn completed_output_authentication_needs_metadata_space_not_another_payload_and_
     // Fill only this disposable fixture's owned filesystem, retaining enough
     // real space for metadata+journals but less than a duplicate Home payload.
     let free = || {
-        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        assert_eq!(
-            unsafe { libc::fstatvfs(pin.file.as_raw_fd(), stats.as_mut_ptr()) },
-            0
-        );
-        let stats = unsafe { stats.assume_init() };
+        let stats = rustix::fs::fstatvfs(&pin.file).unwrap();
         stats.f_bavail.checked_mul(stats.f_frsize).unwrap()
     };
     let ballast = File::create(root.join("owned-ballast")).unwrap();

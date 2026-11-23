@@ -57,8 +57,11 @@ pub fn changed(message: &str) -> io::Error {
 }
 
 pub fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
-    if cancelled.load(Ordering::Relaxed) {
-        Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
+    if cancelled.load(Ordering::Acquire) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "migration cancelled",
+        ))
     } else {
         Ok(())
     }

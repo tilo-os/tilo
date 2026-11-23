@@ -77,12 +77,7 @@ fn decode(data: &[u8], limit: usize) -> io::Result<Value> {
 }
 
 fn hex_digest(value: &Value) -> bool {
-    value.as_str().is_some_and(|text| {
-        text.len() == 64
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    value.as_str().is_some_and(crate::record::is_hex_sha256)
 }
 
 fn int_is(value: Option<&Value>, expected: i64) -> bool {

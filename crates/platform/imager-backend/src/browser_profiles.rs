@@ -137,7 +137,7 @@ impl ReviewedProfile {
             ));
         }
         for attempt in 0..3 {
-            super::browser_selection::check_cancel(cancel)?;
+            super::migration::check_cancel(cancel)?;
             self.validate()?;
             match browser_continuity::snapshot::capture_cancellable(
                 super::migration_durability::readable_directory(&self.directory.file)?,
@@ -145,7 +145,7 @@ impl ReviewedProfile {
                 cancel,
             ) {
                 Ok(captured) => {
-                    super::browser_selection::check_cancel(cancel)?;
+                    super::migration::check_cancel(cancel)?;
                     self.validate()?;
                     return Ok(captured);
                 }
@@ -153,7 +153,7 @@ impl ReviewedProfile {
                     if attempt < 2 && browser_continuity::snapshot::content_changed(&error) =>
                 {
                     self.validate()?;
-                    super::browser_selection::check_cancel(cancel)?;
+                    super::migration::check_cancel(cancel)?;
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(error) => return Err(error),

@@ -5,7 +5,7 @@ use crate::{
     migration_durability,
     migration_review::{InventoryScratch, InventoryScratchOwnership},
 };
-use std::{io, os::fd::AsRawFd, path::Path, sync::Arc};
+use std::{io, path::Path, sync::Arc};
 const RESERVE: u64 = 256 * 1024 * 1024;
 struct StorageOwnership {
     preparation: Arc<dyn InventoryScratchOwnership>,
@@ -38,11 +38,7 @@ pub fn review(
     let directory = parent.create_child(std::ffi::OsStr::new(&name))?;
     let readable = migration_durability::readable_directory(&directory.file)?;
     let backing = BackingProof::review(&readable)?;
-    let mut capacity: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: writes the complete statvfs for this retained directory descriptor.
-    if unsafe { libc::fstatvfs(readable.as_raw_fd(), &raw mut capacity) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let capacity = rustix::fs::fstatvfs(&readable)?;
     let allowance = capacity
         .f_bavail
         .checked_mul(capacity.f_frsize)

@@ -7,7 +7,7 @@ use crate::setup::{
     },
     portable_transfer::Observer,
 };
-use std::{os::fd::AsRawFd, os::unix::fs::DirBuilderExt, sync::Arc};
+use std::{os::unix::fs::DirBuilderExt, sync::Arc};
 const RECEIPT_RESERVE: u64 = 128 * 1024;
 fn selected(
     authority: &OriginalReadClaim,
@@ -28,16 +28,12 @@ fn available(required: u64) -> io::Result<()> {
     let pin =
         PinnedDirectory::open_absolute(Path::new(launcher::owned_service::CAPTURE_OUTPUT_PATH))?;
     pin.validate_destination()?;
-    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: held output descriptor and writable statvfs result.
-    if unsafe { libc::fstatvfs(pin.file.as_raw_fd(), &raw mut stats) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let stats = rustix::fs::fstatvfs(&pin.file)?;
     let free = stats
         .f_bavail
         .checked_mul(stats.f_frsize)
         .ok_or_else(|| failure("Original output space overflows"))?;
-    if stats.f_flag & libc::ST_RDONLY != 0 || required > free {
+    if stats.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) || required > free {
         return Err(failure(
             "Original combined output and scratch space unavailable",
         ));

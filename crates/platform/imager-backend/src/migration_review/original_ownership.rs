@@ -265,16 +265,12 @@ impl OriginalOmission {
     /// That kernel number is not portable across boots; inode and owner facts
     /// remain exact on the same authenticated, held, readonly source volume.
     pub fn read_projection(values: &[Self], home: &File) -> io::Result<Vec<Self>> {
-        use std::os::fd::AsRawFd;
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Self::validate_shapes(values)?;
-        let mut flags: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(home.as_raw_fd(), &raw mut flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if flags.f_flag & libc::ST_RDONLY == 0 {
+        let flags = rustix::fs::fstatvfs(home)?;
+        if !flags.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         values

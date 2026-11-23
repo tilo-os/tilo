@@ -60,12 +60,20 @@ impl NativePath {
         }
     }
 
-    pub fn decode(&self) -> Result<PathBuf, String> {
-        let units = match self {
+    /// The number of native units the path occupies.
+    pub fn len(&self) -> usize {
+        match self {
             Self::Unix(units) => units.len(),
             Self::Windows(units) => units.len(),
-        };
-        if units > 4096 {
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn decode(&self) -> Result<PathBuf, String> {
+        if self.len() > 4096 {
             return Err("persisted migration path exceeds bounds".into());
         }
         match self {

@@ -296,12 +296,12 @@ impl NativeMediumOutput {
         }
         let id = mount_id(&root.file)?;
         unique_mount(&before.number, id)?;
-        let mut fs: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(root.file.as_raw_fd(), &raw mut fs) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let safety = libc::ST_NODEV | libc::ST_NOSUID | libc::ST_NOEXEC;
-        if fs.f_flag & safety != safety || fs.f_flag & libc::ST_RDONLY != 0 {
+        let fs = rustix::fs::fstatvfs(&root.file)?;
+        let safety = rustix::fs::StatVfsMountFlags::NODEV
+            | rustix::fs::StatVfsMountFlags::NOSUID
+            | rustix::fs::StatVfsMountFlags::NOEXEC;
+        if !fs.f_flag.contains(safety) || fs.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        {
             return Err(refused("Original output mount flags differ"));
         }
         let private = proof(&root, plan.media(), &before.uuid)?;

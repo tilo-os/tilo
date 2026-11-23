@@ -864,17 +864,12 @@ fn kernel_access(directory: &PinnedDirectory, mode: AccessMode) -> io::Result<()
     if mode == AccessMode::ReadOnly {
         return kernel_read_only(directory);
     }
-    use std::os::fd::AsRawFd;
     let file = super::super::migration_durability::readable_directory(&directory.file)?;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: live descriptor and correctly sized output storage.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful syscall initialized all fields.
-    let flags = unsafe { status.assume_init() }.f_flag;
-    let safe = libc::ST_NODEV | libc::ST_NOSUID | libc::ST_NOEXEC;
-    if flags & libc::ST_RDONLY != 0 || flags & safe != safe {
+    let flags = rustix::fs::fstatvfs(&file)?.f_flag;
+    let safe = rustix::fs::StatVfsMountFlags::NODEV
+        | rustix::fs::StatVfsMountFlags::NOSUID
+        | rustix::fs::StatVfsMountFlags::NOEXEC;
+    if flags.contains(rustix::fs::StatVfsMountFlags::RDONLY) || !flags.contains(safe) {
         return Err(refusal(
             "Shared files need a verified writable nodev,nosuid,noexec source mount",
         ));
@@ -882,15 +877,12 @@ fn kernel_access(directory: &PinnedDirectory, mode: AccessMode) -> io::Result<()
     Ok(())
 }
 fn kernel_read_only(directory: &PinnedDirectory) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
     let file = super::super::migration_durability::readable_directory(&directory.file)?;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: descriptor stays live, output holds a complete native statvfs.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the complete structure.
-    if unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY == 0 {
+    let status = rustix::fs::fstatvfs(&file)?;
+    if !status
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
         return Err(refusal(
             "Kernel source filesystem is writable; no transfer was authorized.",
         ));

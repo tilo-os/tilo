@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use crate::account_store::Accounts;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
@@ -45,17 +45,7 @@ fn storage(message: &str) -> io::Error {
     io::Error::other(message)
 }
 
-fn cancelled() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "migration cancelled")
-}
-
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(cancelled())
-    } else {
-        Ok(())
-    }
-}
+use crate::migration::check_cancel;
 
 fn kept_too_large() -> io::Error {
     io::Error::new(

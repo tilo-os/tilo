@@ -53,17 +53,12 @@ pub(super) fn install(name: &str, destination: &Path) {
             0,
             "SDK helper must not be group/world writable"
         );
-        use std::os::fd::AsRawFd as _;
-        let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: the descriptor is live and statvfs writes a complete structure on success.
-        assert_eq!(
-            unsafe { libc::fstatvfs(file.as_raw_fd(), filesystem.as_mut_ptr()) },
-            0
-        );
-        // SAFETY: fstatvfs succeeded above.
-        let filesystem = unsafe { filesystem.assume_init() };
+        let filesystem = rustix::fs::fstatvfs(file).unwrap();
         assert!(
-            info.mode() & 0o222 == 0 || filesystem.f_flag & libc::ST_RDONLY != 0,
+            info.mode() & 0o222 == 0
+                || filesystem
+                    .f_flag
+                    .contains(rustix::fs::StatVfsMountFlags::RDONLY),
             "SDK helper must reside on a read-only mount or have no writable permission bits"
         );
     }

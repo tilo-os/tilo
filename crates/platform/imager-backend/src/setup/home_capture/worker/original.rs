@@ -133,7 +133,7 @@ impl OriginalMountedClaim {
         proof: &super::super::MountedProof,
         table_sha256: [u8; 32],
     ) -> io::Result<Self> {
-        if rustix::process::geteuid().as_raw() != 0 || table_sha256 == [0; 32] {
+        if !crate::native_root::is_root() || table_sha256 == [0; 32] {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Ok(Self {
@@ -168,7 +168,7 @@ impl OriginalReadClaim {
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
         use sha2::{Digest, Sha256};
-        if rustix::process::geteuid().as_raw() != 0 {
+        if !crate::native_root::is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if plan.source_proof().is_none() {
@@ -240,7 +240,7 @@ impl OriginalReadClaim {
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
         use sha2::{Digest, Sha256};
-        if rustix::process::geteuid().as_raw() != 0 {
+        if !crate::native_root::is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         plan.validate()?;
@@ -371,16 +371,12 @@ impl OriginalReadClaim {
         Ok(())
     }
     fn validate_source(&self, source: &File) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
         let facts = source.metadata()?;
         if !facts.is_dir() || (facts.dev(), facts.ino(), facts.uid()) != self.source {
             return Err(failure("Original source projection differs"));
         }
-        let mut flags: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(source.as_raw_fd(), &raw mut flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if flags.f_flag & libc::ST_RDONLY == 0 {
+        let flags = rustix::fs::fstatvfs(source)?;
+        if !flags.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         crate::setup::migration_review::OriginalOmission::validate_set(

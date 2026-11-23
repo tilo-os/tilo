@@ -192,11 +192,7 @@ impl OfflineOutputTransaction {
             files.disk.metadata()?.rdev(),
         )?;
         store.check_original_output_filesystem(files.partition.metadata()?.rdev())?;
-        let mut capacity: libc::statvfs = unsafe { std::mem::zeroed() };
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::fstatvfs(files.output.as_raw_fd(), &raw mut capacity) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let capacity = rustix::fs::fstatvfs(&files.output)?;
         let free = capacity
             .f_bavail
             .checked_mul(capacity.f_frsize)

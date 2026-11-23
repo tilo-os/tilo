@@ -139,7 +139,7 @@ fn review_pending<'a>(
     cancel: &AtomicBool,
 ) -> io::Result<PendingBootReview<'a>> {
     // SAFETY: geteuid only observes the executing root controller's credentials.
-    if rustix::process::geteuid().as_raw() != 0 {
+    if !crate::native_root::is_root() {
         return Err(changed("Boot pending setup review requires root ownership"));
     }
     check_cancel(cancel)?;

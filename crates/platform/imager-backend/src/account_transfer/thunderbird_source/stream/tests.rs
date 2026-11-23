@@ -7,6 +7,7 @@ use super::super::tests::{
 };
 use super::super::{CachedFolder, ThunderbirdSelection};
 use super::*;
+use std::sync::atomic::Ordering;
 
 const BINDING: &[u8] = b"deferred:operation-1";
 

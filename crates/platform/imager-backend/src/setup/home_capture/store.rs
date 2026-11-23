@@ -368,7 +368,7 @@ impl Store {
         operation: &str,
     ) -> io::Result<Arc<PinnedDirectory>> {
         if rustix::process::getuid().as_raw() != 0
-            || rustix::process::geteuid().as_raw() != 0
+            || !crate::native_root::is_root()
             || self.records_path.as_deref()
                 != Some(Path::new("/var/lib/tilo-imager/home-capture/records"))
         {

@@ -150,17 +150,12 @@ impl DataBackend for Native {
         self.0.unmount(device).map_err(io::Error::other)
     }
     fn grant(&self, target: &TargetDrive, root: &Path) -> io::Result<MediaFilesystemGrant> {
-        use std::os::fd::AsRawFd;
         let grant = MediaFilesystemGrant::resolve(target, root)?;
-        let mut flags = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: live held root descriptor and writable statvfs buffer.
-        if unsafe { libc::fstatvfs(grant.pin.file.as_raw_fd(), flags.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful fstatvfs initialized the structure.
-        let flags = unsafe { flags.assume_init() }.f_flag;
-        let required = libc::ST_NODEV | libc::ST_NOSUID | libc::ST_NOEXEC;
-        if flags & required != required || flags & libc::ST_RDONLY != 0 {
+        let flags = rustix::fs::fstatvfs(&grant.pin.file)?.f_flag;
+        let required = rustix::fs::StatVfsMountFlags::NODEV
+            | rustix::fs::StatVfsMountFlags::NOSUID
+            | rustix::fs::StatVfsMountFlags::NOEXEC;
+        if !flags.contains(required) || flags.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
             return Err(changed(
                 "Migration media must be writable with nodev,nosuid,noexec",
             ));

@@ -122,25 +122,14 @@ impl MountedRecord {
     }
 }
 fn read_private(file: &File) -> io::Result<Vec<u8>> {
-    use std::io::{Seek, SeekFrom};
-    let metadata = file.metadata()?;
-    if metadata.uid() != 0
-        || metadata.nlink() != 1
-        || !metadata.is_file()
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > MAX_RECORD
-    {
-        return Err(io::ErrorKind::PermissionDenied.into());
-    }
-    let mut reader = file.try_clone()?;
-    reader.seek(SeekFrom::Start(0))?;
-    let bytes = crate::record::read_bounded(reader, MAX_RECORD, || {
-        failure("Protected mounted record changed")
-    })?;
-    if stamp(&metadata) != stamp(&file.metadata()?) {
-        return Err(failure("Protected mounted record changed"));
-    }
-    Ok(bytes)
+    crate::record::read_private_file(
+        file,
+        MAX_RECORD,
+        |metadata| {
+            metadata.uid() == 0 && metadata.nlink() == 1 && metadata.mode().trailing_zeros() >= 6
+        },
+        || failure("Protected mounted record changed"),
+    )
 }
 fn stamp(m: &std::fs::Metadata) -> (u64, u64, u32, u32, u64, i64, i64, i64, i64) {
     (
@@ -340,24 +329,18 @@ impl Store {
         let name = format!("{}.mounted-roots.json", self.operation);
         volumes.verify(self, &peer.original_peer(), cancel)?;
         crate::setup::migration::check_cancel(cancel)?;
-        match directory.open_read(OsStr::new(&name), Privacy::OwnerOnly) {
-            Ok(file) => {
-                if read_private(&file)? != bytes {
-                    return Err(failure(
-                        "Mounted registration conflicts with protected record",
-                    ));
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => directory
-                .publish(
-                    OsStr::new(&name),
-                    &bytes,
-                    PublishMode::IfAbsent,
-                    Privacy::OwnerOnly,
-                )
-                .map_err(io::Error::other)?,
-            Err(error) => return Err(error),
-        }
+        crate::record::publish_or_match(
+            &directory,
+            &name,
+            &bytes,
+            MAX_RECORD,
+            |metadata| {
+                metadata.uid() == 0
+                    && metadata.nlink() == 1
+                    && metadata.mode().trailing_zeros() >= 6
+            },
+            || failure("Mounted registration conflicts with protected record"),
+        )?;
         let named = directory.open_read(OsStr::new(&name), Privacy::OwnerOnly)?;
         if read_private(&named)? != bytes
             || read_private(&primary_file)? != primary_bytes

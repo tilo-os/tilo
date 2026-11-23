@@ -803,10 +803,9 @@ fn target_stdio_child() {
     // FUSE statfs traverses the source worker and guarded relay; compare stable capacity and units,
     // not free space that changes concurrently.
     let observe_capacity = |descriptor| {
-        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: fixture-owned live descriptors; successful fstatvfs fills stats.
-        assert_eq!(unsafe { libc::fstatvfs(descriptor, stats.as_mut_ptr()) }, 0);
-        unsafe { stats.assume_init() }
+        // SAFETY: fixture-owned live descriptor.
+        let descriptor = unsafe { std::os::fd::BorrowedFd::borrow_raw(descriptor) };
+        rustix::fs::fstatvfs(descriptor).unwrap()
     };
     let projected_stats = observe_capacity(70);
     let actual_source_stats = observe_capacity(72);
@@ -1141,13 +1140,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
         EntryKind::Directory
     );
     let held_source = File::open(&source_dir).unwrap();
-    let mut source_capacity = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: successful fstatvfs fills the fixture's held original directory stats.
-    assert_eq!(
-        unsafe { libc::fstatvfs(held_source.as_raw_fd(), source_capacity.as_mut_ptr()) },
-        0
-    );
-    let source_capacity = unsafe { source_capacity.assume_init() };
+    let source_capacity = rustix::fs::fstatvfs(&held_source).unwrap();
     let rpc_capacity = client.statfs(ROOT_DIRECTORY).unwrap();
     rpc_capacity.validate().unwrap();
     assert!(rpc_capacity.blocks > 0);
