@@ -804,9 +804,20 @@ impl ActionService {
         use tilo_actions::remote::ActionCallError;
         let action = signed.action();
         let source = action.source;
+        // A computer with no certificate yet is admitted to the one scope the device that
+        // certifies it serves, and holds no workspace to be read. Its endpoint is a key the
+        // device delegated, which the host cannot know before it admits the device, so its
+        // request stands on its signature and on what its provider checks.
+        let uncertified = self
+            .0
+            .uncertified
+            .lock_recover()
+            .get(&action.workspace)
+            .cloned();
         // A device asks as itself and nobody else: the transport already says
         // which device is there, where it says one at all.
-        if let Some(remote) = remote
+        if uncertified.is_none()
+            && let Some(remote) = remote
             && remote != source
         {
             return Err(not_permitted(
@@ -817,14 +828,6 @@ impl ActionService {
         if signed.verify(&source).is_err() {
             return Err(not_permitted(source, "its signature does not verify"));
         }
-        // A computer with no certificate yet is admitted to the one scope the device that
-        // certifies it serves, and holds no workspace to be read.
-        let uncertified = self
-            .0
-            .uncertified
-            .lock_recover()
-            .get(&action.workspace)
-            .cloned();
         if let Some(provider) = uncertified {
             self.admit_replay(signed)?;
             return Ok(Decided::Serve(Box::new(Admitted {
