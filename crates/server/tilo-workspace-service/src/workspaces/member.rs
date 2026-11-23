@@ -1372,6 +1372,7 @@ impl Workspaces {
 
     /// Keep a locally drafted document, using its authenticated writer, and
     /// carry it on the workspace's link.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(super) fn retain_local_document(
         &self,
         workspace_id: WorkspaceId,
