@@ -216,6 +216,9 @@ pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
 /// The most the server reads from a client before it is admitted: its
 /// `initialize` and any discovery probe before it.
 const MAX_HELLO: usize = 64 * 1024;
+/// What a client that gave no name of its own is called: what the person who decides who it is
+/// reads, and what the workspace calls it until it says otherwise.
+pub const UNNAMED_CLIENT: &str = "MCP client";
 /// The most of a client's own name the person is shown.
 const MAX_CLIENT_NAME: usize = 64;
 /// The most of a session's own name the person is shown.
@@ -301,6 +304,13 @@ fn bounded_text(value: Option<&serde_json::Value>) -> Option<String> {
     tilo_actions::context::one_line(value?.as_str()?, MAX_CLIENT_NAME)
 }
 
+/// The client's own name as the `params` of its `initialize` give it: `clientInfo.name`,
+/// trimmed, bounded and stripped of control characters. `None` when it gives none.
+#[must_use]
+pub fn client_name(params: &serde_json::Value) -> Option<String> {
+    bounded_text(params.pointer("/clientInfo/name"))
+}
+
 /// The request a client may send before `initialize` to learn whether the
 /// server speaks a newer protocol revision.
 const DISCOVER: &str = "server/discover";
@@ -343,7 +353,7 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
     Ok(Hello {
         key,
         client_name: bounded_text(info.and_then(|info| info.get("name")))
-            .unwrap_or_else(|| "MCP client".to_owned()),
+            .unwrap_or_else(|| UNNAMED_CLIENT.to_owned()),
         client_version: bounded_text(info.and_then(|info| info.get("version"))),
         session_name: bounded_text(request.pointer(SESSION_NAME)),
         workspace: bounded_text(request.pointer(WORKSPACE)),

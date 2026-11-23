@@ -154,13 +154,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         apps: None,
         session: Some(Arc::new(AdmittedRuntimeSession {
             policy_time: time,
-            provider: qualified,
+            provider: std::sync::RwLock::new(qualified),
             admission,
-            agent: None,
+            agent: std::sync::RwLock::new(None),
             projection: Some(owner.clone()),
         })),
         tickets: None,
         invocations: Arc::default(),
+        presence: None,
     };
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();
@@ -237,9 +238,9 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         session: provider.session.as_ref().map(|session| {
             Arc::new(AdmittedRuntimeSession {
                 policy_time: session.policy_time.clone(),
-                provider: Arc::clone(&session.provider),
+                provider: std::sync::RwLock::new(session.provider()),
                 admission: Arc::clone(&session.admission),
-                agent: None,
+                agent: std::sync::RwLock::new(None),
                 projection: Some(Caller::local_person(actor.clone()).in_workspace(&workspace_id)),
             })
         }),

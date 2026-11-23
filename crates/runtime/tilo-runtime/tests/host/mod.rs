@@ -257,6 +257,7 @@ impl Host {
         Agent {
             session,
             calls: std::sync::atomic::AtomicU64::new(1),
+            opened: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -351,21 +352,48 @@ impl Key {
 pub struct Agent {
     session: tilo_mcp::McpServer<tilo_runtime::device::services::RuntimeActionProvider>,
     calls: std::sync::atomic::AtomicU64,
+    /// Whether the connection opened with its client's name, as `tilo mcp` opens it.
+    opened: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
     /// The MCP tool `name` with `arguments`: its `tools/call` result.
     pub async fn tool(&self, name: &str, arguments: &Value) -> Value {
+        let answer = self
+            .ask("tools/call", json!({"name": name, "arguments": arguments}))
+            .await;
+        answer["result"].clone()
+    }
+
+    /// The MCP request `method` with `params`, answered whole. The connection opens with the
+    /// client's `initialize` first, as every MCP client does, naming itself as the person's
+    /// agent `Claude Code` unless the test's own `initialize` names it.
+    pub async fn ask(&self, method: &str, params: Value) -> Value {
+        if method == "initialize" {
+            self.opened
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        } else if !self.opened.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            self.session
+                .handle(json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "Claude Code", "version": "2"},
+                    },
+                }))
+                .await
+                .unwrap();
+        }
         let id = self
             .calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let answer = self
-            .session
-            .handle(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
-                          "params": {"name": name, "arguments": arguments}}))
+        self.session
+            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await
-            .unwrap();
-        answer["result"].clone()
+            .unwrap()
     }
 }
 

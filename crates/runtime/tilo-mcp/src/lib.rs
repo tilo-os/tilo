@@ -1601,6 +1601,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         }
         session::name_from_initialize(&self.caller, &mut self.agent_session.lock_recover(), params);
+        // The client said what it is: a host that admits it as one of the person's agents knows
+        // which one from here on, and the workspace names it so.
+        if let Some(client) = crate::session_api::client_name(params) {
+            self.host.introduced(&self.caller, &client);
+        }
         let session = self.session_id();
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
         // The agent this session is (a server connection's task agent), so it

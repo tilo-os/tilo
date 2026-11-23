@@ -37,6 +37,7 @@ mod keep;
 pub mod package_runs;
 pub mod peer;
 mod person;
+mod presence;
 #[cfg(target_os = "linux")]
 pub mod processes;
 pub mod serve;

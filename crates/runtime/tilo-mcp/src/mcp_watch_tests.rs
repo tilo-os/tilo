@@ -201,10 +201,15 @@ async fn cursor_of<H: ActionProvider + Send + Sync + 'static>(
 ) -> String {
     let (start, failed) = answer(server, "tilo_watch", arguments).await;
     assert!(!failed, "{start}");
-    assert_eq!(
-        start["events"],
-        json!([]),
-        "a watch with no cursor starts now"
+    // A watch with no cursor starts now: nothing that happened yet is news, and who is here now
+    // is said, so a page that opens draws them.
+    assert!(
+        start["events"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .all(|event| event["kind"] == "presence"),
+        "a watch with no cursor starts now, saying who is here: {start}"
     );
     start["cursor"].as_str().unwrap_or_default().to_owned()
 }

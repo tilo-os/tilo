@@ -351,7 +351,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The cursor a caller with none starts from: nothing that has happened
-    /// yet is news to it.
+    /// yet is news to it. Who is here is not something that happened: the
+    /// first read of a watch says who is here now, so a page that opens on a
+    /// workspace draws its people and agents at once.
     async fn watch_now(&self, path: Option<&str>) -> Result<Cursor, String> {
         let invocation = self
             .invocations
@@ -365,7 +367,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         Ok(Cursor {
             invocation,
-            here: self.here_now().map(|(fingerprint, _)| fingerprint),
+            here: None,
             change: last_change(
                 self.history_page(path)
                     .await?

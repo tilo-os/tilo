@@ -18,7 +18,7 @@
 use super::commits::{RecordCreation, ServiceCommits};
 use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
-use super::{host_runs, take_work};
+use super::{host_runs, presence, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use ed25519_dalek::SigningKey;
@@ -104,6 +104,9 @@ pub struct Daemon {
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
     invocations: Arc<Invocations>,
+    /// The agent sessions this device's MCP server serves now: who is here, beside the
+    /// workspace's own roster.
+    presence: Arc<presence::Presence>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -576,6 +579,7 @@ impl Daemon {
             login: identity.login,
             tickets,
             invocations,
+            presence: Arc::new(presence::Presence::default()),
             key: identity.key.clone(),
             cert: identity.cert,
             account: std::sync::Mutex::new(None),
@@ -984,13 +988,14 @@ impl Daemon {
             apps: Some(Arc::clone(&self.apps)),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
-                provider,
+                provider: std::sync::RwLock::new(provider),
                 admission,
-                agent: None,
+                agent: std::sync::RwLock::new(None),
                 projection: Some(Caller::local_person(&self.actor).in_workspace(workspace)),
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
+            presence: Some(Arc::clone(&self.presence)),
         })
     }
 }
@@ -1056,24 +1061,58 @@ pub struct RuntimeActionProvider {
     /// The device's record of every invocation it was asked for: what following, waiting on and
     /// stopping one asks, wherever the call came in.
     invocations: Arc<Invocations>,
+    /// The agent sessions this device's MCP server serves, for a host that serves them: what
+    /// who is here adds beside the workspace's roster, and what a stop action ends. `None` for a
+    /// host that serves no connection of its own.
+    presence: Option<Arc<presence::Presence>>,
 }
 
 struct AdmittedRuntimeSession {
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-    provider: Arc<dyn ActionProvider + Send + Sync>,
+    /// The provider the run's calls go through: replaced once, when the connection's client
+    /// names itself, so every call after that is the agent's, under the name it connects as.
+    provider: std::sync::RwLock<Arc<dyn ActionProvider + Send + Sync>>,
     admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
-    /// The agent the person's device handed this run to.
-    agent: Option<String>,
+    /// The agent the person's device handed this run to, once it is known: the client's name
+    /// settles it, and until then the connection is an unnamed agent of its own.
+    agent: std::sync::RwLock<Option<SessionAgent>>,
     projection: Option<Caller>,
 }
+
+/// One agent of the person's, as a workspace's record of its agents names it: the id its runs
+/// share on every computer of theirs, and the name its client connects as.
+#[derive(Clone)]
+struct SessionAgent {
+    id: String,
+    name: String,
+}
+
 impl AdmittedRuntimeSession {
     /// The run's caller as the broker admits it: the agent, for the person.
     fn acting(&self) -> Caller {
         let caller = self.admission.caller().clone();
-        match &self.agent {
-            Some(agent) => caller.delegated_to(agent.clone()),
+        match self.agent() {
+            Some(agent) => caller.delegated_to(agent.id.clone()).named(&agent.name),
             None => caller,
         }
+    }
+
+    /// The agent this run is, once its client named itself.
+    fn agent(&self) -> Option<SessionAgent> {
+        self.agent
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The provider this run's calls go through.
+    fn provider(&self) -> Arc<dyn ActionProvider + Send + Sync> {
+        Arc::clone(
+            &self
+                .provider
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Whether `caller` is who this run was admitted for. A program the person runs reaches
@@ -1161,7 +1200,7 @@ impl RuntimeActionProvider {
     /// Whether `caller` is the person's own run, not an agent's: only the person adds a device.
     fn is_the_person(&self, caller: &Caller) -> bool {
         self.session.as_ref().is_some_and(|session| {
-            session.agent.is_none()
+            session.agent().is_none()
                 && (session.admits(caller) || caller == session.admission.caller())
         })
     }
@@ -1192,6 +1231,15 @@ impl RuntimeActionProvider {
             // session to; the admission stays the person's.
             let (session_host, caller, agent) =
                 provider.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
+            // The connection is here from the moment it opens, before it asks anything, and
+            // says what it is when its client does.
+            if let (Some(presence), Some(execution)) = (&provider.presence, caller.execution_id()) {
+                presence.opened(
+                    &execution.to_string(),
+                    &workspace,
+                    tilo_mcp::session_api::UNNAMED_CLIENT,
+                );
+            }
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(agent))
         })
     }
@@ -1227,13 +1275,17 @@ impl RuntimeActionProvider {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                provider: qualified,
+                provider: std::sync::RwLock::new(qualified),
                 admission,
-                agent: Some(agent.clone()),
+                agent: std::sync::RwLock::new(Some(SessionAgent {
+                    id: agent.clone(),
+                    name: tilo_mcp::session_api::UNNAMED_CLIENT.to_owned(),
+                })),
                 projection: None,
             })),
             tickets: None,
             invocations: Arc::clone(&self.invocations),
+            presence: self.presence.clone(),
         };
         Ok((run, caller, agent))
     }
@@ -1264,6 +1316,55 @@ fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
 }
 
+/// One answer for either of two waits: resolves when the first of them does, with what it
+/// answered, so a watch woken by either reads again.
+fn whichever_first(
+    first: Pending<Result<(), ActionCallError>>,
+    second: Pending<Result<(), ActionCallError>>,
+) -> Pending<Result<(), ActionCallError>> {
+    let (complete, waited) = tilo_actions::remote::pending();
+    let answer = Arc::new(Mutex::new(Some(complete)));
+    for one in [first, second] {
+        let answer = Arc::clone(&answer);
+        one.then(move |answered| {
+            let Some(complete) = answer.lock().ok().and_then(|mut answer| answer.take()) else {
+                return;
+            };
+            complete.complete(answered.unwrap_or(Err(ActionCallError::Unavailable {
+                reason: "a source the watch followed is gone".into(),
+            })));
+        });
+    }
+    waited
+}
+
+/// The answer to the person stopping the agent session `request` names in `workspace`, when
+/// this device serves it: `None` for a session it does not serve, whose stop is somebody
+/// else's to answer.
+fn stop_session(
+    presence: &presence::Presence,
+    workspace: &str,
+    request: &InvokeRequest,
+) -> Option<InvocationReceipt> {
+    let tilo_actions::remote::InvokeArgument::Json(argument) = &request.argument else {
+        return None;
+    };
+    let stop: tilo_actions::remote::mcp_server::AgentSessionRef =
+        serde_json::from_value(serde_json::Value::Object(argument.clone())).ok()?;
+    if !presence.stop(workspace, &stop.session) {
+        return None;
+    }
+    Some(InvocationReceipt {
+        invocation: request.invocation,
+        status: tilo_actions::remote::ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::Value::Null),
+                resources: Vec::new(),
+            },
+        },
+    })
+}
+
 impl ActionProvider for RuntimeActionProvider {
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
@@ -1274,6 +1375,10 @@ impl ActionProvider for RuntimeActionProvider {
     }
 
     fn retire_execution(&self, caller: &Caller) {
+        // The connection ended, so its session leaves who is here.
+        if let (Some(presence), Some(execution)) = (&self.presence, caller.execution_id()) {
+            presence.closed(&execution.to_string());
+        }
         if let Some(session) = &self.session {
             if caller
                 == session
@@ -1288,6 +1393,71 @@ impl ActionProvider for RuntimeActionProvider {
             return;
         }
         self.broker.state().retire_execution(caller);
+    }
+
+    /// The connection's client named itself (`Claude Code`): the run is that agent of the
+    /// person's from now on, called so in who is here and in the workspace's record of its
+    /// agents, and its calls are decided as that agent's rather than as an unnamed one.
+    fn introduced(&self, caller: &Caller, client: &str) {
+        let (Some(session), Some(presence)) = (&self.session, &self.presence) else {
+            return;
+        };
+        // Only the run's own connection may say what it is.
+        if !session.admits(caller) {
+            return;
+        }
+        let Some(execution) = caller.execution_id() else {
+            return;
+        };
+        // The person's own run has no agent to name.
+        if session.agent().is_none() {
+            return;
+        }
+        let Some(person) = session.admission.caller().user_public_key() else {
+            return;
+        };
+        let agent = tilo_actions::remote::device_agent_id(&person, client);
+        match self.broker.certified_local_agent_provider(
+            session.admission.caller(),
+            session.admission.presentation(),
+            &agent,
+        ) {
+            Ok(provider) => {
+                *session
+                    .provider
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = provider;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "an agent's session is not admitted as the agent it names");
+                return;
+            }
+        }
+        *session
+            .agent
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SessionAgent {
+            id: agent.clone(),
+            name: client.to_owned(),
+        });
+        presence.named(&execution.to_string(), client);
+        // The workspace's record of its agents names the computer's agent from its first call,
+        // once, kept by its person: what the Agents tab and the workspace's roster read it by.
+        let workspaces = Arc::clone(&self.workspaces);
+        let workspace = self.workspace.clone();
+        let named = session
+            .admission
+            .caller()
+            .clone()
+            .delegated_to(agent)
+            .named(client);
+        block_on_owned(async move {
+            let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&workspace) else {
+                return;
+            };
+            tilo_workspace_service::agents::workspace_agent(workspaces.copies(), workspace, &named)
+                .await;
+        });
     }
 
     fn query(
@@ -1316,7 +1486,7 @@ impl ActionProvider for RuntimeActionProvider {
                 .as_ref()
                 .is_some_and(|provider| certified_provider(provider))
             {
-                let answer = session.provider.query(caller, query.clone());
+                let answer = session.provider().query(caller, query.clone());
                 return self.with_devices(answer, &query);
             }
             // Existing general catalogue/builtin APIs retain the exact
@@ -1343,6 +1513,23 @@ impl ActionProvider for RuntimeActionProvider {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
+        // A session the person stopped is ended for good: what its connection asks next reaches
+        // nothing.
+        if let (Some(presence), Some(execution)) = (&self.presence, caller.execution_id())
+            && presence.ended(&execution.to_string())
+        {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // The person stops one of the agent sessions this device serves, as their card asks:
+        // the session leaves who is here and answers no more.
+        if let Some(presence) = &self.presence
+            && request.target
+                == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
+            && self.is_the_person(caller)
+            && let Some(receipt) = stop_session(presence, &self.workspace, &request)
+        {
+            return Pending::ready(Ok(receipt));
+        }
         if let Some(tickets) = &self.tickets
             && self.is_the_person(caller)
             && Tickets::answers(&request)
@@ -1361,9 +1548,9 @@ impl ActionProvider for RuntimeActionProvider {
                 caller,
                 &request,
                 Some(&self.workspace),
-                (Arc::clone(&session.provider), runs_as.clone()),
+                (session.provider(), runs_as.clone()),
             );
-            return session.provider.invoke(&runs_as, request);
+            return session.provider().invoke(&runs_as, request);
         }
         Pending::ready(Err(ActionCallError::NotPermitted))
     }
@@ -1380,7 +1567,7 @@ impl ActionProvider for RuntimeActionProvider {
         }
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.observe(session.admission.caller(), id);
+            return session.provider().observe(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -1392,16 +1579,24 @@ impl ActionProvider for RuntimeActionProvider {
 
     /// Who is in the workspace, as the desktop's roster names them: routed
     /// and authorized exactly as [`Self::observe`], and empty for a host
-    /// that keeps no roster.
+    /// that keeps no roster. A device that serves its person's agent
+    /// sessions lists them beside the roster, from the moment each connects.
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
-        if let Some(session) = &self.session {
+        let listed = if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.here(session.admission.caller());
-        }
-        if !self.admitted(caller) {
-            return None;
-        }
-        self.broker.state().here(&on_this_device(caller))
+            session.provider().here(session.admission.caller())
+        } else {
+            if !self.admitted(caller) {
+                return None;
+            }
+            self.broker.state().here(&on_this_device(caller))
+        };
+        let Some(presence) = &self.presence else {
+            return listed;
+        };
+        let mut here = listed.unwrap_or_default();
+        presence.add_here(&self.workspace, &mut here);
+        Some(here)
     }
 
     /// Where the session's workspace stands, for a caller of it: authorized
@@ -1410,14 +1605,14 @@ impl ActionProvider for RuntimeActionProvider {
     fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.workspaces).ok()?;
-        session.provider.session_state(session.admission.caller())
+        session.provider().session_state(session.admission.caller())
     }
 
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.workspaces).ok()?;
         session
-            .provider
+            .provider()
             .session_state_changed(session.admission.caller())
     }
 
@@ -1430,14 +1625,30 @@ impl ActionProvider for RuntimeActionProvider {
         scope: tilo_actions::remote::WatchScope,
     ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
     {
-        if let Some(session) = &self.session {
+        let followed = if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.changed(session.admission.caller(), scope);
+            session
+                .provider()
+                .changed(session.admission.caller(), scope)
+        } else {
+            if !self.admitted(caller) {
+                return None;
+            }
+            self.broker.state().changed(&on_this_device(caller), scope)
+        };
+        if !matches!(scope, tilo_actions::remote::WatchScope::Here) {
+            return followed;
         }
-        if !self.admitted(caller) {
-            return None;
-        }
-        self.broker.state().changed(&on_this_device(caller), scope)
+        let Some(presence) = &self.presence else {
+            return followed;
+        };
+        // A session opening, naming itself or leaving is news to who is here, as the roster's
+        // own changes are.
+        let sessions = presence.changed().map(|()| Ok(()));
+        Some(match followed {
+            Some(followed) => whichever_first(followed, sessions),
+            None => sessions,
+        })
     }
 
     /// Routed and authorized exactly as [`Self::observe`]: a caller that may
@@ -1448,7 +1659,9 @@ impl ActionProvider for RuntimeActionProvider {
         }
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.next_change(session.admission.caller(), id);
+            return session
+                .provider()
+                .next_change(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -1470,14 +1683,14 @@ impl ActionProvider for RuntimeActionProvider {
         let Some(session) = &self.session else {
             return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
-        if session.agent.is_none() {
+        if session.agent().is_none() {
             return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         if let Err(refusal) = session.check(caller, &self.workspaces) {
             return Pending::ready(Err(refusal.into()));
         }
         session
-            .provider
+            .provider()
             .confirm(session.admission.caller(), request)
     }
 
@@ -1501,7 +1714,7 @@ impl ActionProvider for RuntimeActionProvider {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.provider.cancel(session.admission.caller(), id);
+            return session.provider().cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));
@@ -1848,6 +2061,7 @@ fn serve_key_sessions(
                 session: None,
                 tickets: None,
                 invocations: Arc::clone(invocations),
+                presence: None,
             },
             workspace: workspace.to_owned(),
             actor: actor.to_owned(),

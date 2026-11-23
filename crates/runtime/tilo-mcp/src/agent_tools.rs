@@ -279,6 +279,10 @@ impl ActionProvider for Latest {
         self.provider().retire_execution(caller);
     }
 
+    fn introduced(&self, caller: &Caller, client: &str) {
+        self.provider().introduced(caller, client);
+    }
+
     fn query(
         &self,
         caller: &Caller,
