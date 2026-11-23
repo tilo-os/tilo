@@ -72,16 +72,4 @@ pub enum SleepAction {
         #[param("Whether the lid is closed")]
         closed: bool,
     },
-    /// Switch the machine to one of its power profiles
-    #[effect(kind = "outside")]
-    #[effect(
-        own_device,
-        icon = "battery",
-        keywords = "power profile, power mode, savings, balanced, performance, energiesparmodus"
-    )]
-    SetProfile {
-        /// The profile's name, one of those the reading offers
-        #[param("One of the machine's power profiles")]
-        profile: String,
-    },
 }

@@ -13,6 +13,7 @@ use crate::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
 struct Fake {
     power: Mutex<Power>,
+    power_refusal: Mutex<Option<String>>,
     update: Mutex<Update>,
     time: Mutex<Time>,
     keyboard_light: Mutex<KeyboardLight>,
@@ -28,6 +29,7 @@ impl Fake {
                 mode: Some(PowerMode::Balanced),
                 ..Power::default()
             }),
+            power_refusal: Mutex::new(None),
             update: Mutex::new(Update::default()),
             time: Mutex::new(Time {
                 zone: Some("Europe/Amsterdam".into()),
@@ -69,7 +71,13 @@ impl System for Fake {
     fn change(&self, change: &Change) -> Result<(), String> {
         self.changes.lock().unwrap().push(change.clone());
         match change {
-            Change::PowerMode(mode) => self.power.lock().unwrap().mode = Some(*mode),
+            Change::PowerMode(mode) => {
+                let refusal = self.power_refusal.lock().unwrap().clone();
+                if let Some(reason) = refusal {
+                    return Err(reason);
+                }
+                self.power.lock().unwrap().mode = Some(*mode);
+            }
             Change::Zone(zone) => {
                 let mut time = self.time.lock().unwrap();
                 time.zone = Some(zone.clone());
@@ -230,14 +238,16 @@ fn the_power_actions_switch_ask_and_refuse() {
     );
     services.settle();
     assert_eq!(services.read(POWER).unwrap()["mode"], json!("saver"));
-    assert!(matches!(
+    assert_eq!(
         services.invoke(
             POWER,
             "set-power-mode",
             &arguments(json!({"mode": "performance"}))
         ),
-        Some(Err(ApiError::InvalidArguments(_)))
-    ));
+        Some(Err(ApiError::InvalidArguments(
+            "this device offers no power mode performance".into()
+        )))
+    );
     for action in ["restart", "power-off", "log-out"] {
         assert_eq!(
             services.invoke(POWER, action, &Map::new()),
@@ -274,6 +284,36 @@ fn the_power_actions_switch_ask_and_refuse() {
             Change::Lock,
         ]
     );
+}
+
+#[test]
+fn a_power_mode_refusal_shows_in_problem() {
+    let fake = Fake::new();
+    *fake.power_refusal.lock().unwrap() = Some("power-profiles-daemon refused the switch".into());
+    let mut service = service(&fake);
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(POWER).unwrap()["pending"],
+        json!(["set-power-mode"])
+    );
+    service.settle();
+
+    let power = service.read(POWER).unwrap();
+    assert_eq!(power["mode"], json!("balanced"));
+    assert_eq!(power["pending"], json!([]));
+    assert_eq!(
+        power["problem"],
+        json!("power-profiles-daemon refused the switch")
+    );
+    assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Saver)]);
 }
 
 #[test]
