@@ -14,7 +14,7 @@ pub struct DocumentFormat {
 }
 
 /// What reads a word-processing document.
-const WRITER: &str = "word-processor import-docx-content or read-content";
+const WRITER: &str = "word-processor open-document";
 
 const PDF: DocumentFormat = DocumentFormat {
     extension: "pdf",
@@ -119,13 +119,13 @@ pub fn document_format(bytes: &[u8]) -> Option<DocumentFormat> {
 }
 
 /// What an agent is told of content an action does not open: what it is and what opens it,
-/// "this is a Word document; use word-processor import-docx-content or read-content". `None`
+/// "this is a Word document; use word-processor open-document". `None`
 /// when the bytes say nothing (plain text, or a format not known here).
 #[must_use]
 pub fn opened_by(bytes: &[u8]) -> Option<String> {
     if let Some(picture) = crate::image_format(bytes).filter(|format| format.extension != "svg") {
         return Some(format!(
-            "this is a picture ({}); use word-processor read-content, which shows it",
+            "this is a picture ({}); open it in Files, which shows it",
             picture.mime
         ));
     }
@@ -279,7 +279,7 @@ mod tests {
         let docx = zip(&[("word/document.xml", b"<w:document/>")]);
         assert_eq!(
             opened_by(&docx).as_deref(),
-            Some("this is a Word document; use word-processor import-docx-content or read-content")
+            Some("this is a Word document; use word-processor open-document")
         );
         assert_eq!(
             opened_by(b"%PDF-1.4").as_deref(),

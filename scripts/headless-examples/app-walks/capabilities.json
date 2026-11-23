@@ -48,19 +48,6 @@
       "shot": true
     },
     {
-      "id": "open-word-processor",
-      "said": "Open word-processor",
-      "ops": [
-        {
-          "open": {
-            "app": "word-processor",
-            "deadline": 30
-          }
-        }
-      ],
-      "shot": true
-    },
-    {
       "id": "open-chat",
       "said": "Open chat",
       "ops": [

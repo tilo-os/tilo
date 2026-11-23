@@ -1,7 +1,7 @@
 {
   "app": "file-explorer",
   "said": "Files",
-  "native": "file-explorer word-processor",
+  "native": "file-explorer",
   "rust": {
     "id": "so.tilo.file-explorer"
   },

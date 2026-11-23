@@ -2,11 +2,6 @@
   "app": "docs",
   "said": "Docs",
   "family": "apps",
-  "live": "rust",
-  "rust": {
-    "id": "so.tilo.word-processor",
-    "native": "word-processor"
-  },
   "steps": [
     {
       "id": "open",
@@ -139,5 +134,9 @@
         }
       ]
     }
-  ]
+  ],
+  "tl": {
+    "id": "so.tilo.word-processor",
+    "package": "word-processor"
+  }
 }
