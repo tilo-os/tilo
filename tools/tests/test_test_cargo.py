@@ -75,6 +75,12 @@ class TestCargo(unittest.TestCase):
             [],
         )
 
+    def test_a_fixture_payload_under_tests_still_cannot_run_cargo(self):
+        source = 'fn main() { Command::new("cargo").arg("build").output().unwrap(); }'
+        self.assertEqual(
+            found(source, "crates/x/tests/fixtures/payload/src/main.rs"), [1]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
