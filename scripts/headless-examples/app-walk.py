@@ -2329,7 +2329,7 @@ class Walk:
             self.session.start(apps=apps_of(spec, self.variant),
                                fresh=True, out=self.out / "logs", tag=self.variant,
                                tapps=tapps, session_args=session_args_of(spec, self.variant),
-                               env={**session_env(self.state), **devices_env(spec)})
+                               env={**session_env(self.state), **(devices_env(spec) or {})})
             try:
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
@@ -2853,7 +2853,7 @@ def main() -> int:
                 began = time.monotonic()
                 session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
                               session_args=session_args_of(first, variant),
-                              env={**session_env(state), **devices_env(first)})
+                              env={**session_env(state), **(devices_env(first) or {})})
                 try:
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
