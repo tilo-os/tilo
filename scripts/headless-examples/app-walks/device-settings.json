@@ -9,8 +9,8 @@
   },
   "steps": [
     {
-      "id": "open",
-      "said": "Open Settings",
+      "id": "displays",
+      "said": "Open the Displays page of this device",
       "ops": [
         {
           "theme": false
@@ -25,11 +25,158 @@
           "wait_for": "actions"
         },
         {
-          "targets": true
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "displays"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Displays"
+          }
         }
       ],
       "dark": true,
       "budget_ms": 30000
+    },
+    {
+      "id": "scale",
+      "said": "Ask the display to draw everything at 125%, and keep it",
+      "ops": [
+        {
+          "must": {
+            "see": [
+              "Scale"
+            ],
+            "within": 20
+          }
+        },
+        {
+          "press": "Scale"
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "125%"
+            },
+            "125%"
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "Try"
+            ],
+            "within": 10
+          }
+        },
+        {
+          "press": "Try"
+        },
+        {
+          "press_when_any": {
+            "selectors": [
+              "Keep"
+            ],
+            "within": 20
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.settings",
+            "operation": "inspect-display-configuration",
+            "is": {
+              "observed_outputs.0.scale": 1.25
+            }
+          }
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "power",
+      "said": "Change the idle power settings this computer offers",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "set-suspend-plugged-in",
+            "args": {
+              "minutes": 30
+            }
+          }
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "set-suspend-on-battery",
+            "args": {
+              "minutes": 45
+            }
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "settings-read",
+      "said": "What Settings holds for this device",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.settings",
+            "operation": "read",
+            "args": {
+              "item": "settings.power"
+            }
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.settings",
+            "operation": "read",
+            "args": {
+              "item": "power"
+            }
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "restart",
+      "said": "Sign in again; the power choices come back",
+      "ops": [
+        {
+          "restart": "session"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        }
+      ],
+      "budget_ms": 180000
+    },
+    {
+      "id": "kept-power",
+      "said": "The power settings still hold",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.settings",
+            "operation": "read",
+            "args": {
+              "item": "settings.power"
+            }
+          }
+        }
+      ],
+      "budget_ms": 20000
     }
   ]
 }

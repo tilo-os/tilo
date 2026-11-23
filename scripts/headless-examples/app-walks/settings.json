@@ -10,12 +10,25 @@
   },
   "steps": [
     {
-      "id": "open",
-      "said": "Open Settings",
+      "id": "files-open",
+      "said": "Open Files, so another app's window is open while the desktop restyles",
       "ops": [
         {
           "theme": false
         },
+        {
+          "open": "file-explorer"
+        },
+        {
+          "window_of": "file-explorer"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "settings-open",
+      "said": "Open Settings on its Appearance page",
+      "ops": [
         {
           "launch": true
         },
@@ -23,13 +36,282 @@
           "wait_for": "window"
         },
         {
-          "wait_for": "actions"
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "appearance"
+            }
+          }
         },
         {
-          "targets": true
+          "wait_for": {
+            "shown": "Light or dark"
+          }
+        },
+        {
+          "must": [
+            "Light or dark",
+            "Dark"
+          ]
         }
       ],
       "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "dark",
+      "said": "Switch the desktop to dark; the open Files window redraws without reopening",
+      "ops": [
+        {
+          "window_frames": "file-explorer"
+        },
+        {
+          "press": "Dark"
+        },
+        {
+          "window_frames": "file-explorer"
+        },
+        {
+          "window_of": "file-explorer"
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "accent",
+      "said": "Pick the blue accent; the desktop and Files take it",
+      "ops": [
+        {
+          "window_frames": "file-explorer"
+        },
+        {
+          "press": "Blue"
+        },
+        {
+          "window_frames": "file-explorer"
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "look",
+      "said": "Choose the Dusk look",
+      "ops": [
+        {
+          "press": "Dusk"
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "text-size",
+      "said": "Make the text larger and calmer in Accessibility",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "accessibility"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Larger"
+          }
+        },
+        {
+          "window_frames": "file-explorer"
+        },
+        {
+          "press": "Larger"
+        },
+        {
+          "window_frames": "file-explorer"
+        },
+        {
+          "press": "High contrast"
+        },
+        {
+          "press": "Reduce motion"
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "density",
+      "said": "Make the controls denser",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "appearance"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Compact"
+          }
+        },
+        {
+          "press": "Compact"
+        },
+        {
+          "window_frames": "file-explorer"
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "dnd",
+      "said": "Silence banners while the person works",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "notifications"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Do not disturb"
+          }
+        },
+        {
+          "press": "Do not disturb"
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "mono",
+      "said": "Combine the output's channels",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "set-mono-output",
+            "args": {
+              "on": true
+            }
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "language",
+      "said": "Show the desktop in German",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "choose-language",
+            "args": {
+              "language": "de"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Darstellung"
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "restart",
+      "said": "Sign in again; every choice comes back",
+      "ops": [
+        {
+          "restart": "session"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        }
+      ],
+      "budget_ms": 180000
+    },
+    {
+      "id": "kept",
+      "said": "The desktop is dark, violet, larger and German, and Files redrew in it",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": "Darstellung"
+          }
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "appearance"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Dunkel"
+          }
+        },
+        {
+          "must": [
+            "Dunkel"
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.settings",
+            "operation": "inspect-appearance",
+            "is": {
+              "theme": "dusk",
+              "mode": "dark",
+              "accent": "blue",
+              "text_scale": 1.3,
+              "density": 0.85,
+              "high_contrast": true,
+              "reduce_motion": true
+            }
+          }
+        },
+        {
+          "window_of": "file-explorer"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "english-again",
+      "said": "Put the desktop back in English",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "choose-language",
+            "args": {
+              "language": "en"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Appearance"
+          }
+        }
+      ],
       "budget_ms": 30000
     }
   ]
