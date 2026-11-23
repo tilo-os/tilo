@@ -1,11 +1,10 @@
 //! An agent a workspace's server works executes commands in the workspace's Terminal for its
 //! person, on their own server, and is held to what they allow.
 //!
-//! A command asks the person first, in the conversation the turn is in, and the person's own
-//! answer carries it out, once, with the agent told what it printed. A second command asks again. Once
+//! A command asks the person first, at a device of theirs, and their own answer carries it out,
+//! once, with the agent told what it printed. A second command asks again. Once
 //! the person allowed the agent that one action for good, from its Agents settings, it is
 //! carried out unasked, and taken back it asks again.
-use super::api_unattended::{Person, Sheet, beside};
 use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_agent};
 use super::*;
 use std::sync::Arc;
@@ -16,10 +15,7 @@ use tilo_server::workspaces::{
         scripted::{Linking, Reply, ScriptedProvider},
     },
 };
-use tilo_server_client::MemberApprover;
-use tilo_server_client::questions::{MemberQuestions, answer_questions};
 use tilo_workspace_service::agents::ServerAgents;
-use tokio::sync::mpsc;
 use ui::tilo_resource::{Id, Resource as _};
 
 const CHAT: &str = "so.tilo.chat";
@@ -38,9 +34,10 @@ struct OnTheirServer {
     browser: crate::support::Device,
     agents: ServerAgents,
     model: Arc<ScriptedProvider>,
-    address: tilo_server_client::ServerAddress,
     /// The server's own device, as the workspace's documents hold it.
     server_device: [u8; 32],
+    /// The server's own device, as a page of her own joins its workspace.
+    host_device: crate::support::Device,
     _state: tempfile::TempDir,
     _shells: tempfile::TempDir,
     /// The VM host the workspace's programs run on, when the server sells it one.
@@ -108,7 +105,6 @@ impl OnTheirServer {
         )
         .await;
         let actions = server.roster.actions.clone();
-        let address = tilo_server_client::ServerAddress::at(server.node_addr());
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let acts_for = ada.verifying_key().to_bytes();
@@ -157,8 +153,8 @@ impl OnTheirServer {
             browser,
             agents,
             model,
-            address,
             server_device: holder.cert.device_public_key,
+            host_device: holder,
             _state: state,
             _shells: shells,
             vms,
@@ -202,93 +198,8 @@ impl OnTheirServer {
     }
 
     /// The questions about an action the conversation holds, oldest first.
-    async fn questions(&self) -> Vec<(Id, chat::chat::Message)> {
-        let part = conversation_part(&self.workspaces, &self.workspace).await;
-        let mut asked: Vec<_> = part
-            .messages
-            .iter()
-            .filter(|(_, held)| {
-                held.question
-                    .as_ref()
-                    .is_some_and(|question| question.kind.0 == chat::question::ACTION)
-            })
-            .map(|(id, held)| (id.clone(), held.clone()))
-            .collect();
-        asked.sort_by_key(|(id, held)| (held.ts, id.to_string()));
-        asked
-    }
-
     /// Ada answers the question `message` asks with `answer`, at a device of hers.
-    async fn answers(&self, message: &Id, answer: &str) {
-        let saved = self
-            .workspaces
-            .resource_document(&self.workspace, CHAT, "")
-            .await
-            .unwrap()
-            .expect("the workspace's chat");
-        let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
-        let person = hex::encode(self.ada.verifying_key().to_bytes());
-        let answering = chat::messages::chat_messages::AnswerQuestion {
-            message: message.clone(),
-            answer: answer.to_owned(),
-            device: Some("browser".to_owned()),
-        };
-        let catalogue = crate::common::catalogue();
-        let governor = self.workspaces.governor().clone();
-        let part = chat::parts::part(0);
-        self.workspaces
-            .author_application(
-                &self.workspace,
-                &governor,
-                &catalogue,
-                CHAT,
-                part.as_str(),
-                |doc| {
-                    chat::demo::apply_part_doc_as(
-                        doc,
-                        &held,
-                        |replica| replica.as_invoker(&person),
-                        None,
-                        chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
-                    )
-                    .map_err(|error| format!("{error:?}"))
-                },
-            )
-            .await
-            .unwrap();
-    }
-
     /// The server looks until the question `message` asks says what came of its answer.
-    async fn settled(&self, message: &Id) -> chat::question::Question {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            Box::pin(self.agents.look(&self.workspace)).await.unwrap();
-            let part = conversation_part(&self.workspaces, &self.workspace).await;
-            let question = part
-                .messages
-                .get(message)
-                .and_then(|held| held.question.clone())
-                .expect("the question is in the conversation");
-            let ended = question.outcome.as_ref().is_some_and(|outcome| {
-                [
-                    chat::question::DONE,
-                    chat::question::DROPPED,
-                    chat::question::FAILED,
-                ]
-                .contains(&outcome.outcome.0.as_str())
-            });
-            if ended {
-                return question;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the server never said what came of the answer: {:?}",
-                question.outcome
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
     /// What the model was shown, every request's last message, for a failed assertion.
     fn shown(&self) -> String {
         self.model
@@ -321,7 +232,7 @@ fn executes(call: &str, command: &str) -> Reply {
 /// words it can tell its person, and nothing is run or asked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_approved_without_the_terminal_runs_no_command() {
-    let hosted = OnTheirServer::start_with(None, &[CHAT]).await;
+    let mut hosted = OnTheirServer::start_with(None, &[CHAT]).await;
     hosted
         .turn(
             "Say hello in the shell",
@@ -337,69 +248,49 @@ async fn an_agent_approved_without_the_terminal_runs_no_command() {
         hosted.shown()
     );
     assert!(!hosted.was_shown("first-echo-42"), "nothing was run");
-    assert!(hosted.questions().await.is_empty(), "nobody was asked");
+    assert!(hosted.page.asks().await.is_empty(), "nobody was asked");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_answer() {
+async fn an_agents_command_asks_first_and_is_done_once_on_its_persons_answer() {
     Box::pin(command_asks_then_is_done()).await;
 }
 
-async fn command_asks_then_is_done() {
-    let hosted = OnTheirServer::start().await;
-    // Ada's tab holds her root: whatever the server puts to her device shows there.
-    let approver = MemberApprover::new(hosted.address.clone());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &approver,
-        root: &hosted.ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
-
-    beside(
-        &mut page,
-        Box::pin(hosted.turn(
-            "Say hello in the shell",
-            vec![
-                executes("first", "echo first-echo-$((40+2))"),
-                Reply::text("I asked you first."),
-            ],
-        )),
-    )
+async fn command_asks_then_is_done() async fn command_asks_then_is_done() {
+    let mut hosted = OnTheirServer::start().await;
+    Box::pin(hosted.turn(
+        "Say hello in the shell",
+        vec![
+            executes("first", "echo first-echo-$((40+2))"),
+            Reply::text("I asked you first."),
+        ],
+    ))
     .await;
-    let asked_in_conversation = beside(&mut page, hosted.questions()).await;
+    let asked = hosted.page.asks().await;
     assert_eq!(
-        (asked_in_conversation.len(), person.questions()),
-        (1, 0),
-        "the command is asked in the conversation, not on a device; the model was shown:\n{}",
+        asked.len(),
+        1,
+        "the command waits for its person; the model was shown:\n{}",
         hosted.shown()
     );
     assert!(!hosted.was_shown("first-echo-42"), "nothing was done yet");
-    let (question, _) = asked_in_conversation.into_iter().next().unwrap();
+    // The person reads the command that would run before allowing it.
+    assert!(
+        asked[0]
+            .facts
+            .iter()
+            .any(|fact| fact.value.contains("first-echo")),
+        "{:?}",
+        asked[0]
+    );
 
     // Her answer carries it out, once, and her assistant is told what it printed.
     hosted.model.then(Reply::text("It printed first-echo-42."));
-    beside(&mut page, hosted.answers(&question, "allow")).await;
-    let settled = beside(&mut page, hosted.settled(&question)).await;
-    assert_eq!(
-        settled
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.outcome.0.as_str()),
-        Some(chat::question::DONE),
-        "{settled:?}"
-    );
+    hosted
+        .page
+        .resolve(&asked[0], "approve", None)
+        .await
+        .expect("the person allows it");
     let deadline = tilo_test_env::hang_deadline();
     while !hosted.was_shown("first-echo-42") {
         assert!(
@@ -407,38 +298,29 @@ async fn command_asks_then_is_done() {
             "the assistant is told what the command printed; it was shown:\n{}",
             hosted.shown()
         );
-        beside(&mut page, hosted.agents.look(&hosted.workspace))
-            .await
-            .unwrap();
-        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+        hosted.agents.look(&hosted.workspace).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(
+        hosted.page.asks().await.is_empty(),
+        "answered, it waits for nobody"
+    );
 
     // A second command in the same conversation asks again, the same way.
-    beside(
-        &mut page,
-        Box::pin(hosted.turn(
-            "And once more",
-            vec![
-                executes("second", "echo second-echo"),
-                Reply::text("I asked you again."),
-            ],
-        )),
-    )
+    Box::pin(hosted.turn(
+        "And once more",
+        vec![
+            executes("second", "echo second-echo"),
+            Reply::text("I asked you again."),
+        ],
+    ))
     .await;
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let again = beside(&mut page, hosted.questions()).await;
-        if again.len() == 2 || Instant::now() >= deadline {
-            assert_eq!(
-                (again.len(), person.questions()),
-                (2, 0),
-                "the second command is asked too; the model was shown:\n{}",
-                hosted.shown()
-            );
-            break;
-        }
-        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
-    }
+    assert_eq!(
+        hosted.page.asks().await.len(),
+        1,
+        "the second command is asked too; the model was shown:\n{}",
+        hosted.shown()
+    );
 }
 
 impl OnTheirServer {
@@ -519,7 +401,7 @@ async fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_take
 
 async fn allowed_commands_go_unasked() {
     use tilo_action_policy::agent_answers::AnswerScope;
-    let hosted = OnTheirServer::start().await;
+    let mut hosted = OnTheirServer::start().await;
     let terminal = ui::apps::TERMINAL;
     // Terminal as a whole is not hers to allow: an outside effect goes unasked only for the one
     // action she names.
@@ -548,7 +430,7 @@ async fn allowed_commands_go_unasked() {
         "the command ran unasked; the model was shown:\n{}",
         hosted.shown()
     );
-    assert!(hosted.questions().await.is_empty(), "nobody was asked");
+    assert!(hosted.page.asks().await.is_empty(), "nobody was asked");
 
     // Taken back, the next command asks again.
     hosted.bound(&[]).await.unwrap();
@@ -561,7 +443,7 @@ async fn allowed_commands_go_unasked() {
             ],
         )
         .await;
-    assert_eq!(hosted.questions().await.len(), 1, "{}", hosted.shown());
+    assert_eq!(hosted.page.asks().await.len(), 1, "{}", hosted.shown());
     assert!(!hosted.was_shown("again-42"), "nothing ran");
 }
 
@@ -784,59 +666,30 @@ async fn a_commands_git_identity_is_the_agent_that_asked_as_the_workspace_names_
     Box::pin(identity_in_the_vm()).await;
 }
 
-async fn identity_in_the_vm() {
-    let hosted = OnTheirServer::start_with_vm().await;
-    let approver = MemberApprover::new(hosted.address.clone());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &approver,
-        root: &hosted.ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
-
-    beside(
-        &mut page,
-        Box::pin(hosted.turn(
-            "Commit in the shell",
-            vec![
-                executes(
-                    "commit",
-                    "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'",
-                ),
-                Reply::text("I asked you first."),
-            ],
-        )),
-    )
+async fn identity_in_the_vm() async fn identity_in_the_vm() {
+    let mut hosted = OnTheirServer::start_with_vm().await;
+    Box::pin(hosted.turn(
+        "Commit in the shell",
+        vec![
+            executes(
+                "commit",
+                "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'",
+            ),
+            Reply::text("I asked you first."),
+        ],
+    ))
     .await;
-    let asked_in_conversation = beside(&mut page, hosted.questions()).await;
-    let (question, _) = asked_in_conversation
+    let asked = hosted.page.asks().await;
+    let question = asked
         .into_iter()
         .next()
         .expect("the command is asked before it runs");
-
     hosted.model.then(Reply::text("It ran."));
-    beside(&mut page, hosted.answers(&question, "allow")).await;
-    let settled = beside(&mut page, hosted.settled(&question)).await;
-    assert_eq!(
-        settled
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.outcome.0.as_str()),
-        Some(chat::question::DONE),
-        "the command ran: {settled:?}; the model was shown:\n{}",
-        hosted.shown()
-    );
+    hosted
+        .page
+        .resolve(&question, "approve", None)
+        .await
+        .expect("the person allows it");
 
     let deadline = tilo_test_env::hang_deadline();
     let vms = hosted
@@ -878,26 +731,40 @@ async fn identity_in_the_vm() {
                 hosted.page.workspace.to_string(),
                 hex::encode(hosted.ada.verifying_key().to_bytes()),
             );
-            let asked_before = person.questions();
-            let (text, failed) = beside(
-                &mut page,
-                Box::pin(super::agent_mcp::tool(
-                    &mcp,
-                    "tilo_do",
-                    serde_json::json!({
-                        "path": "terminal#run",
-                        "args": {"command": "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'"},
-                    }),
-                )),
-            )
+            let (text, failed) = Box::pin(super::agent_mcp::tool(
+                &mcp,
+                "tilo_do",
+                serde_json::json!({
+                    "path": "terminal#run",
+                    "args": {"command": "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'"},
+                }),
+            ))
             .await;
             assert!(!failed, "her command is taken: {text}");
-            let mut allowed = false;
-            loop {
-                if !allowed && person.questions() > asked_before {
-                    person.answer(tilo_server_protocol::certify::ConfirmationAnswer::AllowOnce);
-                    allowed = true;
+            // It waits for her own yes, at another device of hers.
+            let other = enrol(&hosted.ada, "Ada's other browser", DeviceCapabilities::member());
+            let mut at = Browser::open_at(
+                &hosted.server,
+                &other,
+                &hosted.host_device,
+                &hosted.workspace,
+            )
+            .await;
+            let question = loop {
+                if let Some(question) = at.asks().await.into_iter().next() {
+                    break question;
                 }
+                assert!(
+                    Instant::now() < deadline,
+                    "her command is never put to her: {}",
+                    hosted.shown()
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            at.resolve(&question, "approve", None)
+                .await
+                .expect("the person allows her own command");
+            loop {
                 let launched = vms.launched();
                 let mut hers = launched
                     .iter()
@@ -931,7 +798,7 @@ async fn identity_in_the_vm() {
                     Instant::now() < deadline,
                     "her command never reached the workspace's VM: {launched:?}"
                 );
-                beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
         assert!(
@@ -940,6 +807,6 @@ async fn identity_in_the_vm() {
             vms.wakes_asked(),
             hosted.shown()
         );
-        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
