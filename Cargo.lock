@@ -23465,6 +23465,7 @@ dependencies = [
  "jiff",
  "libc",
  "mail-engine",
+ "notify",
  "runtime-dylib",
  "runtime-portal",
  "serde_json",
