@@ -113,8 +113,20 @@ type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
 /// session's own reads only this: such a read often waits with its whole thread, and a task of
 /// that thread queued for a workspace's lock, or for the registry's, would be handed the lock's
 /// next turn and never be polled to take it.
-#[derive(Default)]
-pub(super) struct Readings(pub(super) std::sync::Mutex<HashMap<WorkspaceId, (Governed, Reading)>>);
+pub(super) struct Readings(
+    pub(super) std::sync::Mutex<HashMap<WorkspaceId, (Governed, Reading)>>,
+    /// Moves whenever a workspace is held here that was not before.
+    tokio::sync::watch::Sender<u64>,
+);
+
+impl Default for Readings {
+    fn default() -> Self {
+        Self(
+            std::sync::Mutex::default(),
+            tokio::sync::watch::Sender::new(0),
+        )
+    }
+}
 
 impl Readings {
     pub(super) fn of(
@@ -135,7 +147,18 @@ impl Readings {
     ) {
         let mut known = self.0.lock_recover();
         known.retain(|_, (of, _)| of.strong_count() > 0);
-        known.insert(workspace, (std::sync::Arc::downgrade(governed), reading));
+        let held = known
+            .insert(workspace, (std::sync::Arc::downgrade(governed), reading))
+            .is_none();
+        drop(known);
+        if held {
+            self.1.send_modify(|holds| *holds = holds.wrapping_add(1));
+        }
+    }
+
+    /// What moves whenever a workspace is held here that was not before.
+    pub(super) fn holds(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.1.subscribe()
     }
 
     /// Read `governed`, held here as `workspace`, from now on.

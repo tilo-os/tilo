@@ -348,12 +348,12 @@ impl tilo_session_client::engine::Founder for Founding {
     fn ask(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
-        action: &str,
+        target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
         let named = workspace.to_string();
-        let request = governance_request(&named, action, arguments);
+        let request = holder_request(target, arguments);
         // The service holds a workspace this device is the holder of: it shares this device's key,
         // and answers it here as it answers every other member's device.
         if engine.is_holder(&named) {
@@ -448,15 +448,14 @@ async fn hand_the_group(engine: &Engine, workspace: tilo_desktop_model::Workspac
 /// What a request no holder answered says.
 const UNANSWERED: &str = "the workspace's holder dropped the request";
 
-/// `workspace`'s governance action `action` with `arguments`, as an invocation of it.
-fn governance_request(
-    workspace: &str,
-    action: &str,
+/// The action `target` with `arguments`, as an invocation of it.
+fn holder_request(
+    target: RemoteActionTarget,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(workspace, action),
+        target,
         argument: InvokeArgument::Json(arguments),
 
         context: None,

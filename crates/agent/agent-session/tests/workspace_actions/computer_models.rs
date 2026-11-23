@@ -224,3 +224,75 @@ async fn with_no_model_linked_the_agent_says_so_in_chat_in_its_persons_language(
     );
     assert!(theirs.asked().is_empty(), "no provider is asked");
 }
+
+/// The model `workspace` runs on by default, once it names one: read again on each change of the
+/// settings the workspaces keep, until `wanted` says it is the one, for at most ten seconds.
+async fn runs_on(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    wanted: &str,
+) -> bool {
+    let mut changes = workspaces.person_settings_changes();
+    let linked = || {
+        let models = workspaces.workspace_models(workspace);
+        models
+            .default_profile
+            .as_ref()
+            .and_then(|id| models.profiles.iter().find(|profile| &profile.id == id))
+            .and_then(|profile| profile.default_model.clone())
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while linked().as_deref() != Some(wanted) {
+            changes.changed().await.expect("the workspaces stay open");
+        }
+    })
+    .await
+    .is_ok()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_the_computer_keeps_after_it_started_runs_on_its_choice_at_once() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let first = workspaces.create("Home").await.unwrap().workspace;
+
+    // Ada chose a model Ollama runs on her computer in its Agent models pane.
+    let settings = crate::support::scratch_dir();
+    let computer = settings_store::profile(settings.path());
+    ollama(&["llama3.2", "qwen3"], "llama3.2")
+        .save_in(&*computer)
+        .unwrap();
+    workspaces.follow_choice_in(computer.clone());
+    assert!(
+        runs_on(&workspaces, &first, "llama3.2").await,
+        "the workspace it kept when it started runs on her choice"
+    );
+
+    // Later she makes another workspace there: it runs on her choice at once, with no change in
+    // the pane to bring it.
+    let later = workspaces.create("Studio").await.unwrap().workspace;
+    assert!(
+        runs_on(&workspaces, &later, "llama3.2").await,
+        "a workspace kept after start-up runs on the computer's choice"
+    );
+
+    // A new choice in the pane follows into both.
+    ollama(&["llama3.2", "qwen3"], "qwen3")
+        .save_in(&*computer)
+        .unwrap();
+    for workspace in [&first, &later] {
+        assert!(
+            runs_on(&workspaces, workspace, "qwen3").await,
+            "the pane's new choice reaches {workspace}"
+        );
+    }
+}

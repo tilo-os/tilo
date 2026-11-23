@@ -200,6 +200,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 tasks-model = { path = "../../../apps/tasks-model" }
 tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
+# The settings a computer's Agent models pane keeps, apart from this process's own.
+settings-store = { path = "../../system/settings-store" }
 # The workspace's machine secrets.
 tilo-environment = { path = "../../vm/environment" }
 # The API server, driven through its HTTP routes against the relay.

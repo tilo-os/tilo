@@ -1381,6 +1381,9 @@ fn broker_services(
                     // are entries in their Servers workspace, which this
                     // session's own workspace service keeps.
                     crate::machine_steps::MachineSteps::session(engine.clone()),
+                    // The models each workspace's work runs on, which its holder keeps: this
+                    // device's own service for a workspace it holds.
+                    crate::model_steps::ModelSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
                         hosting,

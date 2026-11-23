@@ -248,59 +248,77 @@ impl Workspaces {
 
     /// Link this computer's Agent models choice into every workspace this service keeps, once,
     /// and from then on each new choice the pane makes into the workspaces that still run on
-    /// this computer's last ([`Linking`]). The choice is read from this process's settings, the
-    /// computer's own; it is followed for as long as the service runs.
+    /// this computer's last ([`Linking`]). A workspace the service starts keeping later is linked
+    /// once as it is held. The choice is read from this process's settings, the computer's own;
+    /// it is followed for as long as the service runs.
     pub fn follow_this_computer(&self) {
-        let Some(source) = settings_store::source() else {
-            return;
-        };
-        let (ring, mut rings) = tokio::sync::mpsc::unbounded_channel::<()>();
+        if let Some(source) = settings_store::source() {
+            self.follow_choice_in(source);
+        }
+    }
+
+    /// [`Self::follow_this_computer`], with the choice read from `source`.
+    pub fn follow_choice_in(&self, source: std::sync::Arc<dyn settings_store::SettingsSource>) {
+        let (ringer, mut rings) = tokio::sync::mpsc::unbounded_channel::<()>();
         let listener: std::sync::Arc<settings_store::Listener> = std::sync::Arc::new(move || {
-            let _ = ring.send(());
+            let _ = ringer.send(());
         });
         source.changes().listen(&listener);
+        let mut holds = self.inner.readings.holds();
         let workspaces = self.clone();
         tokio::spawn(async move {
             // The settings ring it for as long as it is held.
             let _listening = listener;
-            let mut how = Linking::Once;
+            let mut linked = std::collections::BTreeSet::<String>::new();
             let mut seen: Option<ProviderConfig> = None;
             loop {
-                let held: Vec<String> = workspaces
-                    .inner
-                    .workspaces
-                    .lock()
-                    .await
-                    .keys()
-                    .cloned()
-                    .collect();
+                holds.mark_unchanged();
+                let held = workspaces.inner.readings.workspaces();
                 let linking = workspaces.clone();
                 let before = seen.clone();
+                let known = linked.clone();
+                let from = std::sync::Arc::clone(&source);
                 let read = tokio::task::spawn_blocking(move || {
-                    let computer = ProviderConfig::load();
-                    // Every change of the settings rings; only a change of the choice links.
-                    if how == Linking::Following && before.as_ref() == Some(&computer) {
-                        return computer;
-                    }
-                    for workspace in held {
-                        if let Err(error) = linking.link_this_computer(&workspace, &computer, how) {
+                    let computer = ProviderConfig::load_in(&*from);
+                    // Every change of the settings rings; only a change of the choice follows.
+                    let follows = before.as_ref().is_some_and(|before| *before != computer);
+                    for workspace in &held {
+                        let how = if !known.contains(workspace) {
+                            Linking::Once
+                        } else if follows {
+                            Linking::Following
+                        } else {
+                            continue;
+                        };
+                        if let Err(error) = linking.link_this_computer(workspace, &computer, how) {
                             tracing::warn!(%workspace, %error, "this computer's model choice is not linked into a workspace");
                         }
                     }
-                    computer
+                    (computer, held)
                 })
                 .await;
                 match read {
-                    Ok(computer) => seen = Some(computer),
+                    Ok((computer, held)) => {
+                        seen = Some(computer);
+                        linked.extend(held);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "this computer's model choice was not read");
                     }
                 }
-                if rings.recv().await.is_none() {
-                    return;
+                tokio::select! {
+                    heard = rings.recv() => {
+                        if heard.is_none() {
+                            return;
+                        }
+                        while rings.try_recv().is_ok() {}
+                    }
+                    held = holds.changed() => {
+                        if held.is_err() {
+                            return;
+                        }
+                    }
                 }
-                while rings.try_recv().is_ok() {}
-                how = Linking::Following;
             }
         });
     }

@@ -100,7 +100,8 @@ impl Workspaces {
     }
 
     /// Fires whenever a workspace's accounts or providers kept here change.
-    pub(super) fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    #[must_use]
+    pub fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.person_settings_moved.subscribe()
     }
 

@@ -235,13 +235,14 @@ pub trait Founder: Send + Sync {
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Ask `workspace`'s governance action `action` with `arguments` of its holder: this
-    /// device's own service when it holds `workspace`, else the holder its enrollment names, on
-    /// the device action service. `None` when this device reaches no holder of it.
+    /// Ask `workspace`'s action `target` (its governance's, or the models its work runs on) with
+    /// `arguments` of its holder: this device's own service when it holds `workspace`, else the
+    /// holder its enrollment names, on the device action service. `None` when this device reaches
+    /// no holder of it.
     fn ask(
         &self,
         workspace: WorkspaceId,
-        action: &str,
+        target: tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
 
@@ -1411,11 +1412,28 @@ impl Engine {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
+        let target = tilo_actions::remote::RemoteActionTarget::workspace_governance(
+            &workspace.to_string(),
+            action,
+        );
+        self.ask_holder_of(workspace, target, arguments)
+    }
+
+    /// Ask `workspace`'s action `target` with `arguments` of its holder, as this device
+    /// ([`Founder::ask`]): what [`Self::ask_holder`] asks of its governance, for any action the
+    /// holder answers its members' devices.
+    #[must_use]
+    pub fn ask_holder_of(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
         let mut ended = self.founded.subscribe();
         if !self.founding.lock_recover().contains(&workspace) {
-            return self.founders.get()?.ask(workspace, action, arguments);
+            return self.founders.get()?.ask(workspace, target, arguments);
         }
-        let (engine, action) = (Arc::clone(self), action.to_owned());
+        let (engine, action) = (Arc::clone(self), target);
         Some(Box::pin(async move {
             while engine.founding.lock_recover().contains(&workspace) {
                 if ended.changed().await.is_err() {
@@ -1425,7 +1443,7 @@ impl Engine {
             match engine
                 .founders
                 .get()
-                .and_then(|founder| founder.ask(workspace, &action, arguments))
+                .and_then(|founder| founder.ask(workspace, action, arguments))
             {
                 Some(asked) => asked.await,
                 None => Err("this device reaches no holder of the workspace".to_owned()),

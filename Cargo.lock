@@ -17439,6 +17439,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "settings-store",
  "sha2 0.11.0",
  "sheets",
  "shortcuts",

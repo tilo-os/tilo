@@ -8,8 +8,9 @@
 //! [`crate::work`]): it does when [`takes_turn`](crate::work::takes_turn) says
 //! it is this device's turn, runs it through the [`HostJobs`] its embedder
 //! installed, and answers with what it produced. And a workspace's governance
-//! actions (inviting someone, listing and cancelling invitations) are decided
-//! as the workspace's governance decides them for the asking device's
+//! actions (inviting someone, listing and cancelling invitations) and the
+//! models its work runs on ([`tilo_actions::remote::person_models`]) are
+//! decided as the workspace's governance decides them for the asking device's
 //! certificate, and so are the host's own operations (`account/…`: the person's
 //! workspace list, making and deleting workspaces) for a device that asks them
 //! as itself. A run on a workspace's Linux machine is taken the same way
@@ -100,8 +101,8 @@ impl DeviceWork {
         Some(super::ServiceWorkspaceActions { shared })
     }
 
-    /// `request`, an invocation of a workspace's governance by a device of its roster, decided
-    /// as the workspace's governance decides it for that device's certificate.
+    /// `request`, an invocation of a workspace's governance or of its models by a device of its
+    /// roster, decided as the workspace's governance decides it for that device's certificate.
     fn govern(
         self: &Arc<Self>,
         caller: &Caller,
@@ -834,9 +835,17 @@ fn not_served() -> ActionCallError {
     }
 }
 
+/// Whether `provider` is answered by a workspace's governance here: its own actions, and the
+/// models its work runs on, which the device holding the workspace keeps for its members' devices
+/// as a host keeps them for a page.
+fn governed(provider: &str) -> bool {
+    provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+        || provider == tilo_actions::remote::person_models::PROVIDER
+}
+
 impl ActionProvider for Answers {
     fn serves(&self, provider: &str) -> bool {
-        provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+        governed(provider)
             || provider == HOST_ACTIONS_PROVIDER
             || provider == WORK_PROVIDER
             || self.0.provided(provider).is_some()
@@ -862,7 +871,7 @@ impl ActionProvider for Answers {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
+        if governed(&request.target.provider) {
             return self.0.govern(caller, request);
         }
         if request.target.provider == HOST_ACTIONS_PROVIDER {
