@@ -3,7 +3,10 @@
 use imager_backend::{
     destination_security,
     migration::PinnedDirectory,
-    setup::migration_handoff::{self, Plan},
+    setup::{
+        helper_arguments,
+        migration_handoff::{self, Plan},
+    },
 };
 use std::{
     ffi::OsString,
@@ -56,17 +59,18 @@ fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<Grants> {
     if values.len() != 4 {
         return Err(failure());
     }
-    let get = |name: &str| values.get(name).cloned().ok_or_else(failure);
     let grants = Grants {
-        plans: PathBuf::from(get("--plans")?),
-        operation: get("--operation")?.into_string().map_err(|_| failure())?,
-        home: PathBuf::from(get("--home")?),
-        workspace: PathBuf::from(get("--workspace")?),
+        plans: helper_arguments::path(&values, "--plans", failure)?,
+        operation: values
+            .get("--operation")
+            .cloned()
+            .ok_or_else(failure)?
+            .into_string()
+            .map_err(|_| failure())?,
+        home: helper_arguments::path(&values, "--home", failure)?,
+        workspace: helper_arguments::path(&values, "--workspace", failure)?,
     };
     for path in [&grants.plans, &grants.home, &grants.workspace] {
-        if !path.is_absolute() {
-            return Err(failure());
-        }
         private(path)?;
     }
     if grants.workspace
