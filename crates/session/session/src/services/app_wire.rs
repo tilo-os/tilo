@@ -13,7 +13,7 @@ use ui::host_operation::ResourceOperationStart;
 use tilo_workspace_service::apps::collab_broker::FanoutState;
 
 use crate::app_wire::AppWire;
-use crate::app_wire::{LayoutAuthority, Sealed, ShortcutLibrary};
+use crate::app_wire::{LayoutAuthority, Sealed};
 use crate::{
     AppSocket, Options, Service, Services, activity, activity_provider, app_wire, surfaces,
 };
@@ -230,7 +230,6 @@ pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
-    shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     services: Knitted,
     collaboration: Collaboration<'_>,
@@ -297,7 +296,6 @@ pub(crate) fn start_app_wire(
             content: Some(std::sync::Arc::clone(&options.content)),
             records,
             layout: std::sync::Arc::clone(&layout),
-            shortcuts,
             activity: activity_wire,
             agents: services.agents,
             agent_sessions: services.agent_sessions,

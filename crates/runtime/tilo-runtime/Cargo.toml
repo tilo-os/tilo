@@ -113,6 +113,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+# The person's saved chords, which a shortcut's keyboard trigger may not take.
+settings-store = { path = "../../system/settings-store" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.

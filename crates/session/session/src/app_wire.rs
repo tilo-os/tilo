@@ -34,9 +34,8 @@ use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, 
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WifiContinuityServices, WorkspaceMemberships,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
+    SpeakerServices, WifiContinuityServices, WorkspaceMemberships,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -366,9 +365,8 @@ pub struct Sealed {
 
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
-/// in, the session it decides a workspace against, the shortcuts it saves and
-/// runs, the workspace's activity it serves, and the runs of what people ask
-/// its agents.
+/// in, the session it decides a workspace against, the workspace's activity it
+/// serves, and the runs of what people ask its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     /// The calls this session's apps join: the service an app's
@@ -379,7 +377,6 @@ pub struct Hosted {
     /// what search finds of an app that never opened them here.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
-    pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -584,102 +581,6 @@ pub(crate) fn owner_publisher(
             ),
         )
     })
-}
-
-/// The workspace's shortcuts as the broker keeps and runs them: a shortcut a
-/// person saves is one of its workspace's settings, and a run executes on
-/// `runtime`.
-pub struct ShortcutLibrary {
-    runtime: tokio::runtime::Handle,
-    /// The workspaces this device's records are held in: where a saved shortcut
-    /// is written. A session that holds none saves none.
-    engine: Option<std::sync::Arc<crate::engine::Engine>>,
-}
-
-impl ShortcutLibrary {
-    /// A library whose runs execute on `runtime`, saving into the workspaces of
-    /// `engine`.
-    #[must_use]
-    pub fn new(
-        runtime: tokio::runtime::Handle,
-        engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    ) -> Self {
-        Self { runtime, engine }
-    }
-}
-
-/// Store `request`'s change in its workspace: signed as the saver's own device
-/// ([`tilo_peer_state::workspace::sign_saved_shortcut`]), then written into the
-/// workspace's document as one of its settings. Every device of the workspace
-/// admits the write by the same rule, and reads the shortcut back from the
-/// document.
-async fn save_shortcut(
-    engine: std::sync::Arc<crate::engine::Engine>,
-    request: ShortcutLibraryRequest,
-) -> Result<(), String> {
-    let (key, device) = tilo_identity::broker::trusted_current_device(&request.workspace)
-        .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
-    if request.actor.person_id() != Some(hex::encode(device.user_public_key).as_str()) {
-        return Err("a shortcut is saved from its saver's own device".into());
-    }
-    let change = match &request.change {
-        tilo_automation::ShortcutChange::Save(shortcut) => {
-            let mut shortcut = shortcut.as_ref().clone();
-            // A trigger this device cannot watch would be saved into a shortcut
-            // that never runs: the person is told now.
-            for trigger in &shortcut.triggers {
-                tilo_workspace_service::apps::automation::validate_trigger(trigger)?;
-            }
-            tilo_peer_state::workspace::sign_saved_shortcut(
-                &request.workspace,
-                &mut shortcut,
-                &device,
-                &key,
-            )?;
-            tilo_automation::ShortcutChange::Save(Box::new(shortcut))
-        }
-        delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),
-    };
-    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-        workspace: request.workspace,
-        operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-            invocation: uuid::Uuid::new_v4(),
-            caller: device,
-            command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
-                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
-            ),
-        },
-    };
-    engine
-        .owner()
-        .commit_workspace_membership_command(request, &key, std::time::SystemTime::now())
-        .await
-        .map(drop)
-}
-
-impl ShortcutLibraryServices for ShortcutLibrary {
-    fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
-        settings_store::hardware::ShortcutConfig::load()
-    }
-
-    fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore {
-        let Some(engine) = self.engine.clone() else {
-            return Box::pin(std::future::ready(Err(
-                "this session keeps no shortcuts".to_owned()
-            )));
-        };
-        let runtime = self.runtime.clone();
-        Box::pin(async move {
-            runtime
-                .spawn(save_shortcut(engine, request))
-                .await
-                .map_err(|_| "this session stopped before it saved the shortcut".to_owned())?
-        })
-    }
-
-    fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
-        Ok(self.runtime.clone())
-    }
 }
 
 /// The session the broker's thread decides against: the workspaces it shows and
@@ -1194,7 +1095,6 @@ fn broker_services(
         content,
         records,
         layout,
-        shortcuts,
         activity,
         agents,
         agent_sessions,
@@ -1220,7 +1120,6 @@ fn broker_services(
         item_lending,
         fanout: _,
     } = hosted;
-    let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
@@ -1324,9 +1223,11 @@ fn broker_services(
         workspace_governance: BrokerService::unserved(
             "workspace grants are given in the session's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands on the shell, and a shortcut's run
-        // executes on the session's runtime.
-        shortcut_library: BrokerService::served(shortcut_library),
+        // A shortcut a person saves lands in its workspace, and a shortcut's run executes on the
+        // device's runtime: this session installs neither.
+        shortcut_library: BrokerService::unserved(
+            "shortcuts are saved and run by the device's own broker, not by this session",
+        ),
         // The device's shortcut catalogue, as the shortcut guide and
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
@@ -1841,7 +1742,6 @@ mod tests {
                 crate::engine::revocations_of(None),
                 Names::default(),
             )),
-            shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -1877,20 +1777,6 @@ mod tests {
                 tilo_workspace_service::service::ServiceSlot::default(),
             ),
         }
-    }
-
-    /// A shortcut library whose runs would execute on a runtime of the
-    /// tests' own. Nothing starts a run here: these tests publish and read,
-    /// they save no shortcut.
-    fn library() -> std::sync::Arc<ShortcutLibrary> {
-        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        let runtime = RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime for shortcut runs")
-        });
-        std::sync::Arc::new(ShortcutLibrary::new(runtime.handle().clone(), None))
     }
 
     tilo_test_env::scenario! {

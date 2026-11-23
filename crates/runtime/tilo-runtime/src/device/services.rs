@@ -43,7 +43,7 @@ use tilo_workspace_service::apps::{
     collab_core::{BrokerChannels, BrokerSealChecks},
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{LauncherServices, ProcessServices, WorkspaceAuthority},
+    services::{LauncherServices, ProcessServices, ShortcutLibraryServices, WorkspaceAuthority},
 };
 use tilo_workspace_service::workspaces::Refusal;
 
@@ -657,7 +657,7 @@ fn start_broker(
                 as Arc<dyn OwnerCommitService>,
         ),
         None,
-        broker_services(parts, policy_time),
+        broker_services(parts, policy_time)?,
         channels,
         fanout,
     )?;
@@ -670,7 +670,7 @@ fn start_broker(
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-) -> ProcessServices {
+) -> io::Result<ProcessServices> {
     let document_content =
         super::content::document_content(parts.workspaces, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
@@ -710,7 +710,7 @@ fn broker_services(
                 ),
             )));
     }
-    ProcessServices {
+    Ok(ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             policy_time,
             workspaces: Arc::downgrade(parts.workspaces),
@@ -726,12 +726,18 @@ fn broker_services(
         })),
         journal_root: Some(parts.root.join(INVOCATION_JOURNAL)),
         document_content: Some(document_content),
+        // The person's shortcuts, saved into the workspaces this device holds and run here: the
+        // same store the trigger runner arms them from, so a computer keeps its shortcuts with
+        // no desktop session open on it.
+        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(Arc::clone(
+            parts.workspaces,
+        ))?) as Arc<dyn ShortcutLibraryServices>),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
         action_offload,
         ..ProcessServices::default()
-    }
+    })
 }
 
 fn execution_policy_clock() -> io::Result<(

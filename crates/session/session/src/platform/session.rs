@@ -1219,19 +1219,14 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own, and what a person saves through the action API is one
-        // of its workspace's settings, written into the workspace's records
-        // and shown on the shell on the loop's next pass.
+        // of its own; the shortcuts themselves are saved and run by the
+        // device's own broker.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
             .map_err(crate::Error::host)?;
-        let shortcut_library = crate::app_wire::ShortcutLibrary::new(
-            automation_runtime.handle().clone(),
-            engine.as_ref().map(std::sync::Arc::clone),
-        );
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
@@ -1247,7 +1242,6 @@ impl Session {
             &options,
             &live_activities,
             &handle,
-            std::sync::Arc::new(shortcut_library),
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),

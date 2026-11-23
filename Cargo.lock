@@ -21449,6 +21449,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
+ "settings-store",
  "tempfile",
  "test-server",
  "thiserror 2.0.21",
