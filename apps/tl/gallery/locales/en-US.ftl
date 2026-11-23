@@ -570,6 +570,7 @@ d-z5ai6zk5 = Controls
     .w-ends = Ends
     .w-at = At
     .w-colours = Colours
+    .w-highlight = Highlight
     .w-accent = Accent
     .w-text = Text
     .w-title = Title

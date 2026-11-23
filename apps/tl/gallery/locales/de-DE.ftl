@@ -335,6 +335,7 @@ d-z5ai6zk5 = Bedienelemente
     .w-reviewer = Prüfer
     .w-progress = Fortschritt
     .w-accent = Akzent
+    .w-highlight = Hervorhebung
     .w-title = Titel
     .w-send-to = Senden an
     .w-name-or-address = Name oder Adresse

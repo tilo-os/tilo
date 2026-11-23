@@ -2469,6 +2469,37 @@
       }
     },
     {
+      "name": "Labelled",
+      "doc": "A control a view composed of its own parts (a chooser, a field holding parts of its own), named by the caption the view places beside it: a screen reader and an agent reach it by the words the person reads there. A control that names itself keeps its own name.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "The caption the view shows beside the control, which names it.",
+          "type": "text",
+          "positional": true
+        },
+        {
+          "name": "description",
+          "doc": "A line that explains the control, read after its name.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "content",
+          "doc": "The control it names.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "FunnelChart",
       "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
       "props": [

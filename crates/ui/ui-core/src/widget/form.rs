@@ -6,6 +6,10 @@ use super::{
 };
 use crate::tokens::TextRole;
 
+#[path = "labelled_component.rs"]
+mod component;
+pub use component::LabelledProps;
+
 /// `label` names `content`, which is a control composed as plain elements
 /// rather than one [`FormControl`] — a chooser, a field holding parts of its
 /// own, anything already boxed as an [`Element`](super::Element). It is the

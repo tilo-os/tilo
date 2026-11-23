@@ -124,11 +124,15 @@ view controls(g: Gallery) {
             ui.TimePicker(bind: g.controls_clock, label: "At")
         }
         ui.Section("Colours") {
-            ui.ColorPicker(
-                bind: g.controls_accent,
-                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
-                columns: 3,
-            )
+            // A chooser of its own parts, named by the caption over it.
+            ui.Text("Highlight", role: .caption, secondary: true)
+            ui.Labelled("Highlight") {
+                ui.ColorPicker(
+                    bind: g.controls_accent,
+                    swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
+                    columns: 3,
+                )
+            }
             ui.ColorSwatchPicker(
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
                 columns: 4,
