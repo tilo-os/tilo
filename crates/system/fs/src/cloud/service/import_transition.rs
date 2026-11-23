@@ -374,6 +374,12 @@ impl CloudService {
         CloudResponse::Done
     }
 
+    /// Follow the accounts an import-only mode leaves with no mount to serve.
+    pub(super) fn reconcile_imports(&mut self, store: &[accounts::Account]) {
+        self.imports
+            .reconcile(store.iter().filter_map(providers::source_spec).collect());
+    }
+
     /// Returns whether an unpinned ready hold was released (and may need a remount).
     pub(super) fn reconcile_import_holds(&mut self, store: &[accounts::Account]) -> bool {
         let mut released = Vec::new();
@@ -382,7 +388,7 @@ impl CloudService {
             if hold.phase == Phase::Committing {
                 continue;
             }
-            let current = kept(&store, id);
+            let current = kept(store, id);
             let unchanged =
                 current.is_some_and(|config| generation(config) == generation(&hold.account));
             let is_committed = current.is_some_and(|config| committed(&hold.account, config));

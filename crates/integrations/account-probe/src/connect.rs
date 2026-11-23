@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use account_credentials::icloud::{ICloudAuthError, ICloudSignIn};
+
 use crate::AccountTester;
 
 /// The version of what crosses the connection; Settings and the session speak only the same one
@@ -247,7 +249,7 @@ impl CloudFollowing<'_> {
         label: &str,
         apple_id: Option<String>,
         password: Option<String>,
-        login_hint: Option<String>,
+        login_hint: Option<&str>,
     ) -> Reply {
         self.end();
         let store = account_credentials::CredentialStore::live().with_apple_icloud();
@@ -268,7 +270,6 @@ impl CloudFollowing<'_> {
                     message: "enter your Apple ID's password".into(),
                 };
             };
-            use account_credentials::icloud::ICloudSignIn;
             return match auth.sign_in(&apple_id, &password) {
                 Ok(ICloudSignIn::Complete(session)) => {
                     cloud_account(store.icloud_account(&apple_id, &session))
@@ -294,7 +295,7 @@ impl CloudFollowing<'_> {
                 message: "this account type does not sign in on its provider's page".into(),
             };
         };
-        let authorization = match store.begin_sign_in(cloud, login_hint.as_deref()) {
+        let authorization = match store.begin_sign_in(cloud, login_hint) {
             Ok(authorization) => authorization,
             Err(error) => {
                 return Reply::Failed {
@@ -314,11 +315,10 @@ impl CloudFollowing<'_> {
         };
         let page = self.pages.show(&url);
         let (sender, pending) = std::sync::mpsc::channel();
-        let thread_store = store.clone();
         let thread_label = label.to_owned();
         std::thread::spawn(move || {
             let outcome = account_credentials::CredentialStore::finish_sign_in(authorization)
-                .and_then(|tokens| thread_store.cloud_account(cloud, &thread_label, &tokens))
+                .and_then(|tokens| store.cloud_account(cloud, &thread_label, &tokens))
                 .map_err(|error| error.to_string());
             let _ = sender.send(outcome);
         });
@@ -390,7 +390,6 @@ impl CloudFollowing<'_> {
                 apple_id,
                 challenge,
             } => {
-                use account_credentials::icloud::ICloudAuthError;
                 let verified = auth.verify_code(&challenge, &code);
                 match verified {
                     Ok(session) => {
@@ -414,11 +413,10 @@ impl CloudFollowing<'_> {
                     },
                 }
             }
-            other => {
-                let page = match &other {
-                    CloudStage::Oauth { page, .. } => *page,
-                    CloudStage::Pasted { .. } | CloudStage::Icloud { .. } => None,
-                };
+            CloudStage::Oauth { page, canceller } => {
+                if let Some(canceller) = canceller {
+                    canceller.cancel();
+                }
                 if let Some(page) = page {
                     self.pages.over(page);
                 }
@@ -536,7 +534,7 @@ fn answer(
             apple_id,
             password,
             login_hint,
-        } => cloud.begin(&provider, &label, apple_id, password, login_hint),
+        } => cloud.begin(&provider, &label, apple_id, password, login_hint.as_deref()),
         Request::CloudCode { code } => cloud.code(&code),
         Request::CloudPoll => cloud.poll(),
         Request::CloudEnd => {

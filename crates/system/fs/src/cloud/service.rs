@@ -253,8 +253,7 @@ impl CloudService {
         self.retry.clear();
         let store = self.accounts();
         self.reconcile_import_holds(&store);
-        self.imports
-            .reconcile(store.iter().filter_map(providers::source_spec).collect());
+        self.reconcile_imports(&store);
         self.credentials.retain(|id, _| {
             store
                 .iter()
