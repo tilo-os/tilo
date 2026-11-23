@@ -4,8 +4,8 @@
 
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Modem,
-    ModemUnit, Nearby, Network, SavedNetwork, Tethering, Vpn, VpnPluginKind, VpnProfile, Wifi,
-    WifiNetwork, Wired, ordered,
+    ModemUnit, Nearby, Network, SavedIpv4, SavedNetwork, Tethering, Vpn, VpnPluginKind, VpnProfile,
+    Wifi, WifiNetwork, Wired, ordered,
 };
 
 /// A change to make on the device.
@@ -53,6 +53,14 @@ pub enum Change {
     Proxy {
         profile: String,
         server: Option<String>,
+    },
+    /// Set how a saved network's addresses are taken.
+    Ipv4 {
+        profile: String,
+        automatic: bool,
+        addresses: Vec<String>,
+        gateway: Option<String>,
+        dns: Vec<String>,
     },
     /// Type the mobile data profile's access point name, or choose it from
     /// the SIM's operator again.
@@ -250,6 +258,7 @@ fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     }
     saved.proxy = settings.proxy.and_then(|proxy| proxy.manual);
     saved.hidden = settings.hidden.unwrap_or_default();
+    saved.ipv4 = settings.ipv4.as_ref().map(SavedIpv4::from);
     saved
 }
 
@@ -428,6 +437,21 @@ impl Device for OsDevice {
                         browser_only: false,
                     }),
                     ..os_actions::ConnectionPolicyPatch::default()
+                },
+            ),
+            Change::Ipv4 {
+                profile,
+                automatic,
+                addresses,
+                gateway,
+                dns,
+            } => os_actions::configure_ipv4(
+                profile,
+                &os_actions::IpConfiguration {
+                    automatic: *automatic,
+                    addresses: addresses.clone(),
+                    gateway: gateway.clone(),
+                    dns: dns.clone(),
                 },
             ),
             Change::MobileApn { apn } => {

@@ -147,6 +147,23 @@ pub struct SavedNetwork {
     pub proxy: Option<String>,
     /// The Wi-Fi profile keeps its name hidden.
     pub hidden: bool,
+    /// How its addresses are set; `None` when the device could not read them.
+    pub ipv4: Option<SavedIpv4>,
+}
+
+/// How a saved network's addresses are set.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SavedIpv4 {
+    /// The network hands out an address; the entries below are then unread.
+    pub automatic: bool,
+    /// Addresses with their prefixes.
+    pub addresses: Vec<String>,
+    pub gateway: Option<String>,
+    /// The name servers it asks.
+    pub dns: Vec<String>,
 }
 
 /// What kind of connection a saved network is.
@@ -494,6 +511,17 @@ impl From<&os_actions::bluez::DeviceInfo> for Nearby {
             name: device.name.clone(),
             address: device.address.clone(),
             signal: device.rssi,
+        }
+    }
+}
+
+impl From<&os_actions::IpConfiguration> for SavedIpv4 {
+    fn from(config: &os_actions::IpConfiguration) -> Self {
+        Self {
+            automatic: config.automatic,
+            addresses: config.addresses.clone(),
+            gateway: config.gateway.clone(),
+            dns: config.dns.clone(),
         }
     }
 }
