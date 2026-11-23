@@ -256,7 +256,7 @@ pub(crate) fn start_app_wire(
     };
     let agents_service = service.clone();
     let link = app_wire::Link::new(options.wake.handle());
-    let layout = layout_authority(options, handle, revocations);
+    let layout = layout_authority(options, handle, revocations, engine.clone());
     // The workspace's activity as this session's apps read it: the shell's own model.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
@@ -445,20 +445,25 @@ fn serve_files_tree(
 }
 
 /// What the broker decides against, from this pass on: the shell as it is
-/// before the person touches anything, and every shell it shows after.
+/// before the person touches anything, and every shell it shows after — and,
+/// beside it, every workspace this device holds that no shell shows.
 fn layout_authority(
     options: &Options,
     handle: &DesktopHandle,
     revocations: crate::engine::Revocations,
+    held: Option<std::sync::Arc<crate::engine::Engine>>,
 ) -> std::sync::Arc<LayoutAuthority> {
-    std::sync::Arc::new(LayoutAuthority::new(
-        handle.read(Clone::clone),
-        revocations,
-        crate::app_wire::Names {
-            person: options.person.clone(),
-            earlier: options.earlier.clone(),
-        },
-    ))
+    std::sync::Arc::new(
+        LayoutAuthority::new(
+            handle.read(Clone::clone),
+            revocations,
+            crate::app_wire::Names {
+                person: options.person.clone(),
+                earlier: options.earlier.clone(),
+            },
+        )
+        .holding(held),
+    )
 }
 
 /// The calls the apps reach on this session's peer network, or none when it has no endpoint.

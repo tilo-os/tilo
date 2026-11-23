@@ -185,6 +185,8 @@ mod panel_services;
 mod part_view;
 #[path = "people.rs"]
 mod people;
+#[path = "person_workspace.rs"]
+mod person_workspace;
 #[path = "personal_store.rs"]
 mod personal_store;
 #[path = "placed_apps.rs"]

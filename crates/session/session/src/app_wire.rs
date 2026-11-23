@@ -707,6 +707,9 @@ pub struct LayoutAuthority {
     /// Who is here in each workspace, as presence names and colours them: what the broker tells the
     /// apps there of each member ([`Self::set_people`]).
     people: Mutex<std::collections::HashMap<String, Vec<collab_types::Member>>>,
+    /// This device's engine, whose workspaces the tree does not show are still the session's: the
+    /// person's own workspace above all.
+    held: Option<std::sync::Arc<crate::engine::Engine>>,
 }
 
 /// Who the person at this device is, as the broker's decisions name them.
@@ -733,7 +736,54 @@ impl LayoutAuthority {
             revocations,
             names,
             people: Mutex::new(std::collections::HashMap::new()),
+            held: None,
         }
+    }
+
+    /// The authority over `tree`, also answering for the workspaces `held` — this device's
+    /// engine — keeps but the tree does not show. The person's own workspace is one: it is
+    /// theirs, held beside the shell, and what its governance says decides a read or a change in
+    /// it as an on-screen workspace's does.
+    #[must_use]
+    pub fn holding(mut self, held: Option<std::sync::Arc<crate::engine::Engine>>) -> Self {
+        self.held = held;
+        self
+    }
+
+    /// `workspace` as this device's engine describes it: its name, policy, sandbox and the names
+    /// of its people, as their governance has them. `None` for a workspace this device does not
+    /// hold.
+    fn held_workspace(&self, workspace: &str) -> Option<tilo_desktop_model::Workspace> {
+        let engine = self.held.as_deref()?;
+        let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+        engine
+            .owner()
+            .with_current(id, |view| {
+                let peer = view.peer();
+                let Some(document) = peer.admitted_workspace() else {
+                    return Ok(None);
+                };
+                let mut described = tilo_desktop_model::Workspace::new(id, String::new());
+                tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
+                let Ok(sandbox) = peer.governance().governed_sandbox() else {
+                    return Ok(None);
+                };
+                described.sandbox = sandbox;
+                if let Ok(people) = peer.governance().governed_members(tilo_clock::wall()) {
+                    described.named_people(
+                        people
+                            .members
+                            .iter()
+                            .filter(|member| !member.removed)
+                            .filter_map(|member| {
+                                Some((member.id.person_id()?, member.name.as_str()))
+                            }),
+                    );
+                }
+                Ok(Some(described))
+            })
+            .ok()
+            .flatten()
     }
 
     /// Who is here in `workspace` now: each person by their user root, with the name and colour
@@ -823,16 +873,23 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
 
 /// The session as the identity service reads it: an app signs in the person's
 /// workspace through the session this session shows, so the workspace the
-/// request names is the one the person sees it in.
+/// request names is the one the person sees it in — or one this device holds
+/// beside the shell, the person's own above all.
 impl tilo_identity::broker::WorkspaceMembership for LayoutAuthority {
     fn with_workspace(
         &self,
         workspace: &tilo_desktop_model::WorkspaceId,
         read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
-        let tree = self.tree.lock_recover();
-        if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
-            read(held);
+        {
+            let tree = self.tree.lock_recover();
+            if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
+                read(held);
+                return;
+            }
+        }
+        if let Some(held) = self.held_workspace(&workspace.to_string()) {
+            read(&held);
         }
     }
 }
@@ -843,16 +900,46 @@ impl WorkspaceAuthority for LayoutAuthority {
         Ok(())
     }
 
+    /// A workspace this session acts in is one the shell shows, or one this device holds beside
+    /// it: the person's own workspace is never on the shell, and a read or a change in it is
+    /// decided by its governance all the same.
+    fn with_workspace(
+        &self,
+        workspace: &str,
+        read: &mut dyn FnMut(Option<&tilo_desktop_model::Workspace>),
+    ) -> Result<(), String> {
+        {
+            let tree = self.tree.lock_recover();
+            if let Some(shown) = tilo_broker_core::services::workspace_in(&tree, workspace) {
+                read(Some(shown));
+                return Ok(());
+            }
+        }
+        if let Some(held) = self.held_workspace(workspace) {
+            read(Some(&held));
+            return Ok(());
+        }
+        read(None);
+        Ok(())
+    }
+
     /// A workspace this session shows is one this device was let into, so its
     /// shortcuts are proven against the revocations its workspace records. A
+    /// held workspace the shell does not show is let into all the same. A
     /// workspace whose document this device does not hold — a session kept from
     /// before it joined, or one it left — revokes nothing here: the shortcuts
     /// it shows are proven by what it does hold, and a call it can no longer
     /// make is refused elsewhere.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
-        let tree = self.tree.lock_recover();
-        tilo_broker_core::services::workspace_in(&tree, workspace)?;
-        Some(self.revocations.of(workspace).unwrap_or_default())
+        let shown = {
+            let tree = self.tree.lock_recover();
+            tilo_broker_core::services::workspace_in(&tree, workspace).is_some()
+        };
+        let held = shown
+            || self.held.as_ref().is_some_and(|engine| {
+                tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| engine.holds(id))
+            });
+        held.then(|| self.revocations.of(workspace).unwrap_or_default())
     }
 
     /// Every write the broker's checks read here is announced: the session on [`Self::publish`],
