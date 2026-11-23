@@ -45,7 +45,7 @@ mod state;
 mod wheel_input;
 
 use gesture_input::asked_of_gestures;
-use state::{presence_stamp, shown, state_dump, window_rows};
+use state::{presence_stamp, shown, state_dump};
 use wheel_input::wheel;
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development

@@ -282,7 +282,9 @@ fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
     assert_eq!(unknown["err"]["code"], "unsupported", "{unknown}");
     let message = unknown["err"]["message"].as_str().unwrap();
     assert!(!message.contains("`snapshot`"), "{unknown}");
-    assert!(message.contains("`state_dump`"), "{unknown}");
+    assert!(message.contains("`watch`"), "{unknown}");
+    // The desktop's state is read from the session's own resources, not the control protocol's.
+    assert!(!message.contains("`state_dump`"), "{unknown}");
 }
 
 /// A locked session invokes nothing through the owner's socket, and shows nothing of what the lock
