@@ -44,9 +44,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
+use tilo_lock::MutexRecover as _;
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenRequest, Packet as _, TaskFds,
-    TaskRequest, ToProcess,
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView, OpenRequest,
+    Packet as _, TaskFds, TaskRequest, ToProcess,
 };
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
@@ -174,6 +175,23 @@ pub struct Instance {
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
 type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
+/// What one of the device's apps plays, as the system's media controls hear it: the Playback's
+/// whole view when it moved, or the id of the one that stopped playing.
+#[derive(Clone, Debug)]
+pub enum MediaChange {
+    Playing(MediaView),
+    Stopped(String),
+}
+
+/// Who plays what: what the system's media controls are told, and which process and instance
+/// plays each Playback, so a control the person presses reaches it.
+#[derive(Default)]
+struct Playing {
+    told: Option<Arc<dyn Fn(MediaChange) + Send + Sync>>,
+    /// The process and instance playing each Playback, by its id.
+    where_played: HashMap<String, (HostKey, u64)>,
+}
+
 /// The tilolang processes this device runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
@@ -185,6 +203,8 @@ pub struct Processes {
     generations: AtomicU64,
     /// Whether the app store is watched for reinstalls.
     follows_reinstalls: AtomicBool,
+    /// What each app here plays, as the system's media controls hear it.
+    playing: Mutex<Playing>,
 }
 
 impl Processes {
@@ -207,7 +227,76 @@ impl Processes {
             running: Mutex::new(HashMap::new()),
             generations: AtomicU64::new(1),
             follows_reinstalls: AtomicBool::new(false),
+            playing: Mutex::new(Playing::default()),
         })
+    }
+
+    /// Tell `told` what each app here plays, as its Playback moves, and stop telling the one
+    /// before. The system's media controls show every Playback and press the one a key reaches.
+    pub fn on_media(&self, told: Arc<dyn Fn(MediaChange) + Send + Sync>) {
+        self.playing.lock_recover().told = Some(told);
+    }
+
+    /// Run `command` as the Playback `id`'s own action, on the instance that plays it. Whether a
+    /// process here plays it.
+    pub fn media_command(&self, id: &str, command: MediaCommand) -> bool {
+        let found = self
+            .playing
+            .lock_recover()
+            .where_played
+            .get(id)
+            .map(|(key, instance)| (key.clone(), *instance));
+        let Some((key, instance)) = found else {
+            return false;
+        };
+        let socket = self
+            .running()
+            .get(&key)
+            .map(|process| Arc::clone(&process.socket));
+        let Some(socket) = socket else {
+            return false;
+        };
+        if let Err(error) = ToProcess::MediaCommand { instance, command }.send(&socket) {
+            tracing::warn!(%error, workspace = %key.workspace, app = %key.app, "a media control did not reach its app");
+            return false;
+        }
+        true
+    }
+
+    /// What the instance `instance` of `key` plays now, told to whoever serves the media
+    /// controls: its Playback's view, or the id of the one it stopped playing.
+    fn media(&self, key: &HostKey, instance: u64, view: Option<MediaView>) {
+        let change = {
+            let mut playing = self.playing.lock_recover();
+            match &view {
+                Some(view) => {
+                    playing
+                        .where_played
+                        .insert(view.id.clone(), (key.clone(), instance));
+                    MediaChange::Playing(view.clone())
+                }
+                None => {
+                    let stopped = playing
+                        .where_played
+                        .iter()
+                        .find(|(_, (held, held_instance))| {
+                            held.workspace == key.workspace
+                                && held.app == key.app
+                                && *held_instance == instance
+                        })
+                        .map(|(id, _)| id.clone());
+                    let Some(stopped) = stopped else {
+                        return;
+                    };
+                    playing.where_played.remove(&stopped);
+                    MediaChange::Stopped(stopped)
+                }
+            }
+        };
+        let told = self.playing.lock_recover().told.clone();
+        if let Some(told) = told {
+            told(change);
+        }
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, HashMap<HostKey, Host>> {
@@ -746,6 +835,9 @@ impl Processes {
                 Ok(Some(FromProcess::Ended(instance))) => self.ended(key, generation, instance),
                 Ok(Some(FromProcess::Exiting(why))) => reason = Some(why),
                 Ok(Some(FromProcess::Serves)) => {}
+                Ok(Some(FromProcess::Media { instance, view })) => {
+                    self.media(key, instance, view);
+                }
                 Ok(None) => break,
                 // The packet was taken: the socket carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {

@@ -178,6 +178,8 @@ tilo-workspace-directory = { path = "../workspace-directory" }
 # gateway an app asks, reached on every host.
 agent-provider-config = { path = "../../integrations/provider-config" }
 tilo-rt = { workspace = true }
+# The system's media controls: one board over every Playback the apps here play.
+tilo-media-controls = { path = "../media-controls" }
 tokio = { workspace = true, features = ["sync"] }
 # The shell's chooser protocol: the socket the launcher hands an app, and what the session
 # answers on it.

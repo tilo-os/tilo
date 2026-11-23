@@ -231,6 +231,9 @@ pub(crate) struct Served {
     chooser: Option<chooser::Served>,
     /// The person's clipboard, for the apps that hold no display of their own.
     clipboard: Option<clipboard::Served>,
+    /// The system's media controls over every Playback the apps here play: what the apps told
+    /// the loop since its last pass is taken on the loop itself.
+    media: std::cell::RefCell<Option<crate::media_controls::Serving>>,
 }
 
 /// What a session serves its services with.
@@ -370,6 +373,18 @@ impl Served {
     /// The files and links the apps ask this session for, while it serves them.
     pub(crate) const fn chooser(&self) -> Option<&chooser::Served> {
         self.chooser.as_ref()
+    }
+
+    /// Serve the media controls over the Playbacks the apps here play.
+    pub(crate) fn serve_media(&mut self, media: crate::media_controls::Serving) {
+        *self.media.borrow_mut() = Some(media);
+    }
+
+    /// Take what the apps said they play since the last pass, and show it.
+    pub(crate) fn follow_media(&self) {
+        if let Some(media) = &mut *self.media.borrow_mut() {
+            media.follow();
+        }
     }
 
     /// The person's clipboard, served to the tilolang apps that hold no display of their own.

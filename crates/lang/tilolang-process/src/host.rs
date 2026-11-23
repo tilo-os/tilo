@@ -155,6 +155,14 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let mut api_failed: Option<String> = None;
     loop {
         run_frames(&mut host);
+        // What each instance plays, as the system's media controls show it: said when it moved.
+        for (instance, view) in host.take_media() {
+            if let Some(open) = api.as_ref()
+                && let Err(error) = FromProcess::Media { instance, view }.send(open)
+            {
+                tracing::warn!(%error, instance, "the session was not told what plays");
+            }
+        }
         // The session stops the host once its last instance ended.
         for instance in host.take_ended() {
             if let Some(open) = api.as_ref()
@@ -253,6 +261,9 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
             if let Err(error) = host.take_build(&build, &module) {
                 tracing::error!(app = build.app, %error, "a later build was not taken");
             }
+        }
+        ToProcess::MediaCommand { instance, command } => {
+            host.media_command(instance, command);
         }
         ToProcess::Task { request, fds } => {
             if let Err(error) = host.begin_task(&request, fds) {

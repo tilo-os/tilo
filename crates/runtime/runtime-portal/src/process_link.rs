@@ -106,6 +106,12 @@ pub enum ToProcess {
         #[serde(with = "crate::packet::fd")]
         module: Descriptor,
     },
+    /// What the system's media controls ask of the app's Playback (`FromProcess::Media`): the
+    /// instance that told the session what it plays, and the control a person pressed.
+    MediaCommand {
+        instance: u64,
+        command: MediaCommand,
+    },
 }
 
 impl Packet for ToProcess {
@@ -114,7 +120,11 @@ impl Packet for ToProcess {
             Self::Instance { request, .. } => request.module_len > MAX_MODULE,
             Self::Task { request, .. } => request.apps_len > MAX_MODULE,
             Self::Build { build, .. } => build.module_len > MAX_MODULE,
-            Self::Window { .. } | Self::Patch { .. } | Self::Locale(_) | Self::Access(_) => false,
+            Self::Window { .. }
+            | Self::Patch { .. }
+            | Self::Locale(_)
+            | Self::Access(_)
+            | Self::MediaCommand { .. } => false,
         };
         if over {
             Err("a module over the link's limit")
@@ -125,7 +135,7 @@ impl Packet for ToProcess {
 }
 
 /// What a process says to the session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FromProcess {
     /// The app opens the windows the session asks for on this link. An app that maps a window
     /// without having said it gets a process of its own for each window.
@@ -135,6 +145,58 @@ pub enum FromProcess {
     /// Said last, as the process exits: why, in words its supervisor logs and shows. A process
     /// gone without saying it ended unheard (killed, or crashed).
     Exiting(String),
+    /// What the instance `instance` plays, as its Playback stands now, or that it plays nothing
+    /// (`None`): what the system's media controls show, and the board a bare media key reaches.
+    /// Said only when it moved.
+    Media {
+        instance: u64,
+        view: Option<MediaView>,
+    },
+}
+
+/// What one instance plays, as the system's media controls show it: the Playback's own reading,
+/// so the board and its now-playing surface name what a person hears without reading an app's
+/// records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaView {
+    /// The Playback's id: what a command comes back naming.
+    pub id: String,
+    /// The app playing, as the desktop's widget shows it ("Video", "Music").
+    pub identity: String,
+    pub title: String,
+    pub artist: String,
+    /// Where its artwork is, or empty.
+    pub art_url: String,
+    pub playing: bool,
+    /// Where the playhead stood when this was read, microseconds.
+    pub position_us: i64,
+    /// How long what plays runs, microseconds; zero when it does not say.
+    pub length_us: i64,
+    pub volume: f64,
+    pub rate: f64,
+    pub can_next: bool,
+    pub can_prev: bool,
+}
+
+/// What a media control asks a Playback to do: the same actions a person or an agent calls on
+/// the resource.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MediaCommand {
+    Play,
+    Pause,
+    /// Play if paused, pause if playing.
+    Toggle,
+    Stop,
+    Next,
+    Previous,
+    /// Move by this many microseconds, positive forward.
+    SeekBy(i64),
+    /// Move to this position, microseconds from the start.
+    SeekTo(i64),
+    /// Set the volume, `0.0..=1.0`.
+    SetVolume(f64),
+    /// Silence, or bring back what was silent.
+    Mute,
 }
 
 impl Packet for FromProcess {}

@@ -1375,7 +1375,7 @@ impl Session {
         // Every service this session serves, from the one table that says who serves each: the
         // identity an app signs in through, the machine's readings, the data this device used and
         // Windows programs. They start here, before any app does.
-        let table = crate::services::start(crate::services::Serving {
+        let mut table = crate::services::start(crate::services::Serving {
             shell: app_wire
                 .as_ref()
                 .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
@@ -1400,6 +1400,15 @@ impl Session {
                 .cloned(),
             launches: Some(std::sync::Arc::clone(&options.launches)),
         });
+        // The system's media controls show every Playback the session's apps play, and a media
+        // key reaches the one the person touched last: the host of each app's windows says what
+        // its Playback holds, and what a key asks runs as that Playback's own action.
+        if let Some(apps) = &options.launch
+            && let Some(media) =
+                crate::media_controls::Serving::start(apps, options.wake.handle())
+        {
+            table.serve_media(media);
+        }
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,
         // both answered over the broker this session's app wire starts. It exists whether or not a

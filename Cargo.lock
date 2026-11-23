@@ -21564,6 +21564,7 @@ dependencies = [
  "tilo-lock",
  "tilo-mcp",
  "tilo-media",
+ "tilo-media-controls",
  "tilo-model-client",
  "tilo-native-media",
  "tilo-nearby-service",

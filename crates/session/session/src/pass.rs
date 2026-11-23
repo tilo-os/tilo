@@ -79,6 +79,9 @@ impl Session {
         self.read_controls();
         self.shared.feed_agents();
         self.shared.follow_recipients();
+        // What the apps' hosts said they play since the last pass, as the desktop's media
+        // controls show it.
+        self.shared.table.follow_media();
         // The apps' resources the services run over are the workspace's, once the session holds it.
         self.shared
             .keep_app_stores(self.automation_runtime.handle());

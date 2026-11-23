@@ -514,8 +514,13 @@ struct HostPlatform {
     builds: BuildsSlot,
     /// The device content store of the app in its workspace, which the session opened for this
     /// instance: what a chosen file's bytes are kept in and its document's pictures are read
-    /// from. `None` on a device that keeps no content store.
+    /// from. `None` on a session that hands none, and then this window keeps what it is given
+    /// in [`Self::kept`] instead.
     content: Option<tilo_content::ContentStore>,
+    /// Where a file a person chooses is kept when the session handed no store: this window's
+    /// own, in memory. It lasts as long as the window, which is what a device that keeps no
+    /// store can promise; the person is still asked, and the file still opens.
+    own_content: tilo_content::ContentStore,
     /// The person's own chooser, which the session opened for this instance.
     chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
     /// The person's clipboard, which the session opened for this instance.
@@ -532,6 +537,15 @@ struct HostPlatform {
     person: String,
     /// The folders this instance watches, shared with the frames that run their actions.
     watches: Rc<crate::files::Watches>,
+}
+
+impl HostPlatform {
+    /// The content store this window keeps files in: the device's for the app in its workspace,
+    /// which the session opened for it, else the one the window keeps itself, so a file a person
+    /// chooses still opens where no store was handed.
+    fn store(&self) -> &tilo_content::ContentStore {
+        self.content.as_ref().unwrap_or(&self.own_content)
+    }
 }
 
 /// One `tilolang-process` hosts multiple windows of different apps on a single thread — some
@@ -624,7 +638,7 @@ impl Platform for HostPlatform {
     }
 
     fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
-        crate::files::read(self.content.as_ref()?, hash)
+        crate::files::read(self.store(), hash)
     }
     /// The device's PDF engine: the one reader crate over the one PDF engine, answering every
     /// `pdf.*` call from the bytes the runtime read out of the content store.
@@ -636,13 +650,12 @@ impl Platform for HostPlatform {
         &self,
         request: &tilolang_tilo::runtime::blob::FileRequest,
     ) -> Result<Vec<tilolang_tilo::runtime::blob::FileValue>, String> {
-        let Some(store) = self.content.as_ref() else {
-            return Err(crate::files::NO_CONTENT_STORE.to_owned());
-        };
+        // The person is asked whether or not this session handed the app a store: a session that
+        // serves no store still serves the chooser, and the file it is given opens here.
         let Some(chooser) = self.chooser.as_deref() else {
             return Err(self.no_chooser.clone());
         };
-        crate::files::choose(store, chooser, request)
+        crate::files::choose(self.store(), chooser, request)
     }
 
     fn save_file(
@@ -662,11 +675,7 @@ impl Platform for HostPlatform {
         media: &str,
         bytes: &[u8],
     ) -> Result<tilolang_tilo::runtime::blob::FileValue, String> {
-        let store = self
-            .content
-            .as_ref()
-            .ok_or_else(|| crate::files::NO_CONTENT_STORE.to_owned())?;
-        crate::files::keep(store, name, media, bytes)
+        crate::files::keep(self.store(), name, media, bytes)
     }
 
     /// `File.thumbnail(size)`: a preview no larger than `size` pixels a side, from the device's
@@ -676,9 +685,6 @@ impl Platform for HostPlatform {
         file: &tilolang_tilo::runtime::blob::FileValue,
         size: u32,
     ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
-        let Some(store) = self.content.as_ref() else {
-            return Err(crate::files::NO_CONTENT_STORE.to_owned());
-        };
         let Some(shared) = self.thumbnails.as_ref() else {
             return Err("this host keeps no previews".to_owned());
         };
@@ -688,7 +694,7 @@ impl Platform for HostPlatform {
                     .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
             )
         });
-        crate::files::thumbnail(store, thumbnails, file, size)
+        crate::files::thumbnail(self.store(), thumbnails, file, size)
     }
 
     /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection
@@ -1101,6 +1107,9 @@ pub struct Hosted {
     /// The playback's outputs as the window was last told them: sent again only when the app's
     /// `outputs` Collection changed.
     outputs_sent: Option<Vec<u8>>,
+    /// What the system's media controls were last told this instance plays: said again only
+    /// when it moved.
+    media_said: Option<Option<runtime_portal::process_link::MediaView>>,
     /// The folders this instance watches for `File.watch`, shared with the platform that
     /// registered them: each turn runs the action of a folder that changed.
     watches: Rc<crate::files::Watches>,
@@ -1196,6 +1205,7 @@ impl Hosted {
             surface: Rc::clone(&surface),
             builds: Rc::clone(&builds),
             content: kept.content.clone(),
+            own_content: memory_content(),
             chooser: kept.chooser.clone(),
             clipboard: kept.clipboard.clone(),
             thumbnails: kept.thumbnails.clone(),
@@ -1316,6 +1326,7 @@ impl Hosted {
             opening: None,
             files: kept.content.clone(),
             outputs_sent: None,
+            media_said: None,
             watches,
         }
     }
@@ -1626,6 +1637,9 @@ impl Hosted {
         self.answer_directory();
         self.publish_search_index();
         changed |= self.opened();
+        // Where what plays comes out, after this frame's views ran: a person who moved the
+        // session to a speaker or a cast target hears it there from the next frame.
+        changed |= self.say_outputs();
         changed
     }
 
@@ -1697,6 +1711,134 @@ impl Hosted {
         self.instance.say(ToUi::Outputs(bytes));
         self.instance.flush();
         true
+    }
+
+    /// What this instance plays, as the system's media controls show it, when it moved since the
+    /// last turn said it: its Playback's reading, or `None` when it plays nothing.
+    pub fn media(&mut self) -> Option<Option<runtime_portal::process_link::MediaView>> {
+        let view = self.media_view();
+        if self.media_said.as_ref() == Some(&view) {
+            return None;
+        }
+        self.media_said = Some(view.clone());
+        Some(view)
+    }
+
+    /// The Playback this instance holds, as the system's controls read it: what it is called,
+    /// where it stands, how long it runs and what a person can ask of it.
+    fn media_view(&self) -> Option<runtime_portal::process_link::MediaView> {
+        if !self
+            .bundle
+            .imports
+            .iter()
+            .any(|import| import.meta.app == PLAYBACK_APP)
+        {
+            return None;
+        }
+        let host = self.instance.host()?;
+        let root = host.root_of(&self.spec.app).ok()?;
+        let runtime = host.runtime();
+        let Ok(Value::Opt(Some(playing))) = runtime.read(&root, "playing") else {
+            return None;
+        };
+        let Value::Ref(playing) = *playing else {
+            return None;
+        };
+        let at = &playing.target;
+        // A Playback that stands still is nothing the controls show: the board leaves it out.
+        let state = match runtime.read(at, "state") {
+            Ok(Value::Enum(state)) => state.variant,
+            _ => return None,
+        };
+        if state == "stopped" {
+            return None;
+        }
+        let text = |field: &str| match runtime.read(at, field) {
+            Ok(Value::Text(text)) => text,
+            _ => String::new(),
+        };
+        let number = |field: &str| match runtime.read(at, field) {
+            Ok(Value::Float(value)) => value,
+            Ok(Value::Int(value)) => value as f64,
+            _ => 0.0,
+        };
+        let queue = match runtime.read(at, "queue") {
+            Ok(Value::List(items)) => items.len(),
+            _ => 0,
+        };
+        let seconds = |value: f64| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a playhead and a length read as whole microseconds, clamped at zero"
+            )]
+            let micros = (value.max(0.0) * 1_000_000.0) as i64;
+            micros
+        };
+        Some(runtime_portal::process_link::MediaView {
+            id: at.id_string(),
+            identity: self.bundle.meta.title.clone(),
+            title: text("title"),
+            artist: text("artist"),
+            art_url: text("cover"),
+            playing: state == "playing",
+            position_us: seconds(number("at")),
+            length_us: seconds(number("length")),
+            volume: number("volume"),
+            rate: 1.0,
+            can_next: queue > 1,
+            can_prev: queue > 1,
+        })
+    }
+
+    /// Run the media control `command` as this instance's Playback's own action, so every
+    /// control the desktop carries out is a real action on the resource.
+    ///
+    /// # Errors
+    ///
+    /// Nothing plays here, or the action did not run.
+    pub fn run_media_command(
+        &mut self,
+        command: runtime_portal::process_link::MediaCommand,
+    ) -> Result<(), String> {
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the app has not started".to_owned())?;
+        let root = host
+            .root_of(&self.spec.app)
+            .map_err(|error| error.to_string())?;
+        let playing = match host.runtime().read(&root, "playing") {
+            Ok(Value::Opt(Some(playing))) => match *playing {
+                Value::Ref(playing) => (*playing.target).clone(),
+                _ => return Err("nothing plays here".to_owned()),
+            },
+            _ => return Err("nothing plays here".to_owned()),
+        };
+        let length = match host.runtime().read(&playing, "length") {
+            Ok(Value::Float(length)) => length,
+            _ => 0.0,
+        };
+        let (name, args) = media_action(command, &playing, length)?;
+        let action = self
+            .bundle
+            .imports
+            .iter()
+            .find(|import| import.meta.app == PLAYBACK_APP)
+            .and_then(|import| {
+                import
+                    .meta
+                    .actions
+                    .iter()
+                    .find(|action| !action.scenario && action.name == name)
+            })
+            .map(|action| action.id.clone())
+            .ok_or_else(|| format!("the player declares no `{name}`"))?;
+        let actor = tilolang_tilo::runtime::Actor::Member(MemberId::person(&self.spec.person));
+        host.runtime()
+            .invoke_action(&actor, (action.as_str(), args))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// Run the action the package declares for the file the app was opened with, once the
@@ -3574,6 +3716,49 @@ fn say_surface(instance: &mut Instance, delta: &SurfaceDelta) {
 #[must_use]
 pub fn memory_content() -> tilo_content::ContentStore {
     tilo_content::ContentStore::memory()
+}
+
+/// The Playback action the media control `command` runs, and the arguments it takes beside the
+/// Playback: the resource the person's controls act on.
+fn media_action(
+    command: runtime_portal::process_link::MediaCommand,
+    playing: &tilolang_tilo::runtime::ResourceRef,
+    length: f64,
+) -> Result<(&'static str, Vec<Value>), String> {
+    let target = Value::resource(playing);
+    Ok(match command {
+        runtime_portal::process_link::MediaCommand::Play => ("play", vec![target]),
+        runtime_portal::process_link::MediaCommand::Pause => ("pause", vec![target]),
+        runtime_portal::process_link::MediaCommand::Toggle => ("toggle", vec![target]),
+        // The player has no stop of its own: a stop stands it still, which is its pause.
+        runtime_portal::process_link::MediaCommand::Stop => ("pause", vec![target]),
+        runtime_portal::process_link::MediaCommand::Next => ("next", vec![target]),
+        runtime_portal::process_link::MediaCommand::Previous => ("previous", vec![target]),
+        runtime_portal::process_link::MediaCommand::SeekBy(micros) => (
+            "seek_by",
+            vec![
+                target,
+                Value::Int(micros / 1_000_000),
+            ],
+        ),
+        runtime_portal::process_link::MediaCommand::SeekTo(micros) => {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a playhead in whole microseconds reads as a place in the video"
+            )]
+            let place = if length > 0.0 {
+                micros as f64 / 1_000_000.0 / length
+            } else {
+                0.0
+            };
+            ("seek", vec![target, Value::Float(place.clamp(0.0, 1.0))])
+        }
+        runtime_portal::process_link::MediaCommand::SetVolume(level) => (
+            "set_volume",
+            vec![target, Value::Float(level.clamp(0.0, 1.0))],
+        ),
+        runtime_portal::process_link::MediaCommand::Mute => ("mute", vec![target]),
+    })
 }
 
 /// Give each version `history` lists the sentence it reads as in `locale`: what was done, by the

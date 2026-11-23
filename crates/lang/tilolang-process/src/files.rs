@@ -45,8 +45,9 @@ pub fn resolve(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
-/// What a person choosing a file is told on a device that keeps no content store: the file
-/// could not be kept, which is what they need to know, not the name of what is missing.
+/// What a person is told when a file handed to the app cannot be read on a device that keeps no
+/// content store: the file could not be opened, which is what they need to know, not the name of
+/// what is missing. A file they choose themselves is kept in the window's own store instead.
 pub const NO_CONTENT_STORE: &str = "this computer cannot keep the file you chose; try again later";
 
 /// The content at `hash`, when this device holds it.

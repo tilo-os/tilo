@@ -148,12 +148,12 @@
     "test": "crates/integrations/tilolang-youtube/tests/origin.rs:209"
   },
   "so.tilo.tube tube.library#seek": {
-    "to": "so.tilo.video-player video-player.library#seek",
-    "test": "apps/video-player/src/app/tests.rs:1025"
+    "to": "so.tilo.playback tl.so.tilo.playback.Playback#seek",
+    "test": "crates/lang/tilolang-tilo/tests/tube.rs:530"
   },
   "so.tilo.tube tube.library#toggle-playback": {
-    "to": "so.tilo.video-player video-player.library#toggle-playback",
-    "test": "apps/video-player/src/app/tests.rs:1025"
+    "to": "so.tilo.playback tl.so.tilo.playback.Playback#set_playing",
+    "test": "crates/lang/tilolang-tilo/tests/tube.rs:540"
   },
   "so.tilo.tube tube.watch-history#clear": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#delete_history",

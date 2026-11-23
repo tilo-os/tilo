@@ -1124,6 +1124,35 @@ impl TilolangProcess {
         std::mem::take(&mut self.ended)
     }
 
+    /// What each instance plays now, when it moved since the last turn said it: the system's
+    /// media controls show it, and a media key reaches it. `None` for an instance that plays
+    /// nothing.
+    pub fn take_media(&mut self) -> Vec<(u64, Option<runtime_portal::process_link::MediaView>)> {
+        let mut said = Vec::new();
+        for running in &mut self.running {
+            if let Some(view) = running.hosted.media() {
+                said.push((running.hosted.spec().instance, view));
+            }
+        }
+        said
+    }
+
+    /// Run the media control `command` as the Playback's own action on the instance `instance`:
+    /// what the desktop's media keys, its now-playing surface and a script ask.
+    pub fn media_command(&mut self, instance: u64, command: runtime_portal::process_link::MediaCommand) {
+        let Some(running) = self
+            .running
+            .iter_mut()
+            .find(|running| running.hosted.spec().instance == instance)
+        else {
+            tracing::warn!(instance, "a media control reached no instance");
+            return;
+        };
+        if let Err(error) = running.hosted.run_media_command(command) {
+            tracing::warn!(instance, %error, "a media control did not run");
+        }
+    }
+
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
