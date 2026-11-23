@@ -5,17 +5,6 @@
 use anyhow::Result;
 use tilo_identity::store::SigningIdentity;
 
-/// Whether this computer holds the root of `person`, read from the identity's public record
-/// alone, so the process stays dumpable.
-pub(crate) fn holds_root_of(person: &[u8; 32]) -> bool {
-    let Ok(dir) = tilo_identity::store::identity_dir_from_env() else {
-        return false;
-    };
-    tilo_identity::store::resolve_active_identity(&dir)
-        .and_then(|active| tilo_identity::store::load_metadata_from_path(&active).ok())
-        .is_some_and(|metadata| metadata.single_device && metadata.group_public_key == *person)
-}
-
 /// The root kept here, if this computer holds one. Reading it makes this process undumpable,
 /// so it is read only when a ticket is asked for.
 ///

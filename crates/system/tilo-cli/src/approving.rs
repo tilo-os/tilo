@@ -59,9 +59,7 @@ pub(crate) fn serve() -> anyhow::Result<ExitCode> {
     let Some(person) = crate::identity::held()? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let Some((_, device)) =
-        crate::login::load(&crate::login::Place::here(crate::identity::paths())?)?
-    else {
+    let Some(device) = crate::login::home() else {
         return Ok(ExitCode::SUCCESS);
     };
     if device.cert.user_public_key != person.public_key() {

@@ -21,7 +21,6 @@
 //! session ([`serve_current`]), so no program of its opens a second one.
 
 use crate::grant_key::GrantKey;
-use crate::server::Connection;
 use crate::store::{GrantKind, Store};
 use crate::{Body, Config, Reply, Server, now_ms};
 use http_body_util::BodyExt as _;
@@ -35,11 +34,9 @@ use tilo_user_identity::DeviceCert;
 /// computer holds. `None` for both is the login itself, and so this
 /// computer's.
 ///
-/// A key named outright needs no login here: a login this computer cannot read
-/// is no device key, so the key's calls go their own way rather than failing on
-/// it. Only the key's public half is compared, from the login's certificate, so
-/// naming the device's own key keeps this process dumpable, which the daemon
-/// requires of a caller it admits.
+/// Only the key's public half is compared, with a certificate of this
+/// computer's device key, so naming the device's own key keeps this process
+/// dumpable, which the daemon requires of a caller it admits.
 pub(crate) fn names_this_device(
     key_file: Option<&std::path::Path>,
     token: Option<String>,
@@ -58,12 +55,8 @@ pub(crate) fn names_this_device(
     let Some(named) = named else {
         return Ok(false);
     };
-    let Ok(Some(device)) = tilo_device_identity::login::Place::here(crate::client::device_keys())
-        .and_then(|place| tilo_device_identity::login::load_public(&place))
-    else {
-        return Ok(false);
-    };
-    Ok(named == device.cert.device_public_key)
+    let device = tilo_device_identity::login::served_device_key(&crate::client::device_keys());
+    Ok(device == Some(named))
 }
 
 /// The public key the 32-byte hex secret in a key file names.
@@ -293,24 +286,6 @@ impl Direct {
             .ok_or_else(|| "the key names no server".to_owned())?;
         let _ = server.held.set(held);
         Self::as_key(server, &key, &file.name)
-    }
-
-    /// The connection [`Self::over`] answers over, without an API of its own: the daemon's
-    /// workspaces are answered locally, and the account's own actions still go to the server the
-    /// login reaches, over this one session.
-    ///
-    /// # Errors
-    /// The key or its certificate is not one, or names no server.
-    pub fn held_for(
-        file: &KeyFile,
-        device: tilo_session_client::device::Device,
-    ) -> Result<Arc<Connection>, String> {
-        let (server, key) = Self::server_for(file)?;
-        server
-            .hosts
-            .first()
-            .map(|first| Arc::new(first.held(&key, device)))
-            .ok_or_else(|| "the key names no server".to_owned())
     }
 
     /// The server `file`'s key reaches, and the key.
@@ -596,6 +571,25 @@ mod tests {
 
     const WORKSPACE: &str = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
 
+    /// A device key seeded `seed` and the certificate Ada's root signed for it, valid for an hour.
+    fn ada_laptop(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
+        let (person, _) = UserIdentity::generate("Ada", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        (key, cert)
+    }
+
     impl crate::session::Here for Desktop {
         fn workspaces(&self) -> Vec<crate::session::Workspace> {
             vec![crate::session::held(WORKSPACE.into(), "Release".into())]
@@ -673,20 +667,7 @@ mod tests {
     /// what one holds, which the desktop's own actions answer. The account's own actions are not answered.
     #[tokio::test]
     async fn a_desktop_serves_its_persons_programs_at_its_socket() {
-        let (person, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let (key, cert) = ada_laptop(7);
         let desktop = Desktop::default();
         let entered = std::sync::Arc::clone(&desktop.entered);
         let direct = Direct::here(std::sync::Arc::new(desktop), key, cert, "Ada's laptop").unwrap();
@@ -727,6 +708,249 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A device of the person's that keeps the workspaces it was asked to, and reaches their
+    /// account at a server that lists one more, shared with them.
+    #[derive(Default)]
+    struct Device {
+        kept: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    const SHARED: &str = "0a6c1f5e-9d84-4b0e-8f2d-4c3a1b2e7d90";
+    const MADE: &str = "5b1d7c3e-2a4f-4e6b-9c8d-7f0e1a2b3c4d";
+
+    /// The person's account at their server: it makes the workspaces it is asked to, owned by
+    /// the person, and lists them beside [`SHARED`], which another person shared with them.
+    #[derive(Default)]
+    struct HomeServer {
+        made: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl crate::session::AccountServer for HomeServer {
+        fn call(
+            &self,
+            target: tilo_actions::remote::RemoteActionTarget,
+            arguments: serde_json::Map<String, serde_json::Value>,
+        ) -> crate::session::Asked<'_, serde_json::Value> {
+            use tilo_server_session::workspaces as ws;
+            let text = |name: &str| arguments[name].as_str().unwrap().to_owned();
+            let action = target.address.action.as_str();
+            let answer = match action {
+                ws::CREATE_OWN_WORKSPACE => {
+                    let (id, name) = (text("workspace"), text("name"));
+                    self.made.lock().unwrap().push((id.clone(), name.clone()));
+                    serde_json::to_value(ws::CreatedWorkspace {
+                        workspace: ws::WorkspaceListing {
+                            workspace_id: tilo_server_protocol::WorkspaceId::parse(&id).unwrap(),
+                            workspace: id,
+                            name,
+                            generation: 1,
+                            role: Some("owner".to_owned()),
+                            labels: ws::WorkspaceLabels::new(),
+                            unattended: false,
+                            made_at_ms: None,
+                        },
+                        invitation: None,
+                    })
+                    .map_err(|error| error.to_string())
+                }
+                ws::LIST_PERSONAL => {
+                    let row = |id: &str, name: &str, role: &str| ws::PersonalWorkspace {
+                        workspace: id.to_owned(),
+                        name: name.to_owned(),
+                        host: None,
+                        role: Some(role.to_owned()),
+                        labels: ws::WorkspaceLabels::new(),
+                        made_at_ms: None,
+                        unattended: false,
+                        enter_at: None,
+                    };
+                    let mut workspaces = vec![row(SHARED, "Shared", "editor")];
+                    workspaces.extend(
+                        self.made
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(|(id, name)| row(id, name, "owner")),
+                    );
+                    serde_json::to_value(ws::PersonalList {
+                        workspaces,
+                        devices: Vec::new(),
+                    })
+                    .map_err(|error| error.to_string())
+                }
+                _ => Err(format!("{action} is not this server's")),
+            };
+            Box::pin(async move { answer })
+        }
+    }
+
+    impl crate::session::Here for Device {
+        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+            self.kept
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, name)| crate::session::held(id.clone(), name.clone()))
+                .collect()
+        }
+
+        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
+            Err(format!("{workspace} is not entered in this test"))
+        }
+
+        fn account(&self) -> Option<std::sync::Arc<dyn crate::session::AccountServer>> {
+            static HOME: std::sync::OnceLock<std::sync::Arc<HomeServer>> =
+                std::sync::OnceLock::new();
+            Some(HOME.get_or_init(std::sync::Arc::default).clone())
+        }
+
+        fn keep(&self, workspace: &str) -> crate::session::Asked<'_, ()> {
+            let kept = (workspace.to_owned(), String::new());
+            self.kept.lock().unwrap().push(kept);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn leave(&self, workspace: &str) -> crate::session::Asked<'_, ()> {
+            self.kept.lock().unwrap().retain(|(id, _)| id != workspace);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A device with no login answers the person's account itself: a workspace it makes at
+    /// their server is kept here, its list says which of theirs it keeps, and it enters and
+    /// leaves one shared with them at their word.
+    #[tokio::test]
+    async fn a_device_makes_lists_enters_and_leaves_workspaces_from_its_own_state() {
+        let (key, cert) = ada_laptop(13);
+        let direct = Direct::here(
+            std::sync::Arc::new(Device::default()),
+            key,
+            cert,
+            "Ada's laptop",
+        )
+        .unwrap();
+        let ask = |action: &'static str, body: serde_json::Value| {
+            let target = format!("/v1/resources/account/workspaces/actions/{action}");
+            let direct = &direct;
+            async move {
+                let headers = [("content-type".to_owned(), "application/json".to_owned())];
+                let answer = direct
+                    .answer("POST", &target, &headers, body.to_string().as_bytes())
+                    .await;
+                let AnswerBody::Whole(bytes) = answer.body else {
+                    panic!("a whole answer");
+                };
+                let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(answer.status, 200, "{action}: {json}");
+                json["result"].clone()
+            }
+        };
+        let kept = |listed: &serde_json::Value| -> Vec<(String, bool, bool)> {
+            listed["workspaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["id"].as_str().unwrap().to_owned(),
+                        row["own"].as_bool().unwrap(),
+                        row["kept_here"].as_bool().unwrap(),
+                    )
+                })
+                .collect()
+        };
+
+        let made = ask(
+            "create",
+            serde_json::json!({"name": "Made here", "id": MADE}),
+        )
+        .await;
+        assert_eq!(made["workspace"]["id"], MADE, "{made}");
+        assert_eq!(
+            made["workspace"]["kept_here"], true,
+            "made here is kept here: {made}"
+        );
+
+        let listed = ask("list", serde_json::json!({})).await;
+        assert_eq!(
+            kept(&listed),
+            [
+                (MADE.to_owned(), true, true),
+                (SHARED.to_owned(), false, false)
+            ],
+            "{listed}"
+        );
+
+        let entered = ask("enter", serde_json::json!({"workspace": SHARED})).await;
+        assert_eq!(entered["kept_here"], true, "{entered}");
+        let listed = ask("list", serde_json::json!({})).await;
+        assert!(
+            kept(&listed).contains(&(SHARED.to_owned(), false, true)),
+            "{listed}"
+        );
+
+        let left = ask("leave", serde_json::json!({"workspace": SHARED})).await;
+        assert_eq!(left["kept_here"], false, "{left}");
+        let listed = ask("list", serde_json::json!({})).await;
+        assert!(
+            kept(&listed).contains(&(SHARED.to_owned(), false, false)),
+            "the person stays in what this device left: {listed}"
+        );
+    }
+
+    /// A command that names no workspace acts in the one this computer's daemon keeps first,
+    /// asked at the daemon's own socket, which a certificate of the device key names: nothing
+    /// reads what a ticket left on this computer.
+    #[test]
+    fn a_command_naming_no_workspace_acts_in_the_one_the_daemon_keeps_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", dir.path())
+            .set("XDG_STATE_HOME", dir.path().join("state"))
+            .set("XDG_RUNTIME_DIR", dir.path().join("run"))
+            .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
+            .remove(crate::client::KEY_ENV);
+        std::fs::create_dir_all(dir.path().join("run")).unwrap();
+        let (key, cert) = ada_laptop(17);
+        let keys = crate::client::device_keys();
+        tilo_device_identity::persist::write_device_cert(
+            &keys.device_cert_for_user(&cert.user_public_key),
+            &cert,
+        )
+        .unwrap();
+        let reach = crate::client::Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        };
+        assert_eq!(
+            crate::client::entered_workspace(reach).unwrap(),
+            None,
+            "no daemon answers yet"
+        );
+
+        let device = Device::default();
+        device
+            .kept
+            .lock()
+            .unwrap()
+            .push((WORKSPACE.to_owned(), "Release".to_owned()));
+        let direct = Direct::here(std::sync::Arc::new(device), key, cert, "Ada's laptop").unwrap();
+        let socket = crate::daemon::device_api().unwrap().unwrap();
+        let serving = tokio::runtime::Runtime::new().unwrap();
+        let listener = {
+            let _entered = serving.enter();
+            tokio::net::UnixListener::bind(&socket).unwrap()
+        };
+        serving.spawn(direct.serve(listener));
+        assert_eq!(
+            crate::client::entered_workspace(reach).unwrap(),
+            Some((WORKSPACE.to_owned(), "Release".to_owned()))
+        );
+        drop(serving);
+        drop(env);
+    }
+
     /// A request with no `Authorization` at all is answered as the desktop's own key: a program of
     /// this login sends no secret, because the kernel's account of its peer admits the connection
     /// and the desktop acts as the one key it holds.
@@ -734,20 +958,7 @@ mod tests {
     async fn a_request_with_no_bearer_is_answered_as_the_persons_key() {
         use http_body_util::BodyExt as _;
         use hyper_util::rt::TokioIo;
-        let (person, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let (key, cert) = ada_laptop(11);
         let direct = Direct::here(
             std::sync::Arc::new(Desktop::default()),
             key,
@@ -811,20 +1022,7 @@ mod tests {
             )
         }
 
-        let (person, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let (key, cert) = ada_laptop(7);
         let direct = Direct::here(
             std::sync::Arc::new(Desktop::default()),
             key,

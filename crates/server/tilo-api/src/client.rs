@@ -108,14 +108,42 @@ impl Reach<'_> {
     }
 }
 
-/// The workspace this computer's login entered, which `-w` means when nobody
-/// named one: its id, and the name the device keeps for it. `None` when these
-/// calls act as some other key, or this computer is not logged in.
+/// The workspace this computer's device enters through, which `-w` means when
+/// nobody named one: its id and name, as this computer's daemon lists it first
+/// among the workspaces it keeps, else the one it enters through. `None` when
+/// these calls act as some other key, or no daemon of this computer's answers.
+///
+/// # Errors
+/// The daemon did not answer its list.
 pub fn entered_workspace(reach: Reach<'_>) -> Result<Option<(String, String)>> {
     if !reach.as_device() {
         return Ok(None);
     }
-    device::entered_workspace(device_keys())
+    let Some(socket) = held_api_for(reach)?.filter(|socket| model_asks::is_socket(socket)) else {
+        // A daemon whose person's part is not serving its API yet still says where it enters.
+        return Ok(crate::daemon::who::home().ok().flatten().map(|home| {
+            let name = home
+                .workspace_name
+                .clone()
+                .unwrap_or_else(|| home.workspace.clone());
+            (home.workspace, name)
+        }));
+    };
+    let listed = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(Client::session(&socket).workspaces())?;
+    Ok(listed
+        .get("workspaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|workspace| workspace.get("kept_here").and_then(Value::as_bool) == Some(true))
+        .and_then(|workspace| {
+            let id = workspace.get("id")?.as_str()?;
+            let name = workspace.get("name").and_then(Value::as_str).unwrap_or(id);
+            Some((id.to_owned(), name.to_owned()))
+        }))
 }
 
 /// This computer's device key and certificates, where its session keeps them: what its login
@@ -1144,13 +1172,13 @@ pub fn api_url(api: Option<&str>) -> String {
 }
 
 /// This computer's own key as a key file ([`crate::direct::KeyFile`]),
-/// named `name` or as the person's devices name this computer: the key
-/// `tilo login` kept, its certificate in the canonical bytes the in-process
-/// API reads, and the host it reaches.
+/// named `name` or as the person's devices name this computer: its device key,
+/// its certificate in the canonical bytes the in-process API reads, and the
+/// host its daemon enters through ([`crate::daemon::who::here`]).
 ///
-/// `None` when this computer did not log in.
+/// `None` while this computer's daemon knows no server of its person's.
 pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
-    let Some((key, device)) = device::load(&device::Place::here(device_keys())?)? else {
+    let Some((key, device)) = crate::daemon::who::here()? else {
         return Ok(None);
     };
     let canonical = tilo_user_identity::canonical::canonical_bytes(&device.cert)
@@ -1163,14 +1191,14 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
         name: name.map_or_else(|| device.label().to_owned(), str::to_owned),
         key: hex::encode(key.to_bytes()),
         cert: hex::encode(canonical),
-        reached_at: match &device.server_address {
-            Some(address) => Some(crate::server::ServerInfo {
+        reached_at: device
+            .server_address
+            .as_ref()
+            .map(|address| crate::server::ServerInfo {
                 server_cert: device.server_cert.clone(),
                 address: Some(address.clone()),
                 origin: Some(device.host_origin.clone()),
             }),
-            None => None,
-        },
     }))
 }
 
@@ -1308,46 +1336,6 @@ mod tests {
             drop(listener);
             drop(env);
             std::fs::remove_dir_all(&root).expect("the socket's directory goes");
-        }
-
-        phase a_key_file_needs_no_login_this_computer_can_read;
-        {
-            let root = std::env::temp_dir().join(format!("tilo-key-file-{}", std::process::id()));
-            let login = root.join("state/tilo/device");
-            std::fs::create_dir_all(&login).expect("a login directory");
-            // A login gone stale: it names no device at all.
-            std::fs::write(login.join("login.json"), b"{}").expect("a stale login");
-            let file = root.join("key.json");
-            let person = crate::tests::Person::new(7);
-            let key_file = crate::direct::KeyFile::new(
-                "https://tilo.example",
-                None,
-                "a script",
-                &person.device,
-                &person.cert,
-            );
-            std::fs::write(&file, serde_json::to_vec(&key_file).expect("a key file"))
-                .expect("the key file");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_STATE_HOME", root.join("state"))
-                .set("TILO_IDENTITY_ROOT", root.join("identity"))
-                .remove(KEY_ENV);
-            assert!(
-                device::load(&device::Place::here(device_keys()).expect("a place")).is_err(),
-                "the login this computer holds cannot be read"
-            );
-            let reached = held_api_for(Reach {
-                api: None,
-                key_file: Some(&file),
-                json: false,
-            });
-            assert!(
-                matches!(reached, Ok(None)),
-                "a key file goes its own way, whatever this computer's login is: {:?}",
-                reached.map_err(|error| error.to_string())
-            );
-            drop(env);
-            std::fs::remove_dir_all(&root).expect("the test's directory goes");
         }
     }
 

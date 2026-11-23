@@ -18,7 +18,7 @@ use tilo_actions::{
     ResultSpec,
 };
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
-use tilo_device_identity::login::{self, Entry, Reached};
+use tilo_device_identity::login::{Entry, Reached};
 use tilo_peer_state::actions::ActionService;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::device_tickets::{Issuer, Role, Root, TicketServer};
@@ -98,9 +98,7 @@ impl Desktop {
     /// Where the certified computer enters: the workspace this computer was logged into, or the
     /// one it founded itself, through this endpoint.
     async fn entered(&self) -> Result<Entry, String> {
-        let place = login::Place::here(tilo_api::client::device_keys())
-            .map_err(|error| error.to_string())?;
-        if let Some((_, device)) = login::load(&place).map_err(|error| error.to_string())? {
+        if let Some(device) = tilo_api::daemon::who::home().ok().flatten() {
             return tilo_api::daemon::enter::login_entry(&device);
         }
         // No login: this computer founded its own workspace, and the computer it adds enters it

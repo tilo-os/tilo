@@ -38,35 +38,6 @@ tilo_test_env::scenario! {
         assert_eq!(server.endpoint, public(4));
     }
 
-    phase a_login_joined_with_a_ticket_names_the_server_it_takes_work_for;
-    // A profile joined with a ticket serves the server the login was answered with, reached
-    // at the endpoint the ticket named.
-    {
-        let server = SigningKey::from_bytes(&[0x55; 32]);
-        let endpoint = public(7);
-        let login = tilo_device_identity::login::Device {
-            site: "https://tilo.sh".into(),
-            host_origin: "https://home.example".into(),
-            workspace: "1f8f5b1c-6f2a-4c53-9c1a-2f0b3b0d4e11".into(),
-            workspace_name: None,
-            agent: "t".into(),
-            cert: cert(&server),
-            server_cert: cert(&server),
-            server_address: Some(tilo_device_identity::login::ServerAddress {
-                endpoint_addr: iroh::EndpointAddr::from_parts(
-                    iroh::EndpointId::from_bytes(&endpoint).unwrap(),
-                    Vec::new(),
-                ),
-                relay_url: None,
-                web: None,
-            }),
-        };
-        let found = Server::from_login(Some(&login)).unwrap();
-        assert_eq!(found.device(), server.verifying_key().to_bytes());
-        assert_eq!(found.endpoint, endpoint);
-        assert!(Server::from_login(None).is_none(), "no login, no server");
-    }
-
     phase each_workspaces_files_are_a_directory_of_their_own_under_the_profile;
     {
         let profile = Path::new("/var/lib/tilo/runtime");
@@ -112,18 +83,4 @@ fn public(seed: u8) -> [u8; 32] {
     SigningKey::from_bytes(&[seed; 32])
         .verifying_key()
         .to_bytes()
-}
-
-/// A certificate `key`'s person signed for this device.
-fn cert(key: &SigningKey) -> tilo_user_identity::DeviceCert {
-    tilo_user_identity::DeviceCert {
-        user_public_key: key.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "member".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    }
 }

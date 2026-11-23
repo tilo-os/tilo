@@ -175,10 +175,12 @@ impl Target {
             Self::Hosted { workspace, .. } => {
                 workspace::Hosted::workspace_id(self.reach(), workspace)
             }
-            Self::Device => Ok(crate::login::load_public(&crate::login::Place::here(
-                crate::identity::paths(),
-            )?)?
-            .map_or_else(|| "this-computer".to_owned(), |device| device.workspace)),
+            Self::Device => Ok(crate::api::entered_workspace(crate::api::Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })?
+            .map_or_else(|| "this-computer".to_owned(), |(workspace, _)| workspace)),
         }
     }
 

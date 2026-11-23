@@ -143,10 +143,12 @@ browser's 30 days count from the earlier start too, so nothing lasts longer than
 
 Every identity in the system derives from the device certificate. There is exactly one
 cryptographic identity per device, and its public half is the name other machines know it by. No
-subsystem mints its own: `tilo login` and the agents it serves sign with the `IdentityPaths` key,
-and keep only where the login goes (`$XDG_STATE_HOME/tilo/device/login.json`: site, host,
-workspace, the host's certificate, the agent). The certificate the person's root signed for the
-key is kept beside it, in `device/certs/<user>.bin`.
+subsystem mints its own: `tilo login` and the agents it serves sign with the `IdentityPaths` key.
+The certificate the person's root signed for the key is kept beside it, in
+`device/certs/<user>.bin`, and its label names the agent that runs there. Nothing else of a login
+is written down: the daemon keeps the server the ticket named in memory, and after a restart reads
+the person's server from its copy of their own workspace. Other programs ask the daemon
+(`account#who`).
 
 #### Adding a computer with a ticket
 
@@ -168,8 +170,9 @@ key is kept beside it, in `device/certs/<user>.bin`.
    was given is the one it asked for, before it answers. On a computer that holds the root,
    `tilo device add` is that approver itself.
 5. The computer gets the certificate and where to enter (the workspace and its server's
-   certificate and address, `CertifyAnswer`). It keeps them with its device key in `login.json`,
-   then enters the workspace over its one session.
+   certificate and address, `CertifyAnswer`). Its daemon, which `tilo login` asks
+   (`devices#logIn`), files the certificate beside its device key, starts its person's part again
+   as that device, and enters through that server over its one session.
 
 A computer keeps one device key, and a login is never kept with a key of its own. On a computer whose Tilo desktop is running, the desktop
 is the device already, and `tilo login` refuses rather than open a second session under the same

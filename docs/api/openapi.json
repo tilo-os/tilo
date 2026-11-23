@@ -1478,6 +1478,16 @@
           "unattended": {
             "type": "boolean",
             "description": "Keys made for this workspace alone run commands in its Linux machine\nwithout asking the person each time; absent while they are asked, as\nevery workspace starts. Read by the owner's keys alone."
+          },
+          "own": {
+            "type": "boolean",
+            "description": "One of the person's own, rather than one they were invited into.",
+            "default": false
+          },
+          "kept_here": {
+            "type": "boolean",
+            "description": "Whether the device answering keeps a copy of it.",
+            "default": false
           }
         },
         "required": [

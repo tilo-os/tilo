@@ -153,7 +153,7 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
         .ok_or_else(|| anyhow!("this computer holds no identity: tilo login --new-identity"))?;
     // The person is reached where this computer's login reaches them: the server it entered
     // through, signed in as the device their root certified here.
-    let Some((_, here)) = login::load(&login::Place::here(crate::identity::paths())?)? else {
+    let Some(here) = login::home() else {
         bail!("{}", login::NOT_LOGGED_IN);
     };
     if here.cert.user_public_key != person.public_key() {

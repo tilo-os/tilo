@@ -46,6 +46,7 @@ pub fn own_host_hint(
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id: workspace,
         endpoint_addr: endpoint,
         user_public_key: certificate.user_public_key,
@@ -289,6 +290,7 @@ fn seeded(now: SystemTime) -> Seeded {
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),

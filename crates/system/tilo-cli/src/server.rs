@@ -256,8 +256,7 @@ fn keep_recovery_key(file: &std::path::Path) -> Result<std::process::ExitCode> {
     if key.is_empty() {
         bail!("{} holds no recovery key", file.display());
     }
-    let place = tilo_device_identity::login::Place::here(identity::paths())?;
-    let (signing, device) = tilo_device_identity::login::load(&place)?.ok_or_else(|| {
+    let (signing, device) = crate::login::here()?.ok_or_else(|| {
         anyhow::anyhow!("this machine is not one of your devices yet: run `tilo login` first")
     })?;
     let runtime = crate::login::runtime()?;

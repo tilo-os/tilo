@@ -51,9 +51,7 @@ async fn keep_in_list(entered: &Entered, cert: &DeviceCert) -> Result<()> {
 
 /// This computer's login and the person whose root it holds, checked to be one person.
 fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
-    crate::identity::convert_earlier()?;
-    let (key, here) = login::load(&login::Place::here(crate::identity::paths())?)?
-        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     let person = crate::identity::held()?.ok_or_else(|| {
         anyhow!(
             "This computer does not hold your identity, so it cannot add a device: run \
@@ -92,11 +90,9 @@ pub fn add(
         return sign_in(ticket, json);
     }
     login::trust_test_certificates()?;
-    crate::identity::convert_earlier()?;
-    let login_place = login::Place::here(crate::identity::paths())?;
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
-    let here = login::load_public(&login_place)?.filter(Device::reaches_a_server);
+    let here = login::home().filter(Device::reaches_a_server);
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let cert = runtime.block_on(async {
@@ -158,7 +154,7 @@ pub fn add(
         // no login has no session of its own to enter with: the host lists it as it enters.
         // The daemon calls are done, so this process may read the private key now.
         if here.is_some()
-            && let Some((key, here)) = login::load(&login_place)?
+            && let Some((key, here)) = login::here()?
         {
             match login::connect(&key, &here, None).await {
                 Ok(entered) => {
@@ -202,7 +198,6 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     use tilo_device_identity::login::{APPROVE, Direction, PENDING};
 
     login::trust_test_certificates()?;
-    crate::identity::convert_earlier()?;
     let parsed = Ticket::parse(ticket).map_err(|_| {
         anyhow!(
             "{} is not a Tilo ticket; a browser's sign-in prompt copies one that starts with \
@@ -218,8 +213,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         );
     }
     let person = crate::identity::held()?;
-    let login_place = login::Place::here(crate::identity::paths())?;
-    let (_, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let (_, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
@@ -341,8 +335,7 @@ fn named(device: &PersonalDevice) -> &str {
 /// # Errors
 /// This computer is not logged in, or its login is damaged.
 pub fn key() -> Result<ExitCode> {
-    let here = login::load_public(&login::Place::here(crate::identity::paths())?)?
-        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let here = login::home().ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     println!(
         "{}",
         json!({
@@ -360,8 +353,7 @@ pub fn key() -> Result<ExitCode> {
 /// This computer is not logged in, or its host did not answer.
 pub fn list(json: bool) -> Result<ExitCode> {
     login::trust_test_certificates()?;
-    let (key, here) = login::load(&login::Place::here(crate::identity::paths())?)?
-        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     let runtime = login::runtime()?;
     let devices = runtime.block_on(devices(&key, &here))?;
     let this = here.cert.device_public_key;

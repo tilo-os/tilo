@@ -94,6 +94,29 @@ pub(super) async fn member_service(
     service
 }
 
+/// A device that joins names its person as they asked, among the workspace's people: the serving
+/// device that let it in writes the name, and its member list shows it.
+#[tokio::test]
+async fn a_device_that_joins_names_its_person_in_the_workspace() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Named", 12).await;
+    let member = member_service(member_state.path(), device).await;
+    member
+        .workspaces()
+        .join_member_as(&invitation, Some("Ada Lovelace"))
+        .await
+        .expect("the invitation is redeemed");
+    let named = serving
+        .workspaces()
+        .members(&created.workspace)
+        .await
+        .unwrap()
+        .iter()
+        .any(|member| member["name"] == "Ada Lovelace");
+    assert!(named, "the serving device names the person who joined");
+}
+
 #[tokio::test]
 async fn a_device_joins_a_workspace_its_invitation_names_and_holds_its_governance() {
     let serving_state = tempfile::tempdir().unwrap();

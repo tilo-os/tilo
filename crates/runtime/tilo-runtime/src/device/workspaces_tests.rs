@@ -192,6 +192,23 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     })
     .await;
 
+    // With no login to name it, the copy names the person's server: the host that keeps the
+    // workspace's keys and is not this device. The account asked there answers.
+    let hosts = own.copies().hosts(&workspace).await.unwrap();
+    let found = crate::device::home::server_among(&hosts, &laptop_cert.device_public_key)
+        .expect("the copy names the server");
+    assert_eq!(found.endpoint_addr.id, server.node_addr().id);
+    let signs_as = found.device_certificate.device_public_key;
+    assert_eq!(signs_as, server_cert.device_public_key);
+    let account =
+        crate::device::account::Account::at(&own, &found.endpoint_addr, signs_as, &workspace);
+    tilo_test_env::within(
+        "the server answers the account its copy names",
+        account.list(None),
+    )
+    .await
+    .expect("the person's workspace list");
+
     entered.close();
     server.shutdown().await;
 }

@@ -983,6 +983,8 @@ pub(crate) struct HolderClaim {
     pub(crate) cloud: bool,
     /// The workspaces it runs a moderation agent for.
     pub(crate) moderates: std::collections::BTreeSet<String>,
+    /// The web origin its site answers at, when it serves one.
+    pub(crate) origin: Option<String>,
 }
 
 struct WorkspacesInner {

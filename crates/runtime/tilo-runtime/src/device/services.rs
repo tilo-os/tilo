@@ -1,14 +1,15 @@
 //! The services this computer's one daemon runs for the person: the shared action broker and
 //! identity service the apps attach to, over the device's one workspace service.
 //!
-//! The daemon is the device: it acts as the device key and certificate this computer's login
-//! keeps ([`tilo_device_identity::login`]), for the person that certificate names, in the
-//! workspace the login names. A computer with no login acts as the identity founded on it
-//! (`tilo login --new-identity`), in a workspace founded here whose member list names the person
-//! as its owner. A computer of one account's that has neither, and was handed no ticket, founds
-//! its person at its first start ([`found_a_person`]); Tilo OS's system tree, and a computer handed
-//! a ticket, are served with the device key alone until a person's certificate names it
-//! ([`super::unclaimed`]). Here the daemon
+//! The daemon is the device: it acts as the device key and the certificate the person's root
+//! signed for it, for the person that certificate names. A device a ticket made of this computer
+//! keeps its person's workspaces as a member, entering them through the server its copy of the
+//! person's own workspace names ([`super::home`]). A computer that holds the person's root acts as
+//! the identity founded on it (`tilo login --new-identity`), in a workspace founded here whose
+//! member list names the person as its owner. A computer of one account's that has neither, and
+//! was handed no ticket, founds its person at its first start ([`found_a_person`]); Tilo OS's
+//! system tree, and a computer handed a ticket, are served with the device key alone until a
+//! person's certificate names it ([`super::unclaimed`]). Here the daemon
 //! launches the installed apps through the platform launcher (`crate::apps`), records the grants
 //! people give apps for other apps' actions as changes to the workspace's member list, serves
 //! route keys for its workspaces (`channels`) and routes offloadable actions through the
@@ -36,6 +37,7 @@ use tilo_api::daemon::DaemonPlace;
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
@@ -70,9 +72,6 @@ const FOUNDED_NAME: &str = "Home";
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
 pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set up Tilo first, with \
      `tilo login` and the code from your Tilo tab (Set up with your agent).";
-/// How long a daemon with a login waits for the endpoint its server is reached from before it
-/// binds one of its own: a server that is not reachable now is reached later from either.
-const BINDING: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// This computer's daemon, as the device. Drop applications first.
 pub struct Daemon {
@@ -98,17 +97,19 @@ pub struct Daemon {
     other_devices: Option<crate::other_devices::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it runs here.
     apps: Arc<apps::Apps>,
-    /// The login this daemon serves, when this computer logged in.
-    login: Option<(SigningKey, Device)>,
+    /// The server this device enters its person's workspaces through, once it knows one.
+    home: Arc<super::home::Home>,
     /// The device actions this daemon answers: a ticket for a new computer, and a login with one.
     tickets: Arc<Tickets>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
-    /// The account's own actions, forwarded over the login's one session.
-    account: std::sync::Mutex<Option<Arc<tilo_api::server::Connection>>>,
+    /// The person's account at their server, once [`Self::home`] names it.
+    account: Mutex<Option<Arc<super::account::Account>>>,
     place: DaemonPlace,
-    _lock: advisory_lock::FileLock,
+    /// The device's lock, when this daemon took it itself: one started under the lock the
+    /// daemon's device part keeps ([`Self::start_locked`]) holds none of its own.
+    _lock: Option<advisory_lock::FileLock>,
 }
 
 /// The services a profile is served as: the person's own runtime, or the same
@@ -125,49 +126,39 @@ impl Drop for Daemon {
     }
 }
 
-/// Who this device is: its key and certificate, and the login they come from, when there is one.
+/// Who this device is: the key and certificate its identity holds.
 struct Identity {
     key: SigningKey,
     cert: DeviceCert,
-    login: Option<(SigningKey, Device)>,
-    /// Where the login keeps this computer's device: its key and certificates, and its directory.
+    /// This computer's device directory, with its key and certificates.
     place: tilo_device_identity::login::Place,
 }
 
 impl Identity {
-    /// The login's device, or, with no login, the identity founded on this computer.
+    /// The device this computer's identity is.
     ///
     /// # Errors
-    /// Neither names this computer's device key ([`SET_UP_FIRST`]), or the login is damaged.
+    /// Nothing certifies this computer's device key ([`SET_UP_FIRST`]).
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
             .map_err(io::Error::other)?;
-        // A login that ended, on a computer that holds its person's root, is no login: the
-        // computer is that person's own device, serves itself and adds their others.
-        let login = tilo_device_identity::login::load(&place)
-            .map_err(io::Error::other)?
-            .filter(|(_, device)| {
-                let ended = !device.reaches_a_server()
-                    && super::person::holds_root_of(&device.cert.user_public_key);
-                if ended {
-                    tracing::info!("this computer's login has ended and it holds the person's root: it serves as their own device");
-                }
-                !ended
+        let (key, cert) = tilo_identity::broker::trusted_current_device("").map_err(|error| {
+            io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
+        })?;
+        Ok(Self { key, cert, place })
+    }
+
+    /// Whether a ticket made this computer a device of its person's, rather than it holding their
+    /// root: it keeps their workspaces as a member then, and founds none of its own.
+    fn joined(&self) -> bool {
+        let holds_root = tilo_identity::store::identity_dir_from_env()
+            .ok()
+            .and_then(|dir| tilo_identity::store::resolve_active_identity(&dir))
+            .and_then(|active| tilo_identity::store::load_metadata_from_path(&active).ok())
+            .is_some_and(|active| {
+                active.single_device && active.group_public_key == self.cert.user_public_key
             });
-        let (key, cert) = if let Some((key, device)) = &login {
-            adopt_login(&place, device);
-            (key.clone(), device.cert.clone())
-        } else {
-            tilo_identity::broker::trusted_current_device("").map_err(|error| {
-                io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
-            })?
-        };
-        Ok(Self {
-            key,
-            cert,
-            login,
-            place,
-        })
+        !holds_root
     }
 
     /// The person's id, hex of their root, as which they act here.
@@ -204,28 +195,6 @@ pub(crate) fn found_a_person() -> io::Result<()> {
     Ok(())
 }
 
-/// The login's device as this computer's enrolment: its certificate filed as this device's, and
-/// its person as the account's identity, so the identity service signs for apps here as the
-/// login's person, as on a device enrolled any other way. A computer that holds the person's root
-/// is theirs already. One enrolled for another person (the root it made for itself before it
-/// logged in, or an earlier login's) becomes the login's person's: they just chose it.
-fn adopt_login(place: &tilo_device_identity::login::Place, device: &Device) {
-    if device.cert.capabilities.can_admit_devices {
-        return;
-    }
-    let enrolled = tilo_identity::store::identity_dir_from_env().and_then(|dir| {
-        tilo_identity::provisioning::adopt_login_certificate(
-            &dir,
-            place.keys(),
-            &device.cert,
-            tilo_clock::unix_now_ns(),
-        )
-    });
-    if let Err(error) = enrolled {
-        tracing::warn!(%error, "the login's device is not this computer's enrolment: apps here cannot sign as its person");
-    }
-}
-
 impl Daemon {
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
@@ -250,13 +219,30 @@ impl Daemon {
         self.workspaces.copies().provide(provider, answers);
     }
 
-    /// The login this daemon serves, when this computer logged in.
-    pub(crate) fn login(&self) -> Option<&(SigningKey, Device)> {
-        self.login.as_ref()
+    /// The device this computer is as it enters its person's workspaces, once it knows their
+    /// server ([`super::home::Home::get`]).
+    pub(crate) fn home(&self) -> Option<Device> {
+        self.home.get()
     }
 
-    /// Tilo's API as this daemon: its own workspaces answered locally, and the account forwarded
-    /// over the login's one session when `keep_account` gave it one.
+    /// What [`Self::home`] is read from, for what enters as this device.
+    pub(crate) fn home_source(&self) -> Arc<super::home::Home> {
+        Arc::clone(&self.home)
+    }
+
+    /// The device's key.
+    pub(crate) fn key(&self) -> &SigningKey {
+        &self.key
+    }
+
+    /// The device a ticket made of this computer while this daemon runs, once it logs in with
+    /// one: the person's part starts again as it.
+    pub(crate) fn logged_in(&self) -> tokio::sync::watch::Receiver<Option<Box<Device>>> {
+        self.tickets.logged_in()
+    }
+
+    /// Tilo's API as this daemon: its own workspaces answered locally, and the person's account
+    /// asked at their server ([`Self::account`]).
     ///
     /// # Errors
     /// The API server cannot be built.
@@ -273,13 +259,80 @@ impl Daemon {
         ))
     }
 
-    /// Answer the account's own actions over `connection`, the login's one session with its
-    /// server: the daemon's workspaces are answered locally, the account is not its to keep.
-    pub(crate) fn keep_account(&self, connection: Arc<tilo_api::server::Connection>) {
-        *self
-            .account
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(connection);
+    /// The person's account at their server, asked as this device over the device action service
+    /// ([`super::account`]): the server [`Self::home`] names. `None` while it names none; asked
+    /// again then, so the account is there once the copy of the person's workspace arrives.
+    pub(crate) fn account(&self) -> Option<Arc<super::account::Account>> {
+        if let Some(account) = self.account.lock_recover().as_ref() {
+            return Some(Arc::clone(account));
+        }
+        let person = tilo_server_protocol::servers::person_workspace_id(&self.cert.user_public_key);
+        let home = self.home()?;
+        let server = home.server_address.as_ref()?;
+        let account = Arc::new(super::account::Account::at(
+            &self.workspaces,
+            &server.endpoint_addr,
+            home.server_cert.device_public_key,
+            &home.workspace,
+        ));
+        // The person's own workspace, whose roster lists every device of theirs, is the first
+        // this device keeps: entered where the server says it is.
+        let (own, asked) = (Arc::clone(&self.workspaces), Arc::clone(&account));
+        tilo_rt::app().handle().spawn(async move {
+            let Some(person) = WorkspaceId::parse(&person) else {
+                return;
+            };
+            if own.keeps(person).await {
+                return;
+            }
+            let entered = match asked.address(person).await {
+                Ok(hint) => own.copies().hold_as_member(person, &hint).await.map(drop),
+                Err(why) => Err(why),
+            };
+            if let Err(why) = entered {
+                tracing::warn!(%why, "the person's own workspace is not kept here yet");
+            }
+        });
+        Some(Arc::clone(
+            self.account.lock_recover().get_or_insert(account),
+        ))
+    }
+
+    /// The sessions of the agent `name` names, which this computer's login was made for: each a
+    /// run of its own in this daemon's workspace, as the one agent every computer of the person's
+    /// knows it by, so what the person granted that agent holds on every connection.
+    pub(crate) fn agent_sessions(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> tilo_mcp::SessionFactory<RuntimeActionProvider> {
+        let daemon = Arc::downgrade(self);
+        let name = name.to_owned();
+        Arc::new(move || {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            let policy_time = daemon.policy_origin.capture().map_err(io::Error::other)?;
+            let (host, caller) = daemon.action_provider()?.agent_session(
+                &daemon.workspace,
+                &daemon.actor,
+                &policy_time,
+                |person| {
+                    (
+                        tilo_actions::remote::device_agent_id(person, &name),
+                        name.clone(),
+                    )
+                },
+            )?;
+            // The apps of the workspace: what the agent's task programs compile against.
+            let catalogue =
+                tilo_mcp::task_hosts::WorkspaceCatalogue::new(host.clone(), caller.clone());
+            let tasks =
+                tilo_mcp::task_hosts::TaskHosts::new(Some(&daemon.actor), Arc::new(catalogue));
+            let run = hex::encode(rand::random::<[u8; 8]>());
+            Ok(tilo_mcp::McpServer::admitted(host, caller)?
+                .with_agent_session(run)
+                .with_task_hosts(Some(Arc::new(tasks))))
+        })
     }
 
     /// Where this daemon's connections reach it.
@@ -295,17 +348,13 @@ impl Daemon {
         root: &Path,
         stage: &mut dyn FnMut(&str),
         serving: Serving,
-        locked: Option<([u8; 32], advisory_lock::FileLock)>,
+        (locked, entered): (Option<[u8; 32]>, Option<Device>),
     ) -> io::Result<Self> {
         let identity = Identity::here()?;
-        let take_work =
-            take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
         tilo_files::native::private::directory(identity.place.dir())?;
-        let place = tilo_api::daemon::this_computer()
-            .map_err(io::Error::other)?
-            .serving(&identity.key.verifying_key().to_bytes());
+        let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         let lock = match locked {
-            Some((device, lock)) if device == identity.key.verifying_key().to_bytes() => lock,
+            Some(device) if device == identity.key.verifying_key().to_bytes() => None,
             Some(_) => {
                 return Err(io::Error::other(
                     "the device key this daemon locked at its start is not the one its person's \
@@ -314,15 +363,19 @@ impl Daemon {
             }
             None => {
                 stage("locking the device");
-                super::serve::lock_device(&place)?
+                Some(super::serve::lock_device(&place)?)
             }
         };
         tilo_files::native::private::directory(root)?;
         let sockets = &crate::daemon::sockets(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
-        let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
-            (device.workspace.clone(), None)
+        let joined = identity.joined();
+        let (workspace_id, founded) = if joined {
+            (
+                tilo_server_protocol::servers::person_workspace_id(&identity.cert.user_public_key),
+                None,
+            )
         } else {
             let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
             (founded.to_string(), Some(founded))
@@ -343,15 +396,24 @@ impl Daemon {
         // workspaces the login takes part in, or the workspace founded here.
         stage("opening the device's workspace service");
         let key_sessions = founded.map(|_| crate::key_sessions::KeySessions::new());
-        let member = take_work.is_some();
-        let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
-        let endpoint = endpoint(&identity, port, member)?;
+        let port = configured_port()?.or_else(|| joined.then_some(take_work::PORT));
+        let endpoint = listen_endpoint(&identity.key, port)?;
         let workspaces = open_workspaces(
             &identity,
             endpoint,
             Arc::clone(&brokers),
             key_sessions.as_ref(),
+            !joined,
         )?;
+        let home = Arc::new(super::home::Home::new(
+            Arc::clone(&workspaces),
+            identity.cert.clone(),
+            entered,
+        ));
+        // A device a ticket made takes the work of the server it enters through.
+        let take_work = joined
+            .then(|| take_work::Server::from_login(home.get().as_ref()))
+            .flatten();
         if let Some(founded) = founded {
             tilo_rt::app()
                 .handle()
@@ -382,7 +444,7 @@ impl Daemon {
             Tickets::new(
                 (identity.key.clone(), identity.cert.clone()),
                 workspaces.endpoint(),
-                identity.login.clone(),
+                joined.then(|| Arc::clone(&home)),
                 Arc::new(super::person::root),
                 founded.map(|workspace| super::ticket::Founded {
                     workspace: workspace.to_string(),
@@ -496,11 +558,11 @@ impl Daemon {
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
-            login: identity.login,
+            home,
             tickets,
             key: identity.key.clone(),
             cert: identity.cert,
-            account: std::sync::Mutex::new(None),
+            account: Mutex::new(None),
             place,
             _lock: lock,
         })
@@ -572,27 +634,15 @@ pub(crate) fn port_from(
     })
 }
 
-/// This device's endpoint, keyed by its device key and bound on UDP `port` when one is fixed: the
-/// one its login's server is reached from, or, with no login or for a member that takes work, one
-/// bound as [`listen_endpoint`] binds it.
-fn endpoint(identity: &Identity, port: Option<u16>, member: bool) -> io::Result<iroh::Endpoint> {
-    let Some((key, device)) = identity.login.as_ref().filter(|_| !member) else {
-        return listen_endpoint(&identity.key, port);
-    };
-    let bound = tilo_rt::app().handle().block_on(async {
-        let server = tilo_api::daemon::enter::server_of(device).await?;
-        tokio::time::timeout(BINDING, server.bind_at(Some(key.to_bytes()), port))
-            .await
-            .map_err(|_| anyhow::anyhow!("the endpoint did not bind in time"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
-    });
-    match bound {
-        Ok(endpoint) => Ok(endpoint),
-        Err(error) => {
-            tracing::warn!(%error, "the login's server is not reached now; this device relays as the person's other devices do");
-            listen_endpoint(&identity.key, port)
-        }
-    }
+/// The name this computer's person gave themself, as its identity keeps it: what a workspace
+/// they join shows them by. `None` before they named themself.
+fn person_name() -> Option<String> {
+    let dir = tilo_identity::store::identity_dir_from_env().ok()?;
+    let active = tilo_identity::store::resolve_active_identity(&dir)?;
+    tilo_identity::store::load_metadata_from_path(&active)
+        .ok()
+        .map(|metadata| metadata.display_name)
+        .filter(|name| tilo_identity::store::is_chosen_display_name(name))
 }
 
 /// Open the device's workspace service in its directory: it governs the workspace founded here
@@ -602,6 +652,7 @@ fn open_workspaces(
     endpoint: iroh::Endpoint,
     brokers: Arc<Mutex<BrokerChannels>>,
     key_sessions: Option<&Arc<crate::key_sessions::KeySessions>>,
+    governs: bool,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
         identity.cert.clone(),
@@ -614,7 +665,6 @@ fn open_workspaces(
         Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
     });
     let (dir, key) = (identity.place.dir().join(OWN), identity.key.clone());
-    let governs = identity.login.is_none();
     block_on_owned(async move {
         ServiceWorkspaces::open(Opening {
             dir: &dir,
@@ -794,10 +844,10 @@ impl Daemon {
         root: &Path,
         stage: &mut dyn FnMut(&str),
         dev: bool,
-        locked: ([u8; 32], advisory_lock::FileLock),
+        (device, entered): ([u8; 32], Option<Device>),
     ) -> io::Result<Self> {
         let serving = if dev { Serving::Dev } else { Serving::Profile };
-        Self::start(root, stage, serving, Some(locked))
+        Self::start(root, stage, serving, (Some(device), entered))
     }
 }
 
@@ -805,11 +855,11 @@ impl RuntimeServices for Daemon {
     type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Profile, None)
+        Self::start(root, stage, Serving::Profile, (None, None))
     }
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Dev, None)
+        Self::start(root, stage, Serving::Dev, (None, None))
     }
 
     /// The person's other devices, as this device asks them.
@@ -918,11 +968,15 @@ impl Daemon {
 
 impl tilo_api::session::Here for Daemon {
     fn workspaces(&self) -> Vec<tilo_api::session::Workspace> {
-        self.workspaces
+        let mut kept: Vec<_> = self
+            .workspaces
             .workspaces()
             .into_iter()
             .map(|workspace| tilo_api::session::held(workspace.id().to_string(), workspace.name))
-            .collect()
+            .collect();
+        // The one this computer enters through first: what a command that names none acts in.
+        kept.sort_by_key(|workspace| workspace.id != self.workspace);
+        kept
     }
 
     fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
@@ -945,13 +999,73 @@ impl tilo_api::session::Here for Daemon {
         })
     }
 
-    fn connection(&self) -> Option<Arc<tilo_api::server::Connection>> {
-        self.account
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
+        Daemon::account(self).map(|account| account as Arc<dyn tilo_api::session::AccountServer>)
+    }
+
+    fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
+        let workspace = workspace.to_owned();
+        Box::pin(async move {
+            let id = WorkspaceId::parse(&workspace)
+                .ok_or_else(|| format!("{workspace} names no workspace"))?;
+            if self.workspaces.keeps(id).await {
+                return Ok(());
+            }
+            let hint = Daemon::account(self)
+                .ok_or(NO_ACCOUNT_YET)?
+                .address(id)
+                .await?;
+            self.workspaces
+                .copies()
+                .hold_as_member(id, &hint)
+                .await
+                .map(drop)
+        })
+    }
+
+    fn leave(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
+        let workspace = workspace.to_owned();
+        Box::pin(async move {
+            if workspace == self.workspace {
+                return Err(
+                    "this computer enters through this workspace: it keeps it for as long as it \
+                     is the person's device"
+                        .to_owned(),
+                );
+            }
+            self.workspaces.copies().release(&workspace).await
+        })
+    }
+
+    fn join(&self, invite: &str) -> tilo_api::session::Asked<'_, String> {
+        let invite = invite.trim().to_owned();
+        Box::pin(async move {
+            self.workspaces
+                .copies()
+                .join_member_as(&invite, person_name().as_deref())
+                .await
+                .map(|workspace| workspace.to_string())
+        })
+    }
+
+    fn workspaces_changed(&self) -> Option<Pending<()>> {
+        let held = self.workspaces.entered();
+        let mut changes = self.workspaces.copies().governance_changes();
+        let (done, answer) = tilo_actions::remote::pending();
+        tilo_rt::app().handle().spawn(async move {
+            tokio::select! {
+                () = held.notified() => {}
+                _ = changes.recv() => {}
+            }
+            done.complete(());
+        });
+        Some(answer)
     }
 }
+
+/// Why a workspace this daemon does not keep cannot be kept: no server says where it is.
+const NO_ACCOUNT_YET: &str = "this computer isn't logged in to a server that says where the \
+     workspace is kept: run `tilo login <ticket>` first";
 
 /// The broker's action links as one more local caller, for no app
 /// connection. Its callers act from this foreign device.

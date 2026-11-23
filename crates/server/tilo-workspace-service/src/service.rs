@@ -54,6 +54,10 @@ pub struct ServiceConfig {
     /// can read what the machine holds. A keeper declares it in the address it signs, so every
     /// member reads what can read their workspace.
     pub rented: bool,
+    /// The web origin this keeper's site answers at (`https://eu1.tilo.sh`), when it serves
+    /// one: the address it signs carries it, so a member's device finds the site's pages and
+    /// API without guessing them from its name.
+    pub origin: Option<String>,
     /// Who the handshake admits besides the person's own devices and the
     /// workspaces' members.
     pub trust_policy: TrustPolicy,
@@ -93,6 +97,7 @@ impl ServiceConfig {
             work,
             label: String::new(),
             rented: false,
+            origin: None,
             trust_policy: TrustPolicy::AllowMatchingUser,
             max_workspace_grants: None,
             apps: None,
@@ -333,6 +338,7 @@ impl ServiceSessions {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
                 moderates: std::collections::BTreeSet::new(),
+                origin: cfg.origin.clone(),
             })),
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),

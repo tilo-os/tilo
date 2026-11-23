@@ -39,7 +39,7 @@ pub fn serve() -> Result<ExitCode> {
     // is not complete has none yet. This computer's own login then reaches its daemon, as on any
     // other computer; without one the agent hears what it waits for.
     let login = crate::login::Place::here(crate::identity::paths())?;
-    match (crate::login::load_public(&login)?, desktop) {
+    match (crate::login::served_device_key(login.keys()), desktop) {
         (Some(_), _) => {}
         (None, Ok(Some(server))) => {
             tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
@@ -93,7 +93,7 @@ pub fn serve() -> Result<ExitCode> {
 /// The login is damaged, or the daemon did not start.
 pub(crate) fn ensure_held() -> Result<()> {
     let login = crate::login::Place::here(crate::identity::paths())?;
-    if crate::login::load_public(&login)?.is_none() {
+    if crate::login::served_device_key(login.keys()).is_none() {
         return Ok(());
     }
     let place = this_computer().map_err(anyhow::Error::msg)?;
@@ -129,7 +129,7 @@ fn answer_alone(line: &str, problem: &str) -> Option<String> {
 pub(crate) fn ask_peer() -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
     let login = crate::login::Place::here(crate::identity::paths()).ok()?;
-    crate::login::load_public(&login).ok()??;
+    crate::login::served_device_key(login.keys())?;
     let mut stream = this_computer().ok()?.connect()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     writeln!(

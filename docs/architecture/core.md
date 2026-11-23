@@ -422,7 +422,7 @@ another:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native device key and certificate | `tilo-device-identity` `IdentityPaths` (`persist.rs`, `keychain.rs`) | `$TILO_IDENTITY_ROOT`, else `/var/lib/tilo`, else `$XDG_DATA_HOME/tilo`: `device-private/keypair.bin`, `device/cert.bin`, `device/certs/<user>.bin` | 6,922 |
-| CLI and agent login | `tilo-device-identity` `login` `Place`, `Device` | `$XDG_STATE_HOME/tilo/device/login.json`, with the device key and certificate above. A key an earlier tilo kept there (`{key,device.json}`) is taken over once. | 365 |
+| CLI and agent login | `tilo-device-identity` `login` `Place`, `file_certificate` | The certificate above, filed under `device/certs/<user>.bin`. Where the device enters is the daemon's to know, in memory and from its copy of the person's own workspace, and every program asks it (`account#who`). | 365 |
 | Browser device keys | `tilo-browser-runtime` `web/device-key.mjs` | IndexedDB, a pool of non-extractable keys per tab | 423 |
 | Boot unlock key | `tilo-auth` `userkey.rs`, `record.rs`; `tilo-unlock-protocol` `BootKeyCert` | `/var/lib/tilo/auth/`, the root keyring | 445 + 1,818 |
 

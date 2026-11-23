@@ -1,4 +1,5 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
+use crate::device::presence::{Presence, Visit};
 use crate::device::services::Daemon;
 use crate::seats::{Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
@@ -290,32 +291,48 @@ fn serve_device(
             }
         }
     }
+    // A device a ticket made enters through the server the ticket named until its copy of the
+    // person's own workspace names it.
+    let mut entered = device.entered();
     let locked = device.into_lock();
-    let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
-    let session = Arc::new(Daemon::start_locked(profile, &mut stage, dev, locked)?);
-    // A computer that just logged in takes its workspace in while the device is held (below):
-    // nothing is admitted to the workspace before then. The endpoint admits each connection as
-    // it comes, and host search starts once the workspace is here, rather than the daemon ending
-    // before it could take the workspace in.
-    let search = Arc::new(OnceLock::new());
-    search_once_held(&session, &search)?;
-    let endpoint = Endpoint {
-        session_factory: admitted_per_connection(&session),
-        status: Status {
-            version: 1,
-            pid: std::process::id(),
-            workspace: session.workspace().to_owned(),
-        },
-        search,
-        media: session.media(),
-        other_devices: session.other_devices(),
-    };
-    native.serve_the_person(endpoint);
-    // The device is served until the daemon is told to stop, or another takes the device over.
-    let held = crate::device::hold(&session, stop);
-    drop(session);
-    held.map_err(|error| io::Error::other(format!("{error:#}")))?;
-    Ok(())
+    loop {
+        let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
+        let session = Arc::new(Daemon::start_locked(
+            profile,
+            &mut stage,
+            dev,
+            (locked.0, entered.take()),
+        )?);
+        // A computer that just logged in takes its workspace in while the device is held (below):
+        // nothing is admitted to the workspace before then. The endpoint admits each connection as
+        // it comes, and host search starts once the workspace is here, rather than the daemon
+        // ending before it could take the workspace in.
+        let search = Arc::new(OnceLock::new());
+        search_once_held(&session, &search)?;
+        let endpoint = Endpoint {
+            session_factory: admitted_per_connection(&session),
+            status: Status {
+                version: 1,
+                pid: std::process::id(),
+                workspace: session.workspace().to_owned(),
+            },
+            search,
+            media: session.media(),
+            other_devices: session.other_devices(),
+            agents: None,
+        };
+        native.serve_the_person(endpoint);
+        // The device is served until the daemon is told to stop, another takes the device over,
+        // or this computer logs in with a ticket: its person's part starts again as that device,
+        // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
+        let held = crate::device::hold(&session, stop);
+        native.forget_the_person();
+        drop(session);
+        match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
+            crate::device::Ended::Stopped => return Ok(()),
+            crate::device::Ended::LoggedIn(device) => entered = Some(*device),
+        }
+    }
 }
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
@@ -330,7 +347,8 @@ struct Native {
     answers: crate::device::unclaimed::DeviceOnly,
     /// Who each connection is, and the device's answers about it.
     seats: Arc<Seats>,
-    person: OnceLock<Take>,
+    /// The person's endpoint, while their services run.
+    person: Mutex<Option<Arc<Take>>>,
     /// Told when [`Self::person`] is set.
     started: (Mutex<()>, Condvar),
 }
@@ -348,7 +366,7 @@ impl Native {
             answers: device,
             seats,
             started: (Mutex::new(()), Condvar::new()),
-            person: OnceLock::new(),
+            person: Mutex::new(None),
         }
     }
 
@@ -378,6 +396,7 @@ impl Native {
             search: Arc::new(OnceLock::new()),
             media: None,
             other_devices: None,
+            agents: None,
         }
         .take(stream, slot, Some(seated))
     }
@@ -389,12 +408,20 @@ impl Native {
     ) {
         let take: Take =
             Box::new(move |stream, slot, seated| endpoint.take(stream, slot, Some(seated)));
-        assert!(
-            self.person.set(take).is_ok(),
-            "one daemon starts its person's services once"
-        );
+        *self.person.lock_recover() = Some(Arc::new(take));
         let _told = self.started.0.lock_recover();
         self.started.1.notify_all();
+    }
+
+    /// Serve no connection the person's from now on, while their services start again: one that
+    /// comes meanwhile waits for them.
+    fn forget_the_person(&self) {
+        self.person.lock_recover().take();
+    }
+
+    /// The person's endpoint, while their services run.
+    fn person(&self) -> Option<Arc<Take>> {
+        self.person.lock_recover().clone()
     }
 
     /// Serve each connection to `listener` as whatever answers when it comes ([`accept`]): an
@@ -420,7 +447,7 @@ impl Native {
         if !seated.seat.admitted.served() || seated.seat.uid == ROOT {
             return self.device_only(stream, slot, seated);
         }
-        match self.person.get() {
+        match self.person() {
             Some(person) => person(stream, slot, seated),
             None if !self.answers.claimed() => self.device_only(stream, slot, seated),
             None => {
@@ -430,7 +457,7 @@ impl Native {
                     .spawn(move || {
                         let mut told = native.started.0.lock_recover();
                         let person = loop {
-                            if let Some(person) = native.person.get() {
+                            if let Some(person) = native.person() {
                                 break person;
                             }
                             told = native
@@ -470,7 +497,7 @@ fn accept(
 }
 
 /// What every native connection is served with.
-struct Endpoint<H> {
+pub(crate) struct Endpoint<H> {
     session_factory: tilo_mcp::SessionFactory<H>,
     status: Status,
     /// Opens the host search results another process was handed, once host search started.
@@ -480,6 +507,34 @@ struct Endpoint<H> {
     /// The person's other devices, which a `--connect --device` client is carried to and the
     /// `tilo_devices` tool lists; `None` for an endpoint that reaches none.
     other_devices: Option<crate::other_devices::OtherDevices>,
+    /// For the connections of the agents this computer's login was made for: the device's
+    /// presence in its workspace, which answers their account calls and says when the person
+    /// stopped them.
+    agents: Option<Arc<Presence>>,
+}
+
+/// The endpoint every agent of this computer's login reaches at its device socket: the
+/// daemon's own workspace, as the native endpoint serves the person's apps, each connection a
+/// run of the one agent the login was made for, as every computer of the person's names it.
+pub(crate) fn agents_endpoint(
+    daemon: &Arc<Daemon>,
+    agents: Arc<Presence>,
+) -> Endpoint<<Daemon as RuntimeServices>::ActionProvider> {
+    let name = agents
+        .home()
+        .map_or_else(|| "agent".to_owned(), |device| device.agent);
+    Endpoint {
+        session_factory: daemon.agent_sessions(&name),
+        status: Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: daemon.workspace().to_owned(),
+        },
+        search: Arc::new(OnceLock::new()),
+        media: daemon.media(),
+        other_devices: daemon.other_devices(),
+        agents: Some(agents),
+    }
 }
 
 /// The sessions of the native endpoint, each admitted to `session`'s workspace when its
@@ -575,6 +630,19 @@ fn refuse_busy(mut stream: UnixStream) {
     }
 }
 
+impl<H> Clone for Endpoint<H> {
+    fn clone(&self) -> Self {
+        Self {
+            session_factory: Arc::clone(&self.session_factory),
+            status: self.status.clone(),
+            search: Arc::clone(&self.search),
+            media: self.media.clone(),
+            other_devices: self.other_devices.clone(),
+            agents: self.agents.clone(),
+        }
+    }
+}
+
 impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
     /// Serve `stream` on its own thread, counted in `slot` while it lasts, as `seated` says
     /// who it is.
@@ -584,71 +652,81 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         slot: ConnectionSlot,
         seated: Option<Seated>,
     ) -> io::Result<()> {
-        let factory = Arc::clone(&self.session_factory);
-        let status = self.status.clone();
-        let search = Arc::clone(&self.search);
-        let media = self.media.clone();
-        let other_devices = self.other_devices.clone();
+        let endpoint = self.clone();
         std::thread::Builder::new()
             .name("tilo-native-mcp".into())
             .spawn(move || {
                 let _slot = slot;
-                // The first line says whether the client asks to be carried to another
-                // device's MCP server; anything else is served here, that line first.
-                let mut reader = match stream.try_clone() {
-                    Ok(clone) => BufReader::new(clone),
-                    Err(error) => {
-                        tracing::debug!(%error, "native runtime client socket");
-                        return;
-                    }
-                };
-                let mut first = Vec::new();
-                if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
-                    tracing::debug!(%error, "native runtime client disconnected");
-                    return;
-                }
-                if let Some(forward) = first
-                    .strip_suffix(b"\n")
-                    .and_then(tilo_mcp::devices::forward_request)
-                {
-                    match &other_devices {
-                        // A client asks for nothing more before it is told whether the
-                        // connection opened.
-                        Some(other_devices) if reader.buffer().is_empty() => {
-                            other_devices.serve_forward(stream, &forward);
-                        }
-                        Some(_) => tilo_mcp::devices::refuse_forward(
-                            stream,
-                            "a forward is the only line before its answer".into(),
-                        ),
-                        None => tilo_mcp::devices::refuse_forward(
-                            stream,
-                            "this runtime reaches none of your other devices".into(),
-                        ),
-                    }
-                    return;
-                }
-                let input = io::Cursor::new(first).chain(reader);
-                let server = match factory() {
-                    Ok(server) => Arc::new(server.with_media(media).with_devices(
-                        other_devices.map(|other_devices| {
-                            Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-                        }),
-                    )),
-                    Err(error) => {
-                        tracing::debug!(%error, "native MCP session admission unavailable");
-                        return;
-                    }
-                };
-                if let Err(error) =
-                    serve_connection(stream, input, &server, &status, &search, seated.as_ref())
-                {
-                    tracing::debug!(%error, "native runtime client disconnected");
-                }
+                endpoint.serve(stream, Vec::new(), seated.as_ref());
             })?;
         Ok(())
     }
+
+    /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
+    pub(crate) fn serve(&self, stream: UnixStream, read: Vec<u8>, seated: Option<&Seated>) {
+        // The first line says whether the client asks to be carried to another device's MCP
+        // server; anything else is served here, that line first.
+        let mut reader = match stream.try_clone() {
+            Ok(clone) => BufReader::new(io::Cursor::new(read).chain(clone)),
+            Err(error) => {
+                tracing::debug!(%error, "native runtime client socket");
+                return;
+            }
+        };
+        let mut first = Vec::new();
+        if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
+            tracing::debug!(%error, "native runtime client disconnected");
+            return;
+        }
+        if let Some(forward) = first
+            .strip_suffix(b"\n")
+            .and_then(tilo_mcp::devices::forward_request)
+        {
+            match &self.other_devices {
+                // A client asks for nothing more before it is told whether the connection
+                // opened.
+                Some(other_devices) if reader.buffer().is_empty() => {
+                    other_devices.serve_forward(stream, &forward);
+                }
+                Some(_) => tilo_mcp::devices::refuse_forward(
+                    stream,
+                    "a forward is the only line before its answer".into(),
+                ),
+                None => tilo_mcp::devices::refuse_forward(
+                    stream,
+                    "this runtime reaches none of your other devices".into(),
+                ),
+            }
+            return;
+        }
+        let input = io::Cursor::new(first).chain(reader);
+        let server = match (self.session_factory)() {
+            Ok(server) => Arc::new(server.with_media(self.media.clone()).with_devices(
+                self.other_devices.clone().map(|other_devices| {
+                    Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+                }),
+            )),
+            Err(error) => {
+                tracing::debug!(%error, "native MCP session admission unavailable");
+                return;
+            }
+        };
+        let visit = self.agents.as_ref().map(Presence::visit);
+        let agent = self.agents.as_deref().zip(visit.as_ref());
+        if let Err(error) = serve_connection(
+            stream,
+            input,
+            &server,
+            &self.status,
+            &self.search,
+            seated,
+            agent,
+        ) {
+            tracing::debug!(%error, "native runtime client disconnected");
+        }
+    }
 }
+
 struct ConnectionSlot(Arc<AtomicUsize>);
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
@@ -657,7 +735,8 @@ impl Drop for ConnectionSlot {
 }
 
 /// Answer one native connection: the daemon's own requests in order, and
-/// MCP requests as [`serve_lines`] does, overlapping one another.
+/// MCP requests as [`serve_lines`] does, overlapping one another. An `agent`'s connection hears
+/// first what [`Presence::answer_first`] answers.
 fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
     mut stream: UnixStream,
     input: impl Read + Send + 'static,
@@ -665,6 +744,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     status: &Status,
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
+    agent: Option<(&Presence, &Visit)>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -701,7 +781,14 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                     None => json!({"error": SEARCH_NOT_STARTED}),
                 }))
             }),
-            _ => return mcp_answer(server, value),
+            _ => {
+                return match &agent {
+                    Some((agents, visit)) => agents
+                        .answer_first(visit, value)
+                        .unwrap_or_else(|value| mcp_answer(server, value)),
+                    None => mcp_answer(server, value),
+                };
+            }
         })
     };
     let ended = serve_lines(runtime, input, &mut stream, answer, None);

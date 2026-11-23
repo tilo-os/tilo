@@ -247,6 +247,12 @@ impl Seats {
             who.insert("label".into(), json!(label));
         }
         who.insert("claimed".into(), json!(self.device.claimed()));
+        // Where the device enters its person's workspaces, to the person's own accounts alone.
+        if person.is_some()
+            && let Some(home) = crate::device::home()
+        {
+            who.insert("home".into(), tilo_api::daemon::who::home_answer(&home));
+        }
         Value::Object(who)
     }
 }

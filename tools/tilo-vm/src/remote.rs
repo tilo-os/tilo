@@ -87,13 +87,19 @@ impl Machine {
         place: &tilo_device_identity::login::Place,
         scope: Option<PathBuf>,
     ) -> Result<Option<Self>, CliError> {
-        if let Some((key, device)) =
-            tilo_device_identity::login::load(place).map_err(|error| login_error(&error))?
+        // A computer a ticket logged in acts in its person's own workspace, as the certificate the
+        // login filed names them.
+        if let Some(device) = tilo_device_identity::login::served_device_key(place.keys())
+            && let Some(cert) = tilo_device_identity::login::ticket_cert(place.keys(), &device)
         {
+            let key = tilo_device_identity::persist::load_device_key(place.keys())
+                .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
             return Ok(Some(Self {
                 key,
-                user: device.cert.user_public_key,
-                workspace: device.workspace,
+                user: cert.user_public_key,
+                workspace: tilo_server_protocol::servers::person_workspace_id(
+                    &cert.user_public_key,
+                ),
                 scope,
             }));
         }

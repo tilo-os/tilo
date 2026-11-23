@@ -19020,7 +19020,6 @@ dependencies = [
  "tilo-secrets",
  "tilo-test-env",
  "tilo-user-identity",
- "tracing",
  "workspace-hack",
  "zeroize",
 ]
@@ -21489,6 +21488,7 @@ dependencies = [
  "tilo-capture",
  "tilo-clock",
  "tilo-content-device",
+ "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-dialogs",
@@ -23162,6 +23162,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-rt",
  "tilo-server-client",
+ "tilo-server-protocol",
  "tilo-test-env",
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",

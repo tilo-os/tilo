@@ -46,7 +46,13 @@ pub(crate) struct ThisDevice {
     key: SigningKey,
     place: Place,
     lock: advisory_lock::FileLock,
+    /// The device a ticket made of this computer, once one did: kept in memory for the person's
+    /// services to enter through, as nothing of it is written down.
+    entered: Entered,
 }
+
+/// The device a ticket made of this computer while its daemon runs, once one did.
+type Entered = Arc<std::sync::Mutex<Option<Device>>>;
 
 impl ThisDevice {
     /// Take this computer's device, its key made here on the first start of a computer whose
@@ -60,11 +66,14 @@ impl ThisDevice {
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
         let place = Place::here(keys).map_err(io::Error::other)?;
         tilo_files::native::private::directory(place.dir())?;
-        let daemon = tilo_api::daemon::this_computer()
-            .map_err(io::Error::other)?
-            .serving(&key.verifying_key().to_bytes());
+        let daemon = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         let lock = super::serve::lock_device(&daemon)?;
-        Ok(Self { key, place, lock })
+        Ok(Self {
+            key,
+            place,
+            lock,
+            entered: Entered::default(),
+        })
     }
 
     /// Whether a person's certificate names this device's key.
@@ -74,7 +83,22 @@ impl ThisDevice {
 
     /// The device's own actions, as its endpoints answer them before its person's services run.
     pub(crate) fn answers(&self) -> DeviceOnly {
-        DeviceOnly::new(self.key.clone(), self.place.clone())
+        DeviceOnly(
+            Arc::new(Answering {
+                key: self.key.clone(),
+                place: self.place.clone(),
+                entered: Arc::clone(&self.entered),
+                calls: std::sync::Mutex::default(),
+                runtime: tilo_rt::app().handle().clone(),
+            }),
+            None,
+        )
+    }
+
+    /// The device a ticket made of this computer while this daemon ran, when one did: what its
+    /// person's services enter through first.
+    pub(crate) fn entered(&self) -> Option<Device> {
+        self.entered.lock_recover().take()
     }
 
     /// The device's key and lock, for the person's services to start under.
@@ -95,11 +119,14 @@ impl ThisDevice {
         ));
         match taken {
             None => {}
-            Some(Ok(device)) => tracing::info!(
-                person = %device.user(),
-                label = device.label(),
-                "this computer is one of the person's devices now, with the ticket it was handed"
-            ),
+            Some(Ok(device)) => {
+                tracing::info!(
+                    person = %device.user(),
+                    label = device.label(),
+                    "this computer is one of the person's devices now, with the ticket it was handed"
+                );
+                *self.entered.lock_recover() = Some(device);
+            }
             Some(Err(error)) => tracing::error!(
                 "the ticket this computer was handed did not add it: {error:#}. It may be used \
                  already or have run out: make a new one with `tilo device add` on one of the \
@@ -128,9 +155,9 @@ pub(crate) fn claimed(place: &Place, key: &SigningKey) -> bool {
 }
 
 /// Spend the ticket in `credentials`' [`TICKET_CREDENTIAL`] to make this computer, whose device
-/// key is `key`, one of the person's devices, keeping the login in `place`: `None` when no ticket
-/// was handed, or when a person's certificate already names this key, where the ticket is left
-/// unspent.
+/// key is `key`, one of the person's devices, its certificate kept in `place`: `None` when no
+/// ticket was handed, or when a person's certificate already names this key, where the ticket is
+/// left unspent.
 pub(crate) async fn take_handed_ticket(
     place: &Place,
     key: &SigningKey,
@@ -163,18 +190,22 @@ pub(crate) struct DeviceOnly(Arc<Answering>, Option<crate::seats::Seated>);
 struct Answering {
     key: SigningKey,
     place: Place,
+    /// Where the device a ticket made of this computer is kept for its person's services.
+    entered: Entered,
     /// Each invocation taken, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
 }
 
 impl DeviceOnly {
-    /// The device actions of the device whose key is `key`, its login kept in `place`.
+    /// The device actions of the device whose key is `key`, its certificates kept in `place`.
+    #[cfg(test)]
     pub(crate) fn new(key: SigningKey, place: Place) -> Self {
         Self(
             Arc::new(Answering {
                 key,
                 place,
+                entered: Entered::default(),
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
             }),
@@ -210,13 +241,17 @@ impl DeviceOnly {
             .copied()
     }
 
-    /// The name its person's certificate gives this device, once it logged in.
+    /// The name its person's certificate gives this device, once one names it.
     pub(crate) fn label(&self) -> Option<String> {
-        tilo_device_identity::login::load_public(&self.0.place)
-            .ok()
-            .flatten()
-            .filter(|login| login.cert.device_public_key == self.public_key())
-            .map(|login| login.cert.device_label)
+        let keys = self.0.place.keys();
+        [
+            keys.device_cert.clone(),
+            keys.device_cert_for_user(&self.person()?),
+        ]
+        .iter()
+        .filter_map(|path| tilo_device_identity::persist::read_device_cert(path).ok())
+        .find(|cert| cert.device_public_key == self.public_key())
+        .map(|cert| cert.device_label)
     }
 
     /// Why an action that needs a person is not answered now.
@@ -245,7 +280,9 @@ impl DeviceOnly {
         let device =
             tilo_api::daemon::enter::log_in_here(&self.0.key, &self.0.place, ticket, agent, label)
                 .await?;
-        Ok(logged_in(&device))
+        let said = logged_in(&device);
+        *self.0.entered.lock_recover() = Some(device);
+        Ok(said)
     }
 }
 

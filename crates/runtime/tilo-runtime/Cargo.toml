@@ -129,6 +129,8 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+# The signed address of each host of a workspace: the person's server, as their workspace names it.
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-rt.workspace = true
 # The errors a compute job fails with.
 thiserror.workspace = true

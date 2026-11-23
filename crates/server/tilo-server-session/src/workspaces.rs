@@ -292,8 +292,14 @@ pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// them as that browser's. Asked for one workspace (argument `workspace`),
 /// the host names its own signed address for it
 /// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
-/// does not hold it yet asks to be taken in.
+/// does not hold it yet asks to be taken in. A device that follows the list
+/// names the version it holds (argument [`PERSONAL_AFTER`], as
+/// [`PersonalList::version`] says it): over the device action service the
+/// answer then waits until the list moves past it, or a while went by.
 pub const LIST_PERSONAL: &str = "workspace.personal";
+/// The argument of [`LIST_PERSONAL`] naming the version of the list the asking
+/// device holds.
+pub const PERSONAL_AFTER: &str = "after";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
 /// The most devices a person's record keeps.
@@ -415,6 +421,23 @@ pub struct PersonalWorkspace {
     pub enter_at: Option<String>,
 }
 
+impl PersonalWorkspace {
+    /// Where a device of the person's that keeps none of it enters it: the answering host's own
+    /// signed address ([`Self::enter_at`]), else the one the list keeps for the device hosting it.
+    ///
+    /// # Errors
+    /// The list names neither, or what it names is no signed address.
+    pub fn entered_at(&self) -> Result<tilo_workspace_join::TransportHint, String> {
+        let hint = self
+            .enter_at
+            .as_deref()
+            .or_else(|| self.host.as_ref()?.hint.as_deref())
+            .ok_or("no device the list knows names where it is kept")?;
+        let bytes = hex::decode(hint).map_err(|error| error.to_string())?;
+        postcard::from_bytes(&bytes).map_err(|error| error.to_string())
+    }
+}
+
 /// Where a workspace is hosted, as a device dials it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeepingDeviceAddress {
@@ -472,6 +495,15 @@ impl KeepingDeviceAddress {
 }
 
 impl PersonalList {
+    /// The version of `list`, a list as [`LIST_PERSONAL`] answers it: what a device following
+    /// the list names as [`PERSONAL_AFTER`].
+    #[must_use]
+    pub fn version(list: &serde_json::Value) -> String {
+        blake3::hash(list.to_string().as_bytes())
+            .to_hex()
+            .to_string()
+    }
+
     /// Whether every entry is a workspace UUID with a printable name and an
     /// address of bounded size, and the list is no longer than
     /// [`MAX_PERSONAL_WORKSPACES`]: what a host keeps.

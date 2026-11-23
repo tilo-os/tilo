@@ -47,6 +47,7 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
         ))),
         media: None,
         other_devices: None,
+        agents: None,
     };
     std::thread::spawn(move || {
         super::accept(&listener, |stream, slot| endpoint.take(stream, slot, None))

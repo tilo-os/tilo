@@ -3298,7 +3298,7 @@ mod tests {
             let account = crate::nearby::tests::Account::new();
             let _daemon = crate::nearby::testing::FakeDaemon::start(
                 &account.paths,
-                crate::nearby::testing::Answer::Hold,
+                crate::nearby::testing::Answer::Wait,
             );
             let (mut view, _) = joining(&account);
             let mut document = AutoCommit::new();

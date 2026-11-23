@@ -1,8 +1,7 @@
-//! A login as this computer keeps it: [`Place`], [`load`] and [`store`].
+//! This computer as one of the person's devices, as it keeps it: its [`Place`], and the
+//! certificates the person's root signed for its device key ([`file_certificate`]).
 
-use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::SigningKey;
-use serde::{Deserialize, Serialize};
+use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
 use tilo_user_identity::DeviceCert;
 
@@ -10,16 +9,9 @@ use super::ServerAddress;
 use crate::IdentityPaths;
 use crate::persist::{load_device_key, read_device_cert, write_device_cert};
 
-/// What a login this computer cannot read says.
-pub const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: log in again with a ticket \
-     `tilo device add` prints on one of your devices.";
-
-/// What a login says whose certificate is for a device key this computer no longer has.
-const LOGIN_STALE: &str = "This computer's Tilo login is for a device key it no longer has: \
-     log in again with a ticket `tilo device add` prints on one of your devices.";
-
-/// The file in [`Place::dir`] a login is kept in.
-const LOGIN_FILE: &str = "login.json";
+/// What a device certificate this computer cannot read says.
+pub const LOGIN_DAMAGED: &str = "This computer's Tilo certificate is damaged: log in again with a \
+     ticket `tilo device add` prints on one of your devices.";
 
 /// Where this account keeps its login and what the login keeps on this computer (its folders,
 /// its background process's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
@@ -72,21 +64,14 @@ impl Place {
     pub fn keys(&self) -> &IdentityPaths {
         &self.keys
     }
-
-    /// Whether this computer logged in, without reading the device key: a process that reads it
-    /// makes itself undumpable.
-    #[must_use]
-    pub fn logged_in(&self) -> bool {
-        self.dir.join(LOGIN_FILE).exists()
-    }
 }
 
-/// Whether a person's certificate names this computer's device key `device`: a login kept in
-/// `place`, or a certificate for the key among the device's certificates. A computer no
-/// certificate names yet is served with its key alone, and a ticket logs it in without its daemon.
+/// Whether a person's certificate names this computer's device key `device`, among the device's
+/// certificates in `place`. A computer no certificate names yet is served with its key alone, and
+/// a ticket logs it in through its daemon.
 #[must_use]
 pub fn claimed(place: &Place, device: &[u8; 32]) -> bool {
-    place.logged_in() || !certified_by(place, device).is_empty()
+    !certified_by(place, device).is_empty()
 }
 
 /// The people, by their root keys, whose certificates among the device's certificates in `place`
@@ -117,7 +102,9 @@ pub fn certified_by(place: &Place, device: &[u8; 32]) -> Vec<[u8; 32]> {
     people
 }
 
-/// A login: where this computer goes, and as which device of the person.
+/// Where this computer goes, and as which device of the person: what a ticket's answer names,
+/// and what the daemon finds in its copy of the person's own workspace afterwards. Kept in memory
+/// only: the device's certificate is what is written down ([`file_certificate`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub site: String,
@@ -127,7 +114,7 @@ pub struct Device {
     pub agent: String,
     /// The certificate the person's root signed for this computer's device key.
     pub cert: DeviceCert,
-    /// The host's own certificate, as the login was answered it.
+    /// The certificate of the server this computer enters through.
     pub server_cert: DeviceCert,
     /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
     /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
@@ -147,176 +134,86 @@ impl Device {
         hex::encode(self.cert.user_public_key)
     }
 
-    /// Whether the login names a server to enter through. One that names none, as logins
-    /// older builds kept do, has ended: nothing this computer runs reaches its workspace again.
+    /// Whether it names a server to enter through.
     #[must_use]
     pub const fn reaches_a_server(&self) -> bool {
         self.server_address.is_some()
     }
 }
 
-/// A login as [`LOGIN_FILE`] keeps it: the certificate is kept with the device key, and found by
-/// the person it names.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Kept {
-    site: String,
-    host_origin: String,
-    workspace: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workspace_name: Option<String>,
-    user: String,
-    agent: String,
-    /// The host's certificate, its canonical bytes in hex.
-    server_cert: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    server_address: Option<ServerAddress>,
-}
-
-/// Keep `device` in `place`: its certificate beside this computer's device key, which it must
-/// certify, and the rest in [`LOGIN_FILE`].
+/// File `cert`, the certificate a person's root signed for this computer's device key, among the
+/// device's certificates in `place`: it makes the device theirs ([`claimed`]).
 ///
 /// # Errors
-/// The certificate is for another key than this computer's, or the files cannot be written.
-pub fn store(place: &Place, device: &Device) -> Result<()> {
+/// The certificate is for another key than this computer's, or it cannot be written.
+pub fn file_certificate(place: &Place, cert: &DeviceCert) -> Result<()> {
     let key = load_device_key(&place.keys).context("reading this computer's device key")?;
-    if device.cert.device_public_key != key.verifying_key().to_bytes() {
-        bail!("the login's certificate is for another device key than this computer's");
+    if cert.device_public_key != key.verifying_key().to_bytes() {
+        bail!("the certificate is for another device key than this computer's");
     }
     write_device_cert(
-        &place
-            .keys
-            .device_cert_for_user(&device.cert.user_public_key),
-        &device.cert,
-    )?;
-    let kept = Kept {
-        site: device.site.clone(),
-        host_origin: device.host_origin.clone(),
-        workspace: device.workspace.clone(),
-        workspace_name: device.workspace_name.clone(),
-        user: device.user(),
-        agent: device.agent.clone(),
-        server_cert: hex::encode(tilo_user_identity::canonical::canonical_bytes(
-            &device.server_cert,
-        )?),
-        server_address: device.server_address.clone(),
-    };
-    tilo_files::native::atomic::write_private(
-        &place.dir.join(LOGIN_FILE),
-        &serde_json::to_vec_pretty(&kept)?,
+        &place.keys.device_cert_for_user(&cert.user_public_key),
+        cert,
     )?;
     Ok(())
 }
 
-/// This computer's device key and the login kept in `place`; `None` when this computer did not
-/// log in.
-///
-/// Reading the device key makes this process undumpable ([`load_device_key`]), so a program that
-/// only needs to know which device this computer is takes [`load_public`] instead.
-///
-/// # Errors
-/// The login is damaged, or its certificate is for a device key this computer no longer has.
-pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
-    let Some(device) = load_public(place)? else {
-        return Ok(None);
-    };
-    let key = load_device_key(&place.keys).map_err(|error| damaged("device key", &error))?;
-    if device.cert.device_public_key != key.verifying_key().to_bytes() {
-        bail!(LOGIN_STALE);
-    }
-    Ok(Some((key, device)))
+/// The label a login gives a computer that runs `agent` on the host `host`:
+/// `"Reviewer on build-box"`, cut to what a certificate's label carries. The agent is read back
+/// from it ([`agent_of`]).
+#[must_use]
+pub fn device_label(agent: &str, host: &str) -> String {
+    let mut fitted = format!("{agent}{ON}{host}");
+    let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+    fitted.truncate(
+        (0..=room.min(fitted.len()))
+            .rev()
+            .find(|end| fitted.is_char_boundary(*end))
+            .unwrap_or(0),
+    );
+    fitted
 }
 
-/// What a login this computer cannot read says, with why kept to this process's log.
-fn damaged(what: &str, why: &dyn std::fmt::Display) -> anyhow::Error {
-    tracing::debug!(%why, "reading this computer's Tilo {what}");
-    anyhow!(LOGIN_DAMAGED)
+/// What a login's label puts between the agent and the host.
+const ON: &str = " on ";
+
+/// The agent a device labelled `label` runs, as [`device_label`] names it first; the whole label
+/// for one it did not make.
+#[must_use]
+pub fn agent_of(label: &str) -> &str {
+    label
+        .split_once(ON)
+        .map_or(label, |(agent, _)| agent)
+        .trim()
 }
 
-/// The login kept in `place`, as its certificate and what the login names: read without this
-/// computer's device key, so the process stays dumpable. The certificate names the device, which
-/// is all a program that finds this device's daemon ([`serves_a_device`]) needs.
-///
-/// # Errors
-/// The login is damaged, or its certificate is for another person than the one it names.
-pub fn load_public(place: &Place) -> Result<Option<Device>> {
-    let bytes = match std::fs::read(place.dir.join(LOGIN_FILE)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(damaged("login", &error)),
-    };
-    let kept: Kept = serde_json::from_slice(&bytes).map_err(|error| damaged("login", &error))?;
-    let user: [u8; 32] = hex::decode(&kept.user)
-        .ok()
-        .and_then(|user| user.try_into().ok())
-        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let cert = read_device_cert(&place.keys.device_cert_for_user(&user))
-        .map_err(|error| damaged("device certificate", &error))?;
-    if cert.user_public_key != user {
-        bail!(LOGIN_STALE);
-    }
-    let server_cert = hex::decode(&kept.server_cert)
-        .ok()
-        .and_then(|bytes| tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok())
-        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    Ok(Some(Device {
-        site: kept.site,
-        host_origin: kept.host_origin,
-        workspace: kept.workspace,
-        workspace_name: kept.workspace_name,
-        agent: kept.agent,
-        cert,
-        server_cert,
-        server_address: kept.server_address,
-    }))
+/// The certificate a ticket's login filed for the device key `device` among the certificates in
+/// `keys` ([`file_certificate`]): one naming it for another person than the identity founded
+/// there, if any was, the newest when several do. `None` where no ticket logged it in.
+#[must_use]
+pub fn ticket_cert(keys: &IdentityPaths, device: &[u8; 32]) -> Option<DeviceCert> {
+    let founded = crate::persist::read_public_key(&keys.user_pubkey).ok();
+    let persons = keys.device_cert_for_user(&[0; 32]);
+    std::fs::read_dir(persons.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let cert = read_device_cert(&entry.path()).ok()?;
+            Some((entry.metadata().ok()?.modified().ok()?, cert))
+        })
+        .filter(|(_, cert)| {
+            cert.device_public_key == *device && Some(cert.user_public_key) != founded
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, cert)| cert)
 }
 
-/// The workspace this computer's login entered: its id, and the name the
-/// device keeps for it, which is how a command that acts in it says which
-/// workspace it used, with this computer's device key and certificates at `keys`. `None` when
-/// this computer is not logged in.
-///
-/// # Errors
-/// The login is damaged.
-pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>> {
-    let Some(device) = load_public(&Place::here(keys)?)? else {
-        return Ok(None);
-    };
-    let name = device
-        .workspace_name
-        .clone()
-        .unwrap_or_else(|| device.workspace.clone());
-    Ok(Some((device.workspace, name)))
-}
-
-/// Whether this computer's daemon serves a device here, so its API answers every program of
-/// the account as that device: a login, or, with none, a certificate of the device it made for
-/// itself. `keys` are this computer's device key and certificates.
-///
-/// The device is read from a certificate, never from the device key: a program that reads the
-/// key makes itself undumpable, and the daemon admits a caller by reading its namespaces, which
-/// a non-dumpable process hides from it.
-///
-/// # Errors
-/// The login is damaged.
-#[cfg(unix)]
-pub fn serves_a_device(keys: IdentityPaths) -> Result<bool> {
-    serves_a_device_in(&Place::here(keys)?)
-}
-
-/// [`serves_a_device`] for the login `place` keeps. A computer whose device certificate went
-/// (one in an encoding no build reads) has its key certified for its person beside it.
-#[cfg(unix)]
-fn serves_a_device_in(place: &Place) -> Result<bool> {
-    Ok(load_public(place)?.is_some() || served_device_key(place.keys()).is_some())
-}
-
-/// The device key a daemon with no login serves as, from a certificate of it in `keys`: the
-/// device's own, else the newest of those it holds for its persons.
-#[cfg(unix)]
-fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
+/// The certificate this computer's device key is served as, read without the key: the device's
+/// own, else the newest of those it holds for its persons. `None` before anything certifies it.
+#[must_use]
+pub fn served_cert(keys: &IdentityPaths) -> Option<DeviceCert> {
     if let Ok(cert) = read_device_cert(&keys.device_cert) {
-        return Some(cert.device_public_key);
+        return Some(cert);
     }
     let persons = keys.device_cert_for_user(&[0; 32]);
     std::fs::read_dir(persons.parent()?)
@@ -324,18 +221,45 @@ fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let cert = read_device_cert(&entry.path()).ok()?;
-            Some((
-                entry.metadata().ok()?.modified().ok()?,
-                cert.device_public_key,
-            ))
+            Some((entry.metadata().ok()?.modified().ok()?, cert))
         })
         .max_by_key(|(modified, _)| *modified)
-        .map(|(_, key)| key)
+        .map(|(_, cert)| cert)
+}
+
+/// Whether this computer's daemon serves a device here, so its API answers every program of
+/// the account as that device: a certificate names its device key. `keys` are this computer's device key and certificates.
+///
+/// The device is read from a certificate, never from the device key: a program that reads the
+/// key makes itself undumpable, and the daemon admits a caller by reading its namespaces, which
+/// a non-dumpable process hides from it.
+///
+/// # Errors
+/// This computer's device directory cannot be named.
+#[cfg(unix)]
+pub fn serves_a_device(keys: IdentityPaths) -> Result<bool> {
+    Ok(serves_a_device_in(&Place::here(keys)?))
+}
+
+/// [`serves_a_device`] for the device directory `place` names.
+#[cfg(unix)]
+fn serves_a_device_in(place: &Place) -> bool {
+    served_device_key(place.keys()).is_some()
+}
+
+/// The device key this computer's daemon serves as, from a certificate of it in `keys`
+/// ([`served_cert`]), so the secret is not read. A computer whose device certificate went (one in
+/// an encoding no build reads) has its key certified for its person beside it, and every one of
+/// those names the same key. `None` before anything certifies it.
+#[must_use]
+pub fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
+    served_cert(keys).map(|cert| cert.device_public_key)
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
 
     /// A computer that never had a login has no device directory yet; finding its place makes
     /// it, so `tilo device add` and `tilo login` both start there.
@@ -393,34 +317,15 @@ mod tests {
                 };
                 tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
                 write_device_cert(&keys.device_cert_for_user(&user), &cert).unwrap();
-                let mut server = cert.clone();
-                server.device_public_key =
-                    SigningKey::from_bytes(&[11; 32]).verifying_key().to_bytes();
-                tilo_user_identity::sign_device_cert(&mut server, &root_key).unwrap();
-                let server_cert =
-                    hex::encode(tilo_user_identity::canonical::canonical_bytes(&server).unwrap());
-                let kept = serde_json::json!({
-                    "site": "https://tilo.sh",
-                    "host_origin": "https://eu1.tilo.sh",
-                    "workspace": "6f1e1c3a-0000-4000-8000-000000000001",
-                    "user": hex::encode(user),
-                    "agent": "tilo-test",
-                    "server_cert": server_cert,
-                });
-                std::fs::write(
-                    login_dir.join(LOGIN_FILE),
-                    serde_json::to_vec(&kept).unwrap(),
-                )
-                .unwrap();
                 assert!(
                     !keys.device_privkey.exists(),
-                    "this login keeps no device key, so naming its daemon must not need one"
+                    "this computer keeps no device key here, so naming its daemon must not need one"
                 );
 
                 let place = Place::at(login_dir, keys);
                 assert!(
-                    serves_a_device_in(&place).unwrap(),
-                    "a login is a device its daemon serves"
+                    serves_a_device_in(&place),
+                    "a certified device is one its daemon serves"
                 );
                 assert_eq!(
                     dumpable(),
@@ -455,7 +360,7 @@ mod tests {
         assert!(!login_dir.exists(), "this computer never logged in");
 
         assert!(
-            serves_a_device_in(&Place::at(login_dir, keys)).unwrap(),
+            serves_a_device_in(&Place::at(login_dir, keys)),
             "a device of its own is served by its daemon"
         );
     }

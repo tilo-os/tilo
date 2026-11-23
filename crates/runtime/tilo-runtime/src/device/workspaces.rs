@@ -265,6 +265,11 @@ impl ServiceWorkspaces {
         block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
     }
 
+    /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
+    pub(crate) async fn keeps(&self, workspace: WorkspaceId) -> bool {
+        copy_of(self.copies(), workspace).await.is_some()
+    }
+
     /// What reads `workspace`'s policy as this device's copy of it holds it now, `None` while the
     /// copy is not here or its policy does not read.
     pub(crate) fn policy_of(

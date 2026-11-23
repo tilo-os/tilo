@@ -113,6 +113,12 @@ pub struct WorkspaceDeviceHintV1 {
     /// person who governs it may turn on, which decides reports filed in Chat.
     #[serde(default)]
     pub moderates: bool,
+    /// The web origin the holder's site answers at (`https://eu1.tilo.sh`), when it serves
+    /// one: where a member's device finds the site's pages and API. `None` for a holder
+    /// reached over iroh alone. Left out when there is none, so a holder without one signs
+    /// what earlier builds read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The workspace this endpoint serves.
     pub workspace_id: WorkspaceId,
     /// Exact Iroh service address the guest dials.
@@ -364,6 +370,15 @@ impl WorkspaceDeviceHintV1 {
         {
             return Err(WorkspaceJoinError::Protocol(
                 "a workspace holder's name is not a label".into(),
+            ));
+        }
+        if self.origin.as_deref().is_some_and(|origin| {
+            origin.len() > 2048
+                || !origin.starts_with("https://")
+                || origin.chars().any(|c| c.is_control() || c.is_whitespace())
+        }) {
+            return Err(WorkspaceJoinError::Protocol(
+                "a workspace holder's origin is not an https origin".into(),
             ));
         }
         if self.packet_relay_url.is_empty() || self.packet_relay_url.len() > 4096 {

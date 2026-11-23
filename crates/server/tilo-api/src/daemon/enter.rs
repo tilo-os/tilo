@@ -46,7 +46,7 @@ pub fn enter_said(error: &anyhow::Error) -> String {
     let says = |needle: &str| chain.contains(needle);
     if says("Tilo login has ended") || says("device cert has expired") || says("revoked") {
         LOGIN_ENDED.to_owned()
-    } else if says("Tilo login is damaged")
+    } else if says("certificate is damaged")
         || says("not hex")
         || says("names no person")
         || says("postcard")
@@ -268,20 +268,37 @@ pub fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
     }
 }
 
+/// What `devices#logIn` answers: the device this computer became, and for how many days its
+/// certificate holds.
+#[must_use]
+pub fn logged_in(device: &Device) -> serde_json::Value {
+    let days = device.cert.expires_at_ns.map_or(0, |end| {
+        end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
+    });
+    serde_json::json!({
+        "label": device.label(),
+        "days": days,
+        "workspace": device.workspace,
+        "workspace_name": device.workspace_name,
+        "host_origin": device.host_origin,
+    })
+}
+
 /// How many times the call asking the device to certify this computer is sent.
 const CERTIFY_TRIES: u32 = 3;
 
 /// Log this computer in with `ticket`, which another of the person's devices issued: that device
 /// has the person's root certify this computer's key `key`, for `agent`, listed as `label`, asked
-/// through `service` over `endpoint`, and the login it answers is kept in `place`. The login this
-/// computer became.
+/// over `endpoint`. The certificate it answers is filed among the device's certificates in
+/// `place` and made this account's identity ([`adopt`]); the device this computer became, and the
+/// server it enters through, are answered to the daemon, which keeps them in memory alone.
 ///
 /// The one way a computer becomes one of the person's devices: `tilo login <ticket>` through the
 /// daemon's `devices#logIn`, and a ticket handed to the daemon at its first boot.
 ///
 /// # Errors
 /// The text is no ticket, the issuing device is not reached, the ticket is spent, wrong or ran
-/// out, the person declined, or the login cannot be kept.
+/// out, the person declined, or the certificate cannot be kept.
 pub async fn log_in(
     key: &SigningKey,
     endpoint: &iroh::Endpoint,
@@ -300,14 +317,41 @@ pub async fn log_in(
     }
     let answer = certified_with(key, endpoint, &ticket, agent, label).await?;
     let device = device_of(answer, agent);
-    tilo_device_identity::login::store(place, &device)
-        .map_err(|error| anyhow!("keeping this computer's login: {error:#}"))?;
+    tilo_device_identity::login::file_certificate(place, &device.cert)
+        .map_err(|error| anyhow!("keeping this computer's certificate: {error:#}"))?;
+    adopt(place, &device.cert)?;
     Ok(device)
+}
+
+/// Make `cert`, which the person's root signed for this computer's device key, this account's
+/// identity: the identity service signs for apps here as its person from then on, as on a device
+/// enrolled any other way. A computer that holds the person's root is theirs already, and one
+/// enrolled for another person (the root it made for itself before it logged in, or an earlier
+/// login's) becomes this person's: they just chose it.
+///
+/// # Errors
+/// The identity cannot be written.
+pub fn adopt(
+    place: &tilo_device_identity::login::Place,
+    cert: &tilo_user_identity::DeviceCert,
+) -> Result<()> {
+    if cert.capabilities.can_admit_devices {
+        return Ok(());
+    }
+    let dir = tilo_identity::store::identity_dir_from_env()
+        .map_err(|error| anyhow!("this account's identity: {error}"))?;
+    tilo_identity::provisioning::adopt_login_certificate(
+        &dir,
+        place.keys(),
+        cert,
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(|error| anyhow!("making this computer's certificate its identity: {error}"))
 }
 
 /// [`log_in`] from this process, on an endpoint of its own for the time the login takes: how a
 /// computer no person's certificate names yet logs in, whose daemon serves the device key alone
-/// and so has no API to ask.
+/// and runs no endpoint of its own until then.
 ///
 /// # Errors
 /// As [`log_in`], and when this computer's endpoint does not bind.
@@ -327,44 +371,6 @@ pub async fn log_in_here(
     let logged_in = log_in(key, &endpoint, place, ticket.trim(), agent, label).await;
     endpoint.close().await;
     logged_in
-}
-
-/// A device serving `ticket` on `endpoint`, keyed by `key`, as the device that printed it
-/// does: a computer that logs in with it is certified by `approver` for the person whose root
-/// key is `person`, and enters `entry`. What the router serves ends with it.
-///
-/// # Panics
-/// Outside a runtime context.
-#[cfg(feature = "test-support")]
-#[must_use]
-pub fn issuing_for_test(
-    endpoint: &iroh::Endpoint,
-    key: &SigningKey,
-    ticket: tilo_device_identity::login::Ticket,
-    person: [u8; 32],
-    entry: tilo_device_identity::login::Entry,
-    approver: Arc<dyn tilo_device_identity::login::Approver>,
-) -> iroh::protocol::Router {
-    let service = tilo_peer_state::actions::ActionService::new(
-        key.clone(),
-        Arc::new(tilo_peer_state::actions::NoActions),
-    );
-    service.admit_uncertified(
-        tilo_device_identity::login::SCOPE,
-        Arc::new(tilo_peer_state::new_device::ServedTicket::new(
-            ticket,
-            person,
-            entry,
-            tilo_user_identity::DeviceCapabilities::member(),
-            approver,
-            tilo_user_identity::RevocationList::new(),
-            tilo_clock::unix_now_ns()
-                .saturating_add(tilo_device_identity::login::TICKET_LIFETIME_NS),
-        )),
-    );
-    iroh::protocol::Router::builder(endpoint.clone())
-        .accept(tilo_peer_state::actions::ACTIONS_ALPN, service)
-        .spawn()
 }
 
 /// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,

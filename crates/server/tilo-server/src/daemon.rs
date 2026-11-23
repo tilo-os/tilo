@@ -566,6 +566,7 @@ impl Server {
                 // workspace gives it, applied below once it is open.
                 label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
                 rented: cfg.rented,
+                origin: cfg.web_entry.as_deref().and_then(site_origin),
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
                 reaching,
@@ -986,6 +987,14 @@ impl Server {
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
+/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
+/// this keeper signs carries: `None` for an entry that is no https address.
+fn site_origin(web_entry: &str) -> Option<String> {
+    let rest = web_entry.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| format!("https://{host}"))
+}
+
 fn site_name(web_entry: &str) -> String {
     let rest = web_entry
         .split_once("://")

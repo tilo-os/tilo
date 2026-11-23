@@ -891,8 +891,8 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A computer that logged in with a code holds no root: its login's device is what its apps sign
-/// as, enrolled as this computer's identity when the daemon starts.
+/// A computer that logged in with a code holds no root: the certificate its login filed is what its
+/// apps sign as, made this computer's identity as it logs in, and what its daemon serves as.
 #[test]
 fn a_logins_device_is_what_this_computers_apps_sign_as() {
     let dir = tempfile::tempdir().unwrap();
@@ -919,24 +919,12 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
-    tilo_device_identity::login::store(
-        &place,
-        &Device {
-            site: "https://tilo.test/".into(),
-            host_origin: "https://eu1.tilo.test".into(),
-            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
-            workspace_name: Some("Studio".into()),
-            agent: "Claude Code".into(),
-            server_cert: cert.clone(),
-            cert: cert.clone(),
-            server_address: None,
-        },
-    )
-    .unwrap();
+    tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
     assert!(
         tilo_identity::broker::trusted_current_device("").is_err(),
-        "nothing signs before the daemon starts"
+        "nothing signs before the login makes the certificate this computer's identity"
     );
+    tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
 
     let identity = Identity::here().unwrap();
     assert_eq!(identity.cert, cert);

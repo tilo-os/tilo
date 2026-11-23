@@ -129,6 +129,7 @@ tilo_test_env::scenario! {
                         },
                         &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                         None,
+                        None,
                     )
                     .unwrap();
                 }
@@ -182,6 +183,7 @@ tilo_test_env::scenario! {
                         workspace: "workspace".into(),
                     },
                     &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
+                    None,
                     None,
                 )
             })
@@ -811,6 +813,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         search: std::sync::Arc::new(std::sync::OnceLock::new()),
         media: None,
         other_devices: None,
+        agents: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();

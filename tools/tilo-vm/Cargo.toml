@@ -24,6 +24,7 @@ tilo-identity = { path = "../../crates/runtime/tilo-identity" }
 tilo-peer-state = { path = "../../crates/collab/tilo-peer-state" }
 tilo-rt.workspace = true
 tilo-server-client = { path = "../../crates/server/tilo-server-client" }
+tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
 quick-xml.workspace = true
 regex.workspace = true
 base64.workspace = true

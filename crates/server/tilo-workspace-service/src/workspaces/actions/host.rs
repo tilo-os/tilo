@@ -492,6 +492,11 @@ fn list_personal_params() -> Vec<ActionParam> {
             ParamType::Text,
             "Only this workspace (a UUID), when it is yours.",
         ),
+        ActionParam::optional(
+            tilo_server_session::workspaces::PERSONAL_AFTER,
+            ParamType::Text,
+            "The version of the list your device holds: the answer waits until the list changes.",
+        ),
     ]
 }
 

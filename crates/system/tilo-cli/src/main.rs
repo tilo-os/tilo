@@ -551,11 +551,6 @@ enum DeviceCmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// This computer's device key, as hex, made now when it has none. A command that then
-    /// talks to this computer's daemon asks it of a child, as reading the key makes the process
-    /// that reads it one the daemon refuses.
-    #[command(hide = true)]
-    PublicKey,
     /// Which account on this device is the person its identity belongs to: the one whose
     /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
     /// several prove it. The system asks this as root when it prepares the store.
@@ -1028,7 +1023,6 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Key
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
-            | DeviceCmd::PublicKey
     ) {
         require_system_provider()?;
     }
@@ -1629,7 +1623,6 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             reason,
             yes,
         } => device::revoke(&which, reason, yes),
-        DeviceCmd::PublicKey => login::print_public_key(),
         DeviceCmd::LocalPerson {
             identity_root,
             passwd,

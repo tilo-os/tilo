@@ -15,6 +15,7 @@ pub mod admission;
 pub mod enter;
 pub mod folders;
 pub mod service;
+pub mod who;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -75,7 +76,7 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
     fits(&sockets)?;
     Ok(DaemonPlace {
         system,
-        ..DaemonPlace::at(&sockets, login.dir(), None)
+        ..DaemonPlace::at(&sockets, login.dir())
     })
 }
 
@@ -198,33 +199,22 @@ pub struct DaemonPlace {
     /// One per device directory: a computer has one daemon, and a login made again under a new
     /// key waits for the daemon of the old one to end instead of running beside it.
     lock: PathBuf,
-    /// The first bytes of the device key the daemon serves, when it is the daemon's own place.
-    key: Option<[u8; 8]>,
     /// Whether it is the system unit's: its sockets are open to every account, which it admits
     /// by who they are ([`admission`]).
     system: bool,
 }
 
 impl DaemonPlace {
-    /// A daemon listening in `sockets`, keeping its lock in `dir`; `key` is the device key it
-    /// serves, for the daemon itself to see a login made again ([`Self::serves_current_login`]).
+    /// A daemon listening in `sockets`, keeping its lock in `dir`.
     #[must_use]
-    pub fn at(sockets: &Path, dir: &Path, key: Option<&[u8; 32]>) -> Self {
+    pub fn at(sockets: &Path, dir: &Path) -> Self {
         Self {
             sockets: sockets.to_owned(),
             socket: sockets.join(AGENTS),
             api: sockets.join(API),
             lock: dir.join("holder.lock"),
-            key: key.map(first_bytes),
             system: false,
         }
-    }
-
-    /// This place as the daemon serving the device whose public key is `key` sees it.
-    #[must_use]
-    pub fn serving(mut self, key: &[u8; 32]) -> Self {
-        self.key = Some(first_bytes(key));
-        self
     }
 
     /// Whether this is the system unit's daemon.
@@ -244,6 +234,13 @@ impl DaemonPlace {
     #[must_use]
     pub fn sockets(&self) -> &Path {
         &self.sockets
+    }
+
+    /// Its native endpoint: what every program of this computer asks about the device
+    /// ([`who`]).
+    #[must_use]
+    pub fn native(&self) -> PathBuf {
+        self.sockets.join(NATIVE)
     }
 
     /// Where it takes `tilo mcp` connections.
@@ -271,36 +268,6 @@ impl DaemonPlace {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default()
-    }
-
-    /// Whether the login under this device's directory is still this daemon's: a login made
-    /// again makes another device, and the daemon of the one it replaced ends so that one
-    /// computer keeps one daemon and one live connection.
-    #[must_use]
-    pub fn serves_current_login(&self) -> bool {
-        let (Some(dir), Some(serving)) = (self.lock.parent(), self.key) else {
-            return true;
-        };
-        match tilo_device_identity::login::load(&tilo_device_identity::login::Place::at(
-            dir.to_owned(),
-            tilo_identity::provisioning::collaboration_identity_paths(),
-        )) {
-            Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == serving,
-            // A login mid-write reads as none; the next look answers for it.
-            _ => true,
-        }
-    }
-
-    /// Whether this computer is logged in, as the login under this device's directory says.
-    #[must_use]
-    pub fn logged_in(&self) -> bool {
-        self.lock.parent().is_some_and(|dir| {
-            tilo_device_identity::login::Place::at(
-                dir.to_owned(),
-                tilo_identity::provisioning::collaboration_identity_paths(),
-            )
-            .logged_in()
-        })
     }
 
     /// A connection to the device's daemon when one listens, starting none.
@@ -345,6 +312,15 @@ impl DaemonPlace {
         self.wait_for(&self.api, within)
     }
 
+    /// Wait until the daemon answers at its native endpoint, starting the service when none
+    /// runs: a computer no person's certificate names answers there alone.
+    ///
+    /// # Errors
+    /// The service did not start, or no daemon answered in `within`.
+    pub fn wait_for_native(&self, within: Duration) -> Result<(), String> {
+        self.wait_for(&self.native(), within)
+    }
+
     /// A connection to the daemon's `tilo mcp` socket, starting the service when none answers
     /// and waiting up to `within` for it.
     ///
@@ -380,13 +356,6 @@ impl DaemonPlace {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-}
-
-/// The first bytes of a device key, as a daemon's place names the device it serves.
-fn first_bytes(key: &[u8; 32]) -> [u8; 8] {
-    let mut first = [0; 8];
-    first.copy_from_slice(&key[..8]);
-    first
 }
 
 /// `line` with the session this connection is written in, when it is the client's `initialize`

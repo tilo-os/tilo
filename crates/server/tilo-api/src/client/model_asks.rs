@@ -24,19 +24,12 @@ impl Client {
     }
 
     /// The workspace a program of this computer asks the person's model in:
-    /// the one this computer's login entered, else the first of the
-    /// person's own, else the first the key reaches.
+    /// the first of the person's own, which this computer's daemon lists the
+    /// one it enters through as, else the first the key reaches.
     ///
     /// # Errors
     /// The workspaces could not be listed.
     pub async fn model_workspace(&self) -> Result<String> {
-        if let Some((entered, _)) =
-            tilo_device_identity::login::entered_workspace(super::device_keys())
-                .ok()
-                .flatten()
-        {
-            return Ok(entered);
-        }
         let listed = self.workspaces().await?;
         let workspaces: Vec<&Value> = listed
             .get("workspaces")
@@ -107,7 +100,7 @@ impl Client {
 }
 
 /// Whether `path` is a socket something may listen at.
-fn is_socket(path: &std::path::Path) -> bool {
+pub(super) fn is_socket(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path)
         .is_ok_and(|found| std::os::unix::fs::FileTypeExt::is_socket(&found.file_type()))
 }
