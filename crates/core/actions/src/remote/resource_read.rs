@@ -742,7 +742,8 @@ mod tests {
                 fn move_to(&self, value: serde_json::Value, revision: &str) {
                     *self.value.lock().unwrap() = value;
                     *self.revision.lock().unwrap() = revision.to_owned();
-                    for wake in std::mem::take(&mut *self.wakers.lock().unwrap()) {
+                    let woken = std::mem::take(&mut *self.wakers.lock().unwrap());
+                    for wake in woken {
                         wake.wake();
                     }
                 }
