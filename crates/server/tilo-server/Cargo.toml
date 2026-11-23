@@ -278,11 +278,6 @@ ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 # A folder's link streams a zip: the tests read it back as a file manager does.
 zip.workspace = true
-# The fetch proxy test's target.
-test-http = { path = "../../dev/test-http" }
-# The sources a test has an event look at are servers the test starts, which
-# the fetch reaches only through its fixture entry.
-tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # The workspace host's fixtures: a certified test host and the devices around it.
 # The tests author a workspace's record through the host's app action server
 # (`author_workspace_record`), which the `agents` feature carries: asking for it here
