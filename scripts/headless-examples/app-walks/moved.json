@@ -41,7 +41,7 @@
   },
   "so.tilo.notes notes.pages#import-markdown-files": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#import_dropped",
-    "test": "crates/lang/tilolang-runtime/tests/e2e_notes_import.rs:593"
+    "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:1457"
   },
   "so.tilo.notes notes.pages#indent": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#indent",
@@ -49,7 +49,7 @@
   },
   "so.tilo.notes notes.pages#keep-image": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#keep_image",
-    "test": "crates/lang/tilolang-runtime/tests/e2e_notes_import.rs:243"
+    "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:1590"
   },
   "so.tilo.notes notes.pages#move-down": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#move_down",
