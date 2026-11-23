@@ -1,46 +1,55 @@
 #!/usr/bin/env bash
-# Deploy a website's image: pin REPOSITORY@DIGEST in tilo/infra's apps/NAME/deployment.yaml and
-# push infra's main, where Argo CD applies it. The pin is the only line it changes; a digest
-# infra pins already is no commit. Others push to infra's main too, so a push that lost the race
-# is made again on the new head.
+# Deploy a website's image: write its manifests, with the image pinned by digest, to the site
+# repository's `deploy` branch, which an Argo CD Application in tilo/infra applies. The branch
+# holds one file, site.yaml: MANIFEST with every `IMAGE` replaced by REPOSITORY@DIGEST. A digest
+# the branch pins already is no commit. A newer head of the site's main deploys after this one,
+# so a superseded run pushes nothing and never rolls the site back.
 #
-#   site-deploy.sh NAME REPOSITORY DIGEST
+#   site-deploy.sh SITE_REPOSITORY MANIFEST REPOSITORY DIGEST
 #
-# SITES_INFRA_DEPLOY_KEY is the private SSH key of tilo/infra's deploy key for the websites (a
-# t secret given to trusted runs of the sites' main alone).
+# SITE_REPOSITORY is the forge's name (tilo/tilolang-site). SITE_DEPLOY_KEY is the private SSH
+# key of that repository's write deploy key (a t secret given to trusted runs of its main alone).
 set -euo pipefail
-name=${1:?usage: site-deploy.sh NAME REPOSITORY DIGEST}
-repository=${2:?usage: site-deploy.sh NAME REPOSITORY DIGEST}
-digest=${3:?usage: site-deploy.sh NAME REPOSITORY DIGEST}
+usage='usage: site-deploy.sh SITE_REPOSITORY MANIFEST REPOSITORY DIGEST'
+site=${1:?$usage}
+manifest=${2:?$usage}
+repository=${3:?$usage}
+digest=${4:?$usage}
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "site-deploy: not a digest: $digest" >&2; exit 1; }
-: "${SITES_INFRA_DEPLOY_KEY:?site-deploy: the check needs secrets = [\"SITES_INFRA_DEPLOY_KEY\"]}"
+grep -q 'IMAGE' "$manifest" || { echo "site-deploy: $manifest names no IMAGE to pin" >&2; exit 1; }
+: "${SITE_DEPLOY_KEY:?site-deploy: the check needs secrets = [\"SITE_DEPLOY_KEY\"]}"
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/site-deploy.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
-umask 077
-printf '%s\n' "$SITES_INFRA_DEPLOY_KEY" >"$work/key"
+(umask 077 && printf '%s\n' "$SITE_DEPLOY_KEY" >"$work/key")
 export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$here/code.tilo.so.known_hosts -o StrictHostKeyChecking=yes"
-file=apps/$name/deployment.yaml
+remote=git@code.tilo.so:$site.git
 image=$repository@$digest
 
-for attempt in 1 2 3 4 5; do
-  rm -rf "$work/infra"
-  git clone -q --depth 1 --branch main git@code.tilo.so:tilo/infra.git "$work/infra"
-  grep -qE "$repository@sha256:[0-9a-f]{64}" "$work/infra/$file" \
-    || { echo "site-deploy: $file pins no $repository@sha256:… to move" >&2; exit 1; }
-  sed -i -E "s#$repository@sha256:[0-9a-f]{64}#$image#" "$work/infra/$file"
-  if git -C "$work/infra" diff --quiet; then
-    echo "infra pins $image already"
+if [[ -n ${T_COMMIT:-} ]]; then
+  main=$(git ls-remote "$remote" refs/heads/main | cut -f1)
+  if [[ $main != "$T_COMMIT" ]]; then
+    echo "the site's main is $main now, not $T_COMMIT: its own run deploys"
     exit 0
   fi
-  git -C "$work/infra" -c user.name='tilo sites' -c user.email='sites@tilo.so' \
-    commit -q -a -m "deploy($name): $image" -m "Built from the site's commit ${T_COMMIT:-?} and tilo's main."
-  if git -C "$work/infra" push -q origin HEAD:main; then
-    echo "$image"
-    exit 0
-  fi
-  echo "site-deploy: infra's main moved; trying again on its new head ($attempt)" >&2
-done
-echo "site-deploy: could not push the pin to infra's main" >&2
-exit 1
+fi
+
+git init -q "$work/deploy"
+cd "$work/deploy"
+git remote add origin "$remote"
+if git fetch -q --depth 1 origin deploy 2>/dev/null; then
+  git checkout -q FETCH_HEAD
+else
+  git checkout -q --orphan deploy
+fi
+sed "s#IMAGE#$image#g" "$manifest" >site.yaml
+git add site.yaml
+if git diff --cached --quiet; then
+  echo "the site runs $image already"
+  exit 0
+fi
+git -c user.name='tilo sites' -c user.email='sites@tilo.so' \
+  commit -q -m "Deploy $image" -m "Built from the site's commit ${T_COMMIT:-?} and tilo's main."
+git push -q origin HEAD:refs/heads/deploy
+echo "$image"
