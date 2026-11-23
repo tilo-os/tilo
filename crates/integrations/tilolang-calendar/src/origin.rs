@@ -1556,7 +1556,7 @@ fn write_sync(
                 let mut writes = Vec::new();
                 let mut inserts = Vec::new();
                 let mut wanted: Vec<String> = Vec::new();
-                for occurrence in entry.overrides.iter() {
+                for occurrence in &entry.overrides {
                     let original = wall_at(&occurrence.date, &occurrence.time);
                     wanted.push(original.clone());
                     let calendar_record = calendar_record(&entry.calendar);
@@ -1602,7 +1602,7 @@ fn write_sync(
                 let results = change.write(inserts)?;
                 let mut made_overrides: Vec<(Occurrence, ResourceRef)> = Vec::new();
                 let mut slot = 0;
-                for occurrence in entry.overrides.iter() {
+                for occurrence in &entry.overrides {
                     let original = wall_at(&occurrence.date, &occurrence.time);
                     if existing.iter().any(|(_, start)| start == &original) {
                         continue;

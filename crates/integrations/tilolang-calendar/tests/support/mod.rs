@@ -97,10 +97,10 @@ impl Rig {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         });
-        self.origin = Box::new(CalDavOrigin::new(
+        *self.origin = CalDavOrigin::new(
             Box::new(DirectConnector::new(source)),
             Arc::new(AtomicBool::new(true)),
-        ));
+        );
     }
 
     /// Polls as frames do until everything asked has been taken in: a sync answered, a write
