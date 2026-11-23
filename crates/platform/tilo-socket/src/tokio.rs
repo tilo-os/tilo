@@ -77,17 +77,16 @@ pub fn peer_is_this_login(stream: &Stream) -> bool {
 
 #[cfg(windows)]
 mod pipe {
-    use crate::account::{Account, LocalAllocation, attributes};
+    use crate::account::{Account, LocalAllocation};
     use crate::windows::{SocketAddr, open, peer_is};
     use std::io;
-    use std::os::windows::io::{AsRawHandle, IntoRawHandle};
+    use std::os::windows::io::{AsRawHandle, IntoRawHandle, OwnedHandle};
     use std::path::Path;
     use std::pin::Pin;
     use std::sync::Mutex;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-    use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+    use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer};
 
     /// A listening pipe on the runtime: the instance the next client connects to.
     pub struct Listener {
@@ -97,33 +96,29 @@ mod pipe {
         next: Mutex<Option<NamedPipeServer>>,
     }
 
-    fn instance(name: &[u16], descriptor: &LocalAllocation) -> io::Result<NamedPipeServer> {
-        let mut attributes = attributes(descriptor);
-        // The name is the synchronous listener's, whose first instance already holds it.
-        let name = String::from_utf16_lossy(name.strip_suffix(&[0]).unwrap_or(name));
-        // SAFETY: the security attributes outlive the call.
-        unsafe {
-            ServerOptions::new()
-                .reject_remote_clients(true)
-                .create_with_security_attributes_raw(&name, (&raw mut attributes).cast())
-        }
+    /// An instance the synchronous listener made, served on the runtime.
+    fn served(pipe: OwnedHandle) -> io::Result<NamedPipeServer> {
+        // SAFETY: an overlapped pipe instance owned here, handed over once.
+        unsafe { NamedPipeServer::from_raw_handle(pipe.into_raw_handle()) }
     }
 
-    /// Serve `listener`, made by [`crate::bind`], on the current runtime. Its
-    /// first instance is let go only once the runtime's holds the name, so the
-    /// name is never free for another process to take.
+    fn instance(name: &[u16], descriptor: &LocalAllocation) -> io::Result<NamedPipeServer> {
+        served(crate::windows::instance(name, descriptor, false)?)
+    }
+
+    /// Serve `listener`, made by [`crate::bind`], on the current runtime: the
+    /// runtime takes over its instance, which holds the pipe's name.
     ///
     /// # Errors
-    /// The runtime's instance could not be made.
+    /// The runtime could not take the instance.
     pub fn listener(listener: crate::Listener) -> io::Result<Listener> {
         let (name, account, descriptor, first) = listener.into_parts();
-        let next = instance(&name, &descriptor)?;
-        drop(first);
+        let next = first.map(served).transpose()?;
         Ok(Listener {
             name,
             account,
             descriptor,
-            next: Mutex::new(Some(next)),
+            next: Mutex::new(next),
         })
     }
 
@@ -174,11 +169,9 @@ mod pipe {
     pub async fn connect(path: &Path) -> io::Result<Stream> {
         let account = Account::current()?;
         let name = crate::windows::pipe_name(&account, path)?;
-        let pipe = tokio::task::spawn_blocking(move || {
-            open(&crate::windows::wide(&name), FILE_FLAG_OVERLAPPED)
-        })
-        .await
-        .map_err(io::Error::other)??;
+        let pipe = tokio::task::spawn_blocking(move || open(&crate::windows::wide(&name)))
+            .await
+            .map_err(io::Error::other)??;
         if !peer_is(pipe.as_raw_handle(), false, &account)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
