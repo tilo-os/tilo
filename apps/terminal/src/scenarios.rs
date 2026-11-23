@@ -143,9 +143,9 @@ pub(crate) fn tui(cols: usize, rows: usize) -> Vec<u8> {
     )]
     let lines = [
         "fn start() {",
-        "    // alternate-screen redraw via CSI ?1049h",
         "    let greeting = \"hello, Tilo\";",
-        "    for i in 0..3 {",
+        "    let repeat = 3;",
+        "    for i in 0..repeat {",
         "        println!(\"{i}: {greeting}\");",
         "    }",
         "}",
