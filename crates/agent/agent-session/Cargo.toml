@@ -181,7 +181,7 @@ iroh-blobs.workspace = true
 jiff.workspace = true
 # Documents the tests write and read back as a Word or Markdown file.
 tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs" }
-tilo-doc = { path = "../../doc/tilo-doc" }
+tilo-doc = { path = "../../sdk/tilo-doc" }
 # The desktop broker's admission, which the host's decisions are held to.
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The demo workspace and the helpers that write a chat as its people would.
