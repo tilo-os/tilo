@@ -1077,7 +1077,9 @@ everything else is visibly optional:
 
 - `crates/core/`: the foundation (wire types, crypto, identity, keys,
   documents, the one store) and the device daemon. Nothing per app, no
-  importers, no product features.
+  importers, no product features. The daemon links no app crate: it reaches
+  apps, the agent runner included, only through the action registry and
+  the catalogue, and the crate-graph policy refuses an edge to one.
 - `crates/platform/`: one API per operating-system capability (files,
   paths, clock, network, processes, secrets, notifications, clipboard,
   dialogs, appearance, locale) on Linux, macOS and the web. It knows nothing
