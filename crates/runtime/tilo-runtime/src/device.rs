@@ -42,7 +42,7 @@ pub mod serve;
 pub mod services;
 pub mod shortcuts;
 pub mod take_work;
-mod ticket;
+pub(crate) mod ticket;
 #[cfg(test)]
 mod ticket_tests;
 pub(crate) mod unclaimed;
@@ -61,7 +61,7 @@ use tilo_mcp::McpServer;
 use tilo_session_client::device::{Device as Entered, DeviceActions};
 
 use tilo_api::daemon::enter::{self, NOT_LOGGED_IN};
-use tilo_api::daemon::{Claim, PEER_STATUS, STEP_DOWN, unreachable_answer};
+use tilo_api::daemon::{PEER_STATUS, unreachable_answer};
 use tilo_device_identity::login::Device;
 
 use workspaces::ServiceWorkspaces;
@@ -230,11 +230,6 @@ pub(crate) struct Shared<E> {
     entry: tokio::sync::Mutex<Entry>,
     /// Counts finished attempts, so a call that waits for one hears that it ended.
     attempts: tokio::sync::watch::Sender<u64>,
-    /// What this daemon claims the device as, once it keeps it: the program it was started
-    /// from, and whether the user service started it.
-    held_as: std::sync::OnceLock<Claim>,
-    /// Told when a holder that takes over from this one asked it to let it hold the device.
-    stepping_down: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -264,8 +259,6 @@ impl<E: Enter> Shared<E> {
             session: tokio::sync::Mutex::new(None),
             entry: tokio::sync::Mutex::new(Entry::default()),
             attempts: tokio::sync::watch::channel(0).0,
-            held_as: std::sync::OnceLock::new(),
-            stepping_down: tokio::sync::Notify::new(),
         }
     }
 
@@ -500,41 +493,6 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
             );
         }
     };
-    if request.get("method").and_then(Value::as_str) == Some(STEP_DOWN) {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let asking = request
-            .get("params")
-            .and_then(|params| serde_json::from_value::<Claim>(params.clone()).ok());
-        let takes_over = connection
-            .shared
-            .held_as
-            .get()
-            .zip(asking)
-            .is_some_and(|(own, asking)| asking.takes_over(own));
-        // A holder whose folders are in use keeps the device until they are quiet: stepping
-        // down in the middle of a checkout answers its requests with I/O errors. The holder that
-        // asked asks again later (the user service's does, now and then), and meanwhile this one
-        // serves.
-        let busy = match serve::PEER.get() {
-            Some(peer) if takes_over => peer.busy().await,
-            _ => None,
-        };
-        let steps_down = takes_over && busy.is_none();
-        if let Some(busy) = &busy {
-            tracing::warn!(
-                %busy,
-                "a holder of a newer Tilo, or the user service's, asked to take this device over; \
-                 this one keeps it until its folders are quiet"
-            );
-        }
-        if steps_down {
-            connection.shared.stepping_down.notify_one();
-        }
-        return Some(
-            json!({"jsonrpc": "2.0", "id": id, "result": {"stepping_down": steps_down, "busy": busy, "pid": std::process::id()}})
-                .to_string(),
-        );
-    }
     if request.get("method").and_then(Value::as_str) == Some(PEER_STATUS) {
         // Asked by `tilo status`: no agent run, and nothing entered for it.
         let id = request.get("id").cloned().unwrap_or(Value::Null);

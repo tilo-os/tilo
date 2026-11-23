@@ -572,51 +572,6 @@ impl Peer {
         self.held.lock().await.clear();
     }
 
-    /// Why this peer should not end now, if it should not: a folder is answering requests or took
-    /// one within [`QUIET`] (a checkout writing thousands of files, a `git fsck` reading packs),
-    /// or changes made here have not all reached the workspace yet. A holder asked to hand the
-    /// device over to a newer Tilo keeps it while this says why: ending would answer the
-    /// requests under way with I/O errors.
-    pub(crate) async fn busy(&self) -> Option<String> {
-        let folders: Vec<_> = self
-            .held
-            .lock()
-            .await
-            .iter()
-            .map(|shown| {
-                (
-                    shown.showing.at.clone(),
-                    Arc::clone(&shown.showing.activity),
-                    shown.replica.status(),
-                )
-            })
-            .collect();
-        for (at, activity, status) in folders {
-            if !activity.quiet(QUIET) {
-                return Some(format!(
-                    "{} is in use ({} requests under way, the last {} ms ago)",
-                    at.display(),
-                    activity.in_flight(),
-                    activity.quiet_for().as_millis()
-                ));
-            }
-            // Changes that wait for part of the tree that has not arrived are kept on disk, and
-            // the next holder sends them as this one would: waiting for them would keep a newer
-            // Tilo out for as long as that part takes, which may be until a restart.
-            if !status.paused
-                && status.opened
-                && status.stuck.is_empty()
-                && !(status.sent && status.durable)
-            {
-                return Some(format!(
-                    "changes made in {} are still going out to the workspace",
-                    at.display()
-                ));
-            }
-        }
-        None
-    }
-
     /// Stop showing the folders and keep their trees on disk: called when the holder stops, so
     /// no write lands after the session ends and nothing made here is lost with the process.
     /// Each step is bounded, and all of them together by `within`: a step still walking a tree
@@ -682,8 +637,6 @@ impl Peer {
     }
 }
 
-/// How long a folder must have taken no request for this peer to count it as quiet.
-const QUIET: Duration = Duration::from_secs(5);
 /// How long a stop waits for the folders' requests under way to be answered and for a moment of
 /// quiet before it unmounts them: part of the stop's own bound, inside the unit's stop timeout.
 pub(crate) const DRAINING: Duration = Duration::from_secs(10);

@@ -15,7 +15,7 @@ impl Client {
     /// damaged.
     #[must_use]
     pub fn this_computer() -> Option<Self> {
-        let held = tilo_device_identity::login::held_api(super::device_keys())
+        let held = super::held_api()
             .ok()
             .flatten()
             .filter(|socket| is_socket(socket));

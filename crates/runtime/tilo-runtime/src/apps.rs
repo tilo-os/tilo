@@ -47,6 +47,8 @@ pub struct Apps {
     catalog: Option<package_store::Catalog>,
     workspace: String,
     root: PathBuf,
+    /// The directory the daemon's sockets are in, which a launch attaches the app to.
+    sockets: PathBuf,
     /// Where app containers live on macOS, beside the runtime profile.
     #[cfg(target_os = "macos")]
     data_home: PathBuf,
@@ -81,18 +83,19 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
 }
 
 impl Apps {
-    /// The apps of the profile at `profile`, serving `workspace`, from the stores
-    /// the environment names.
+    /// The apps of the profile at `profile`, serving `workspace` with the daemon's sockets in
+    /// `sockets`, from the stores the environment names.
     #[must_use]
-    pub fn from_env(profile: &Path, workspace: &str) -> Self {
+    pub fn from_env(profile: &Path, sockets: &Path, workspace: &str) -> Self {
         let home = tilo_paths::home();
-        let apps = Self::new(
+        let mut apps = Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
             workspace,
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         );
+        sockets.clone_into(&mut apps.sockets);
         apps.register_installed_surfaces();
         apps
     }
@@ -115,6 +118,7 @@ impl Apps {
             catalog,
             workspace: workspace.to_owned(),
             root: profile.to_path_buf(),
+            sockets: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
             #[cfg(target_os = "linux")]
@@ -356,9 +360,9 @@ impl Apps {
         let app = self.launchable(app_id)?;
         self.run_with_signed_surface(&app);
         let sockets = Sockets {
-            collab: self.root.join(COLLAB_SOCKET),
-            identity: self.root.join(IDENTITY_SOCKET),
-            blobs: self.root.join(BLOB_SOCKET),
+            collab: self.sockets.join(COLLAB_SOCKET),
+            identity: self.sockets.join(IDENTITY_SOCKET),
+            blobs: self.sockets.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;

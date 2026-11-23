@@ -120,7 +120,7 @@ tilo-api = { path = "../../server/tilo-api" }
 # An agent's actions asked of the workspace's host over the device's one session.
 tilo-session-actions = { path = "../../session/session-actions" }
 # The log a daemon keeps trims, and the socket it stops taking connections at.
-rustix = { workspace = true, features = ["fs", "net", "std"] }
+rustix = { workspace = true, features = ["fs", "net", "process", "std"] }
 rand.workspace = true
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.

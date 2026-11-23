@@ -21,6 +21,13 @@ use std::ffi::OsString;
 /// reaches the machine's own daemons, `hosted` for one that must not.
 pub const VAR: &str = "TILO_MACHINE";
 
+/// Where Tilo OS's system unit keeps the device daemon's sockets: its own runtime directory,
+/// which every account may enter, each connection admitted by the account it comes from.
+pub const DAEMON_SOCKETS: &str = "/run/tilo-runtime";
+/// The device daemon's native endpoint, in its sockets' directory: what apps, the system's own
+/// callers (the sign-in's session hooks) and `tilo-runtime --connect` reach.
+pub const DAEMON_NATIVE: &str = "native.sock";
+
 /// Whether a session reaches the machine's own daemons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {

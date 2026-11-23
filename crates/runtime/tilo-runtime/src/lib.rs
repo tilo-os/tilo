@@ -49,19 +49,19 @@ pub mod host;
 #[cfg(windows)]
 #[path = "host/windows.rs"]
 pub mod host;
+#[cfg(unix)]
+mod seats;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
 #[cfg(all(test, unix))]
 tilo_automerge_isolate::test_worker!();
 
-/// Socket names inside a profile, shared by the daemon that binds them and
-/// the launcher that attaches an app to them.
+/// Socket names in the directory the daemon keeps its sockets in, shared by the daemon
+/// that binds them and the launcher that attaches an app to them.
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
-/// The profile's workspace files, served read only (`tilo-file-provider`).
-pub const FILES_SOCKET: &str = "files.sock";
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.

@@ -1,17 +1,8 @@
-use super::{
-    DaemonStart, Mode, Observation, STAGES_FILE, StartingProcess, StartupLimits, current_stage,
-    parse_args, wait_until_ready,
-};
-use std::{
-    ffi::OsString,
-    io,
-    process::{Command, Stdio},
-    time::{Duration, Instant},
-};
+use super::{Mode, parse_args};
+use std::{ffi::OsString, io, time::Duration};
 use tilo_mcp::lines::{
     Frame, MAX_REQUEST_BYTES, mcp_answer, read_frame, serve_lines, spawn_reader, write_reply,
 };
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 tilo_test_env::scenario! {
     fn the_daemons_sockets_activate_open_and_answer_as_requests_finish;
@@ -137,6 +128,7 @@ tilo_test_env::scenario! {
                             workspace: "workspace".into(),
                         },
                         &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
+                        None,
                     )
                     .unwrap();
                 }
@@ -190,6 +182,7 @@ tilo_test_env::scenario! {
                         workspace: "workspace".into(),
                     },
                     &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
+                    None,
                 )
             })
         };
@@ -353,376 +346,6 @@ tilo_test_env::scenario! {
         });
         overlapping_lines(&host, &client);
         serving.join().unwrap().unwrap();
-    }
-}
-
-const LIMITS: StartupLimits = StartupLimits {
-    stall: Duration::from_millis(300),
-    cap: Duration::from_secs(10),
-    poll: Duration::from_millis(5),
-};
-
-/// A process that progresses until `progress_for`, then goes quiet. Only
-/// the signal at `moving` changes; the others stay constant or unreadable.
-/// It lives on a virtual clock that moves only when the wait pauses, so
-/// how fast or loaded the machine is never decides the outcome.
-struct Fake {
-    started: Instant,
-    elapsed: Duration,
-    progress_for: Duration,
-    moving: usize,
-    ready_after: Option<Duration>,
-    exit_after: Option<Duration>,
-    stopped: bool,
-}
-
-impl Fake {
-    fn new(progress_for: Duration) -> Self {
-        Self {
-            started: Instant::now(),
-            elapsed: Duration::ZERO,
-            progress_for,
-            moving: 0,
-            ready_after: None,
-            exit_after: None,
-            stopped: false,
-        }
-    }
-}
-
-impl StartingProcess for Fake {
-    type Ready = &'static str;
-    fn ready(&mut self) -> Option<&'static str> {
-        self.ready_after
-            .is_some_and(|after| self.elapsed >= after)
-            .then_some("ready")
-    }
-    fn exited(&mut self) -> io::Result<Option<String>> {
-        Ok(self
-            .exit_after
-            .is_some_and(|after| self.elapsed >= after)
-            .then(|| "exit status: 3".to_owned()))
-    }
-    fn now(&self) -> Instant {
-        self.started.checked_add(self.elapsed).unwrap()
-    }
-    fn pause(&mut self, poll: Duration) {
-        self.elapsed = self.elapsed.saturating_add(poll);
-    }
-    fn observe(&mut self) -> Observation {
-        let elapsed = self.elapsed;
-        let (stage, value) = if elapsed < self.progress_for {
-            (
-                "warming up",
-                u64::try_from(elapsed.as_millis() / 10).unwrap(),
-            )
-        } else {
-            ("waiting on the lock", u64::MAX)
-        };
-        let mut signals = vec![("steady", Some(7)), ("absent", None), ("busy", Some(0))];
-        signals[self.moving].1 = Some(value);
-        Observation {
-            stage: stage.to_owned(),
-            signals,
-        }
-    }
-    fn stop(&mut self) {
-        self.stopped = true;
-    }
-    fn diagnostics(&self) -> String {
-        "last output: fake tail".to_owned()
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_start_is_waited_for_while_it_progresses_and_fails_once_it_stalls_exits_or_never_finishes;
-
-    phase slow_start_that_keeps_progressing_is_waited_for;
-    {
-        let mut fake = Fake::new(Duration::from_secs(60));
-        // Several stall windows long: only continued progress keeps it alive.
-        fake.ready_after = Some(Duration::from_millis(1500));
-        assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
-        assert!(fake.elapsed >= Duration::from_millis(1500));
-        assert!(!fake.stopped);
-    }
-
-    phase stalled_start_fails_at_the_stall_timeout_naming_its_stage;
-    {
-        let mut fake = Fake::new(Duration::from_millis(200));
-        let error = wait_until_ready(&mut fake, LIMITS).unwrap_err();
-        let elapsed = fake.elapsed;
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        let message = error.to_string();
-        assert!(
-            message.contains("stalled while waiting on the lock"),
-            "{message}"
-        );
-        assert!(message.contains("fake tail"), "{message}");
-        // Each signal says when it last moved, so a log shows which went quiet.
-        assert!(message.contains("steady last changed"), "{message}");
-        assert!(message.contains("absent unreadable"), "{message}");
-        assert!(message.contains("busy unchanged since launch"), "{message}");
-        assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
-        assert!(elapsed < LIMITS.cap, "{elapsed:?}");
-        assert!(fake.stopped);
-    }
-
-    phase progress_in_any_single_signal_keeps_the_start_alive;
-    {
-        let mut fake = Fake::new(Duration::from_secs(60));
-        fake.moving = 2;
-        fake.ready_after = Some(Duration::from_millis(1500));
-        assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
-        assert!(!fake.stopped);
-    }
-
-    phase exited_start_fails_immediately_with_its_output;
-    {
-        let mut fake = Fake::new(Duration::from_secs(60));
-        fake.exit_after = Some(Duration::from_millis(20));
-        let message = wait_until_ready(&mut fake, LIMITS).unwrap_err().to_string();
-        assert!(fake.elapsed < LIMITS.stall);
-        assert!(
-            message.contains("exited while warming up (exit status: 3)"),
-            "{message}"
-        );
-        assert!(message.contains("fake tail"), "{message}");
-    }
-
-    phase start_that_never_finishes_fails_at_the_cap;
-    {
-        let mut fake = Fake::new(Duration::from_secs(60));
-        let limits = StartupLimits {
-            cap: Duration::from_millis(800),
-            ..LIMITS
-        };
-        let error = wait_until_ready(&mut fake, limits).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(
-            error
-                .to_string()
-                .contains("within 0.8 s (still warming up; steady last changed"),
-            "{error}"
-        );
-        assert!(fake.stopped);
-    }
-}
-
-fn daemon_start(profile: &std::path::Path, script: &str) -> DaemonStart {
-    let child = Command::new("/bin/sh")
-        .args(["-c", script])
-        .current_dir(profile)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(profile.join("daemon.log")).unwrap())
-        .spawn_locked()
-        .unwrap();
-    DaemonStart::new(profile, child)
-}
-
-tilo_test_env::scenario! {
-    fn a_real_daemon_start_reports_its_stderr_and_names_its_steps;
-
-    phase real_child_exit_reports_its_stderr;
-    {
-        let profile = tempfile::tempdir().unwrap();
-        let mut start = daemon_start(profile.path(), "echo 'identity: boom' >&2; exit 3");
-        let message = wait_until_ready(&mut start, LIMITS)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("exit status: 3"), "{message}");
-        assert!(message.contains("identity: boom"), "{message}");
-    }
-
-    phase named_startup_steps_are_progress_and_a_stall_names_the_last_one;
-    {
-        let profile = tempfile::tempdir().unwrap();
-        // Names a step every 0.2 s for several stall windows, without output,
-        // then blocks without using CPU, reading, writing or naming a step.
-        let mut child = Command::new("/bin/sh")
-            .args([
-                "-c",
-                &format!(
-                    "for step in 1 2 3 4 5 6 7 8; do read line; echo \"step $step\" >> {STAGES_FILE}; \
-                 done; exec sleep 60"
-                ),
-            ])
-            .current_dir(profile.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(profile.path().join("daemon.log")).unwrap())
-            .spawn_locked()
-            .unwrap();
-        let steps = child.stdin.take().unwrap();
-        let pid = child.id();
-        let mut start = Paced {
-            start: DaemonStart::new(profile.path(), child),
-            stages: profile.path().join(STAGES_FILE),
-            steps,
-            started: Instant::now(),
-            elapsed: Duration::ZERO,
-            every: Duration::from_millis(200),
-            named: 0,
-            total: 8,
-        };
-        let limits = StartupLimits {
-            stall: Duration::from_secs(1),
-            ..LIMITS
-        };
-        let error = wait_until_ready(&mut start, limits).unwrap_err();
-        let message = error.to_string();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(message.contains("stalled while step 8"), "{message}");
-        assert!(start.elapsed >= Duration::from_millis(2600), "{message}");
-        assert!(message.contains("startup step last changed"), "{message}");
-        assert!(message.contains("wrote nothing"), "{message}");
-        #[cfg(target_os = "linux")]
-        {
-            assert!(message.contains("threads: sleep S"), "{message}");
-            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
-        }
-        // Only Linux exposes a process tree's CPU time and thread states; elsewhere
-        // the step names alone are the progress signal.
-        #[cfg(not(target_os = "linux"))]
-        {
-            assert!(message.contains("CPU time unreadable"), "{message}");
-            // The stalled child was killed and reaped.
-            // SAFETY: signal 0 only checks whether the exact child still exists.
-            assert_eq!(
-                unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
-                -1,
-                "{message}"
-            );
-        }
-    }
-
-    phase the_current_stage_is_the_last_named_step;
-    {
-        assert_eq!(current_stage(b""), "loading the runtime");
-        assert_eq!(current_stage(b"one\ntwo\n\n"), "two");
-        assert_eq!(current_stage("x".repeat(500).as_bytes()).len(), 200);
-    }
-}
-
-/// A real daemon start whose steps the test paces on a virtual clock: the
-/// child names its next step when the clock passes it, and the clock waits
-/// for the step to be named, so the child's speed never decides the outcome.
-struct Paced {
-    start: DaemonStart,
-    stages: std::path::PathBuf,
-    steps: std::process::ChildStdin,
-    started: Instant,
-    elapsed: Duration,
-    every: Duration,
-    named: usize,
-    total: usize,
-}
-
-impl StartingProcess for Paced {
-    type Ready = <DaemonStart as StartingProcess>::Ready;
-    fn ready(&mut self) -> Option<Self::Ready> {
-        self.start.ready()
-    }
-    fn exited(&mut self) -> io::Result<Option<String>> {
-        self.start.exited()
-    }
-    fn observe(&mut self) -> Observation {
-        self.start.observe()
-    }
-    fn stop(&mut self) {
-        self.start.stop();
-    }
-    fn diagnostics(&self) -> String {
-        self.start.diagnostics()
-    }
-    fn now(&self) -> Instant {
-        self.started.checked_add(self.elapsed).unwrap()
-    }
-    fn pause(&mut self, poll: Duration) {
-        use std::io::Write as _;
-        self.elapsed = self.elapsed.saturating_add(poll);
-        while self.named < self.total
-            && self.elapsed
-                >= self
-                    .every
-                    .checked_mul(u32::try_from(self.named.saturating_add(1)).unwrap())
-                    .unwrap()
-        {
-            self.named = self.named.saturating_add(1);
-            writeln!(self.steps).unwrap();
-            let named = self.named;
-            tilo_test_env::wait_until(format!("the child to name step {named}"), || {
-                std::fs::read_to_string(&self.stages)
-                    .is_ok_and(|stages| stages.lines().count() == named)
-            });
-            if named == self.total {
-                #[cfg(target_os = "linux")]
-                {
-                    let comm = format!("/proc/{}/comm", self.start.child.id());
-                    tilo_test_env::wait_until("the child to block in sleep", || {
-                        std::fs::read_to_string(&comm).is_ok_and(|name| name.trim() == "sleep")
-                    });
-                }
-            }
-        }
-    }
-}
-
-tilo_test_env::scenario! {
-    #[cfg(target_os = "linux")]
-    fn a_process_and_its_tree_are_read_from_proc;
-
-    phase cpu_time_of_a_live_process_is_readable;
-    {
-        assert!(super::cpu_ticks(std::process::id()).is_some());
-        assert!(super::io_bytes(std::process::id()).is_some());
-    }
-
-    phase a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads;
-    // A launcher that waits on a wrapper still sees the worker it started.
-    {
-        use std::os::unix::process::CommandExt;
-        let mut wrapper = Command::new("/bin/sh")
-            .args(["-c", "sh -c 'while :; do :; done' & wait"])
-            .process_group(0)
-            .stdin(Stdio::null())
-            .spawn_locked()
-            .unwrap();
-        let pid = wrapper.id();
-        let deadline = tilo_test_env::hang_deadline();
-        let (mut sample, mut own) = (super::sample_tree(pid, false).unwrap(), 0);
-        while sample.cpu_ticks <= own && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-            own = super::cpu_ticks(pid).unwrap();
-            sample = super::sample_tree(pid, false).unwrap();
-        }
-        let described = super::sample_tree(pid, true).unwrap();
-        // SAFETY: the wrapper leads its own process group, which holds only
-        // itself and the worker it started.
-        unsafe {
-            libc::killpg(i32::try_from(pid).unwrap(), libc::SIGKILL);
-        }
-        let _ = wrapper.wait();
-        assert!(
-            sample.cpu_ticks > own,
-            "the tree never counted its busy descendant's CPU time within the hang bound: {sample:?}, wrapper {own}"
-        );
-        assert!(described.threads.len() >= 2, "{described:?}");
-        assert!(
-            described.held_by_machine || described.cpu_ticks > sample.cpu_ticks,
-            "{described:?}"
-        );
-    }
-
-    phase parent_pids_find_a_spawned_child;
-    // Without per-task child lists, children are found by their parent pid.
-    {
-        let mut child = Command::new("/bin/sleep").arg("30").spawn_locked().unwrap();
-        let found = super::parent_pids().contains(&(child.id(), std::process::id()));
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(found);
     }
 }
 
@@ -1127,6 +750,8 @@ fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person
     let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
     let native = std::sync::Arc::new(super::Native::new(
         crate::device::unclaimed::DeviceOnly::new(key.clone(), place),
+        crate::seats::peer_uid,
+        tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
     ));
     let listener =
         tilo_files::native::private::bind_socket(&dir.path().join("native.sock")).unwrap();
@@ -1179,4 +804,176 @@ fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person
         text.contains("this device has no person yet"),
         "what needs a person says the device has none: {person}"
     );
+}
+
+/// The account a test's next native connection comes from, as the daemon reads it.
+static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the kernel's answer, which can fail"
+)]
+fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    Ok(PEER.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// Under the system unit every account reaches the native endpoint, and the account is what it is
+/// answered as: root says who signed in (and nobody else may), an account signed in is its person
+/// and is served, and any other account is answered the device's own actions alone. `account#who`
+/// tells each which it is.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sign-in and sign-out, read top to bottom"
+)]
+fn the_system_daemon_answers_each_account_as_who_signed_in() {
+    use ed25519_dalek::Signer as _;
+    use io::{BufRead as _, Write as _};
+    use serde_json::{Value, json};
+    use std::sync::atomic::Ordering;
+    use tilo_api::daemon::admission::{Admission, ROOT};
+    const DAEMON: u32 = 990;
+    const ADA: u32 = 1000;
+    const BOB: u32 = 1001;
+
+    // A device bound to Ada: her root certified its key.
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    keys.ensure_directories().unwrap();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let ada = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let person = ada.verifying_key().to_bytes();
+    let device = key.verifying_key().to_bytes();
+    tilo_device_identity::persist::write_public_key(&keys.user_pubkey, &person).unwrap();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: person,
+        device_public_key: device,
+        device_label: "desk".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1_000,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
+    tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
+    let proof_of = |uid: u32| {
+        let digest = tilo_identity::local_person::proof_digest(&person, &device, uid).unwrap();
+        hex::encode(ada.sign(&digest).to_bytes())
+    };
+
+    let answers = crate::device::unclaimed::DeviceOnly::new(
+        key,
+        tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+    );
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
+    let native = std::sync::Arc::new(super::Native::new(answers.clone(), test_peer, admission));
+    // The person's services run, answering as the workspace `home`.
+    native.serve_the_person(super::Endpoint {
+        session_factory: std::sync::Arc::new(move || {
+            Ok(tilo_mcp::McpServer::new(
+                answers.clone(),
+                String::new(),
+                String::new(),
+            ))
+        }),
+        status: super::Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: "home".into(),
+        },
+        search: std::sync::Arc::new(std::sync::OnceLock::new()),
+        media: None,
+        other_devices: None,
+    });
+    let socket = dir.path().join("native.sock");
+    let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    // One request on a connection of `uid`'s, and its answer.
+    let ask = |uid: u32, request: Value| {
+        PEER.store(uid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let who = |uid: u32| ask(uid, json!({"native": "account#who"}));
+    // A seat action called as any action is: whether it failed, and what it answered.
+    let act = |uid: u32, path: &str, args: Value| {
+        let answer = ask(
+            uid,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_do", "arguments": {"path": path, "args": args}}}),
+        );
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (answer["result"]["isError"] == true, text)
+    };
+    let status = |uid: u32| ask(uid, json!({"native": "status"}));
+
+    // Before anyone signed in, Ada's account is a stranger: no person, and the device alone.
+    let unknown = who(ADA);
+    assert_eq!(unknown["person"], Value::Null, "{unknown}");
+    assert_eq!(unknown["device"], hex::encode(device), "{unknown}");
+    assert_eq!(unknown["claimed"], true, "{unknown}");
+    assert_eq!(
+        status(ADA)["workspace"],
+        "",
+        "a stranger is not served the person"
+    );
+
+    // Only root says who signed in: neither Ada herself nor the daemon's own account may.
+    let signing_in = json!({"person": hex::encode(person), "uid": ADA, "proof": proof_of(ADA)});
+    for by in [ADA, DAEMON] {
+        let (failed, why) = act(by, "seats#signed-in", signing_in.clone());
+        assert!(failed, "{by} said who signed in: {why}");
+    }
+    // A proof for another account says nothing about Bob's.
+    let (failed, why) = act(
+        ROOT,
+        "seats#signed-in",
+        json!({"person": hex::encode(person), "uid": BOB, "proof": proof_of(ADA)}),
+    );
+    assert!(failed, "{why}");
+    // Nor is a person this device does not serve taken on root's word.
+    let (failed, why) = act(
+        ROOT,
+        "seats#signed-in",
+        json!({"person": hex::encode([3; 32]), "uid": ADA, "proof": proof_of(ADA)}),
+    );
+    assert!(failed, "{why}");
+    let (failed, signed_in) = act(ROOT, "seats#signed-in", signing_in);
+    assert!(!failed, "{signed_in}");
+    assert!(signed_in.contains(&hex::encode(person)), "{signed_in}");
+
+    // Ada is her person now, and served; Bob still a stranger; root the device, no person.
+    assert_eq!(who(ADA)["person"], hex::encode(person));
+    assert_eq!(
+        status(ADA)["workspace"],
+        "home",
+        "a signed-in account is served"
+    );
+    assert_eq!(who(BOB)["person"], Value::Null);
+    assert_eq!(status(BOB)["workspace"], "");
+    assert_eq!(who(ROOT)["person"], Value::Null);
+
+    // She leaves: only root says so, and she is a stranger again.
+    let leaving = json!({"uid": ADA});
+    assert!(act(ADA, "seats#left", leaving.clone()).0);
+    let (failed, left) = act(ROOT, "seats#left", leaving);
+    assert!(!failed && left.contains("true"), "{left}");
+    assert_eq!(who(ADA)["person"], Value::Null);
+    assert_eq!(status(ADA)["workspace"], "");
 }

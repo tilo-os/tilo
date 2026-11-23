@@ -24,6 +24,8 @@ use serde_json::{Value, json};
 
 /// How long one action may take before the run gives up on it.
 const ACTION_WAIT: Duration = Duration::from_secs(120);
+/// How long a migration waits for this computer's daemon to answer, its service started.
+const REACHING: Duration = Duration::from_secs(30);
 /// How long a step waits for its person to allow it in their tab.
 const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
 /// How long one held read of an invocation waits before the run asks again.
@@ -198,24 +200,12 @@ impl Held {
     /// This computer is not logged in, or its peer could not be reached.
     pub fn connect() -> Result<Self> {
         let login = crate::login::Place::here(crate::identity::paths())?;
-        let device = crate::login::load_public(&login)?
-            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+        crate::login::load_public(&login)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
         crate::login::trust_test_certificates()?;
-        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &device.cert.device_public_key)
-            .map_err(|why| anyhow!(why))?;
-        let stream = if let Some(stream) = place.connect() {
-            stream
-        } else {
-            // A peer that is there is waited for, not replaced: it may be busy with a change, and
-            // a connection that failed once is not a reason to stop it.
-            crate::service::start()?;
-            place.connect().ok_or_else(|| {
-                anyhow!(
-                    "Tilo's background sync isn't answering on this computer yet. Run `tilo \
-                     status` to see how it stands, then try again."
-                )
-            })?
-        };
+        // A daemon that is there is waited for, not replaced: it may be busy with a change.
+        let stream = tilo_api::daemon::this_computer()
+            .and_then(|place| place.reach(REACHING))
+            .map_err(anyhow::Error::msg)?;
         Self::over(stream)
     }
 

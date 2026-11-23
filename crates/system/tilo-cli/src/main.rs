@@ -48,7 +48,6 @@ mod os;
 mod person;
 mod sdk;
 mod server;
-mod service;
 mod settings;
 mod status;
 

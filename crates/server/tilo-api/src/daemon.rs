@@ -1,89 +1,237 @@
-//! Where this computer's one daemon (`tilo-runtime`) listens, the lock that keeps it one,
-//! and what the daemon and the commands that reach it say to each other about it: the claim a
-//! daemon starting makes on the device, and how it asks the one there to step down.
+//! Where this computer's one daemon (`tilo-runtime`) listens, the one way it is started, who it
+//! admits, and what the daemon and the commands that reach it say to each other about it.
+//!
+//! The daemon starts one way on each computer ([`service::start`]): on Tilo OS the system unit
+//! runs it from boot as its own account, and everywhere else it is the signed-in person's own
+//! service. No command starts one of its own: every client asks the one that runs, at the
+//! sockets [`this_computer`] names, and starts the service when none answers.
 //!
 //! The host keeps one session per device, so two processes entering as the same device cut each
 //! other off. Every `tilo mcp` and every workspace command of a login therefore reaches the one
-//! daemon over a socket ([`DaemonPlace::connect`]), and a daemon starting takes the device's lock
+//! daemon over a socket ([`DaemonPlace::connect`]), and the daemon takes the device's lock
 //! ([`DaemonPlace::lock`]) or waits for the one holding it to hand the device over.
 
+pub mod admission;
 pub mod enter;
 pub mod folders;
+pub mod service;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 /// What `tilo status` asks this computer's daemon: who it is, which workspaces it shows where,
 /// and whether they are in sync.
 pub const PEER_STATUS: &str = "tilo/peer";
 
-/// What a daemon starting asks the one keeping the device: to let it keep the device instead,
-/// as what it claims the device as ([`Claim`]): a newer program, or the user service.
-pub const STEP_DOWN: &str = "tilo/stepDown";
-
-/// Set in the user service's environment: the daemon it starts knows itself as the service's,
-/// the one that lasts for as long as the person is logged in.
-pub const SERVICE_ENV: &str = "TILO_PEER_SERVICE";
-
-/// How long the user service gives a daemon told to stop before it kills it. The daemon's own
-/// waits add up to less, so a stop ends by itself rather than being killed.
+/// How long the service gives a daemon told to stop before it kills it. The daemon's own waits
+/// add up to less, so a stop ends by itself rather than being killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Whether this process is the daemon the user service started.
+/// Where the system unit keeps the daemon's sockets on Tilo OS.
+const SYSTEM_SOCKETS: &str = tilo_paths::machine::DAEMON_SOCKETS;
+/// The system unit Tilo OS ships: where it is installed, the daemon is the system's.
+const SYSTEM_UNIT: &str = "/usr/lib/systemd/system/tilo-runtime.service";
+/// The system unit's profile: the daemon's home and state on Tilo OS.
+pub const SYSTEM_PROFILE: &str = "/var/lib/tilo/state";
+/// The longest a socket's path may be: a socket's address holds 104 bytes on macOS (108 on
+/// Linux), its closing NUL among them.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// The native endpoint's socket: apps, `tilo-runtime --connect` and the system's own callers.
+const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
+/// Where agents' `tilo mcp` connections reach the daemon.
+const AGENTS: &str = "agents.sock";
+/// Where the daemon serves Tilo's API as the device.
+const API: &str = "api.sock";
+
+/// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
+/// account for every person of the computer, where other computers run it as the person.
 #[must_use]
-pub fn running_as_service() -> bool {
-    std::env::var_os(SERVICE_ENV).is_some_and(|value| value == "1")
+pub fn system_daemon() -> bool {
+    cfg!(target_os = "linux") && Path::new(SYSTEM_UNIT).is_file()
 }
 
-/// Where one device's daemon listens, the lock that keeps it one, and its log.
+/// Where this computer's daemon listens: the one place every client finds it, and the daemon
+/// binds. Under Tilo OS's system unit its sockets are in its runtime directory; a person's own
+/// service keeps them in `$XDG_RUNTIME_DIR/tilo` on Linux and in the account's temporary
+/// directory (`/var/folders/…/T/tilo`) on macOS. Its lock is in the login's directory, as the
+/// device's state is.
+///
+/// # Errors
+/// The login's directory or the sockets' directory cannot be made, the sockets' directory is not
+/// this account's own, or a socket's path in it is too long for a socket's address.
+pub fn this_computer() -> Result<DaemonPlace, String> {
+    let login = tilo_device_identity::login::Place::here(
+        tilo_identity::provisioning::collaboration_identity_paths(),
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    let system = system_daemon();
+    let sockets = if system {
+        PathBuf::from(SYSTEM_SOCKETS)
+    } else {
+        own_sockets(login.dir())?
+    };
+    fits(&sockets)?;
+    Ok(DaemonPlace {
+        system,
+        ..DaemonPlace::at(&sockets, login.dir(), None)
+    })
+}
+
+/// Whether every socket the daemon listens at in `sockets` has a path a socket's address holds:
+/// one that does not is refused, naming it, never cut short.
+fn fits(sockets: &Path) -> Result<(), String> {
+    [NATIVE, AGENTS, API]
+        .into_iter()
+        .try_for_each(|name| socket_fits(&sockets.join(name)))
+}
+
+/// Whether a socket's address holds `path`: one it does not is refused, naming it, never cut
+/// short.
+///
+/// # Errors
+/// The path is longer than a socket's address holds.
+pub fn socket_fits(path: &Path) -> Result<(), String> {
+    let len = path.as_os_str().len();
+    if len > SOCKET_PATH_MAX {
+        return Err(format!(
+            "{} is too long for a socket's path ({len} bytes, at most {SOCKET_PATH_MAX})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// This account's temporary directory on macOS (`/var/folders/…/T/`), as the system names it:
+/// private to the account, and short whatever the home folder is.
+#[cfg(target_os = "macos")]
+fn darwin_temp_dir() -> Result<PathBuf, String> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut buf = vec![0_u8; 1024];
+    // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most that many, its
+    // NUL included.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return Err(format!(
+            "this account has no temporary directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    buf.truncate(len.saturating_sub(1));
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(buf)))
+}
+
+/// The directory a person's own service keeps its sockets in, made private to this account.
+fn own_sockets(login: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    #[cfg(target_os = "macos")]
+    let _ = login;
+    #[cfg(target_os = "macos")]
+    let dir = darwin_temp_dir()?.join("tilo");
+    // A command run where the login's runtime directory is not said (over ssh, from cron) finds
+    // the one the service has, which systemd names by the account.
+    #[cfg(not(target_os = "macos"))]
+    let dir = {
+        let uid = std::fs::metadata(login)
+            .map_err(|error| format!("{} is not readable: {error}", login.display()))?
+            .uid();
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
+            .or_else(|| Some(PathBuf::from(format!("/run/user/{uid}"))).filter(|run| run.is_dir()))
+            .map_or_else(
+                || std::env::temp_dir().join(format!("tilo-{uid}")),
+                |runtime| runtime.join("tilo"),
+            )
+    };
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|error| format!("{} could not be made: {error}", dir.display()))?;
+    let made = std::fs::symlink_metadata(&dir)
+        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
+    let parent = dir
+        .parent()
+        .and_then(|parent| std::fs::metadata(parent).ok());
+    if !made.is_dir()
+        || made.mode() & 0o077 != 0
+        || parent.is_some_and(|parent| parent.uid() != made.uid())
+    {
+        return Err(format!(
+            "{} is not this account's own private directory",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// Where one device's daemon listens, and the lock that keeps it one.
 #[derive(Clone, Debug)]
 pub struct DaemonPlace {
+    /// The directory its sockets are in: these, its native endpoint and its services'.
+    sockets: PathBuf,
+    /// Where it takes `tilo mcp` connections.
     socket: PathBuf,
-    /// Where it serves Tilo's API as the device, over the one session: what
-    /// `tilo do`, `ls`, `read` and the other workspace commands of this login
-    /// reach ([`tilo_device_identity::login::held_api`]).
+    /// Where it serves Tilo's API as the device, over the one session: what `tilo do`, `ls`,
+    /// `read` and the other workspace commands of this login reach.
     api: PathBuf,
-    /// One per device directory, not per key: a computer has one daemon, and a login made again
-    /// under a new key waits for the daemon of the old one to step down instead of running
-    /// beside it. Two live endpoints under one device's keys take each other's place at the
-    /// relay over and over, and neither serves.
+    /// One per device directory: a computer has one daemon, and a login made again under a new
+    /// key waits for the daemon of the old one to end instead of running beside it.
     lock: PathBuf,
-    log: PathBuf,
-    /// The first bytes of the device key the listener serves, as its socket and log are named.
-    key: [u8; 8],
+    /// The first bytes of the device key the daemon serves, when it is the daemon's own place.
+    key: Option<[u8; 8]>,
+    /// Whether it is the system unit's: its sockets are open to every account, which it admits
+    /// by who they are ([`admission`]).
+    system: bool,
 }
 
 impl DaemonPlace {
-    /// The daemon of the device whose public key is `key`, logged in under `dir`: a new login is
-    /// a new device. Its sockets are in this account's own short directory
-    /// ([`tilo_device_identity::login::holder_dir`]).
-    ///
-    /// # Errors
-    /// The sockets' directory is not this account's own.
-    pub fn of(dir: &Path, key: &[u8; 32]) -> Result<Self, String> {
-        Ok(Self::at(
-            &tilo_device_identity::login::holder_dir(dir)?,
-            dir,
-            key,
-        ))
+    /// A daemon listening in `sockets`, keeping its lock in `dir`; `key` is the device key it
+    /// serves, for the daemon itself to see a login made again ([`Self::serves_current_login`]).
+    #[must_use]
+    pub fn at(sockets: &Path, dir: &Path, key: Option<&[u8; 32]>) -> Self {
+        Self {
+            sockets: sockets.to_owned(),
+            socket: sockets.join(AGENTS),
+            api: sockets.join(API),
+            lock: dir.join("holder.lock"),
+            key: key.map(first_bytes),
+            system: false,
+        }
     }
 
-    /// The daemon of `key`'s device under `dir`, listening in `sockets`.
+    /// This place as the daemon serving the device whose public key is `key` sees it.
     #[must_use]
-    pub fn at(sockets: &Path, dir: &Path, key: &[u8; 32]) -> Self {
-        let mut first = [0; 8];
-        first.copy_from_slice(&key[..8]);
-        let name = tilo_device_identity::login::holder_name(key);
-        Self {
-            socket: sockets.join(format!("{name}.sock")),
-            api: tilo_device_identity::login::holder_api_socket(sockets, &name),
-            lock: dir.join("holder.lock"),
-            log: dir.join(format!("{name}.log")),
-            key: first,
-        }
+    pub fn serving(mut self, key: &[u8; 32]) -> Self {
+        self.key = Some(first_bytes(key));
+        self
+    }
+
+    /// Whether this is the system unit's daemon.
+    #[must_use]
+    pub const fn system(&self) -> bool {
+        self.system
+    }
+
+    /// The mode its sockets are made with: open to every account under the system unit, which
+    /// admits each connection by its account ([`admission`]), and the owner's alone otherwise.
+    #[must_use]
+    pub const fn socket_mode(&self) -> u32 {
+        if self.system { 0o666 } else { 0o600 }
+    }
+
+    /// The directory its sockets are in.
+    #[must_use]
+    pub fn sockets(&self) -> &Path {
+        &self.sockets
     }
 
     /// Where it takes `tilo mcp` connections.
@@ -104,12 +252,6 @@ impl DaemonPlace {
         &self.lock
     }
 
-    /// The log every daemon started for this device adds to.
-    #[must_use]
-    pub fn log(&self) -> &Path {
-        &self.log
-    }
-
     /// The device's directory, which the daemon keeps the device's state in.
     #[must_use]
     pub fn device_dir(&self) -> PathBuf {
@@ -124,14 +266,14 @@ impl DaemonPlace {
     /// computer keeps one daemon and one live connection.
     #[must_use]
     pub fn serves_current_login(&self) -> bool {
-        let Some(dir) = self.lock.parent() else {
+        let (Some(dir), Some(serving)) = (self.lock.parent(), self.key) else {
             return true;
         };
         match tilo_device_identity::login::load(&tilo_device_identity::login::Place::at(
             dir.to_owned(),
             tilo_identity::provisioning::collaboration_identity_paths(),
         )) {
-            Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == self.key,
+            Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == serving,
             // A login mid-write reads as none; the next look answers for it.
             _ => true,
         }
@@ -164,9 +306,7 @@ impl DaemonPlace {
     }
 
     /// Whether a live process holds this device's lock. The kernel drops the lock with its
-    /// process, so a daemon that ended never reads as one that is there, and one inside a step
-    /// that walks a whole folder tree does. A command reads this instead of asking, so a daemon
-    /// that answers slowly is never mistaken for one that is not there.
+    /// process, so a daemon that ended never reads as one that is there.
     #[must_use]
     pub fn alive(&self) -> bool {
         use advisory_lock::{FileLock, TryLockError};
@@ -179,162 +319,62 @@ impl DaemonPlace {
             // Free: taken here for the look, and let go at once.
             Ok(_free) => false,
             Err(TryLockError::WouldBlock) => true,
-            // A lock that cannot even be opened is no daemon to wait for: starting one says more.
             Err(TryLockError::Error(_)) => false,
         }
     }
 
-    /// Start this device's daemon (`tilo-runtime`) as a process of its own, in a process
-    /// group of its own so the command that started it ending does not end it, adding what it
-    /// says to its log.
+    /// Wait until this device's daemon serves Tilo's API at [`Self::api`], starting the service
+    /// ([`service::start`]) when none answers: what a client of this daemon needs before its
+    /// first call.
     ///
     /// # Errors
-    /// The program is not there, or it did not start.
-    pub fn start(&self) -> std::io::Result<std::process::Child> {
-        use std::os::unix::process::CommandExt as _;
-        // Added to, never emptied: a daemon started while another holds the device ends at once,
-        // and emptying the log the one holding writes to would lose what it said.
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log)?;
-        std::process::Command::new(runtime_program()?)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(log)
-            .process_group(0)
-            .spawn()
+    /// The service did not start, or no daemon answered in `within`.
+    pub fn wait_for_api(&self, within: Duration) -> Result<(), String> {
+        self.wait_for(&self.api, within)
     }
 
-    /// Wait until this device's daemon serves Tilo's API at [`Self::api`], starting one with
-    /// `start` when none answers: what a client of this daemon needs before its first call.
+    /// A connection to the daemon's `tilo mcp` socket, starting the service when none answers
+    /// and waiting up to `within` for it.
     ///
     /// # Errors
-    /// No daemon answered in `within`, or starting one failed.
-    pub fn wait_for_api(
-        &self,
-        within: Duration,
-        start: impl FnOnce() -> std::io::Result<()>,
-    ) -> Result<(), String> {
+    /// The service did not start, or no daemon answered in `within`.
+    pub fn reach(&self, within: Duration) -> Result<UnixStream, String> {
+        self.wait_for(&self.socket, within)?;
+        tilo_files::native::socket::connect(&self.socket).map_err(|error| error.to_string())
+    }
+
+    /// Wait until the daemon answers at `socket`, starting the service once when no daemon
+    /// keeps the device: one that runs (still starting, or taking a login up) is waited for.
+    fn wait_for(&self, socket: &Path, within: Duration) -> Result<(), String> {
         let deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
-        let mut start = Some(start);
+        let mut started = false;
         loop {
-            if tilo_files::native::socket::connect(&self.api).is_ok() {
+            if tilo_files::native::socket::connect(socket).is_ok() {
                 return Ok(());
             }
-            if let Some(start) = start.take() {
-                start().map_err(|error| error.to_string())?;
+            if !started && !self.alive() {
+                started = true;
+                service::start()?;
             }
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "this computer's daemon did not answer at {} in time: run `tilo status` to \
-                     see how it stands, then try again (its log is {})",
-                    self.api.display(),
-                    self.log.display()
+                    "Tilo isn't answering on this computer yet ({}): {}",
+                    socket.display(),
+                    service::LOOK
                 ));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-
-    /// Ask the daemon listening here to let a daemon claiming `claim` keep the device: whether
-    /// it steps down, as it does when the claim takes over from its own ([`Claim::takes_over`]);
-    /// `None` when none answered.
-    #[must_use]
-    pub fn ask_to_step_down(&self, claim: Claim) -> Option<bool> {
-        use std::io::{BufRead as _, Write as _};
-        let mut stream = self.connect()?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let asked = serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": STEP_DOWN,
-            "params": {"program": claim.program, "service": claim.service},
-        });
-        writeln!(stream, "{asked}").ok()?;
-        let mut line = String::new();
-        std::io::BufReader::new(stream).read_line(&mut line).ok()?;
-        serde_json::from_str::<serde_json::Value>(&line)
-            .ok()
-            .and_then(|answer| answer.get("result")?.get("stepping_down")?.as_bool())
-    }
 }
 
-/// What a daemon claims the device as: its program, and whether the user service started it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Claim {
-    pub program: Program,
-    /// Started by the user service, which keeps it running for as long as the person is logged
-    /// in. A daemon an agent or a command started lives in their process tree and ends with it.
-    #[serde(default)]
-    pub service: bool,
-}
-
-impl Claim {
-    /// Whether a daemon claiming this takes the device over from one claiming `holding`: it is
-    /// a newer program, or it is the user service's and `holding` is not, of a program no newer.
-    /// The service's daemon is the one that lasts: one an agent started first hands the device
-    /// (its session and its folders) over to it, rather than the service ending beside it.
-    #[must_use]
-    pub fn takes_over(&self, holding: &Self) -> bool {
-        self.program.replaces(&holding.program)
-            || (self.service && !holding.service && !holding.program.replaces(&self.program))
-    }
-}
-
-/// The program a daemon is, as the file it was started from: Tilo replaced by a newer build is
-/// another file, and a daemon still running the one it replaced lets a daemon of the new one take
-/// over. Two daemons of one program never do: two agents starting one at the same moment keep the
-/// first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Program {
-    /// The file's inode: a new build put in place is a new file, whatever its name.
-    pub file: u64,
-    /// When it was written, in nanoseconds since the epoch.
-    pub modified_ns: u128,
-}
-
-impl Program {
-    /// The program this process was started from. A program file replaced since it started is
-    /// still read as the one it started from (`/proc/self/exe` names it, deleted or not).
-    #[must_use]
-    pub fn running() -> Self {
-        let metadata = std::fs::metadata("/proc/self/exe")
-            .or_else(|_| std::env::current_exe().and_then(std::fs::metadata));
-        metadata.map_or(Self::NONE, |metadata| Self::from(&metadata))
-    }
-
-    /// The program in the file at `path`: what a command asks for when it starts a daemon of
-    /// that file.
-    #[must_use]
-    pub fn of(path: &Path) -> Self {
-        std::fs::metadata(path).map_or(Self::NONE, |metadata| Self::from(&metadata))
-    }
-
-    /// A program whose file cannot be read.
-    const NONE: Self = Self {
-        file: 0,
-        modified_ns: 0,
-    };
-
-    fn from(metadata: &std::fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt as _;
-        Self {
-            file: metadata.ino(),
-            modified_ns: metadata
-                .modified()
-                .ok()
-                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |since| since.as_nanos()),
-        }
-    }
-
-    /// Whether a daemon running this program takes over from one running `holding`: it is
-    /// another file, written no earlier.
-    #[must_use]
-    pub fn replaces(self, holding: &Self) -> bool {
-        self.file != holding.file && self.modified_ns >= holding.modified_ns
-    }
+/// The first bytes of a device key, as a daemon's place names the device it serves.
+fn first_bytes(key: &[u8; 32]) -> [u8; 8] {
+    let mut first = [0; 8];
+    first.copy_from_slice(&key[..8]);
+    first
 }
 
 /// `line` with the session this connection is written in, when it is the client's `initialize`
@@ -423,4 +463,39 @@ pub fn unreachable_answer(request: &serde_json::Value, problem: &str) -> Option<
         }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sockets' directory whose longest socket path still fits a socket's address is taken; one
+    /// a byte longer is refused, naming the path it would have made, never cut short.
+    #[test]
+    fn a_socket_path_too_long_for_its_address_is_refused_by_name() {
+        let longest = NATIVE.len().max(AGENTS.len()).max(API.len());
+        // `/`, the directory's name, `/`, the socket's name.
+        let room = SOCKET_PATH_MAX - longest - 2;
+        let fitting = PathBuf::from(format!("/{}", "d".repeat(room)));
+        assert_eq!(fits(&fitting), Ok(()));
+        let over = PathBuf::from(format!("/{}", "d".repeat(room + 1)));
+        let refused = fits(&over).expect_err("a path past the address is refused");
+        assert!(refused.contains(&over.display().to_string()), "{refused}");
+        assert!(refused.contains("too long"), "{refused}");
+    }
+
+    /// On macOS a person's own service keeps its sockets in the account's temporary directory,
+    /// as the system names it, private to the account, and short enough for every socket.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_persons_sockets_on_macos_are_in_their_temporary_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let login = tempfile::tempdir().unwrap();
+        let sockets = own_sockets(login.path()).unwrap();
+        assert_eq!(sockets, darwin_temp_dir().unwrap().join("tilo"));
+        assert!(sockets.starts_with("/var/folders"), "{}", sockets.display());
+        let mode = std::fs::metadata(&sockets).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        assert_eq!(fits(&sockets), Ok(()));
+    }
 }

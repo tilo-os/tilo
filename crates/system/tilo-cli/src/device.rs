@@ -14,7 +14,6 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_api::daemon::DaemonPlace;
 use tilo_device_identity::login::Ticket;
 use tilo_server_session::workspaces::{PersonalDevice, WorkspaceLabels};
 use tilo_session_client::device::Device as Entered;
@@ -98,9 +97,7 @@ pub fn add(
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
     let here = login::load_public(&login_place)?.filter(Device::reaches_a_server);
-    let place = DaemonPlace::of(login_place.dir(), &login::this_device_public_key()?)
-        .map_err(anyhow::Error::msg)?;
-    login::ensure_daemon(&place)?;
+    login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let cert = runtime.block_on(async {
         let client = Client::open(Reach {
@@ -222,10 +219,8 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     }
     let person = crate::identity::held()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
-        .map_err(anyhow::Error::msg)?;
-    login::ensure_daemon(&place)?;
+    let (_, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
     let (device, label, capability) = runtime.block_on(async {

@@ -249,13 +249,6 @@ the key of the stack's own person (`stack.sh owner --here`). The answer must be
 `ok`, which it is only where `tilolang-process` lies beside `tilo-api`: the API
 server starts a task's programs in it (`os/containers/tilo-sh/test-program.sh`).
 
-`t test peer-handover` brings a stack up the same way and holds a folder to
-syncing across a hand-over of its holder: an agent's `tilo mcp` starts the
-device's holder, the user service's holder (`TILO_PEER_SERVICE=1`) takes the
-device over, and a file written into the folder afterwards reaches the
-workspace (`integration/peer-handover.sh`, inside a user namespace where it is
-root because a folder is mounted with FUSE).
-
 `TILO_SH_SEED=1 stack.sh check`, or `stack.sh up --seed` followed by
 `integration/person.mjs`, times a fresh visitor against a Lounge filled by
 production's members and history. Compare `entry_ms` before and after a change

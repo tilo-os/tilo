@@ -208,7 +208,7 @@ pub(crate) fn with_device_actions(
 }
 
 /// `action` of `devices`, as the catalogue publishes it.
-fn descriptor(
+pub(crate) fn descriptor(
     action: &str,
     label: &str,
     description: &str,

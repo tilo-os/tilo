@@ -10,7 +10,7 @@
 //! on this computer serves the same routes to its own person's programs on a
 //! socket of its login ([`Client::session`]), and so does the process holding
 //! the session of the device `tilo login` made of this computer
-//! ([`device::held_api`]): a server keeps one session per device, and a
+//! ([`held_api_for`]): a server keeps one session per device, and a
 //! program entering as the device on its own would cut that one off.
 //!
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
@@ -1175,7 +1175,7 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
 }
 
 /// Where calls with `reach` go to this computer's held session
-/// ([`device::held_api`]): when it names no key and this computer logged in,
+/// ([`crate::daemon::this_computer`]): when it names no key and this computer logged in,
 /// or when its key file or `TILO_API_KEY` is this computer's own device key.
 /// A key has one holder: a program acting with the device's key on a session
 /// of its own would cut the computer's off. `None` for any other key.
@@ -1191,7 +1191,20 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
     if !crate::direct::names_this_device(reach.key_file, api_key())? {
         return Ok(None);
     }
-    device::held_api(device_keys())
+    held_api()
+}
+
+/// Where this computer's daemon serves Tilo's API, when it serves a device here
+/// ([`device::serves_a_device`]).
+///
+/// # Errors
+/// The login is damaged, or the daemon's sockets' directory is not this account's.
+pub fn held_api() -> Result<Option<std::path::PathBuf>> {
+    if !device::serves_a_device(device_keys())? {
+        return Ok(None);
+    }
+    let place = crate::daemon::this_computer().map_err(|why| anyhow!(why))?;
+    Ok(Some(place.api().to_path_buf()))
 }
 
 /// The key a script was approved (`token`, as `tilo keys create` answers it),

@@ -16,7 +16,7 @@ mod native;
 pub use native::{OPEN, open};
 
 /// Hand every host search result this app is asked to continue to the runtime
-/// it attached to (`TILO_RUNTIME_PROFILE`). Call once, on the main thread,
+/// it attached to (its native endpoint, `TILO_RUNTIME_NATIVE`). Call once, on the main thread,
 /// after the event loop exists and before the app finishes launching, so the
 /// result that launched it arrives too. Does nothing on a platform whose
 /// search asks the runtime itself, or in an app attached to no runtime.

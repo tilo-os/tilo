@@ -7181,34 +7181,6 @@ evidence = ["/target/tilo-sh-program/state/logs/**"]
 timeout_secs = 900
 default = false
 
-# A folder keeps syncing across the hand-over of its holder: on a fresh stack from
-# tilo-sh-programs' one build (test-peer-handover.sh), an agent's `tilo mcp` starts the device's
-# holder, the user service's holder (TILO_PEER_SERVICE=1) takes the device over, and a file
-# written into the folder afterwards reaches the workspace. A folder is mounted with FUSE, so the
-# script runs in a user namespace where it is root.
-[[check]]
-name = "peer-handover"
-# Not a default check: the hand-over takes about half a minute, but its need tilo-sh-programs is a
-# release build of the stack's programs, 1.73 CPU-h a head (86.7 CPU-h over the 50 heads of main in
-# the 24 h to 2026-11-19 18:45Z), which nothing else a head runs needs. Main's idle runs it, as
-# they run its neighbours' stack checks when named.
-on = ["dispatch", "idle"]
-# No egress: the holders and the stack meet on loopback alone.
-run = "bash os/containers/tilo-sh/test-peer-handover.sh /target/peer-handover"
-needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
-# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
-# changes as updates land, from mirrors no fixed list names.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
-requires = ["arch=x86_64", "/dev/fuse"]
-isolation = "nested"
-# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
-git = true
-outputs = ["/target/peer-handover/state/logs/*.log"]
-# What a failure keeps of why: every service's log.
-evidence = ["/target/peer-handover/state/logs/**"]
-timeout_secs = 900
-
 # A folder's bulk write survives its holder being killed halfway: on a fresh stack from
 # tilo-sh-programs' one build (test-peer-kill-midwrite.sh), thousands of files go into a mounted
 # folder, the holder gets SIGKILL halfway while `tilo status` is asked the whole time, and the

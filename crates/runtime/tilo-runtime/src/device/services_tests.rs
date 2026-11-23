@@ -784,6 +784,7 @@ fn a_grant_is_a_change_to_the_member_list() {
         person: person.clone(),
         apps: Arc::new(crate::apps::Apps::from_env(
             directory.path(),
+            directory.path(),
             &placed.to_string(),
         )),
     };

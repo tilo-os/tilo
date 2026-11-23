@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 libc.workspace = true
 tilo-auth = { path = "../tilo-auth", default-features = false }
+tilo-paths.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -12058,6 +12058,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-auth",
+ "tilo-paths",
  "workspace-hack",
  "zeroize",
 ]
@@ -17580,6 +17581,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "iroh",
+ "libc",
  "neighbour-wire",
  "percent-encoding",
  "schemars",

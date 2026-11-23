@@ -52,9 +52,9 @@ unsafe extern "C-unwind" fn continue_activity(
 /// Added to the windowing library's delegate class, which must stay the
 /// delegate; a delegate that already continues activities keeps doing so.
 pub(crate) fn forward_to_runtime() {
-    let (Some(mtm), Some(profile)) = (
+    let (Some(mtm), Some(native)) = (
         MainThreadMarker::new(),
-        std::env::var_os("TILO_RUNTIME_PROFILE"),
+        std::env::var_os("TILO_RUNTIME_NATIVE"),
     ) else {
         return;
     };
@@ -62,11 +62,7 @@ pub(crate) fn forward_to_runtime() {
         return;
     };
     let selector = sel!(application:continueUserActivity:restorationHandler:);
-    if delegate.respondsToSelector(selector)
-        || SOCKET
-            .set(PathBuf::from(profile).join("native.sock"))
-            .is_err()
-    {
+    if delegate.respondsToSelector(selector) || SOCKET.set(PathBuf::from(native)).is_err() {
         return;
     }
     let Ok(types) = CString::new(format!("{}@:@@@?", Bool::ENCODING)) else {

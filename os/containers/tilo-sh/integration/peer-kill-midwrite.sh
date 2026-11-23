@@ -8,8 +8,8 @@
 # Then:
 #   - every holder a status saw stayed alive until this script killed it: no command replaced
 #     one, whatever it answered;
-#   - after the kill a status starts the next holder (nothing was there), and every file the
-#     folder acknowledged before the kill is still in it;
+#   - after the kill the service starts the next holder, and every file the folder
+#     acknowledged before the kill is still in it;
 #   - the writer finishes, and the workspace's tree names every file and is durable on the
 #     server;
 #   - a holder that knows nothing of its own (its kept tree removed) reads the whole tree back
@@ -108,7 +108,7 @@ kill -9 "$first"
 killed_at=$(date +%s.%N)
 wait_for 30 "the holder $first ended" bash -c "! kill -0 '$first' 2>/dev/null"
 
-say "a status starts the next holder, which shows the folder again"
+say "the service starts the next holder, which shows the folder again"
 wait_for 180 "a new holder shows the folder" shown
 second=$(holder_pid)
 holders+=("$second")
@@ -172,6 +172,7 @@ EOF
 fi
 
 say "a holder with nothing kept of its own reads the whole tree back from the server"
+touch "$scratch/daemons-held"
 kill -TERM "$second"
 stopped_in=$SECONDS
 wait_for 40 "the holder $second stopped within its stop timeout" bash -c "! kill -0 '$second' 2>/dev/null"
@@ -179,6 +180,7 @@ say "the holder stopped in $((SECONDS - stopped_in))s after SIGTERM"
 kept=$(find "$scratch/state/tilo/device/files" -mindepth 2 -maxdepth 2 -type d -name tree | head -n 1)
 [[ -n $kept ]] || { say "no kept tree under $scratch/state/tilo/device/files"; exit 1; }
 rm -rf "$kept"
+rm -f "$scratch/daemons-held"
 wait_for 180 "a fresh holder shows the folder" shown
 wait_for 600 "the fresh holder's tree names all $want files" converged \
   || { say "$(short)"; exit 1; }

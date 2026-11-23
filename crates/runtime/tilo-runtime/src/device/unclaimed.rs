@@ -60,9 +60,9 @@ impl ThisDevice {
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
         let place = Place::here(keys).map_err(io::Error::other)?;
         tilo_files::native::private::directory(place.dir())?;
-        let daemon =
-            tilo_api::daemon::DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-                .map_err(io::Error::other)?;
+        let daemon = tilo_api::daemon::this_computer()
+            .map_err(io::Error::other)?
+            .serving(&key.verifying_key().to_bytes());
         let lock = super::serve::lock_device(&daemon)?;
         Ok(Self { key, place, lock })
     }
@@ -150,10 +150,12 @@ pub(crate) async fn take_handed_ticket(
     )
 }
 
-/// What a device answers on its native endpoint before its person's services run: what it is ([`INFO`]), and logging it in with a ticket ([`LOG_IN`]). Every
-/// other action needs a person, and is refused saying so.
+/// What a device answers on its native endpoint before its person's services run, and to every
+/// account it serves no person for: what it is ([`INFO`]), logging it in with a ticket
+/// ([`LOG_IN`]), and, to root, who signed in and who left ([`crate::seats`]). Every other action
+/// needs a person, and is refused saying so.
 #[derive(Clone)]
-pub(crate) struct DeviceOnly(Arc<Answering>);
+pub(crate) struct DeviceOnly(Arc<Answering>, Option<crate::seats::Seated>);
 
 struct Answering {
     key: SigningKey,
@@ -166,17 +168,52 @@ struct Answering {
 impl DeviceOnly {
     /// The device actions of the device whose key is `key`, its login kept in `place`.
     pub(crate) fn new(key: SigningKey, place: Place) -> Self {
-        Self(Arc::new(Answering {
-            key,
-            place,
-            calls: std::sync::Mutex::default(),
-            runtime: tilo_rt::app().handle().clone(),
-        }))
+        Self(
+            Arc::new(Answering {
+                key,
+                place,
+                calls: std::sync::Mutex::default(),
+                runtime: tilo_rt::app().handle().clone(),
+            }),
+            None,
+        )
+    }
+
+    /// These actions as one connection asks them: its account, which the seats' actions are
+    /// answered by.
+    pub(crate) fn seated(&self, seated: crate::seats::Seated) -> Self {
+        Self(Arc::clone(&self.0), Some(seated))
     }
 
     /// Whether a person's certificate names this device's key.
     pub(crate) fn claimed(&self) -> bool {
         claimed(&self.0.place, &self.0.key)
+    }
+
+    /// This device's key and certificates.
+    pub(crate) fn keys(&self) -> &tilo_device_identity::IdentityPaths {
+        self.0.place.keys()
+    }
+
+    /// This device's public key.
+    pub(crate) fn public_key(&self) -> [u8; 32] {
+        self.0.key.verifying_key().to_bytes()
+    }
+
+    /// The person whose certificate names this device first, when one does.
+    pub(crate) fn person(&self) -> Option<[u8; 32]> {
+        tilo_device_identity::login::certified_by(&self.0.place, &self.public_key())
+            .first()
+            .copied()
+    }
+
+    /// The name its person's certificate gives this device, once it logged in.
+    pub(crate) fn label(&self) -> Option<String> {
+        tilo_device_identity::login::load_public(&self.0.place)
+            .ok()
+            .flatten()
+            .filter(|login| login.cert.device_public_key == self.public_key())
+            .map(|login| login.cert.device_label)
     }
 
     /// Why an action that needs a person is not answered now.
@@ -211,7 +248,7 @@ impl DeviceOnly {
 
 impl ActionProvider for DeviceOnly {
     fn serves(&self, provider: &str) -> bool {
-        provider == PROVIDER
+        provider == PROVIDER || provider == crate::seats::PROVIDER
     }
 
     fn query(
@@ -220,14 +257,16 @@ impl ActionProvider for DeviceOnly {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(match query.provider.as_deref() {
-            // Listed as the one running provider, in no workspace, as a person's daemon lists it
-            // beside their workspace's apps.
+            // Listed as the running providers, in no workspace, as a person's daemon lists the
+            // device's beside their workspace's apps.
             None => {
                 let mut page = device_only_catalogue(&query);
                 page.providers.push(provider(""));
+                page.providers.push(crate::seats::provider());
                 Ok(page)
             }
             Some(PROVIDER) => Ok(device_only_catalogue(&query)),
+            Some(crate::seats::PROVIDER) => Ok(crate::seats::catalogue(&query)),
             Some(_) => Err(self.needs_a_person()),
         })
     }
@@ -242,6 +281,24 @@ impl ActionProvider for DeviceOnly {
             return Pending::ready(Ok(state.receipt()));
         }
         let address = &request.target.address;
+        if request.target.provider == crate::seats::PROVIDER {
+            let InvokeArgument::Json(argument) = request.argument else {
+                return Pending::ready(Err(ActionCallError::Refused {
+                    reason: "a seat action asks with its arguments".into(),
+                }));
+            };
+            let Some(seated) = &self.1 else {
+                return Pending::ready(Err(ActionCallError::Refused {
+                    reason: crate::seats::ROOT_ALONE.into(),
+                }));
+            };
+            return Pending::ready(
+                seated
+                    .act(&address.action, &Value::Object(argument))
+                    .map(|value| self.keep(invocation, succeeded(invocation, value)))
+                    .map_err(|reason| ActionCallError::Refused { reason }),
+            );
+        }
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
             return Pending::ready(Err(self.needs_a_person()));
         }

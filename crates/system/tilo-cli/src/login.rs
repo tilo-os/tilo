@@ -20,7 +20,6 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
 use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
 use tilo_server_client::CertifyError;
@@ -522,9 +521,7 @@ pub fn login_at_server(host: &str) -> Result<ExitCode> {
             .as_deref()
             .unwrap_or(&device.workspace)
     );
-    let place = DaemonPlace::of(login_place.dir(), &person.device.verifying_key().to_bytes())
-        .map_err(anyhow::Error::msg)?;
-    restart_after_login(&place)?;
+    restart_after_login()?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -636,7 +633,6 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     let agent = agent::given(agent);
     let login_place = Place::here(crate::identity::paths())?;
     let device_key = this_device_public_key()?;
-    let place = DaemonPlace::of(login_place.dir(), &device_key).map_err(anyhow::Error::msg)?;
     let runtime = runtime()?;
     let said = named.map_or_else(|| label(&agent.name, &hostname()), str::to_owned);
     eprintln!("Asking your device to add this computer; it may ask you to approve it…");
@@ -645,7 +641,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     // certificate is here.
     let claimed = tilo_device_identity::login::claimed(&login_place, &device_key);
     if claimed {
-        ensure_daemon(&place)?;
+        ensure_daemon()?;
         asked_daemon(&runtime, ticket, &agent, &said)?;
     } else {
         let key = this_device_key()?;
@@ -656,8 +652,9 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             &agent.name,
             Some(&said),
         ))?;
-        // The daemon serving the device alone takes the login up; one is started where none runs.
-        ensure_daemon(&place)?;
+        // The daemon serving the device alone takes the login up; its service is started where
+        // none runs.
+        ensure_daemon()?;
     }
     // The login is kept; the daemon serving it hands this computer its workspace.
     let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
@@ -687,7 +684,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         );
     }
     if claimed {
-        restart_after_login(&place)?;
+        restart_after_login()?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -795,25 +792,26 @@ fn asked_daemon(
     })
 }
 
-/// How long `tilo login` waits for the daemon it logged in to end before starting the one the
-/// new login needs.
+/// How long `tilo login` waits for the daemon it logged in to end before starting the service
+/// again for the new login.
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a command waits for this computer's daemon to serve its API, its service started.
+const ANSWERING: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Start this computer's daemon and wait until its API socket is served: the actions a ticket is
-/// served and logged in with are calls there.
+/// Start this computer's daemon's service and wait until its API socket is served: the actions a
+/// ticket is served and logged in with are calls there.
 ///
 /// # Errors
-/// The daemon did not start, or did not serve its API in time.
-pub(crate) fn ensure_daemon(place: &DaemonPlace) -> Result<()> {
-    place
-        .wait_for_api(RESTART_WAIT, || {
-            crate::mcp::held::ensure(place).map_err(std::io::Error::other)
-        })
+/// The service did not start, or the daemon did not serve its API in time.
+pub(crate) fn ensure_daemon() -> Result<()> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_api(ANSWERING))
         .map_err(anyhow::Error::msg)
 }
 
-/// Start the daemon the new login needs, once the one serving the login before it ended.
-fn restart_after_login(place: &DaemonPlace) -> Result<()> {
+/// Start the service again for the new login, once the daemon serving the login before it ended.
+fn restart_after_login() -> Result<()> {
+    let place = tilo_api::daemon::this_computer().map_err(anyhow::Error::msg)?;
     let started = std::time::Instant::now();
     while place.alive() || place.listening() {
         if started.elapsed() > RESTART_WAIT {
@@ -821,7 +819,7 @@ fn restart_after_login(place: &DaemonPlace) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    crate::mcp::held::ensure(place).map_err(|why| anyhow!(why))
+    tilo_api::daemon::service::start().map_err(anyhow::Error::msg)
 }
 
 fn entered_after_login(

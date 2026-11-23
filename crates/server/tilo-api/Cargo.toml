@@ -82,5 +82,9 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The account's temporary directory, which a person's own service keeps its sockets in.
+libc.workspace = true
+
 [lints]
 workspace = true

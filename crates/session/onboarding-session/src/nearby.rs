@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tilo_api::client::{Client, Reach};
-use tilo_api::daemon::DaemonPlace;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::login::{LOG_IN, Place, Ticket};
 use tilo_onboarding::{t, t_args};
@@ -278,9 +277,7 @@ fn join(
             .map_err(|error| refused(&error))?;
         return taken_up(&place, identity_dir, paths, cancelled);
     }
-    let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-        .map_err(NearbyFailure::unavailable)?;
-    ensure_daemon(&daemon)?;
+    ensure_daemon()?;
     runtime
         .block_on(async {
             let client = Client::open(Reach {
@@ -336,8 +333,7 @@ fn taken_up(
 }
 
 /// The login directory the device's daemon and login live in, made private
-/// here when this computer has none yet: `holder_dir` reads it before
-/// anything else would make it.
+/// here when this computer has none yet.
 fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
     use std::os::unix::fs::DirBuilderExt as _;
     std::fs::DirBuilder::new()
@@ -347,12 +343,11 @@ fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
         .map_err(NearbyFailure::storage)
 }
 
-/// Wait for this computer's daemon to serve its API, starting one when none
-/// does. The daemon ends by itself once the login changes, so nothing here
-/// leaves one behind that would cut the desktop's own session off.
-fn ensure_daemon(place: &DaemonPlace) -> Result<(), NearbyFailure> {
-    place
-        .wait_for_api(DAEMON_START_WITHIN, || place.start().map(drop))
+/// Wait for this computer's daemon to serve its API, its service started when
+/// none does ([`tilo_api::daemon::service::start`]).
+fn ensure_daemon() -> Result<(), NearbyFailure> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_api(DAEMON_START_WITHIN))
         .map_err(NearbyFailure::not_started)
 }
 
@@ -375,7 +370,7 @@ pub(crate) mod testing {
     use tilo_device_identity::login::{Device, Place};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    use super::{DaemonPlace, make_login_dir};
+    use super::make_login_dir;
 
     pub(crate) const WORKSPACE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
 
@@ -403,8 +398,7 @@ pub(crate) mod testing {
             let place = Place::here(paths.clone()).expect("this account's login place");
             make_login_dir(place.dir()).expect("the login directory");
             let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
-            let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-                .expect("the daemon's place");
+            let daemon = tilo_api::daemon::this_computer().expect("the daemon's place");
             // A daemon serving a computer with no login is this computer's
             // own device already, certified as such: that certificate is
             // what names the socket `tilo` commands reach it on.

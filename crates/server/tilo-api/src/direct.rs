@@ -160,12 +160,14 @@ impl KeyFile {
 }
 
 /// Serve the API on `listener` until it closes, each connection as the key
-/// `current` answers with as it comes: to programs of the account that owns
-/// the socket, and nobody else. While `current` has none (the process holding
-/// it is not in the workspace), each call answers why, as `not_in_workspace`.
+/// `current` answers with as it comes: to the accounts the daemon's admission
+/// serves ([`crate::daemon::admission`]: this process's own, root, and under
+/// the system unit the people signed in), and nobody else. While `current` has
+/// none (the process holding it is not in the workspace), each call answers
+/// why, as `not_in_workspace`.
 ///
 /// The kernel's account of the connection's peer is the whole of the
-/// admission: its account must be this process's, and it must live in this
+/// admission: its account must be one admitted, and it must live in this
 /// login's own user and mount namespaces, as a session's other sockets require
 /// ([`shares_security_namespaces`]). A program a sandbox put in a namespace of
 /// its own is the same account and is refused all the same.
@@ -175,10 +177,9 @@ where
     Fut: std::future::Future<Output = Result<Arc<Direct>, String>> + Send + 'static,
 {
     use std::os::unix::fs::MetadataExt as _;
-    // Only this process's own account is served.
-    let owner = std::fs::metadata("/proc/self")
-        .ok()
-        .map(|metadata| metadata.uid());
+    let admission = crate::daemon::admission::here(|| {
+        std::fs::metadata("/proc/self").map_or(u32::MAX, |metadata| metadata.uid())
+    });
     let current = Arc::new(current);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -187,7 +188,7 @@ where
         let admitted = stream
             .peer_cred()
             .ok()
-            .filter(|credentials| Some(credentials.uid()) == owner)
+            .filter(|credentials| admission.admit(credentials.uid()).served())
             .and_then(|credentials| credentials.pid())
             .and_then(|pid| u32::try_from(pid).ok())
             .is_some_and(shares_security_namespaces);

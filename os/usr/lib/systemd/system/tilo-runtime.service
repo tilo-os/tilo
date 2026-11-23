@@ -29,6 +29,10 @@ Environment=TILO_RUNTIME_PROFILE=/var/lib/tilo/state
 # device steps. systemd owns a unit's RuntimeDirectory= and removes it when the
 # unit stops or restarts, so naming /run/tilo here took it over at boot and
 # emptied it whenever the daemon restarted, cutting the session off from them.
+# Every account on this machine reaches its sockets there, each connection
+# admitted by the account it comes from (root and this daemon act as the
+# device, a signed-in account as its person, any other the device's own
+# actions alone), never by a group. Nothing but its sockets is kept there.
 RuntimeDirectory=tilo-runtime
 RuntimeDirectoryMode=0755
 ExecStart=/usr/libexec/tilo/tilo-runtime

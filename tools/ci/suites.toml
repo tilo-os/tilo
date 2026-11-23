@@ -1665,11 +1665,6 @@ reason = "needs root, KVM, loop devices and the built VM host and hosted guest i
 check = "tilo-sh-vm-host"
 
 [[unrequired]]
-suite = "os/containers/tilo-sh/test-peer-handover.sh"
-reason = "needs a whole tilo.sh stack and a FUSE mount, and the tilo-sh-programs build it needs costs more than a change should; the peer-handover check runs it on main's idle and when named"
-check = "peer-handover"
-
-[[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
 check = "peer-kill-midwrite"

@@ -11,6 +11,8 @@
 //!   them (sign-in.md §4.3), and step aside otherwise.
 //! - `use_first_pass`, `try_first_pass`, `use_authtok`: as for every module;
 //!   libpam's `pam_get_authtok` reads them.
+//! - `seats=PATH`: this computer's daemon's native endpoint, which the session
+//!   hooks tell who signed in and who left ([`seat`]), for tests.
 //!
 //! When the daemon cannot be reached the module answers `PAM_AUTHINFO_UNAVAIL`
 //! without prompting, and the image's stack ends there: the daemon is the only
@@ -19,6 +21,7 @@
 //! image that can boot, so nothing on this one may check it.
 
 mod ffi;
+mod seat;
 
 use ffi::{Handle, Status};
 use std::ffi::{CStr, c_char, c_int};
@@ -28,6 +31,7 @@ use tilo_auth::protocol::{Refusal, Reply, Request};
 
 struct Args {
     socket: PathBuf,
+    seats: PathBuf,
     boot_sign_in: Option<String>,
     fingerprint: bool,
 }
@@ -39,6 +43,8 @@ impl Args {
     unsafe fn parse(arg_count: c_int, arg_values: *const *const c_char) -> Self {
         let mut parsed = Self {
             socket: PathBuf::from(tilo_auth::SOCKET),
+            seats: std::path::Path::new(tilo_paths::machine::DAEMON_SOCKETS)
+                .join(tilo_paths::machine::DAEMON_NATIVE),
             boot_sign_in: None,
             fingerprint: false,
         };
@@ -53,6 +59,8 @@ impl Args {
             let arg = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
             if let Some(path) = arg.strip_prefix("socket=") {
                 parsed.socket = PathBuf::from(path);
+            } else if let Some(path) = arg.strip_prefix("seats=") {
+                parsed.seats = PathBuf::from(path);
             } else if let Some(service) = arg.strip_prefix("boot_sign_in=") {
                 parsed.boot_sign_in = Some(service.to_owned());
             } else if arg == "fingerprint" {
@@ -252,6 +260,59 @@ pub unsafe extern "C" fn pam_sm_setcred(
     _argv: *const *const c_char,
 ) -> c_int {
     Status::Success.code()
+}
+
+/// Tell this computer's daemon who signed in, or who left, when it runs: never a reason to refuse
+/// the session, whatever it answers.
+fn seat_changed(
+    pamh: *mut ffi::PamHandle,
+    arg_count: c_int,
+    arg_values: *const *const c_char,
+    change: fn(&std::path::Path, &str) -> Result<(), String>,
+) -> c_int {
+    guarded(|| {
+        // SAFETY: libpam passes its argument vector.
+        let options = unsafe { Args::parse(arg_count, arg_values) };
+        // SAFETY: libpam passes a live handle for the duration of the call.
+        let Some(handle) = (unsafe { Handle::new(pamh) }) else {
+            return Status::Success;
+        };
+        if !options.seats.exists() {
+            return Status::Success;
+        }
+        if let Some(user) = handle.user()
+            && let Err(why) = change(&options.seats, &user)
+        {
+            handle.log_warning(&why);
+        }
+        Status::Success
+    })
+}
+
+/// # Safety
+///
+/// Called by libpam with a live handle and its module arguments.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pam_sm_open_session(
+    pamh: *mut ffi::PamHandle,
+    _flags: c_int,
+    arg_count: c_int,
+    arg_values: *const *const c_char,
+) -> c_int {
+    seat_changed(pamh, arg_count, arg_values, seat::signed_in)
+}
+
+/// # Safety
+///
+/// Called by libpam with a live handle and its module arguments.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pam_sm_close_session(
+    pamh: *mut ffi::PamHandle,
+    _flags: c_int,
+    arg_count: c_int,
+    arg_values: *const *const c_char,
+) -> c_int {
+    seat_changed(pamh, arg_count, arg_values, seat::left)
 }
 
 /// Accounts stay with the rest of the stack.

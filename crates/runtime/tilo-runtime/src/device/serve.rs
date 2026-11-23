@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader};
 
-use tilo_api::daemon::{Claim, DaemonPlace, Program, naming};
+use tilo_api::daemon::{DaemonPlace, naming};
 
 use super::{Connection, Enter, Shared, answer};
 
@@ -35,10 +35,6 @@ const OPENING_POLL: Duration = Duration::from_millis(100);
 const RELEASING: Duration = Duration::from_secs(3);
 /// How often a daemon starting looks whether the one leaving let go of the lock.
 const POLL: Duration = Duration::from_millis(50);
-/// How often the service's holder, waiting for a newer program's holder to end, looks for its lock.
-const STANDBY_POLL: Duration = Duration::from_secs(1);
-/// How often the service's holder, waiting so, asks the holder there again to step down.
-const STANDBY_ASK: Duration = Duration::from_secs(30);
 /// How long a holder's process waits for its runtime's threads once it ended. A step that walks
 /// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
 /// behind rather than hanging until it finishes.
@@ -120,22 +116,12 @@ async fn converse<E: Enter>(
     while replying.join_next().await.is_some() {}
 }
 
-/// The claim this process makes on the device: its program, and whether the user service
-/// started it.
-fn claim() -> Claim {
-    Claim {
-        program: Program::running(),
-        service: tilo_api::daemon::running_as_service(),
-    }
-}
-
-/// Take the lock that makes this process the device's one daemon, as [`take_lock`] does for
-/// this process's claim.
+/// Take the lock that makes this process the device's one daemon, as [`take_lock`] does.
 ///
 /// # Errors
 /// Another daemon keeps the device, or the lock cannot be opened.
 pub(crate) fn lock_device(place: &DaemonPlace) -> std::io::Result<advisory_lock::FileLock> {
-    take_lock(place, TAKING_OVER, claim())
+    take_lock(place, TAKING_OVER)
         .map_err(std::io::Error::other)?
         .ok_or_else(|| {
             let owner = advisory_lock::owner_pid(place.lock())
@@ -165,7 +151,6 @@ pub(crate) fn hold<E: Enter>(
             home,
             state: device_dir,
         },
-        claim(),
     )
 }
 
@@ -182,34 +167,30 @@ enum Holding {
     Peer { home: PathBuf, state: PathBuf },
 }
 
-/// [`hold`], holding as `holding` says, as a holder claiming `claim`, and waiting up to
-/// `taking_over` for a holder that is leaving, or that `claim` asked to step down.
+/// [`hold`], holding as `holding` says, and waiting up to `taking_over` for a daemon that is
+/// leaving.
 #[cfg(test)]
 fn hold_for<E: Enter>(
     place: &DaemonPlace,
     shared: Arc<Shared<E>>,
     holding: Holding,
     taking_over: Duration,
-    claim: Claim,
 ) -> Result<ExitCode> {
-    let Some(_lock) = take_lock(place, taking_over, claim)? else {
-        tracing::error!("this holder ends: another holder of this device's session keeps it");
+    let Some(_lock) = take_lock(place, taking_over)? else {
+        tracing::error!("this daemon ends: another daemon of this device keeps it");
         return Ok(ExitCode::SUCCESS);
     };
-    held(place, shared, holding, claim)
+    held(place, shared, holding)
 }
 
-/// [`hold`], holding as `holding` says, as a holder claiming `claim`, while the device's lock is
-/// held.
+/// [`hold`], holding as `holding` says, while the device's lock is held.
 fn held<E: Enter>(
     place: &DaemonPlace,
     shared: Arc<Shared<E>>,
     holding: Holding,
-    claim: Claim,
 ) -> Result<ExitCode> {
     say_panics();
     trim_log();
-    let _ = shared.held_as.set(claim);
     let runtime = bridge_runtime()?;
     // A holder that stops answering for seconds says what it was doing, with every thread's
     // stack, long before [`WEDGED`] ends it: a person's `ls` that waits has a reason in the log.
@@ -260,30 +241,18 @@ fn say_panics() {
     }));
 }
 
-/// The lock that makes this process the device's one holder, once one that is leaving let go of
-/// it; `None` when another holds it still. A holder this one's `claim` takes over from (an older
-/// program's, or one an agent started where this is the user service's) is asked to step down,
-/// and waited for: a CLI command that found no holder running starts one from the program it
-/// is, and Tilo updated since must not leave that one serving the old program's answers while
-/// the new one's holder gives up.
-///
-/// The user service's holder never gives up: while a newer program's holder keeps the device it
-/// waits for the lock, and holds the device the moment that one ends. A service that ended
-/// beside a holder some agent started left the person's folders to that agent's lifetime.
+/// The lock that makes this process the device's one daemon, once one that is leaving (the
+/// service restarting it) let go of it within `taking_over`; `None` when another keeps it still.
+/// Only the service starts this computer's daemon, so a second one is never asked to make way.
 fn take_lock(
     place: &DaemonPlace,
     taking_over: Duration,
-    claim: Claim,
 ) -> Result<Option<advisory_lock::FileLock>> {
     use advisory_lock::{FileLock, TryLockError};
     let path = place.lock();
-    let mut deadline = Instant::now()
+    let deadline = Instant::now()
         .checked_add(taking_over)
         .unwrap_or_else(Instant::now);
-    // When the holder there last answered: it is asked until it does, once (again and again, by
-    // the service's holder waiting for it).
-    let mut answered_at: Option<Instant> = None;
-    let mut waiting = false;
     loop {
         // A lock that is not this user's own private file (a link to another file, one others
         // may write) is refused rather than taken: whoever holds it serves the person.
@@ -300,44 +269,10 @@ fn take_lock(
                 return Err(error).with_context(|| format!("open {}", path.display()));
             }
         }
-        // The service's holder asks again now and then: the holder that refused may have been
-        // replaced by one that would step down.
-        if claim.service && answered_at.is_some_and(|at: Instant| at.elapsed() >= STANDBY_ASK) {
-            answered_at = None;
-        }
-        let stepping_down = if answered_at.is_some() {
-            None
-        } else {
-            place.ask_to_step_down(claim)
-        };
-        if stepping_down.is_some() {
-            answered_at = Some(Instant::now());
-        }
-        if stepping_down == Some(true) {
-            tracing::info!("the holder of this device steps down for this one");
-            // Stepping down unmounts the folders and closes the stores: it is waited for.
-            deadline = deadline.max(
-                Instant::now()
-                    .checked_add(TAKING_OVER)
-                    .unwrap_or_else(Instant::now),
-            );
-        }
         if Instant::now() >= deadline {
-            if claim.service {
-                if !waiting {
-                    waiting = true;
-                    tracing::info!(
-                        lock = %path.display(),
-                        "a holder of a newer Tilo keeps this device; the service holds it once \
-                         that one ends"
-                    );
-                }
-                std::thread::sleep(STANDBY_POLL);
-                continue;
-            }
             tracing::warn!(
                 lock = %path.display(),
-                "another holder of this device's session keeps it; this one ends"
+                "another daemon of this device keeps it; this one ends"
             );
             return Ok(None);
         }
@@ -354,6 +289,10 @@ async fn serve_held<E: Enter>(
     // Replaces a socket left by a holder that ended without removing it.
     let listener = tilo_files::native::private::bind_socket(place.socket())
         .with_context(|| format!("listen at {}", place.socket().display()))?;
+    std::fs::set_permissions(
+        place.socket(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
+    )?;
     serve_api(place, &shared)?;
     let linger = match holding {
         Holding::Linger(linger) => {
@@ -391,11 +330,6 @@ async fn serve_held<E: Enter>(
                     .to_owned();
             },
             Some(signal) = ended.recv() => break format!("it was told to stop ({signal})"),
-            () = shared.stepping_down.notified() => {
-                break "a holder of a newer Tilo, or the user service's, takes this device over \
-                       now that its folders are quiet"
-                    .to_owned();
-            },
         }
     };
     tracing::error!("this holder ends: {why}");
@@ -452,6 +386,9 @@ fn accepting<E: Enter>(
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if !admitted(&stream) {
+                            continue;
+                        }
                         count.send_modify(|live| *live = live.saturating_add(1));
                         let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
                         let runtime = runtime.clone();
@@ -475,6 +412,21 @@ fn accepting<E: Enter>(
         socket,
         thread: Some(thread),
     })
+}
+
+/// Whether the account at the other end of `stream` is one this daemon serves
+/// ([`tilo_api::daemon::admission`]); one it does not is told why, and closed.
+fn admitted(stream: &UnixStream) -> bool {
+    use std::io::Write as _;
+    let admission = tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw());
+    let served = crate::seats::peer_uid(stream).is_ok_and(|uid| admission.admit(uid).served());
+    if !served {
+        let refusal = json!({"jsonrpc": "2.0", "id": null,
+            "error": {"code": -32000, "message": tilo_api::daemon::admission::NOT_SIGNED_IN}});
+        let mut writing = stream;
+        let _ = writeln!(writing, "{refusal}");
+    }
+    served
 }
 
 /// Serve `stream`, a connection [`accepting`] took: its first request is read here, and one
@@ -682,6 +634,10 @@ fn serve_api<E: Enter>(place: &DaemonPlace, shared: &Arc<Shared<E>>) -> Result<(
             tokio::net::UnixListener::from_std(listener)
         })
         .with_context(|| format!("listen at {}", place.api().display()))?;
+    std::fs::set_permissions(
+        place.api(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
+    )?;
     let shared = Arc::clone(shared);
     tokio::spawn(tilo_api::direct::serve_current(listener, move || {
         let shared = Arc::clone(&shared);
@@ -925,111 +881,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A holder an agent's or a command's `tilo` started, of `program`.
-    const fn agents(program: Program) -> Claim {
-        Claim {
-            program,
-            service: false,
-        }
-    }
-
-    /// The user service's holder, of `program`.
-    const fn services(program: Program) -> Claim {
-        Claim {
-            program,
-            service: true,
-        }
-    }
-
-    /// The user service's holder starting while one an agent started holds the device (the
-    /// service was restarted, or the agent came first): the agent's steps down and the service's
-    /// holds the device, so the session and the folders live as long as the login, not as long
-    /// as some agent. A newer program's holder an agent started is waited for instead, and the
-    /// service holds the device once it ends; the service never ends beside it.
-    #[test]
-    fn the_services_holder_takes_over_from_one_an_agent_started() {
-        let program = Program {
-            file: 1,
-            modified_ns: 1_000,
-        };
-        let newer = Program {
-            file: 2,
-            modified_ns: 2_000,
-        };
-        assert!(services(program).takes_over(&agents(program)));
-        assert!(!agents(program).takes_over(&services(program)));
-        assert!(!agents(program).takes_over(&agents(program)));
-        assert!(!services(program).takes_over(&services(program)));
-        assert!(!services(program).takes_over(&agents(newer)));
-        assert!(agents(newer).takes_over(&services(program)));
-
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let hold_waiting = |name: &'static str, claim: Claim, taking_over: Duration| {
-            let place = place.clone();
-            std::thread::spawn(move || {
-                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    taking_over,
-                    claim,
-                )
-                .unwrap()
-            })
-        };
-        let hold = |name: &'static str, claim: Claim| hold_waiting(name, claim, TAKING_OVER);
-        let program_of = |file: u64| Program {
-            file,
-            modified_ns: u128::from(file).saturating_mul(1_000),
-        };
-        let held_by = |name: &str| {
-            let started = Instant::now();
-            loop {
-                if let Ok(mut stream) = UnixStream::connect(place.socket())
-                    && initialize(&mut stream).contains(&format!("held by the {name} Tilo"))
-                {
-                    return;
-                }
-                assert!(
-                    started.elapsed() < TAKING_OVER,
-                    "the {name} holder did not hold the device"
-                );
-                std::thread::sleep(POLL);
-            }
-        };
-
-        let agent = hold("agent's", agents(program));
-        held_by("agent's");
-        let service = hold("service's", services(program));
-        agent.join().unwrap();
-        held_by("service's");
-        assert_eq!(
-            place.ask_to_step_down(agents(program)),
-            Some(false),
-            "an agent's holder never takes the device from the service's"
-        );
-
-        // A newer program's holder takes over from the service's...
-        let newer_agent = hold("newer agent's", agents(newer));
-        service.join().unwrap();
-        held_by("newer agent's");
-        // ...and the service's holder started again waits for it rather than ending, even past
-        // the wait a holder of an agent's gives up after.
-        let service = hold_waiting("service's", services(program), Duration::ZERO);
-        std::thread::sleep(Duration::from_secs(2));
-        assert!(
-            !service.is_finished(),
-            "the service's holder waits for the device"
-        );
-        assert_eq!(place.ask_to_step_down(agents(program_of(3))), Some(true));
-        newer_agent.join().unwrap();
-        held_by("service's");
-        assert_eq!(place.ask_to_step_down(agents(program_of(4))), Some(true));
-        service.join().unwrap();
-    }
-
     /// A stop ends by itself inside the user service's timeout: every wait it makes, added
     /// up, is shorter than what the unit gives it before the process is killed, so a holder
     /// stopped while a bulk write is under way exits rather than being killed.
@@ -1123,27 +974,6 @@ mod tests {
         );
     }
 
-    /// A computer's login made again makes another device, with a holder of its own place at the
-    /// server; one computer still runs one holder, so the two never hold a second endpoint under
-    /// a device key at the same time.
-    #[test]
-    fn a_device_directory_has_one_holder_however_its_login_changed() {
-        let dir = Path::new("/state/tilo/device");
-        let first = DaemonPlace::at(dir, dir, &[1; 32]);
-        let second = DaemonPlace::at(dir, dir, &[2; 32]);
-        assert_eq!(
-            first.lock(),
-            second.lock(),
-            "one holder per device directory"
-        );
-        assert_ne!(
-            first.socket(),
-            second.socket(),
-            "each login's connections reach its own holder"
-        );
-        assert_ne!(first.log(), second.log());
-    }
-
     /// Names the lock file a child process takes and then ends still holding.
     const CHILD_LOCK: &str = "TILO_TEST_HOLDER_LOCK";
 
@@ -1171,14 +1001,12 @@ mod tests {
     #[test]
     fn a_holder_that_ended_holds_no_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[3; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path(), Some(&[3; 32]));
         let lock = place.lock().to_path_buf();
-        let held = take_lock(&place, Duration::ZERO, agents(Program::running())).unwrap();
+        let held = take_lock(&place, Duration::ZERO).unwrap();
         assert!(held.is_some());
         assert!(
-            take_lock(&place, Duration::ZERO, agents(Program::running()))
-                .unwrap()
-                .is_none(),
+            take_lock(&place, Duration::ZERO).unwrap().is_none(),
             "a lock its owner holds keeps the next holder out"
         );
         drop(held);
@@ -1200,9 +1028,7 @@ mod tests {
             "the child never took the lock"
         );
         assert!(
-            take_lock(&place, Duration::ZERO, agents(Program::running()))
-                .unwrap()
-                .is_some(),
+            take_lock(&place, Duration::ZERO).unwrap().is_some(),
             "the lock of a process that ended wedges the next holder"
         );
     }
@@ -1212,9 +1038,9 @@ mod tests {
     #[test]
     fn a_holders_liveness_is_seen_from_its_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[5; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path(), Some(&[5; 32]));
         assert!(!place.alive(), "nothing holds the device");
-        let held = take_lock(&place, Duration::ZERO, agents(Program::running()))
+        let held = take_lock(&place, Duration::ZERO)
             .unwrap()
             .expect("the lock is free");
         assert!(place.alive(), "the holder's lock says it is there");
@@ -1295,21 +1121,14 @@ mod tests {
     #[test]
     fn every_connection_of_a_device_reaches_its_one_holder() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path(), Some(&[7; 32]));
         let counting = Arc::new(Counting(AtomicUsize::new(0)));
         let shared = Arc::new(Shared::new(Arc::clone(&counting), Err("unused".to_owned())));
         let linger = Duration::from_millis(300);
         let holding = {
             let (place, shared) = (place.clone(), Arc::clone(&shared));
             std::thread::spawn(move || {
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(linger),
-                    Duration::ZERO,
-                    agents(Program::running()),
-                )
-                .unwrap()
+                hold_for(&place, shared, Holding::Linger(linger), Duration::ZERO).unwrap()
             })
         };
         let mut first = loop {
@@ -1344,7 +1163,6 @@ mod tests {
             Arc::clone(&shared),
             Holding::Linger(linger),
             Duration::ZERO,
-            agents(Program::running()),
         );
         assert!(second_holder.is_ok());
         let mut third = UnixStream::connect(place.socket()).unwrap();
@@ -1388,7 +1206,7 @@ mod tests {
     #[test]
     fn a_status_is_answered_while_the_workers_are_stuck() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path(), Some(&[7; 32]));
         let holding = {
             let place = place.clone();
             std::thread::spawn(move || {
@@ -1398,7 +1216,6 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_millis(100)),
                     TAKING_OVER,
-                    agents(Program::running()),
                 )
                 .unwrap()
             })
@@ -1447,103 +1264,6 @@ mod tests {
         holding.join().unwrap();
     }
 
-    struct Named(&'static str);
-
-    impl Enter for Named {
-        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
-            Err(format!("held by the {} Tilo", self.0))
-        }
-    }
-
-    /// Tilo updated while a holder of the old program still holds the device (one a CLI command
-    /// started while the service was stopped): the holder the new program starts asks it to step
-    /// down, and holds the device from then on, so the next command is the new program's to
-    /// answer. A holder of the same program never takes over: two agents starting one at once keep
-    /// the first.
-    #[test]
-    fn a_holder_of_a_newer_tilo_takes_over_from_one_of_an_older() {
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let older = Program {
-            file: 1,
-            modified_ns: 1_000,
-        };
-        let newer = Program {
-            file: 2,
-            modified_ns: 2_000,
-        };
-        assert!(newer.replaces(&older));
-        assert!(!older.replaces(&newer), "an older program never takes over");
-        assert!(!older.replaces(&older), "nor does the same one");
-
-        let hold = |name: &'static str, program: Program| {
-            let place = place.clone();
-            std::thread::spawn(move || {
-                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    TAKING_OVER,
-                    agents(program),
-                )
-                .unwrap()
-            })
-        };
-        let first = hold("older", older);
-        let mut asking = loop {
-            if let Ok(stream) = UnixStream::connect(place.socket()) {
-                break stream;
-            }
-            std::thread::sleep(POLL);
-        };
-        assert!(initialize(&mut asking).contains("held by the older Tilo"));
-        drop(asking);
-
-        // A holder of the same program finds the device held, and ends at once.
-        let same = std::thread::spawn({
-            let place = place.clone();
-            move || {
-                let shared = Arc::new(Shared::new(Named("same"), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    Duration::ZERO,
-                    agents(older),
-                )
-                .unwrap()
-            }
-        });
-        same.join().unwrap();
-
-        let started = Instant::now();
-        let second = hold("newer", newer);
-        first.join().unwrap();
-        let mut asking = loop {
-            if let Ok(mut stream) = UnixStream::connect(place.socket()) {
-                let said = initialize(&mut stream);
-                if said.contains("held by the newer Tilo") {
-                    break stream;
-                }
-            }
-            assert!(
-                started.elapsed() < TAKING_OVER,
-                "the newer Tilo's holder did not take over"
-            );
-            std::thread::sleep(POLL);
-        };
-        assert!(initialize(&mut asking).contains("held by the newer Tilo"));
-        drop(asking);
-        // Its connections gone, it lingers no longer once asked by an even newer one.
-        let newest = Program {
-            file: 3,
-            modified_ns: 3_000,
-        };
-        assert_eq!(place.ask_to_step_down(agents(newest)), Some(true));
-        second.join().unwrap();
-    }
-
     /// A certificate `root` gives `key`, as a login's is.
     fn certified(
         root: &ed25519_dalek::SigningKey,
@@ -1579,15 +1299,11 @@ mod tests {
         env.set("XDG_RUNTIME_DIR", runtime_dir.path())
             .remove(tilo_api::client::KEY_ENV)
             .remove(tilo_api::client::DESKTOP_ENV);
-        let place = DaemonPlace::of(
-            tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
-                .unwrap()
-                .dir(),
-            &key.verifying_key().to_bytes(),
-        )
-        .unwrap();
+        let place = tilo_api::daemon::this_computer()
+            .unwrap()
+            .serving(&key.verifying_key().to_bytes());
         assert_eq!(
-            tilo_device_identity::login::held_api(tilo_api::client::device_keys()).unwrap(),
+            tilo_api::client::held_api().unwrap(),
             Some(place.api().to_path_buf()),
             "the login's commands reach where its holder serves"
         );
@@ -1601,7 +1317,6 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_millis(300)),
                     Duration::ZERO,
-                    agents(Program::running()),
                 )
                 .unwrap()
             })
@@ -1757,41 +1472,5 @@ mod tests {
         tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
         tilo_device_identity::login::store(&place, &login).unwrap();
         key
-    }
-
-    tilo_test_env::scenario! {
-        fn a_devices_holder_listens_at_a_place_of_its_own;
-
-        phase each_device_has_its_own_holder;
-        // A device logged in anew is another device: its connections reach a
-        // holder of their own.
-        {
-            let dir = Path::new("/state/tilo/device");
-            assert_ne!(
-                DaemonPlace::at(dir, dir, &[1; 32]).socket(),
-                DaemonPlace::at(dir, dir, &[2; 32]).socket()
-            );
-        }
-
-        phase a_deep_home_still_listens_in_a_private_directory;
-        // A home however deep still has a socket short enough to listen at:
-        // its holder listens in the account's own directory, which nobody else
-        // may enter.
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let home = tempfile::tempdir().unwrap();
-            let deep = home.path().join("a".repeat(120)).join("state/tilo/device");
-            std::fs::create_dir_all(&deep).unwrap();
-            let place = DaemonPlace::of(&deep, &[3; 32]).unwrap();
-            assert!(
-                place.socket().as_os_str().len() < 100,
-                "{}",
-                place.socket().display()
-            );
-            let sockets = place.socket().parent().unwrap();
-            let mode = std::fs::metadata(sockets).unwrap().permissions().mode();
-            assert_eq!(mode & 0o077, 0, "{} is {mode:o}", sockets.display());
-            assert!(place.lock().starts_with(&deep));
-        }
     }
 }

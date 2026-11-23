@@ -296,11 +296,9 @@ impl Daemon {
         let take_work =
             take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
         tilo_files::native::private::directory(identity.place.dir())?;
-        let place = DaemonPlace::of(
-            identity.place.dir(),
-            &identity.key.verifying_key().to_bytes(),
-        )
-        .map_err(io::Error::other)?;
+        let place = tilo_api::daemon::this_computer()
+            .map_err(io::Error::other)?
+            .serving(&identity.key.verifying_key().to_bytes());
         let lock = match locked {
             Some((device, lock)) if device == identity.key.verifying_key().to_bytes() => lock,
             Some(_) => {
@@ -315,6 +313,7 @@ impl Daemon {
             }
         };
         tilo_files::native::private::directory(root)?;
+        let sockets = &crate::daemon::sockets(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
@@ -323,7 +322,7 @@ impl Daemon {
             let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
             (founded.to_string(), Some(founded))
         };
-        let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
+        let apps = Arc::new(apps::Apps::from_env(root, sockets, &workspace_id));
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
@@ -403,7 +402,7 @@ impl Daemon {
         let personal = tilo_workspace_service::workspaces::PersonResources::default();
         personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
-        let identity_socket = root.join(IDENTITY_SOCKET);
+        let identity_socket = sockets.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(
             identity_socket.clone(),
@@ -413,11 +412,12 @@ impl Daemon {
             dev,
         )?;
         stage("opening the content store");
-        let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
+        let media = profile::MediaHost::start(&root.join("content"), &sockets.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
         let (policy_origin, broker) = start_broker(
             BrokerParts {
                 root,
+                sockets,
                 apps: &apps,
                 workspaces: &workspaces,
                 keys: &workspaces.keys(),
@@ -446,6 +446,7 @@ impl Daemon {
         let replicas = take_work_files(
             &TakenFiles {
                 root,
+                sockets,
                 workspaces: &workspaces,
                 media: &media,
                 apps: &apps,
@@ -481,7 +482,7 @@ impl Daemon {
             workspace: workspace_id,
             actor,
             identity_socket,
-            blob_socket: root.join(BLOB_SOCKET),
+            blob_socket: sockets.join(BLOB_SOCKET),
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
@@ -640,6 +641,8 @@ fn take_work_action_service(
 /// What the broker's services are opened from: the device's workspaces and the apps.
 struct BrokerParts<'a> {
     root: &'a Path,
+    /// The directory the daemon's sockets are in.
+    sockets: &'a Path,
     apps: &'a Arc<apps::Apps>,
     workspaces: &'a Arc<ServiceWorkspaces>,
     keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
@@ -659,7 +662,7 @@ fn start_broker(
 )> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
-        parts.root.join(COLLAB_SOCKET),
+        parts.sockets.join(COLLAB_SOCKET),
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_optional_owner_commit(
             None,
@@ -682,7 +685,7 @@ fn broker_services(
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
 ) -> io::Result<ProcessServices> {
     let document_content =
-        super::content::document_content(parts.workspaces, &parts.root.join(BLOB_SOCKET));
+        super::content::document_content(parts.workspaces, &parts.sockets.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
     // other devices of the invoking workspace are asked to take the turn over
     // the endpoint this profile syncs on, and the content an offloaded run
@@ -1560,6 +1563,8 @@ fn channels(root: &Path) -> BrokerChannels {
 /// What the files of the workspaces whose work this device takes are held with.
 struct TakenFiles<'a> {
     root: &'a Path,
+    /// The directory the daemon's sockets are in.
+    sockets: &'a Path,
     workspaces: &'a Arc<ServiceWorkspaces>,
     media: &'a profile::MediaHost,
     apps: &'a Arc<apps::Apps>,
@@ -1594,7 +1599,7 @@ fn take_work_files(
                     .ok_or_else(|| io::Error::other("the workspace service closed"))?
                     .files_credentials(workspace)
             }),
-            identity: parts.root.join(IDENTITY_SOCKET),
+            identity: parts.sockets.join(IDENTITY_SOCKET),
             content,
             apps: Arc::clone(parts.apps),
         },

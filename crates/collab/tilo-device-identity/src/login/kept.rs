@@ -235,7 +235,7 @@ fn damaged(what: &str, why: &dyn std::fmt::Display) -> anyhow::Error {
 
 /// The login kept in `place`, as its certificate and what the login names: read without this
 /// computer's device key, so the process stays dumpable. The certificate names the device, which
-/// is all a program that finds this device's daemon ([`held_api`]) needs.
+/// is all a program that finds this device's daemon ([`serves_a_device`]) needs.
 ///
 /// # Errors
 /// The login is damaged, or its certificate is for another person than the one it names.
@@ -289,97 +289,26 @@ pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>
     Ok(Some((device.workspace, name)))
 }
 
-/// Where this account's device holders listen: the session's runtime
-/// directory when it has one, else one of this account's in the temporary
-/// directory, made so that only this account enters it. One someone else
-/// made, or others may enter, is refused: whoever reaches a holder acts as
-/// the person. Short, since a socket's path is (about a hundred bytes), and a
-/// home's state directory need not be.
+/// Whether this computer's daemon serves a device here, so its API answers every program of
+/// the account as that device: a login, or, with none, a certificate of the device it made for
+/// itself. `keys` are this computer's device key and certificates.
+///
+/// The device is read from a certificate, never from the device key: a program that reads the
+/// key makes itself undumpable, and the daemon admits a caller by reading its namespaces, which
+/// a non-dumpable process hides from it.
 ///
 /// # Errors
-/// `login_dir` could not be made or is not readable, or the directory is not this account's own.
+/// The login is damaged.
 #[cfg(unix)]
-pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-    // A computer that made its own identity and never logged in keeps no login yet, so the
-    // directory one goes in is made here, this account's alone, to read whose it is.
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(login_dir)
-        .map_err(|error| format!("{} could not be made: {error}", login_dir.display()))?;
-    let owner = std::fs::metadata(login_dir)
-        .map_err(|error| format!("{} is not readable: {error}", login_dir.display()))?
-        .uid();
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
-        .map_or_else(
-            || std::env::temp_dir().join(format!("tilo-{owner}")),
-            |runtime| runtime.join("tilo"),
-        );
-    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&dir)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(format!("{} could not be made: {error}", dir.display()));
-    }
-    let made = std::fs::symlink_metadata(&dir)
-        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
-    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
-        return Err(format!(
-            "{} is not this account's own private directory",
-            dir.display()
-        ));
-    }
-    Ok(dir)
+pub fn serves_a_device(keys: IdentityPaths) -> Result<bool> {
+    serves_a_device_in(&Place::here(keys)?)
 }
 
-/// What the holder of the device whose public key is `key` names its files
-/// by.
-#[must_use]
-pub fn holder_name(key: &[u8; 32]) -> String {
-    format!("session-{}", hex::encode(&key[..8]))
-}
-
-/// The socket the holder named `name` serves Tilo's API on, in `dir`
-/// ([`holder_dir`]): as this computer's device, over its one session.
-#[must_use]
-pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.api.sock"))
-}
-
-/// Where this computer's daemon serves Tilo's API: every program of the account acts as its
-/// device there, over the one session it keeps. A computer with no login is still the device it
-/// made for itself, with the workspace it founded, so its programs reach the daemon here too.
-/// `keys` are this computer's device key and certificates.
-///
-/// The daemon's socket is named by a certificate, never by the device key: a program that reads
-/// the key makes itself undumpable, and the daemon admits a caller by reading its namespaces,
-/// which a non-dumpable process hides from it.
-///
-/// # Errors
-/// The login is damaged, or the holders' directory is not this account's.
+/// [`serves_a_device`] for the login `place` keeps. A computer whose device certificate went
+/// (one in an encoding no build reads) has its key certified for its person beside it.
 #[cfg(unix)]
-pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
-    held_api_in(&Place::here(keys)?)
-}
-
-/// [`held_api`] for the login `place` keeps.
-#[cfg(unix)]
-fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
-    let key = match load_public(place)? {
-        Some(device) => device.cert.device_public_key,
-        // No login: the device key the daemon serves as, named by its certificate so the secret
-        // is not read here. A computer whose device certificate went (one in an encoding no
-        // build reads) has its key certified for its person beside it, and every one of those
-        // names the same key.
-        None => match served_device_key(place.keys()) {
-            Some(key) => key,
-            None => return Ok(None),
-        },
-    };
-    let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
-    Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
+fn serves_a_device_in(place: &Place) -> Result<bool> {
+    Ok(load_public(place)?.is_some() || served_device_key(place.keys()).is_some())
 }
 
 /// The device key a daemon with no login serves as, from a certificate of it in `keys`: the
@@ -426,18 +355,17 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             let mode = std::fs::metadata(place.dir()).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0, "only this account enters it: {mode:o}");
-            holder_dir(place.dir()).expect("the daemon's place is found from it");
         }
     }
 
-    /// The daemon's socket is found from the certificate, and finding it never makes the process
+    /// Whether a daemon serves is read from the certificate, and reading it never makes the process
     /// undumpable: the daemon refuses a connection from a process it cannot read the namespaces
     /// of, and a program acting as this computer's device only needs to know where its daemon is.
     #[test]
-    fn the_daemons_socket_is_named_by_the_certificate_and_the_calling_process_stays_dumpable() {
+    fn whether_a_daemon_serves_is_read_from_the_certificate_and_the_process_stays_dumpable() {
         tilo_test_env::in_own_process(
             module_path!(),
-            "the_daemons_socket_is_named_by_the_certificate_and_the_calling_process_stays_dumpable",
+            "whether_a_daemon_serves_is_read_from_the_certificate_and_the_process_stays_dumpable",
             || {
                 // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads a flag.
                 let dumpable = || unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
@@ -489,17 +417,10 @@ mod tests {
                     "this login keeps no device key, so naming its daemon must not need one"
                 );
 
-                let place = Place::at(login_dir.clone(), keys);
-                let socket = held_api_in(&place)
-                    .unwrap()
-                    .expect("a login names its daemon");
-                assert_eq!(
-                    socket,
-                    holder_api_socket(
-                        &holder_dir(&login_dir).unwrap(),
-                        &holder_name(&cert.device_public_key),
-                    ),
-                    "the daemon is the one the device's certificate names"
+                let place = Place::at(login_dir, keys);
+                assert!(
+                    serves_a_device_in(&place).unwrap(),
+                    "a login is a device its daemon serves"
                 );
                 assert_eq!(
                     dumpable(),
@@ -533,16 +454,9 @@ mod tests {
         write_device_cert(&keys.device_cert, &cert).unwrap();
         assert!(!login_dir.exists(), "this computer never logged in");
 
-        let socket = held_api_in(&Place::at(login_dir.clone(), keys))
-            .unwrap()
-            .expect("a device of its own names its daemon");
-        assert_eq!(
-            socket,
-            holder_api_socket(
-                &holder_dir(&login_dir).unwrap(),
-                &holder_name(&cert.device_public_key),
-            ),
-            "the daemon is the one the device's certificate names"
+        assert!(
+            serves_a_device_in(&Place::at(login_dir, keys)).unwrap(),
+            "a device of its own is served by its daemon"
         );
     }
 }
