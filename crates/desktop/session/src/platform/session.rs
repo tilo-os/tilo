@@ -737,10 +737,9 @@ impl Session {
         if let Some(sync) = &sync {
             sync.attach_shell(handle.clone());
         }
-        // The person's own workspaces, which their other devices hold with
-        // them: kept beside the shell, and opened when this computer knows
-        // whose they are.
-        let personal = crate::workspaces::personal_for(options.state.as_deref());
+        // The person's own workspaces, as the list in their own workspace names
+        // them: followed at the daemon when this computer knows whose they are.
+        let personal = crate::workspaces::personal_for(&daemon, &options.wake.handle());
         if let (Some(personal), Some(seed)) = (&personal, seed) {
             personal.borrow_mut().hold_seed(seed);
         }

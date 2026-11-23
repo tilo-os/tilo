@@ -12,8 +12,8 @@
 //! them keeps for each person ([`ServiceOperation::CreateOwnWorkspace`]),
 //! deleting one of theirs ([`ServiceOperation::DeleteOwnWorkspace`]), listing
 //! workspaces, which answers anyone but the host's person only the ones of
-//! their own, and keeping and reading their own workspace list
-//! ([`ServiceOperation::KeepPersonalList`]). The workspace is governed here like any other; the
+//! their own, and reading their own workspace list
+//! ([`ServiceOperation::ReadPersonalList`]). The workspace is governed here like any other; the
 //! person administers it.
 //!
 //! Holding a workspace another host governs is asked of anyone too, and
@@ -90,10 +90,6 @@ pub enum ServiceOperation {
     /// on a host that keeps workspaces of people's own; an agent's grant only
     /// when it reaches all its person's workspaces, as for making one.
     BranchOwnWorkspace,
-    /// Keep the caller's person's workspace list here, as one of their own
-    /// devices holds it: anyone's for their own list once the site let them in
-    /// or they are a member of a workspace here, never an agent's grant.
-    KeepPersonalList,
     /// Read the caller's person's workspace list: anyone's for their own
     /// list; an agent's grant reads what its scope reaches.
     ReadPersonalList,
@@ -162,7 +158,6 @@ impl ServiceOperation {
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
             Self::BranchOwnWorkspace => "workspace.branch-own",
-            Self::KeepPersonalList => "workspace.personal.keep",
             Self::ReadPersonalList => "workspace.personal",
             Self::PlanMachine => "machine.plan",
             Self::ListMachines => "machine.list",
@@ -219,7 +214,6 @@ impl ServiceOperation {
                     | Self::DeleteOwnWorkspace
                     | Self::BranchOwnWorkspace
                     | Self::ListWorkspaces
-                    | Self::KeepPersonalList
                     | Self::ReadPersonalList
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
@@ -244,9 +238,7 @@ impl ServiceOperation {
             | Self::ListRevocations
             | Self::ReadPersonalList
             | Self::CreateOwnWorkspace => true,
-            // The list is what the person's own devices hold; a grant reads it.
-            Self::KeepPersonalList
-            | Self::EnterWorkspace
+            Self::EnterWorkspace
             | Self::PreAdmit
             | Self::PutWorkspaceGrants
             | Self::SetAdministrator
@@ -293,7 +285,6 @@ mod tests {
         ServiceOperation::CreateOwnWorkspace,
         ServiceOperation::DeleteOwnWorkspace,
         ServiceOperation::BranchOwnWorkspace,
-        ServiceOperation::KeepPersonalList,
         ServiceOperation::ReadPersonalList,
         ServiceOperation::PlanMachine,
         ServiceOperation::ListMachines,
@@ -331,7 +322,6 @@ mod tests {
                     | ServiceOperation::DeleteOwnWorkspace
                     | ServiceOperation::BranchOwnWorkspace
                     | ServiceOperation::ListWorkspaces
-                    | ServiceOperation::KeepPersonalList
                     | ServiceOperation::ReadPersonalList
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace

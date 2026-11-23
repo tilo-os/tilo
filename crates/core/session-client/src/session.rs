@@ -888,7 +888,8 @@ impl Task {
         let host = self.config.server_cert.device_public_key;
         let reports = Arc::clone(&self.reports);
         n0_future::task::spawn(async move {
-            let Some(token) = ask_fetch_grant(&link, signer, &cert, host, workspace_id).await else {
+            let Some(token) = ask_fetch_grant(&link, signer, &cert, host, workspace_id).await
+            else {
                 return;
             };
             if reports.status().phase != TransportPhase::Closed {
@@ -2466,39 +2467,16 @@ impl Task {
     /// device and host of theirs keeps. `None` while this device holds no such workspace or its
     /// record has not arrived.
     fn personal_list(&self) -> Option<tilo_server_protocol::workspaces::PersonalList> {
-        use tilo_server_protocol::workspaces::{
-            IDENTITY_LIST, KeepingDeviceAddress, PersonalList, PersonalWorkspace,
-        };
+        use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonalList};
         let own = self.own_workspace();
         let link = self.links.get(&own)?;
-        let person = self.config.cert.user_public_key;
-        let device = self.config.cert.device_public_key;
         let bytes = link
             .sync
             .replica()
             .read(|peer| peer.document(IDENTITY_LIST.0, IDENTITY_LIST.1))?;
-        let directory =
-            tilo_user_identity::WorkspaceDirectory::load(person, device, &bytes).ok()?;
-        let workspaces = directory
-            .list_workspaces()
-            .into_iter()
-            .map(|meta| PersonalWorkspace {
-                host: directory
-                    .host_hint(meta.id)
-                    .as_deref()
-                    .and_then(KeepingDeviceAddress::of_hint),
-                workspace: meta.id.to_string(),
-                name: meta.name,
-                role: None,
-                labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
-                made_at_ms: None,
-                unattended: false,
-                enter_at: None,
-            })
-            .collect();
-        Some(PersonalList { workspaces })
+        let list = tilo_user_identity::WorkspaceList::of_document(&bytes).ok()?;
+        Some(PersonalList::of_list(&list))
     }
-
     /// Tell this session's readers the person's list of their workspaces, as their own
     /// workspace's record holds it now.
     fn emit_personal(&self) {
@@ -3473,16 +3451,14 @@ impl Task {
             )
             .await;
         match written {
-            Ok(receipt) => {
-                match self.publish_request(route, workspace, receipt.envelope) {
-                    Publishing::Owned | Publishing::Waiting => Some(Ok(())),
-                    Publishing::History => {
-                        self.note_history(route);
-                        Some(Ok(()))
-                    }
-                    Publishing::Refused(refusal) => Some(self.refused_write(route, &refusal)),
+            Ok(receipt) => match self.publish_request(route, workspace, receipt.envelope) {
+                Publishing::Owned | Publishing::Waiting => Some(Ok(())),
+                Publishing::History => {
+                    self.note_history(route);
+                    Some(Ok(()))
                 }
-            }
+                Publishing::Refused(refusal) => Some(self.refused_write(route, &refusal)),
+            },
             Err(tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
                 self.history_full(route)
             }
@@ -3811,7 +3787,6 @@ impl Task {
         }));
         kept
     }
-
 
     /// Move each held barrier whose routes hold nothing any more on to the ownership.
     fn release_barriers(&mut self, refused: &BTreeMap<DocumentRoute, String>) {

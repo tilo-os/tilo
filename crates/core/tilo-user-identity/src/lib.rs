@@ -73,7 +73,7 @@ pub mod canonical;
 pub mod cert;
 pub mod certification;
 pub mod clock;
-pub mod directory;
+pub mod workspace_list;
 pub mod endpoint_delegation;
 pub mod fleet;
 pub mod image;
@@ -107,7 +107,7 @@ pub use certification::{
     verify_issued_cert,
 };
 pub use clock::CertificateClockError;
-pub use directory::{DirectoryError, WorkspaceDirectory, WorkspaceId, WorkspaceMeta};
+pub use workspace_list::{ListedWorkspace, WorkspaceList};
 pub use endpoint_delegation::{
     ENDPOINT_DELEGATION_PREIMAGE_TAG, EndpointDelegation, EndpointDelegationError,
     MAX_LIFETIME_NS as MAX_ENDPOINT_DELEGATION_LIFETIME_NS, sign_endpoint_delegation,

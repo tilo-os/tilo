@@ -4,7 +4,8 @@
 //! A resource is named as every caller names one: `record:<app>:<id>` in the caller's workspace.
 //! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
 //! agents (Assistant's), its emoji (Chat's), its contact directory (Contacts'), the person's
-//! settings in the workspace whose only member is them (the settings'), and every app's index of
+//! settings and their list of workspaces in the workspace whose only member is them (the
+//! settings' and the identity's), and every app's index of
 //! the workspace (the index's own). The workspace's grants on the owner's node decide the call,
 //! as a window of the app decides a click. What the action changed is written into the
 //! workspace as this device's write, signed and sealed as the device, so every app of the
@@ -103,6 +104,12 @@ impl Declared {
                 app: Some(settings_model::person::APP),
                 id: settings_model::person::RESOURCE.to_owned(),
                 kind: settings_model::person::kind(),
+                founding: Founding::Typed,
+            },
+            Self {
+                app: Some(tilo_user_identity::workspace_list::APP),
+                id: tilo_user_identity::workspace_list::RESOURCE.to_owned(),
+                kind: tilo_user_identity::workspace_list::kind(),
                 founding: Founding::Typed,
             },
             Self {

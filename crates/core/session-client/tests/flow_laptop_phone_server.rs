@@ -24,8 +24,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalList,
-    PersonalWorkspace, WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -136,33 +136,12 @@ async fn rig() -> Rig {
     }
 }
 
-/// The list the laptop keeps for the person.
-fn personal(f: &Rig) -> PersonalList {
-    let workspace = |id: &str, name: &str| PersonalWorkspace {
-        workspace: id.to_owned(),
-        name: name.to_owned(),
-        host: None,
-        role: Some("owner".into()),
-        labels: WorkspaceLabels::new(),
-        made_at_ms: None,
-        unattended: false,
-        enter_at: None,
-    };
-    PersonalList {
-        workspaces: vec![workspace(&f.work, "Work"), workspace(&f.second, "Home")],
-    }
-}
-
 /// The person signs in and controls all their workspaces on the server, and no request
 /// leaves this machine's loopback for a tilo.sh or relay name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
     let f = rig().await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
-    laptop
-        .keep_personal(&personal(&f))
-        .await
-        .expect("the laptop keeps the person's list");
 
     // Both workspaces of the person are listed, and the laptop's own device is theirs.
     let listed = laptop

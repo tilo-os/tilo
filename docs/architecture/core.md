@@ -437,8 +437,8 @@ credentials in `key-group` are a separate layer and stay.
 
 There are three device lists: `CertifiedFleet` (`tilo-user-identity`
 `fleet.rs`, a verifier), `DeviceFleetStore` (`tilo-identity` `device_fleet/`,
-on disk at `<identity_dir>/fleets/<id>.json`), and the
-per-workspace `WorkspaceDirectory` (`tilo-user-identity` `directory.rs`).
+on disk at `<identity_dir>/fleets/<id>.json`), and the devices the person's
+`WorkspaceList` names (`tilo-user-identity` `workspace_list.rs`).
 Revocation has a defect: `tilo-server` `admin.rs` `persist_fleet_revocation`
 defaults to `$XDG_CONFIG_HOME/tilo/identities`, while every other reader
 uses `tilo/identity`. It finds no fleet there and returns success, so by
@@ -886,7 +886,6 @@ Per-person stores still on `main`:
 | Store | Code | Size |
 |---|---|---|
 | Personal records `(app, personal)` | `tilo-peer-state` `state/personal/`, `tilo-workspace-service` `apps/personal.rs`, `session` `personal.rs` | ~6,000 with tests |
-| The person's workspace list | `workspaces/personal.rs` `KeepPersonalList` and `tilo-user-identity` `directory.rs` | 2,226 |
 | The person's roaming settings | `settings-store` person document | part of 19,419 |
 | Connections under the person's root | `tilo-workspace-service` `connections` | 5,661 |
 | Model choice per person | `workspaces/person_model`, `person_models` | 6,071 |

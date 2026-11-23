@@ -231,14 +231,13 @@ impl Workspaces {
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
             // What anyone may do here is for a host that keeps workspaces of
-            // people's own: making theirs, listing them, and keeping their list.
+            // people's own: making theirs and listing them.
             let anyones = matches!(
                 operation,
                 ServiceOperation::CreateOwnWorkspace
                     | ServiceOperation::ListWorkspaces
                     | ServiceOperation::DeleteOwnWorkspace
                     | ServiceOperation::BranchOwnWorkspace
-                    | ServiceOperation::KeepPersonalList
                     | ServiceOperation::ReadPersonalList
             ) && device.user_public_key != host;
             if anyones && self.own().is_none() {

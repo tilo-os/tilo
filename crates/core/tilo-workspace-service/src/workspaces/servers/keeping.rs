@@ -1,7 +1,7 @@
 //! What an always-on server of the person keeps: every workspace in their list.
 //!
-//! The person's list of workspaces is a document of their own workspace
-//! (`identity.workspaces`). A server with an entry among their servers
+//! The person's list of workspaces is a resource of their own workspace
+//! (`identity.workspaces`, a [`WorkspaceList`]). A server with an entry among their servers
 //! ([`super::SERVERS`]) keeps each workspace the list names, unless its entry
 //! turned keeping off for it ([`Server::keeps_not`]). It enters one it does
 //! not keep yet the way every device of the person enters a workspace of
@@ -21,12 +21,12 @@ use std::sync::Arc;
 
 use tilo_peer_state::join::TransportHint;
 use tilo_server_protocol::WorkspaceId;
-use tilo_user_identity::WorkspaceDirectory;
+use tilo_server_protocol::workspaces::IDENTITY_LIST;
+use tilo_user_identity::WorkspaceList;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{SERVERS, person_workspace_id, read};
 use crate::workspaces::person_workspace::{self, holds_person_workspace};
-use crate::workspaces::personal::WORKSPACES;
 use crate::workspaces::{GovernedWorkspace, RELEASED, Workspaces};
 
 /// What one pass over the person's list did, by workspace id.
@@ -106,20 +106,17 @@ async fn listed(
     workspaces: &Workspaces,
     person: &[u8; 32],
 ) -> Result<Vec<(WorkspaceId, Option<TransportHint>)>, String> {
-    let Some(bytes) =
-        person_workspace::document_on(workspaces, &person_workspace_id(person), WORKSPACES).await?
-    else {
-        return Ok(Vec::new());
-    };
-    let device = workspaces.serving_certificate().device_public_key;
-    let directory = WorkspaceDirectory::load(*person, device, &bytes)
-        .map_err(|error| format!("the person's workspace list does not read: {error}"))?;
-    Ok(directory
-        .list_workspaces()
-        .into_iter()
-        .filter_map(|meta| {
-            let workspace = WorkspaceId::parse(&meta.id.to_string())?;
-            let hint = directory.host_hint(meta.id).and_then(|bytes| {
+    let list = person_workspace::read_on::<WorkspaceList>(
+        workspaces,
+        &person_workspace_id(person),
+        IDENTITY_LIST,
+    )
+    .await?;
+    Ok(list
+        .listed()
+        .filter_map(|(id, listed)| {
+            let workspace = WorkspaceId::parse(&id.to_string())?;
+            let hint = listed.address().and_then(|bytes| {
                 tilo_failure::ignored!(
                     "an address the list keeps that does not read names none",
                     postcard::from_bytes::<TransportHint>(&bytes).ok()
@@ -207,7 +204,7 @@ impl Workspaces {
                         write = writes.recv() => match write {
                             Ok(write) => {
                                 write.workspace == person
-                                    && ((write.app == WORKSPACES.0 && write.record == WORKSPACES.1)
+                                    && ((write.app == IDENTITY_LIST.0 && write.record == IDENTITY_LIST.1)
                                         || write.app == SERVERS.0)
                             }
                             Err(RecvError::Lagged(_)) => true,

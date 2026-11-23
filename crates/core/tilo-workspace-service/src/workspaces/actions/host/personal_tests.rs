@@ -1,7 +1,7 @@
 //! The person's workspace list on a host that keeps workspaces of people's
-//! own: one of their devices keeps it, any key of theirs reads it back with
-//! the workspaces this host keeps for them, an agent's grant reads only what
-//! it reaches, and nobody keeps or reads another person's.
+//! own: their devices list workspaces in their own workspace, any key of theirs
+//! reads it back with the workspaces this host keeps for them, an agent's grant
+//! reads only what it reaches, and nobody reads another person's.
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -9,7 +9,7 @@ use tilo_actions::remote::{ActionCallError, ActionProvider as _, InvokeRequest, 
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_protocol::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    KEEP_PERSONAL, LIST_PERSONAL, PersonalList,
+    LIST_PERSONAL, PersonalList,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -31,6 +31,27 @@ pub(super) async fn hold_person_workspace(
         .create_for(crate::workspaces::person_workspace::NAME, Some(&id), person)
         .await
         .expect("the person's own workspace");
+}
+
+/// List `workspaces` (each by id and name) in `person`'s own workspace on `workspaces`, in that
+/// order, as a device of theirs does through the list's actions.
+pub(super) async fn list_workspaces(
+    workspaces: &crate::workspaces::Workspaces,
+    person: [u8; 32],
+    listed: &[(&str, &str)],
+) {
+    use tilo_user_identity::WorkspaceList;
+    let own = tilo_server_protocol::servers::person_workspace_id(&person);
+    for (workspace, name) in listed {
+        crate::workspaces::person_workspace::apply_on(
+            workspaces,
+            &own,
+            tilo_server_protocol::workspaces::IDENTITY_LIST,
+            WorkspaceList::LIST_WORKSPACE.with(((*workspace).to_owned(), (*name).to_owned())),
+        )
+        .await
+        .expect("the person's list names the workspace");
+    }
 }
 
 fn host_request(action: &str, argument: Value) -> InvokeRequest {
@@ -163,18 +184,17 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         "a workspace this host keeps is reached where the list was asked"
     );
 
-    // The desktop keeps the person's list: its own workspaces, hosted on it.
-    let kept = json!({"workspaces": [
-        {"workspace": SHELL, "name": "Shell"},
-        {"workspace": LAPTOP, "name": "Laptop"},
-        {"workspace": here, "name": "On the server"},
-    ]});
-    assert_eq!(
-        invoke(&host, &desktop, KEEP_PERSONAL, json!({"list": kept}))
-            .await
-            .unwrap(),
-        json!({"kept": 3})
-    );
+    // The desktop lists the person's workspaces: its own, hosted on it.
+    list_workspaces(
+        workspaces,
+        root.verifying_key().to_bytes(),
+        &[
+            (SHELL, "Shell"),
+            (LAPTOP, "Laptop"),
+            (here, "On the server"),
+        ],
+    )
+    .await;
     let listed = read(&host, &agent).await;
     let names: Vec<_> = listed
         .workspaces
@@ -250,29 +270,6 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         [SHELL]
     );
 
-    // A grant keeps nothing: the list is what the person's own devices hold.
-    assert!(
-        invoke(
-            &host,
-            &agent,
-            KEEP_PERSONAL,
-            json!({"list": {"workspaces": []}})
-        )
-        .await
-        .is_err()
-    );
-    // A list that names something other than workspaces is refused.
-    assert!(
-        invoke(
-            &host,
-            &desktop,
-            KEEP_PERSONAL,
-            json!({"list": {"workspaces": [{"workspace": "not a workspace", "name": "x"}]}})
-        )
-        .await
-        .is_err()
-    );
-
     // Someone else reads only theirs.
     let stranger = key_of(
         &SigningKey::from_bytes(&rand::random()),
@@ -280,17 +277,6 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         DeviceCapabilities::member(),
     );
     assert!(read(&host, &stranger).await.workspaces.is_empty());
-    // Nor keeps one: the site never let them in, and nothing here is theirs.
-    assert!(
-        invoke(
-            &host,
-            &stranger,
-            KEEP_PERSONAL,
-            json!({"list": {"workspaces": []}})
-        )
-        .await
-        .is_err()
-    );
 
     // The list stays across a restart.
     server.shutdown().await;
@@ -411,17 +397,6 @@ async fn one_record_holds_every_device_the_persons_root_certified() {
             .is_empty(),
         "another root's key is in no record of this person's"
     );
-
-    // A later keep of their list takes no device out.
-    invoke(
-        &host,
-        &desktop,
-        KEEP_PERSONAL,
-        json!({"list": {"workspaces": []}}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(recorded(workspaces, &person).await.len(), 3);
     server.shutdown().await;
 }
 
@@ -810,19 +785,13 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_
                 && listed.name == "My workspace"),
         "{list:?}"
     );
-    for (action, argument) in [
-        (CREATE_OWN_WORKSPACE, json!({"name": "Another"})),
-        (KEEP_PERSONAL, json!({"list": {"workspaces": []}})),
-    ] {
-        // Changing anything asks its person first, and with nobody to ask
-        // nothing changes.
-        let refused = ask(action, argument).await;
-        assert_eq!(
-            refused.unwrap_err(),
-            ActionCallError::confirmation_required(),
-            "{action}"
-        );
-    }
+    // Changing anything asks its person first, and with nobody to ask
+    // nothing changes.
+    let refused = ask(CREATE_OWN_WORKSPACE, json!({"name": "Another"})).await;
+    assert_eq!(
+        refused.unwrap_err(),
+        ActionCallError::confirmation_required()
+    );
     server.shutdown().await;
 }
 
@@ -1067,17 +1036,13 @@ async fn a_workspace_governed_here_is_listed_only_as_its_governance_has_the_pers
     // The host's own workspace, which the person is not in.
     let team = workspaces.create("Team").await.unwrap().workspace;
 
-    // A device of theirs keeps a list naming it as theirs, beside one another device keeps.
-    let kept = json!({"workspaces": [
-        {"workspace": SHELL, "name": "Shell", "role": "owner"},
-        {"workspace": team, "name": "Team", "role": "owner"},
-    ]});
-    assert_eq!(
-        invoke(&host, &desktop, KEEP_PERSONAL, json!({"list": kept}))
-            .await
-            .unwrap(),
-        json!({"kept": 2})
-    );
+    // A device of theirs lists it as theirs, beside one another device keeps.
+    list_workspaces(
+        workspaces,
+        root.verifying_key().to_bytes(),
+        &[(SHELL, "Shell"), (&team, "Team")],
+    )
+    .await;
     let listed: Vec<String> = read(&host, &desktop)
         .await
         .workspaces

@@ -121,9 +121,12 @@ pub fn fleet(
                 .agent
                 .and_then(|scope| scope.workspace_name())
                 .map(|id| {
+                    // The list keeps each workspace under its id, its fields under `v`.
                     records
                         .workspaces
-                        .get(format!("w:{id}"))
+                        .get("workspaces")
+                        .and_then(|listed| listed.get(&id))
+                        .and_then(|listed| listed.get("v"))
                         .and_then(|listed| listed.get("name"))
                         .and_then(serde_json::Value::as_str)
                         .filter(|name| !name.is_empty())

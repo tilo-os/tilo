@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::directory::WorkspaceId;
+use collab_types::WorkspaceId;
 use ed25519_dalek::{Signer as _, Verifier as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

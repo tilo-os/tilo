@@ -1,5 +1,5 @@
-//! What this device keeps of its sessions for the next one: the workspace in front, the person's
-//! workspace list, what could not be written to a workspace yet, the unlock history, the fire times
+//! What this device keeps of its sessions for the next one: the workspace in front, what could
+//! not be written to a workspace yet, the unlock history, the fire times
 //! of scheduled shortcuts, the wallpapers, the notification centre, and what finishing an update
 //! asked and told. Each is one document of the device's document store ([`app_state::FsStore`])
 //! below the session's state directory, under a reserved key no app holds.
@@ -16,8 +16,6 @@ use durable_store::{DurableStore as _, Lease, Revision, StorageKey, WriteOp};
 
 /// The workspace in front and the displays' partition ([`crate::device_state`]).
 pub(crate) const SHOWN: &str = "so.tilo.session-shown";
-/// The person's own workspaces as this device lists them ([`crate::workspaces`]).
-pub(crate) const WORKSPACES: &str = "so.tilo.session-workspaces";
 /// What this device could not write yet of its workspaces' layouts ([`crate::layout`]).
 pub(crate) const PENDING_LAYOUT: &str = "so.tilo.session-pending-layout";
 /// What the person's devices answered to an unlock ([`crate::unlock_history`]).

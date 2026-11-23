@@ -882,15 +882,17 @@ pub const FETCH_GRANT: &str = "workspace.fetch-grant";
 pub const ENTRY_SCOPE: &str = "workspace.entry";
 
 /// The record of the person's own workspace their list of workspaces is kept in: a
-/// [`WorkspaceDirectory`](tilo_user_identity::WorkspaceDirectory), which their devices and every
-/// host of theirs read and write, so a device reads the list from its own workspace's link
-/// rather than being sent it.
-pub const IDENTITY_LIST: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
+/// [`WorkspaceList`](tilo_user_identity::WorkspaceList), which their devices and every host of
+/// theirs read and change through its actions, so a device reads the list from its own
+/// workspace's link rather than being sent it.
+pub const IDENTITY_LIST: (&str, &str) = (
+    tilo_user_identity::workspace_list::APP,
+    tilo_user_identity::workspace_list::RESOURCE,
+);
 
 /// The person's list of their workspaces ([`IDENTITY_LIST`]), as read from that record through
-/// the record API: each workspace by its id and the name the person last saw it by, in their order
-/// (by each entry's `order`, an entry without one last, then by id). What else a list shows of a
-/// workspace is that workspace's own membership record.
+/// the record API: each workspace by its id and the name the person last saw it by, in their
+/// order. What else a list shows of a workspace is that workspace's own membership record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonWorkspaces {
     pub workspaces: Vec<ListedWorkspace>,
@@ -906,11 +908,11 @@ pub struct ListedWorkspace {
 }
 
 impl PersonWorkspaces {
-    /// The list a record read answered (`{"revision", "records": [...]}`): `None` while the
-    /// record is still arriving, an empty list where the person's workspace holds none yet.
+    /// The list a whole-document read answered (`{"revision", "records": [...]}`): `None` while
+    /// the record is still arriving, an empty list where the person's workspace holds none yet.
     ///
     /// # Errors
-    /// The answer names no reading of the list.
+    /// The answer names no reading of the list, or its document does not read.
     pub fn of_readings(readings: &serde_json::Value) -> Result<Option<Self>, String> {
         let record = readings
             .get("records")
@@ -923,44 +925,22 @@ impl PersonWorkspaces {
         if record.get("absent").and_then(serde_json::Value::as_bool) == Some(true) {
             return Ok(Some(Self::default()));
         }
-        let value = record.get("value").ok_or("the read answered no value")?;
-        let Some(entries) = value.as_object() else {
-            return Ok(Some(Self::default()));
-        };
-        // The record keeps each workspace under `w:<id>`, with its name and its place.
-        let mut listed: Vec<(f64, ListedWorkspace)> = entries
-            .iter()
-            .filter_map(|(key, entry)| {
-                let workspace = key.strip_prefix("w:")?;
-                WorkspaceId::parse(workspace)?;
-                let name = entry
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                let order = entry
-                    .get("order")
-                    .and_then(serde_json::Value::as_f64)
-                    .filter(|order| order.is_finite())
-                    .unwrap_or(f64::INFINITY);
-                Some((
-                    order,
-                    ListedWorkspace {
-                        workspace: workspace.to_owned(),
-                        name: name.to_owned(),
-                    },
-                ))
-            })
-            .collect();
-        listed.sort_by(|(left_order, left), (right_order, right)| {
-            left_order
-                .total_cmp(right_order)
-                .then_with(|| left.workspace.cmp(&right.workspace))
-        });
+        let bytes = record
+            .get("document")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|document| hex::decode(document).ok())
+            .ok_or("the read answered no document")?;
+        let list = tilo_user_identity::WorkspaceList::of_document(&bytes)?;
         Ok(Some(Self {
-            workspaces: listed.into_iter().map(|(_, listed)| listed).collect(),
+            workspaces: list
+                .listed()
+                .map(|(workspace, listed)| ListedWorkspace {
+                    workspace: workspace.to_string(),
+                    name: listed.name.clone(),
+                })
+                .collect(),
         }))
     }
-
     /// The revision a record read answered, which the next read of it follows past.
     #[must_use]
     pub fn revision_of(readings: &serde_json::Value) -> Option<String> {
@@ -1016,15 +996,8 @@ pub const CATCH_UP_ABSENT: &str = "workspace.catch-up.absent";
 /// store keeps a lineage per record and author, more than one frame carries.
 /// Answers a [`StandingPage`].
 pub const CATCH_UP_STANDING: &str = "workspace.catch-up.standing";
-/// The person's whole workspace list, as one of their own devices keeps it
-/// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
-/// wherever it is hosted (one of their desktops, a paired device, a server),
-/// with that host's signed address. Only a device of the person's own keeps
-/// it, never an agent's grant or a stand-in; each keep replaces the last.
-/// Answers `{"kept": count}`.
-pub const KEEP_PERSONAL: &str = "workspace.personal.keep";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
-/// devices kept here, with the workspaces this host keeps for them, each
+/// own workspace holds ([`IDENTITY_LIST`]), with the workspaces this host keeps for them, each
 /// naming its host and how to reach it. Any certified key of the person's
 /// reads it; an agent's grant reads only what its scope reaches. A page
 /// asking it may name its browser's tab devices (argument `browser`, a
@@ -1034,13 +1007,11 @@ pub const KEEP_PERSONAL: &str = "workspace.personal.keep";
 /// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
 /// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
-/// The most workspaces a kept list names.
-pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
 /// The most devices a person's record keeps.
 pub const MAX_PERSONAL_DEVICES: usize = 1024;
 
 /// A person's workspaces, each with where it is hosted: what
-/// [`LIST_PERSONAL`] answers and [`KEEP_PERSONAL`] keeps.
+/// [`LIST_PERSONAL`] answers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonalList {
     pub workspaces: Vec<PersonalWorkspace>,
@@ -1185,38 +1156,28 @@ struct HintPayload {
 }
 
 impl PersonalList {
-    /// Whether every entry is a workspace UUID with a printable name and an
-    /// address of bounded size, and the list is no longer than
-    /// [`MAX_PERSONAL_WORKSPACES`]: what a host keeps.
-    ///
-    /// # Errors
-    /// What is wrong with it, for the device that sent it.
-    pub fn check(&self) -> Result<(), String> {
-        if self.workspaces.len() > MAX_PERSONAL_WORKSPACES {
-            return Err(format!(
-                "a list names at most {MAX_PERSONAL_WORKSPACES} workspaces"
-            ));
-        }
-        for entry in &self.workspaces {
-            uuid::Uuid::parse_str(&entry.workspace)
-                .map_err(|_| format!("{:?} names no workspace", entry.workspace))?;
-            if entry.name.chars().count() > 200 || entry.name.chars().any(char::is_control) {
-                return Err(format!(
-                    "the name of {} is not a workspace's name",
-                    entry.workspace
-                ));
-            }
-            if let Some(host) = &entry.host
-                && (host.name.chars().count() > 200
-                    || host
-                        .hint
+    /// The workspaces `list` names, in the person's order, each with where its host is reached
+    /// as a device of theirs said.
+    #[must_use]
+    pub fn of_list(list: &tilo_user_identity::WorkspaceList) -> Self {
+        Self {
+            workspaces: list
+                .listed()
+                .map(|(workspace, listed)| PersonalWorkspace {
+                    workspace: workspace.to_string(),
+                    name: listed.name.clone(),
+                    host: listed
+                        .address()
                         .as_deref()
-                        .is_some_and(|hint| hint.len() > 16 * 1024 || hex::decode(hint).is_err()))
-            {
-                return Err(format!("the host of {} is not an address", entry.workspace));
-            }
+                        .and_then(KeepingDeviceAddress::of_hint),
+                    role: None,
+                    labels: WorkspaceLabels::default(),
+                    made_at_ms: None,
+                    unattended: false,
+                    enter_at: None,
+                })
+                .collect(),
         }
-        Ok(())
     }
 }
 

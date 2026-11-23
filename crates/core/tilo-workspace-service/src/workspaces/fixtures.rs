@@ -446,62 +446,40 @@ pub async fn list_workspace(
     name: &str,
     hint: &tilo_peer_state::join::TransportHint,
 ) {
-    let cert = writer.serving_certificate().clone();
-    let id = tilo_user_identity::WorkspaceId::parse(workspace).unwrap();
-    let name = name.to_owned();
-    let host = hint.host.device_public_key;
-    let hint = postcard::to_stdvec(hint).unwrap();
-    super::person_workspace::edit_document_on(
-        writer,
-        &tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
-        super::personal::WORKSPACES,
-        move |document| {
-            let mut directory = tilo_user_identity::WorkspaceDirectory::load(
-                cert.user_public_key,
-                cert.device_public_key,
-                &document.save(),
-            )
-            .map_err(|error| error.to_string())?;
-            directory
-                .add_workspace(id, &name)
-                .map_err(|error| error.to_string())?;
-            directory
-                .set_host_hint(id, host, &hint)
-                .map_err(|error| error.to_string())?;
-            let mut source = automerge::AutoCommit::load(&directory.save())
-                .map_err(|error| error.to_string())?;
-            tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await
-    .expect("the person's list names the workspace");
+    use tilo_user_identity::WorkspaceList;
+    let person = writer.serving_certificate().user_public_key;
+    let own = tilo_server_protocol::servers::person_workspace_id(&person);
+    let host = hex::encode(hint.host.device_public_key);
+    let address = hex::encode(postcard::to_stdvec(hint).unwrap());
+    for invoke in [
+        WorkspaceList::LIST_WORKSPACE.with((workspace.to_owned(), name.to_owned())),
+        WorkspaceList::HOST_WORKSPACE.with((workspace.to_owned(), host.clone())),
+        WorkspaceList::REACH_WORKSPACE.with((workspace.to_owned(), host.clone(), address.clone())),
+    ] {
+        super::person_workspace::apply_on(
+            writer,
+            &own,
+            tilo_server_protocol::workspaces::IDENTITY_LIST,
+            invoke,
+        )
+        .await
+        .expect("the person's list names the workspace");
+    }
 }
 
 /// Whether the person's list of workspaces, as `reader`'s copy of their workspace has it, names
 /// `workspace`: `false` while the list has not reached it.
 pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
-    let cert = reader.serving_certificate().clone();
-    let Ok(Some(bytes)) = super::person_workspace::document_on(
+    let person = reader.serving_certificate().user_public_key;
+    super::person_workspace::read_on::<tilo_user_identity::WorkspaceList>(
         reader,
-        &tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
-        super::personal::WORKSPACES,
+        &tilo_server_protocol::servers::person_workspace_id(&person),
+        tilo_server_protocol::workspaces::IDENTITY_LIST,
     )
     .await
-    else {
-        return false;
-    };
-    tilo_user_identity::WorkspaceDirectory::load(
-        cert.user_public_key,
-        cert.device_public_key,
-        &bytes,
-    )
-    .is_ok_and(|directory| {
-        directory
-            .list_workspaces()
-            .iter()
-            .any(|listed| listed.id.to_string() == workspace)
+    .is_ok_and(|list| {
+        list.listed()
+            .any(|(listed, _)| listed.to_string() == workspace)
     })
 }
 

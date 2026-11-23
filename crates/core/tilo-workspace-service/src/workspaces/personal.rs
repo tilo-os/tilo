@@ -1,16 +1,14 @@
 //! The person's workspace list and devices, read from their own workspace
-//! ([`ServiceOperation::KeepPersonalList`], [`ServiceOperation::ReadPersonalList`]).
+//! ([`ServiceOperation::ReadPersonalList`]).
 //!
 //! The person's devices hold their list: every workspace of theirs, wherever
 //! it is hosted (a desktop of theirs, a paired device, a server), each with its
 //! host's own signed address. The list is a resource of the person's own
-//! workspace (`identity.workspaces`, a
-//! [`WorkspaceDirectory`]), the same one their sessions read and write, so it
-//! reaches their devices as any resource does rather than being kept in a
-//! second place beside them. Any certified key of theirs (a script, an agent's
-//! grant, the entry that serves the person's agents) reads it back: how a key
-//! that runs on no device of theirs finds the workspaces it may enter, and at
-//! which host.
+//! workspace ([`IDENTITY_LIST`], a [`WorkspaceList`]), which their devices
+//! change through its actions, so it reaches their devices as any resource
+//! does. Any certified key of theirs (a script, an agent's grant, the entry
+//! that serves the person's agents) reads it back: how a key that runs on no
+//! device of theirs finds the workspaces it may enter, and at which host.
 //!
 //! The devices the person's root certified are another resource of their own
 //! workspace ([`super::person_workspace::devices`]), which every device of
@@ -24,7 +22,6 @@
 //! in `so.tilo.shell`'s `tab-groups` of the person's own workspace, so a list
 //! of their devices says which keys are one browser's.
 //!
-//! [`ServiceOperation::KeepPersonalList`]: crate::service_authority::ServiceOperation::KeepPersonalList
 //! [`ServiceOperation::ReadPersonalList`]: crate::service_authority::ServiceOperation::ReadPersonalList
 
 use std::collections::BTreeMap;
@@ -35,12 +32,10 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalList,
-    PersonalWorkspace,
+    IDENTITY_LIST, KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES,
+    PersonalBrowser, PersonalList, PersonalWorkspace,
 };
-use tilo_user_identity::{
-    DeviceCert, RevocationEntry, WorkspaceDirectory, WorkspaceMeta, verify_device_cert,
-};
+use tilo_user_identity::{DeviceCert, RevocationEntry, WorkspaceList, verify_device_cert};
 
 use super::Workspaces;
 
@@ -49,11 +44,6 @@ use super::Workspaces;
 pub(super) type DeviceNames = BTreeMap<String, (String, bool)>;
 use super::person_workspace;
 use super::person_workspace::devices::{self, Devices};
-
-/// The resource of the person's own workspace their list of workspaces is
-/// kept in, as their sessions read and write it.
-pub(super) const WORKSPACES: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
-
 /// The resource of the person's own workspace each browser's tab keys are
 /// kept in: a page naming its tabs says which keys are one browser's.
 const TAB_GROUPS: (&str, &str) = ("so.tilo.shell", "tab-groups");
@@ -110,83 +100,10 @@ impl Workspaces {
             .collect();
         self.list_of(person)
             .await
-            .list_workspaces()
-            .into_iter()
-            .filter(|kept| !here.contains(&kept.id.to_string()))
-            .map(|kept| (kept.id.to_string(), kept.name))
+            .listed()
+            .filter(|(workspace, _)| !here.contains(&workspace.to_string()))
+            .map(|(workspace, kept)| (workspace.to_string(), kept.name.clone()))
             .collect()
-    }
-
-    /// Keep `list` as `device`'s person's list, already permitted to.
-    pub(super) async fn keep_personal(
-        &self,
-        device: &DeviceCert,
-        list: PersonalList,
-    ) -> Result<usize, String> {
-        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
-            return Err("only a device of the person's own keeps their workspace list".to_owned());
-        }
-        list.check()?;
-        let count = list.workspaces.len();
-        let person = device.user_public_key;
-        let workspace = person_workspace_id(&person);
-        let device_key = self.serving_certificate().device_public_key;
-        let workspaces = list.workspaces.clone();
-        person_workspace::edit_document_on(self, &workspace, WORKSPACES, move |document| {
-            let mut directory = WorkspaceDirectory::load(person, device_key, &document.save())
-                .map_err(|error| error.to_string())?;
-            let named: std::collections::BTreeSet<String> = workspaces
-                .iter()
-                .map(|entry| entry.workspace.clone())
-                .collect();
-            for kept in directory.list_workspaces() {
-                if !named.contains(&kept.id.to_string()) {
-                    directory
-                        .remove_workspace(kept.id)
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            for (index, entry) in workspaces.iter().enumerate() {
-                let Some(id) = tilo_user_identity::WorkspaceId::parse(&entry.workspace) else {
-                    return Err(format!("{:?} names no workspace", entry.workspace));
-                };
-                directory
-                    .add_workspace(id, &entry.name)
-                    .map_err(|error| error.to_string())?;
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "a list is shorter than f64 counts exactly"
-                )]
-                let order = index as f64;
-                directory
-                    .set_order(id, order)
-                    .map_err(|error| error.to_string())?;
-                if let Some(host) = &entry.host
-                    && let Some(hint) = host.hint.as_deref()
-                {
-                    let bytes = hex::decode(hint).map_err(|error| error.to_string())?;
-                    let Ok(address) = host.address() else {
-                        continue;
-                    };
-                    let key = address.device_certificate.device_public_key;
-                    directory
-                        .set_host_hint(id, key, &bytes)
-                        .map_err(|error| error.to_string())?;
-                    directory
-                        .assign_host(id, key)
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            let mut source =
-                AutoCommit::load(&directory.save()).map_err(|error| error.to_string())?;
-            tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
-                .map_err(|error| error.to_string())?;
-            Ok(())
-        })
-        .await?;
-        // Every other device of theirs reads the list it kept.
-        self.personal_changed();
-        Ok(count)
     }
 
     /// Whether another device of `person`'s reads by `label`: one their record
@@ -246,10 +163,10 @@ impl Workspaces {
         };
         // Only those the listing names, when it names some.
         let wanted = |kept: &PersonalWorkspace| only.holds(&kept.workspace, &kept.labels);
-        let directory = self.list_of(&person).await;
+        let list = self.list_of(&person).await;
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
-        for kept in ordered(&directory) {
-            let workspace = kept.id.to_string();
+        for (id, kept) in list.listed() {
+            let workspace = id.to_string();
             // A workspace this host governs is listed as its governance has the person, never as
             // a device of theirs last kept it: one they left, or were taken out of, is in no list
             // of theirs here, so their devices let it go.
@@ -270,8 +187,8 @@ impl Workspaces {
             {
                 continue;
             }
-            let host = directory
-                .host_hint(kept.id)
+            let host = kept
+                .address()
                 .and_then(|hint| KeepingDeviceAddress::of_hint(&hint));
             if let Some(at) = local.iter().position(|one| one.workspace == workspace) {
                 workspaces.push(local.remove(at));
@@ -290,7 +207,7 @@ impl Workspaces {
                 };
                 workspaces.push(PersonalWorkspace {
                     workspace,
-                    name: kept.name,
+                    name: kept.name.clone(),
                     host,
                     role: None,
                     labels: BTreeMap::default(),
@@ -566,18 +483,11 @@ impl Workspaces {
 impl Workspaces {
     /// The person's workspace list as it is in their own workspace: empty
     /// while this host does not hold that workspace.
-    async fn list_of(&self, person: &[u8; 32]) -> WorkspaceDirectory {
+    async fn list_of(&self, person: &[u8; 32]) -> WorkspaceList {
         let workspace = person_workspace_id(person);
-        let device = self.serving_certificate().device_public_key;
-        match person_workspace::document_on(self, &workspace, WORKSPACES).await {
-            Ok(Some(bytes)) => {
-                WorkspaceDirectory::load(*person, device, &bytes).unwrap_or_else(|error| {
-                    tracing::warn!(%error, "the person's workspace list does not read");
-                    WorkspaceDirectory::new(*person, device)
-                })
-            }
-            _ => WorkspaceDirectory::new(*person, device),
-        }
+        person_workspace::read_on::<WorkspaceList>(self, &workspace, IDENTITY_LIST)
+            .await
+            .unwrap_or_default()
     }
 
     /// The devices resource of the person's own workspace: empty while this
@@ -728,18 +638,6 @@ impl Workspaces {
             .lock_recover()
             .insert(*person, known);
     }
-}
-
-/// The workspaces of a directory, in the person's order.
-fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
-    let mut out = directory.list_workspaces();
-    out.sort_by(|left, right| {
-        let key = |entry: &WorkspaceMeta| entry.order.unwrap_or(f64::INFINITY);
-        key(left)
-            .total_cmp(&key(right))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    out
 }
 
 /// Who is present on which device, as one source of presence on this device hears it: what who

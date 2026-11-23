@@ -72,8 +72,6 @@ system-update-live-failed-body = Es ließ sich nicht im laufenden Betrieb abschl
 ## Die Liste der eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat,
 ## ließ sich nicht lesen: er beginnt die Liste neu, statt nichts zu zeigen.
 workspaces-app-name = Arbeitsbereiche
-workspaces-unreadable-title = Deine Arbeitsbereiche ließen sich nicht lesen
-workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat, ließ sich nicht lesen, deshalb beginnt er die Liste neu. Nichts wurde entfernt: deine Arbeitsbereiche sind weiterhin auf diesem Computer und auf deinen anderen Geräten.
 workspace-not-founded-title = { $name } ließ sich nicht im Arbeitsbereichsdienst dieses Computers speichern
 workspace-not-founded-body = Der Arbeitsbereich ist vorerst nur auf diesem Computer, und diese Sitzung versucht es erneut. { $reason }
 

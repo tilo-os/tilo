@@ -27,10 +27,6 @@ path = "src/lib.rs"
 # in the user's identity CRDT lets a lost or stolen device be killed;
 # peers reject its changes going forward.
 #
-# The workspace directory itself lives inside this crate as a
-# bounded Automerge document (`WorkspaceDirectory`) that syncs
-# device-to-device via authenticated incremental deltas.
-#
 # Wire format is pinned via canonical postcard byte-encoding and a
 # fixed BLAKE3-hashed preimage constant per signed type; see
 # `signing_preimage.rs`. Neither the constants nor the byte layout
@@ -67,12 +63,9 @@ serde_json.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 
-# Workspace-directory CRDT. Kept in-doc rather than as a separate
-# collab-types Space because directory shape (workspaces, member
-# devices, host assignments, pins, revocations) is user-scoped, not
-# workspace-scoped.
+# The person's list of their workspaces is a typed resource of their own workspace.
 automerge.workspace = true
-tilo-automerge.workspace = true
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 
 # Error plumbing (matches collab-types).
 thiserror.workspace = true

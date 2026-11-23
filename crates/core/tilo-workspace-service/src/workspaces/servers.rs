@@ -1406,6 +1406,10 @@ impl super::Workspaces {
     /// This is the one notice an admitted frame and a local write both raise,
     /// from the single point each reaches, so a watcher hears a write once.
     pub(crate) fn wrote(&self, workspace: &str, app: &str, record: &str) {
+        // A person's list of workspaces moved: whoever follows their list reads it again.
+        if (app, record) == tilo_server_protocol::workspaces::IDENTITY_LIST {
+            self.personal_changed();
+        }
         let _ = self.inner.document_writes.send(super::ResourceWrite {
             workspace: workspace.to_owned(),
             app: app.to_owned(),

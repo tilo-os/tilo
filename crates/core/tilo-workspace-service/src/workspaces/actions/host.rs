@@ -26,7 +26,7 @@ use tilo_server_protocol::workspaces::{
     ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
     CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
+    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_PERSONAL, LIST_REVOCATIONS,
     LIST_WORKSPACES, PersonalList, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels,
     WorkspaceListing, administered_answer, administered_request, check_labels, labelled,
 };
@@ -122,16 +122,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 25] = [
             params: list_personal_params,
         },
         ServiceOperation::ReadPersonalList,
-    ),
-    (
-        Verb {
-            id: KEEP_PERSONAL,
-            label: "Keep your workspace list here",
-            check: KEEP_PERSONAL,
-            kind: roles::GOVERNANCE_KIND,
-            params: keep_personal_params,
-        },
-        ServiceOperation::KeepPersonalList,
     ),
     (
         Verb {
@@ -549,14 +539,6 @@ fn list_personal_params() -> Vec<ActionParam> {
     ]
 }
 
-fn keep_personal_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "list",
-        ParamType::Object,
-        "Your workspaces, each with where it is hosted, as your device holds them.",
-    )]
-}
-
 fn host_workspace_params() -> Vec<ActionParam> {
     vec![
         workspace_params().remove(0),
@@ -887,10 +869,10 @@ impl Workspaces {
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.branch_own_invoke(device, &args, request_id, now).await
             }
-            ServiceOperation::ReadPersonalList | ServiceOperation::KeepPersonalList => {
+            ServiceOperation::ReadPersonalList => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.personal_invoke(device, operation, &args).await
+                self.personal_invoke(device, &args).await
             }
             ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -1051,10 +1033,6 @@ impl Workspaces {
                         }
                     })
             }
-            // A list is kept for a person who takes part here: one the site
-            // let in, or a member of a workspace here, whom an invitation
-            // brought. Anyone else holds nothing here to keep a list of.
-            ServiceOperation::KeepPersonalList => !self.inner.memberships.holds_any(&person),
             _ => false,
         };
         // Anyone can make a root, so a certificate alone is nobody's way past
@@ -1142,39 +1120,27 @@ impl Workspaces {
     async fn personal_invoke(
         &self,
         device: &DeviceCert,
-        operation: ServiceOperation,
         args: &Args,
     ) -> Result<Value, ActionCallError> {
-        if operation == ServiceOperation::ReadPersonalList {
-            self.note_own_device(device).await;
-            // A page names its browser's tab keys; one it can't name as the
-            // contract says still reads the list.
-            if let Ok(Some(browser)) = args.object("browser") {
-                self.note_browser(device, browser).await;
-            }
-            // A backend finds its customer's workspace by its labels: only
-            // the workspaces labelled so are read, however many it has.
-            let only = Listed {
-                labels: args.object("labels")?.unwrap_or_default(),
-                workspace: args.text("workspace")?.map(str::to_owned),
-            };
-            check_labels(&only.labels).map_err(ActionCallError::invalid_request)?;
-            let here = self.listed(device, &only).await;
-            let mut list = self.personal(device, &here, &only).await;
-            if only.workspace.is_some() {
-                self.sign_own_addresses(&mut list).await;
-            }
-            return answer(&list);
-        }
-        let list: PersonalList = args
-            .object("list")?
-            .ok_or_else(|| ActionCallError::invalid_request("`list` is required"))?;
-        let kept = self
-            .keep_personal(device, list)
-            .await
-            .map_err(ActionCallError::refused)?;
         self.note_own_device(device).await;
-        Ok(serde_json::json!({ "kept": kept }))
+        // A page names its browser's tab keys; one it can't name as the
+        // contract says still reads the list.
+        if let Ok(Some(browser)) = args.object("browser") {
+            self.note_browser(device, browser).await;
+        }
+        // A backend finds its customer's workspace by its labels: only
+        // the workspaces labelled so are read, however many it has.
+        let only = Listed {
+            labels: args.object("labels")?.unwrap_or_default(),
+            workspace: args.text("workspace")?.map(str::to_owned),
+        };
+        check_labels(&only.labels).map_err(ActionCallError::invalid_request)?;
+        let here = self.listed(device, &only).await;
+        let mut list = self.personal(device, &here, &only).await;
+        if only.workspace.is_some() {
+            self.sign_own_addresses(&mut list).await;
+        }
+        answer(&list)
     }
 
     /// Name, in each workspace of `list` this host keeps, its own signed

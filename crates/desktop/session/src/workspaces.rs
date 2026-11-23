@@ -1,5 +1,5 @@
 //! The workspace menu's host rows, the directory they open, the person's own
-//! workspaces as all their devices hold them, and what the session says when
+//! workspaces as all their devices list them, and what the session says when
 //! a workspace is left: the parts of workspaces the session itself cannot
 //! answer, because they are the session's to know.
 //!
@@ -7,44 +7,33 @@
 //! workspace's collaboration and reaches every device that takes part in it.
 //! What a device additionally needs is the *list*: which workspaces are this
 //! person's, so that one made on the laptop appears on the board as well.
-//! That list is the person's workspace directory
-//! ([`WorkspaceDirectory`]), a small CRDT every device of theirs holds: one
-//! resource of the person's own workspace, which carries it between their
-//! devices as any other resource of theirs ([`Personal::sync_store`]).
+//! That list is a resource of the person's own workspace
+//! ([`WorkspaceList`]), which the session follows at the device's daemon and
+//! changes only through its typed actions; it keeps no copy of it.
 //!
-//! The whole session stays on the device. Besides the workspaces it records
-//! what this device is looking at (the active workspace, which strip each
-//! display shows, focus pointers) and workspaces that belong to other people,
-//! none of which another device of the person should take over.
-//!
-//! Reconciling is a three-way merge against [`Personal::agreed`], the list
-//! as both sides last had it: a workspace that appeared or was renamed here
-//! since then is written to the list, and one that appeared or was renamed
-//! in the list is brought onto this device. The same holds for a
-//! workspace taken off one device, for the order of the list, and for the
-//! devices a workspace shows on (every device, unless the person keeps it
-//! off some).
-//!
-//! Each entry names the device hosting the workspace
-//! ([`WorkspaceMeta::host_devices`]): the device that made it. Another of
-//! the person's devices that does not hold a listed workspace yet enters it there
-//! when the list brings it ([`Adoption::enter`]), which is how a workspace
-//! made on one device opens on the others without joining anything anew.
-//! Nothing asks the devices on a timer.
+//! Each pass compares the shell with the shell as the last pass left it: a
+//! workspace made, renamed, moved or taken off here since is written to the
+//! list. What the list says is then brought onto the shell: a workspace it
+//! names that this device does not hold is entered at the device hosting it
+//! ([`ListedWorkspace::host`]), one taken off the list or kept off this
+//! device is let go, and the shell takes the list's order. A workspace the
+//! list was never told of — one joined through someone's invitation, which
+//! each device of the person joins on its own — stays as it is. Nothing asks
+//! the devices on a timer.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_resource::Invoke;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
-use tilo_user_identity::{WorkspaceDirectory, WorkspaceMeta};
+use tilo_user_identity::{ListedWorkspace, WorkspaceList};
 
 use crate::directory;
+use crate::followed_resource::FollowedResource;
 use crate::platform::notice::Notices;
 use crate::workspace_settings;
 
@@ -58,15 +47,6 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
         ),
         &tilo_session_core::desktop::names::workspace(name),
     );
-}
-
-/// One of the person's workspaces, as their list holds it on every device of theirs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Listed {
-    /// What the workspace is called.
-    pub(crate) name: String,
-    /// The device hosting the workspace: its device key.
-    pub(crate) host: Option<[u8; 32]>,
 }
 
 /// One of the person's devices as a workspace's settings offer it: whether the workspace shows
@@ -116,32 +96,32 @@ pub(crate) struct Adoption {
     pub(crate) changed: bool,
     /// Workspaces to open here, at the device hosting them.
     pub(crate) enter: Vec<ToEnter>,
-    /// Workspaces to take off this session: gone from the list, deleted on another device, or no
-    /// longer shown on this one.
+    /// Workspaces to take off this session: taken off the list, or no longer shown on this one.
     pub(crate) release: Vec<WorkspaceId>,
 }
 
-/// The person's list of their own workspaces, as this device holds it and last agreed it with their
-/// others.
+/// A write of the person's list.
+pub(crate) type ListWrite = Invoke<WorkspaceList>;
+
+/// The person's list of their own workspaces as this session follows it, and what this session
+/// did with it.
 pub(crate) struct Personal {
     /// This device's collaboration identity: its certificate names the device to the person's
     /// others.
     identity: tilo_network_actor::DeviceIdentity,
-    directory: WorkspaceDirectory,
-    /// The person's store's revision and this list's heads when the two were last brought together:
-    /// while neither moved, there is nothing to take in or to write.
-    synced: Option<(u64, Vec<automerge::ChangeHash>)>,
-    /// This device, as the list's device registers name it.
+    /// This device, as the list names it.
     device: [u8; 32],
-    /// The workspaces this device had at the last reconciliation.
-    agreed: BTreeMap<WorkspaceId, Listed>,
-    /// Their order at the last reconciliation.
-    agreed_order: Vec<WorkspaceId>,
+    /// The list, followed at the device's daemon: `None` in a session that reaches none.
+    list: Option<FollowedResource<WorkspaceList>>,
+    /// The shell's workspaces, by id with their names in its order, as the last pass left them:
+    /// what the next pass compares the shell with to learn what the person did here since. `None`
+    /// until the first pass, which takes the shell as it found it.
+    passed: Option<Vec<(WorkspaceId, String)>>,
     /// Listed workspaces handed to the session to open, until their workspace is here: none of them is
     /// taken for one deleted here meanwhile.
     entering: BTreeSet<WorkspaceId>,
-    /// Workspaces on this session that are someone else's, joined through their API: the person's
-    /// other devices join them each on their own, so the list never names them.
+    /// Workspaces joined on this session through someone's invitation while it runs: the person's
+    /// other devices join them each on their own, so the list is never told of them.
     borrowed: BTreeSet<WorkspaceId>,
     /// Where each workspace this device holds is hosted, as this device's workspace itself says:
     /// the list names that device, never this one, so a device of the person's that opens the
@@ -151,24 +131,8 @@ pub(crate) struct Personal {
     /// were asked at: one ask per hint, so a workspace whose host has not answered yet is not asked
     /// for again on every pass. A newer hint the person's devices say is a new ask.
     asked: BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
-    /// Where the list and `agreed` survive a restart; `None` keeps them in memory only.
-    store: Option<crate::kept::Kept>,
-    /// What the session offered the last time [`Self::publish_local`] ran to the end with everything
-    /// written. While the session offers the same and neither the list nor `agreed` moved since,
-    /// running it again would write nothing, so it is skipped.
-    published: Option<PublishInputs>,
-    /// Whether the list this computer kept could not be read, until the person is told: the list
-    /// starts empty for it.
-    unreadable: bool,
-    /// The list as the person's keys read it, last kept on the hosts of their workspaces and handed
-    /// to this device's API: kept again when it moves.
-    kept: Option<tilo_server_protocol::workspaces::PersonalList>,
-    /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
-    /// serves, so a list said before then is kept on them once it does.
-    kept_on_hosts: bool,
-    /// What the files this device's fleet is read from looked like when the list was last said:
-    /// a fleet that moved since — a device this device's root just certified — is said again.
-    pub(crate) fleet: Option<tilo_identity::device_fleet::FleetStamps>,
+    /// The reading of the list the last pass saw: one that moved since is news to an open sheet.
+    seen: u64,
     /// The workspaces whose host has not taken this device in yet that the person was told of:
     /// once each, not on every ask that times out.
     told_awaiting: BTreeSet<WorkspaceId>,
@@ -180,107 +144,20 @@ pub(crate) struct Personal {
     /// whether the person has workspaces of their own: it becomes their first only if they have
     /// none, and goes when they have some. Until then it is neither founded nor listed.
     seed: Option<WorkspaceId>,
-    /// The parts the person takes in their workspaces, as governance named them when the list
-    /// was last kept where their keys read it: a part that changed since says the list again.
-    kept_roles: BTreeMap<WorkspaceId, String>,
 }
 
 /// How long after a host did not take this device in it is asked again.
 const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// The parts of a session [`Personal::publish_local`] reads.
-#[derive(PartialEq, Eq)]
-struct PublishInputs {
-    listed: BTreeMap<WorkspaceId, Listed>,
-    /// Every workspace of the session, in its order.
-    order: Vec<WorkspaceId>,
+/// The shell's workspaces, by id with their names, in its order.
+fn shown(handle: &DesktopHandle) -> Vec<(WorkspaceId, String)> {
+    handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .map(|workspace| (workspace.id(), workspace.name.clone()))
+            .collect()
+    })
 }
-
-impl PublishInputs {
-    /// What the session hands the list: the person's own workspaces on it, in
-    /// their order. A workspace joined from an API is not one of theirs.
-    ///
-    /// A workspace that was made on another device stays hosted by that one,
-    /// so the devices holding it agree on where it lives; one this device
-    /// made is hosted here.
-    fn of(
-        handle: &DesktopHandle,
-        device: [u8; 32],
-        borrowed: &BTreeSet<WorkspaceId>,
-        seed: Option<WorkspaceId>,
-        agreed: &BTreeMap<WorkspaceId, Listed>,
-        hosts: &BTreeMap<WorkspaceId, [u8; 32]>,
-    ) -> Self {
-        handle.read(|tree| Self {
-            listed: tree
-                .workspaces
-                .iter()
-                .filter(|workspace| {
-                    !workspace.id().is_nil()
-                        && !borrowed.contains(&workspace.id())
-                        && seed != Some(workspace.id())
-                })
-                .map(|workspace| {
-                    // Where the workspace itself says it is hosted first: a device that joined one
-                    // hosted elsewhere must not name itself, or the person's other devices enter a
-                    // workspace that is not here.
-                    let host = hosts
-                        .get(&workspace.id())
-                        .copied()
-                        .or_else(|| agreed.get(&workspace.id()).and_then(|listed| listed.host))
-                        .unwrap_or(device);
-                    (
-                        workspace.id(),
-                        Listed {
-                            name: workspace.name.clone(),
-                            host: Some(host),
-                        },
-                    )
-                })
-                .collect(),
-            order: tree.workspaces.iter().map(Workspace::id).collect(),
-        })
-    }
-}
-
-/// What is kept beside the session.
-#[derive(Serialize, Deserialize)]
-struct Stored {
-    directory: Vec<u8>,
-    agreed: BTreeMap<String, Listed>,
-    #[serde(default)]
-    agreed_order: Vec<String>,
-    #[serde(default)]
-    borrowed: Vec<String>,
-}
-
-/// The list's entries that carry a valid workspace, in the person's order.
-fn entries_of(directory: &WorkspaceDirectory) -> Vec<(WorkspaceId, WorkspaceMeta)> {
-    let mut out: Vec<(WorkspaceId, WorkspaceMeta)> = directory
-        .list_workspaces()
-        .into_iter()
-        .filter_map(|entry| {
-            let workspace = entry.id;
-            (!workspace.is_nil()).then_some((workspace, entry))
-        })
-        .collect();
-    out.sort_by(|(left_id, left), (right_id, right)| {
-        let key = |entry: &WorkspaceMeta| entry.order.unwrap_or(f64::INFINITY);
-        key(left)
-            .total_cmp(&key(right))
-            .then_with(|| left_id.cmp(right_id))
-    });
-    out
-}
-
-/// Whether `entry` shows on `device` : every device shows it unless it opted out, so a device
-/// linked later shows every workspace.
-fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
-    !entry.kept_off_devices.contains(device)
-}
-
-/// The resource of the person's own workspace their list of workspaces is kept in.
-pub(crate) const WORKSPACES_RESOURCE: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 
 impl Personal {
     /// Ask `workspace` 's host again after [`ASK_AGAIN_AFTER`]: it did not take this device in.
@@ -305,90 +182,77 @@ impl Personal {
         }
     }
 
-    /// The person's list as this device holds it, kept beside the session under `state` ; in memory
-    /// only when there is no state directory.
-    /// A file this build cannot read starts empty: the first pass lists this device's workspaces
-    /// again, and the person's other devices answer with theirs.
-    pub(crate) fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Self {
-        let user = identity.device_cert.user_public_key;
+    /// The person's list as this device reads it, read nowhere yet.
+    pub(crate) fn open(identity: tilo_network_actor::DeviceIdentity) -> Self {
         let device = identity.device_cert.device_public_key;
-        let store = state.map(|state| crate::kept::Kept::open(state, crate::kept::WORKSPACES));
-        let mut personal = Self {
+        Self {
             identity,
-            directory: WorkspaceDirectory::new(user, device),
-            synced: None,
             device,
-            agreed: BTreeMap::new(),
-            agreed_order: Vec::new(),
+            list: None,
+            passed: None,
             entering: BTreeSet::new(),
             borrowed: BTreeSet::new(),
             hosts: BTreeMap::new(),
             asked: BTreeMap::new(),
-            store,
-            published: None,
-            unreadable: false,
-            kept: None,
-            kept_on_hosts: false,
-            fleet: None,
+            seen: 0,
             told_awaiting: BTreeSet::new(),
             ask_again: BTreeMap::new(),
             seed: None,
-            kept_roles: BTreeMap::new(),
-        };
-        let read = personal
-            .store
-            .as_ref()
-            .and_then(|store| match store.read() {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(%error, "the remembered workspaces could not be read");
-                    personal.unreadable = true;
-                    None
-                }
-            })
-            .and_then(|bytes| match postcard::from_bytes::<Stored>(&bytes) {
-                Ok(stored) => Some(stored),
-                Err(error) => {
-                    tracing::warn!(%error, "the remembered workspaces do not read back");
-                    personal.unreadable = true;
-                    None
-                }
-            });
-        if let Some(stored) = read {
-            match WorkspaceDirectory::load(user, device, &stored.directory) {
-                Ok(directory) => {
-                    personal.directory = directory;
-                    personal.agreed = stored
-                        .agreed
-                        .into_iter()
-                        .filter_map(|(workspace, listed)| {
-                            Some((WorkspaceId::parse(&workspace)?, listed))
-                        })
-                        .collect();
-                    personal.agreed_order = stored
-                        .agreed_order
-                        .iter()
-                        .filter_map(|workspace| WorkspaceId::parse(workspace))
-                        .collect();
-                    personal.borrowed = stored
-                        .borrowed
-                        .iter()
-                        .filter_map(|workspace| WorkspaceId::parse(workspace))
-                        .collect();
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "the remembered workspaces' list does not read back");
-                    personal.unreadable = true;
-                }
-            }
         }
-        personal
     }
 
-    /// Whether the list this computer kept could not be read, once: the person is told so an empty
-    /// list is not taken for workspaces that are gone.
-    pub(crate) fn take_unreadable(&mut self) -> bool {
-        std::mem::take(&mut self.unreadable)
+    /// Follow the list in the person's own workspace at `daemon` from now on, waking the session
+    /// through `wake` each time it moves.
+    pub(crate) fn follow(
+        &mut self,
+        daemon: &tilo_session_client::daemon_documents::DaemonShell,
+        wake: tilo_service::Wake,
+    ) {
+        let person = self.identity.device_cert.user_public_key;
+        self.list = Some(FollowedResource::follow(
+            daemon,
+            (
+                &tilo_server_protocol::servers::person_workspace_id(&person),
+                tilo_user_identity::workspace_list::APP,
+                tilo_user_identity::workspace_list::RESOURCE,
+            ),
+            tilo_action_policy::PersonId::from_root(person).as_str(),
+            None,
+            wake,
+        ));
+    }
+
+    /// The list as last read: `None` while it was not read yet, or nothing reads it.
+    pub(crate) fn read(&self) -> Option<Rc<WorkspaceList>> {
+        let list = self.list.as_ref()?;
+        list.held()?;
+        Some(list.get())
+    }
+
+    /// Whether the list moved since the last time this was asked.
+    fn moved(&mut self) -> bool {
+        let Some(list) = &self.list else {
+            return false;
+        };
+        let revision = list.revision();
+        let moved = revision != self.seen;
+        self.seen = revision;
+        moved
+    }
+
+    /// Make `writes` at the daemon, in order. Whether every one was made: one that was not is
+    /// made again by a later pass, which finds the list still lacking it.
+    fn write(&self, writes: &[ListWrite]) -> bool {
+        let Some(list) = &self.list else {
+            return writes.is_empty();
+        };
+        writes.iter().all(|write| match list.invoke(write) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, action = write.id, "the person's list was not changed");
+                false
+            }
+        })
     }
 
     /// Hold `workspace`, the one the shell started with on a device that kept none, until it is
@@ -415,25 +279,18 @@ impl Personal {
         self.seed
     }
 
-    /// Whether the person's list names a workspace of theirs besides `except`: one this device or
-    /// another of theirs made, or one a host of theirs lists.
-    fn names_besides(&self, except: WorkspaceId) -> bool {
-        entries_of(&self.directory)
-            .iter()
-            .any(|(workspace, _)| *workspace != except)
-    }
-
     /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
-    /// known. A person with a workspace of their own anywhere — on their list, held on this device
-    /// (`held`), on what their hosts list (`listed`), or one their governance names them the owner
-    /// of (`owned`, which a workspace they joined is not otherwise) — has it taken off `handle`'s
-    /// shell once another workspace stands there, never founded nor listed; a person with none has
-    /// it as their first, founded and listed from then on. `listed` is `None` while a host has not
-    /// answered, which leaves it waiting when nothing else says the person has one. Whether it
-    /// settled.
+    /// known. A person with a workspace of their own anywhere — on their `list`, held on this
+    /// device (`held`), on what their hosts list (`listed`), or one their governance names them
+    /// the owner of (`owned`, which a workspace they joined is not otherwise) — has it taken off
+    /// `handle`'s shell once another workspace stands there, never founded nor listed; a person
+    /// with none has it as their first, founded and listed from then on. `listed` is `None` while
+    /// a host has not answered, which leaves it waiting when nothing else says the person has one.
+    /// Whether it settled.
     pub(crate) fn settle_seed(
         &mut self,
         handle: &DesktopHandle,
+        list: &WorkspaceList,
         held: &[WorkspaceId],
         listed: Option<&BTreeSet<WorkspaceId>>,
         owned: &BTreeSet<WorkspaceId>,
@@ -446,7 +303,7 @@ impl Personal {
                 && !self.is_own(*workspace)
                 && (!self.borrowed.contains(workspace) || owned.contains(workspace))
         };
-        let has = self.names_besides(seed)
+        let has = list.listed().any(|(workspace, _)| workspace != seed)
             || held.iter().any(theirs)
             || match listed {
                 None => return false,
@@ -470,31 +327,28 @@ impl Personal {
             tracing::info!(target: JOIN_FLOW_TARGET, %seed, "the person has no workspace: the one this shell started with is their first");
         }
         self.seed = None;
-        self.published = None;
         true
     }
 
-    /// `workspace` arrived from an API: it is the workspace of whoever let the person in, not one
-    /// of their own, so their other devices are never told to open it themselves — each joins it
-    /// through its own invitation.
+    /// `workspace` was joined here through someone's invitation: it is the workspace of whoever
+    /// let the person in, not one of their own, so their other devices are never told to open it
+    /// themselves — each joins it through its own invitation.
     pub(crate) fn joined(&mut self, workspace: WorkspaceId) {
-        if workspace.is_nil() || !self.borrowed.insert(workspace) {
-            return;
+        if !workspace.is_nil() {
+            self.borrowed.insert(workspace);
         }
-        self.published = None;
-        self.persist();
     }
 
-    /// The workspaces on this device that are someone else's, joined through their API:
-    /// whose workspace they are is their host's governance's to say, not this person's.
+    /// The workspaces joined on this session through someone's invitation while it runs: whose
+    /// workspace they are is their host's governance's to say, not this person's.
     pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
         &self.borrowed
     }
 
-    /// Whether this device is the one that made `workspace` : the list names this device as its
-    /// host, or names no host yet for a workspace a pass has not listed. A workspace another device
-    /// of the person's made is hosted there, and one this device is entering from there is not its
-    /// to make: neither is founded here.
+    /// Whether this device is the one that made `workspace` : it hosts it, or the list names this
+    /// device as its host, or names no host for it. A workspace another device of the person's
+    /// made is hosted there, and one this device is entering from there is not its to make:
+    /// neither is founded here.
     pub(crate) fn made_here(&self, workspace: WorkspaceId) -> bool {
         if self.entering.contains(&workspace) {
             return false;
@@ -502,167 +356,135 @@ impl Personal {
         self.hosts
             .get(&workspace)
             .copied()
-            .or_else(|| self.agreed.get(&workspace).and_then(|listed| listed.host))
             .or_else(|| {
-                // One the list names a host of before this device agreed it: taken from a host's
-                // list, it is entered there.
-                entries_of(&self.directory)
-                    .into_iter()
-                    .find(|(listed, _)| *listed == workspace)
-                    .and_then(|(_, entry)| entry.host_devices.first().copied())
+                self.read()
+                    .and_then(|list| list.get(workspace).and_then(ListedWorkspace::host))
             })
             .is_none_or(|host| host == self.device)
     }
 
-    /// Write what changed on this device since the person's devices
-    /// last agreed into the list: new and renamed workspaces, ones taken off
-    /// the session here, and a new order. Returns whether the list changed,
-    /// which is when the person's other devices need to hear of it.
-    ///
-    /// Called after every pass, so when neither the session nor the list moved
-    /// since the last call it only compares the session with what it offered
-    /// then.
-    pub(crate) fn publish_local(&mut self, handle: &DesktopHandle) -> bool {
-        let inputs = PublishInputs::of(
-            handle,
-            self.device,
-            &self.borrowed,
-            self.seed,
-            &self.agreed,
-            &self.hosts,
-        );
-        if self.published.as_ref() == Some(&inputs) {
-            return false;
+    /// What changed on this shell since the last pass, as writes of `list`: this device named
+    /// among the person's devices, new and renamed workspaces, ones taken off the shell here, and
+    /// a new order. A workspace the list does not name is listed when it appeared here since the
+    /// last pass, or this device hosts it or nothing does yet (it is being made here): a workspace
+    /// taken off the list elsewhere, or joined through an invitation, is neither.
+    pub(crate) fn publish_local(
+        &self,
+        handle: &DesktopHandle,
+        list: &WorkspaceList,
+    ) -> Vec<ListWrite> {
+        let now = shown(handle);
+        let before = self.passed.as_ref().unwrap_or(&now);
+        let mut writes = Vec::new();
+        let device = hex::encode(self.device);
+        if let Some(label) =
+            tilo_user_identity::device_name(&self.identity.device_cert.device_label)
+            && list.devices.get(&device).map(String::as_str) != Some(label)
+        {
+            writes.push(WorkspaceList::NAME_DEVICE.with((device.clone(), label.to_owned())));
         }
-        let listed = &inputs.listed;
-        let mut complete = true;
-        let mut changed = false;
-        let named = tilo_user_identity::device_name(&self.identity.device_cert.device_label);
-        if let Some(label) = named {
-            let registered = self
-                .directory
-                .devices()
-                .iter()
-                .any(|(device, known)| *device == self.device && known == label);
-            if !registered {
-                if self.directory.register_device(self.device, label).is_ok() {
-                    changed = true;
-                } else {
-                    complete = false;
-                }
-            }
-        }
-        let next_order = entries_of(&self.directory)
-            .iter()
-            .filter_map(|(_, entry)| entry.order)
-            .fold(0.0_f64, f64::max);
-        let mut appended = 0.0;
-        for (workspace, entry) in listed {
-            let fresh = !self.agreed.contains_key(workspace);
-            if self.agreed.get(workspace) == Some(entry) {
+        for (workspace, name) in &now {
+            let id = *workspace;
+            if id.is_nil()
+                || self.borrowed.contains(&id)
+                || self.seed == Some(id)
+                || self.is_own(id)
+            {
                 continue;
             }
-            let id = *workspace;
-            let hosts: Vec<[u8; 32]> = entry.host.into_iter().collect();
-            let written = self
-                .directory
-                .add_workspace(id, &entry.name)
-                .and_then(|()| self.directory.set_host_devices(id, &hosts))
-                .and_then(|()| {
-                    if fresh {
-                        appended += 1.0;
-                        self.directory.set_order(id, next_order + appended)
-                    } else {
-                        Ok(())
+            let held_host = self.hosts.get(&id).copied();
+            match list.get(id) {
+                Some(listed) => {
+                    if !name.trim().is_empty() && listed.name != *name {
+                        writes.push(
+                            WorkspaceList::LIST_WORKSPACE.with((id.to_string(), name.clone())),
+                        );
                     }
-                });
-            match written {
-                Ok(()) => {
-                    self.agreed.insert(*workspace, entry.clone());
-                    changed = true;
+                    if let Some(host) = held_host
+                        && listed.host() != Some(host)
+                    {
+                        writes.push(
+                            WorkspaceList::HOST_WORKSPACE.with((id.to_string(), hex::encode(host))),
+                        );
+                    }
                 }
-                Err(error) => {
-                    complete = false;
-                    tracing::warn!(%error, %workspace, "a workspace of the person's was not listed");
+                None => {
+                    let new_here = !before.iter().any(|(was, _)| *was == id);
+                    let gone_elsewhere = list.went(id) && !new_here;
+                    let made_here = held_host.is_none_or(|host| host == self.device);
+                    if gone_elsewhere || !(new_here || made_here) {
+                        continue;
+                    }
+                    writes.push(WorkspaceList::LIST_WORKSPACE.with((id.to_string(), name.clone())));
+                    let host = held_host.unwrap_or(self.device);
+                    writes.push(
+                        WorkspaceList::HOST_WORKSPACE.with((id.to_string(), hex::encode(host))),
+                    );
                 }
             }
         }
-        // A workspace agreed on and gone from this session was taken off it here.
-        let present: BTreeSet<WorkspaceId> = inputs.order.iter().copied().collect();
-        // A listed workspace being entered has no workspace here yet; it was not deleted here.
-        self.entering
-            .retain(|workspace| !present.contains(workspace));
-        let deleted: Vec<WorkspaceId> = self
-            .agreed
-            .keys()
-            .filter(|workspace| !present.contains(workspace) && !self.entering.contains(workspace))
-            .copied()
-            .collect();
-        for workspace in deleted {
-            let _ = self.directory.remove_workspace(workspace);
-            self.agreed.remove(&workspace);
-            changed = true;
+        // A listed workspace this shell showed and shows no more was taken off it here.
+        for (workspace, _) in before {
+            if now.iter().any(|(is, _)| is == workspace) || self.entering.contains(workspace) {
+                continue;
+            }
+            if list
+                .get(*workspace)
+                .is_some_and(|listed| listed.shows_on(&self.device))
+            {
+                writes.push(WorkspaceList::UNLIST_WORKSPACE.with(workspace.to_string()));
+            }
         }
-        changed |= self.publish_order(&inputs.order);
-        if changed {
-            self.persist();
-        }
-        // A write that failed is tried again on the next call.
-        self.published = complete.then_some(inputs);
-        changed
+        writes.extend(Self::publish_order(list, before, &now));
+        writes
     }
 
-    /// Give the workspaces this session holds positions in the list that match their order here, when
-    /// that order moved since the last agreement. Only entries out of place get a new position, so
-    /// a concurrent move of another workspace on another device still lands.
-    fn publish_order(&mut self, order: &[WorkspaceId]) -> bool {
-        let here: Vec<WorkspaceId> = order
-            .iter()
-            .copied()
-            .filter(|workspace| self.agreed.contains_key(workspace))
-            .collect();
-        let agreed: Vec<WorkspaceId> = self
-            .agreed_order
-            .iter()
-            .filter(|workspace| self.agreed.contains_key(workspace))
-            .copied()
-            .collect();
-        if here == agreed {
-            self.agreed_order = here;
-            return false;
-        }
-        let positions: BTreeMap<WorkspaceId, f64> = entries_of(&self.directory)
-            .into_iter()
-            .filter_map(|(workspace, entry)| Some((workspace, entry.order?)))
-            .collect();
-        let mut changed = false;
-        let mut previous = f64::NEG_INFINITY;
-        for (index, workspace) in here.iter().enumerate() {
-            if let Some(current) = positions.get(workspace).copied()
-                && current > previous
-            {
-                previous = current;
-                continue;
-            }
-            let next = here
-                .get(index.saturating_add(1)..)
-                .unwrap_or(&[])
+    /// Put the listed workspaces in the order this shell shows them, when the person moved them
+    /// here since the last pass: each one out of place goes right after the one before it here, so
+    /// a concurrent move of another workspace on another device still lands. Only workspaces the
+    /// shell showed before and shows still say how they were moved: one arriving or going is no
+    /// move.
+    fn publish_order(
+        list: &WorkspaceList,
+        before: &[(WorkspaceId, String)],
+        now: &[(WorkspaceId, String)],
+    ) -> Vec<ListWrite> {
+        let kept = |shell: &[(WorkspaceId, String)], other: &[(WorkspaceId, String)]| {
+            shell
                 .iter()
-                .filter_map(|later| positions.get(later).copied())
-                .find(|later| *later > previous);
-            let placed = match (previous.is_finite(), next) {
-                (true, Some(next)) => f64::midpoint(previous, next),
-                (true, None) => previous + 1.0,
-                (false, Some(next)) => next - 1.0,
-                (false, None) => 0.0,
-            };
-            if self.directory.set_order(*workspace, placed).is_ok() {
-                changed = true;
-            }
-            previous = placed;
+                .map(|(workspace, _)| *workspace)
+                .filter(|workspace| {
+                    list.get(*workspace).is_some() && other.iter().any(|(is, _)| is == workspace)
+                })
+                .collect::<Vec<WorkspaceId>>()
+        };
+        let here = kept(now, before);
+        if here == kept(before, now) {
+            return Vec::new();
         }
-        self.agreed_order = here;
-        changed
+        // The list's order, as the writes so far leave it.
+        let mut order: Vec<WorkspaceId> = list.listed().map(|(workspace, _)| workspace).collect();
+        let mut writes = Vec::new();
+        for pair in here.windows(2) {
+            let [previous, workspace] = pair else {
+                continue;
+            };
+            let at = |order: &[WorkspaceId], which: &WorkspaceId| {
+                order.iter().position(|listed| listed == which)
+            };
+            let (Some(after), Some(from)) = (at(&order, previous), at(&order, workspace)) else {
+                continue;
+            };
+            if from < after {
+                order.remove(from);
+                order.insert(after, *workspace);
+                writes.push(
+                    WorkspaceList::PLACE_WORKSPACE
+                        .with((workspace.to_string(), previous.to_string())),
+                );
+            }
+        }
+        writes
     }
 
     /// Read where each workspace this device holds is hosted, as the workspaces themselves say: the
@@ -679,10 +501,9 @@ impl Personal {
             .collect();
     }
 
-    /// Bring what changed in the list since the last agreement onto this device: the
-    /// person's order, and which listed workspaces this device lets go (gone from the list, or no
-    /// longer shown on this one) or opens at the device hosting them (listed, shown here, and not
-    /// on this session).
+    /// Bring `list` onto this device: the person's order, and which listed workspaces this device
+    /// lets go (taken off the list, or no longer shown on this one) or opens at the device hosting
+    /// them (listed, shown here, and not on this session).
     /// A listed workspace is entered only at a host the list names: a device must never guess where
     /// someone's workspace lives, so an entry naming none is left until one lists it. This device
     /// enters nothing at itself.
@@ -692,128 +513,107 @@ impl Personal {
     pub(crate) fn adopt_into(
         &mut self,
         handle: &DesktopHandle,
+        list: &WorkspaceList,
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Adoption {
-        let entries = entries_of(&self.directory);
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
             handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
-        let agreed = self.agreed.clone();
         let mut shown_here: Vec<WorkspaceId> = Vec::new();
-        for (workspace, meta) in &entries {
-            if !shows_on(meta, &self.device) {
-                if self.agreed.remove(workspace).is_some() && present.contains(workspace) {
-                    adoption.release.push(*workspace);
+        for (workspace, listed) in list.listed() {
+            if !listed.shows_on(&self.device) {
+                if present.contains(&workspace) {
+                    adoption.release.push(workspace);
                 }
-                self.entering.remove(workspace);
+                self.entering.remove(&workspace);
                 continue;
             }
-            shown_here.push(*workspace);
-            let entry = Listed {
-                name: meta.name.clone(),
-                host: meta.host_devices.first().copied(),
-            };
+            shown_here.push(workspace);
+            let host = listed.host().filter(|host| *host != self.device);
             // On this session already: nothing to enter, unless it is held as the device this machine
             // was copied from.
-            if present.contains(workspace) {
-                let copied = unknown_here(*workspace);
-                if let Some(host) = entry.host.filter(|host| *host != self.device)
-                    && copied
+            if present.contains(&workspace) {
+                if let Some(host) = host
+                    && unknown_here(workspace)
                 {
                     adoption.enter.push(ToEnter {
-                        workspace: *workspace,
-                        name: entry.name.clone(),
+                        workspace,
+                        name: listed.name.clone(),
                         host,
                         held: true,
                     });
                 }
-                self.agreed.insert(*workspace, entry);
                 continue;
             }
-            let Some(host) = entry.host.filter(|host| *host != self.device) else {
+            let Some(host) = host else {
                 continue;
             };
             adoption.enter.push(ToEnter {
-                workspace: *workspace,
-                name: entry.name.clone(),
+                workspace,
+                name: listed.name.clone(),
                 host,
                 held: false,
             });
-            self.entering.insert(*workspace);
-            self.agreed.insert(*workspace, entry);
+            self.entering.insert(workspace);
         }
-        let named: BTreeSet<WorkspaceId> =
-            entries.iter().map(|(workspace, _)| *workspace).collect();
-        let gone: Vec<WorkspaceId> = self
-            .agreed
-            .keys()
-            .filter(|workspace| !named.contains(workspace))
-            .copied()
-            .collect();
-        for workspace in gone {
-            self.agreed.remove(&workspace);
-            self.entering.remove(&workspace);
-            if present.contains(&workspace) {
-                adoption.release.push(workspace);
+        for workspace in &present {
+            if list.went(*workspace) && !self.borrowed.contains(workspace) {
+                self.entering.remove(workspace);
+                adoption.release.push(*workspace);
             }
         }
-        adoption.changed = self.arrange(handle, &present, &shown_here);
-        // Both run on every pass: the list is written, and what the session offered read again, only
-        // when one of the two moved.
-        if adoption.changed || self.agreed != agreed {
-            self.published = None;
-            self.persist();
-        }
+        adoption.changed = arrange(handle, &present, &shown_here);
         adoption
     }
 
-    /// Put this session's workspaces in the person's order: the workspaces the list names, in its
-    /// order, then the rest as they were. Whether they moved.
-    fn arrange(
+    /// Write to the person's list what changed on `handle`'s shell since the last pass, with
+    /// `writes` the session adds, then bring the list as it stands after onto the shell
+    /// ([`Self::adopt_into`]). `None` when the daemon did not take a write: the next pass makes
+    /// it, comparing the shell with the same last pass, and nothing is brought onto the shell
+    /// from a list that lacks it meanwhile.
+    pub(crate) fn reconcile(
         &mut self,
         handle: &DesktopHandle,
-        present: &[WorkspaceId],
-        order: &[WorkspaceId],
-    ) -> bool {
-        let mut wanted: Vec<WorkspaceId> = order
-            .iter()
-            .copied()
-            .filter(|workspace| present.contains(workspace))
-            .collect();
-        let rest: Vec<WorkspaceId> = present
-            .iter()
-            .copied()
-            .filter(|workspace| !wanted.contains(workspace))
-            .collect();
-        wanted.extend(rest);
-        if wanted == present {
-            return false;
+        list: Rc<WorkspaceList>,
+        mut writes: Vec<ListWrite>,
+        unknown_here: &dyn Fn(WorkspaceId) -> bool,
+    ) -> Option<(Rc<WorkspaceList>, Adoption)> {
+        writes.extend(self.publish_local(handle, &list));
+        if !self.write(&writes) {
+            return None;
         }
-        let mut tree = handle.read(Clone::clone);
-        reorder(&mut tree, &wanted);
-        self.agreed_order = tree
-            .workspaces
-            .iter()
-            .map(Workspace::id)
-            .filter(|workspace| self.agreed.contains_key(workspace))
-            .collect();
-        handle.replace_tree(tree);
-        true
+        let list = if writes.is_empty() {
+            list
+        } else {
+            self.read().unwrap_or(list)
+        };
+        self.ask_again_due();
+        let adoption = self.adopt_into(handle, &list, unknown_here);
+        Some((list, adoption))
+    }
+
+    /// The pass is over: what the shell shows now is what the next pass compares it with.
+    pub(crate) fn passed(&mut self, handle: &DesktopHandle) {
+        let now = shown(handle);
+        let present: BTreeSet<WorkspaceId> = now.iter().map(|(workspace, _)| *workspace).collect();
+        // A listed workspace being entered has no workspace here until it arrives.
+        self.entering
+            .retain(|workspace| !present.contains(workspace));
+        self.passed = Some(now);
     }
 
     /// The person's devices as a workspace's settings offer them, this device always among them:
     /// whether the workspace shows on each, and which one is this device.
     /// Empty for a workspace the person's list does not name: one joined through someone else's
-    /// API is not theirs to show or keep off.
+    /// invitation is not theirs to show or keep off.
     pub(crate) fn device_choices(&self, workspace: WorkspaceId) -> Vec<DeviceChoice> {
-        let Some(entry) = entries_of(&self.directory)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == workspace)
-            .map(|(_, entry)| entry)
-        else {
+        let Some(list) = self.read() else {
             return Vec::new();
         };
-        let mut devices = self.directory.devices();
+        let Some(entry) = list.get(workspace) else {
+            return Vec::new();
+        };
+        let mut devices = list.named_devices();
         if !devices.iter().any(|(device, _)| *device == self.device) {
             let label = self.identity.device_cert.device_label.clone();
             devices.push((self.device, label));
@@ -825,7 +625,7 @@ impl Personal {
                 label: tilo_user_identity::device_name(&label)
                     .unwrap_or_default()
                     .to_owned(),
-                shown: shows_on(&entry, &device),
+                shown: entry.shows_on(&device),
                 here: device == self.device,
             })
             .collect()
@@ -838,169 +638,81 @@ impl Personal {
 
     /// Whether the workspace shows on `device` .
     pub(crate) fn shown_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Option<bool> {
-        let entry = entries_of(&self.directory)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == workspace)
-            .map(|(_, entry)| entry)?;
-        Some(shows_on(&entry, device))
+        Some(self.read()?.get(workspace)?.shows_on(device))
     }
 
     /// Show the workspace on `device` , or keep it off there. Only the devices that opted out are
     /// named, so a device linked later shows it. Returns whether the list changed.
-    pub(crate) fn set_shown(
-        &mut self,
-        workspace: WorkspaceId,
-        device: [u8; 32],
-        shown: bool,
-    ) -> bool {
+    pub(crate) fn set_shown(&self, workspace: WorkspaceId, device: [u8; 32], shown: bool) -> bool {
         // A workspace the list does not name has no entry to keep anything off.
         if !matches!(self.shown_on(workspace, &device), Some(current) if current != shown) {
             return false;
         }
-        if self
-            .directory
-            .set_kept_off(workspace, device, !shown)
-            .is_err()
-        {
-            return false;
-        }
-        // Writing the choice is not a pass over the shell: the list moved all the same.
-        self.published = None;
-        self.persist();
-        true
-    }
-
-    /// Bring the list and the person's own workspace together: take in what their other devices
-    /// wrote there, and write the list there when the workspace lacks something this device holds.
-    /// The workspace carries it to their other devices. Returns whether another device's write
-    /// moved this list.
-    ///
-    /// Cheap when neither the workspace nor the list moved since the last call, which every pass
-    /// makes.
-    pub(crate) fn sync_store(&mut self, store: &crate::PersonResources) -> bool {
-        let revision = *store.changes().borrow();
-        let heads = self.directory.heads();
-        if self
-            .synced
-            .as_ref()
-            .is_some_and(|(was, held)| *was == revision && *held == heads)
-        {
-            return false;
-        }
-        let held = store.document(WORKSPACES_RESOURCE);
-        let taken = match held.as_deref().map(|bytes| self.directory.merge(bytes)) {
-            Some(Ok(taken)) => taken,
-            Some(Err(error)) => {
-                tracing::warn!(%error, "the person's list of workspaces in their own workspace does not read");
-                false
-            }
-            None => false,
-        };
-        if taken {
-            self.published = None;
-            self.persist();
-        }
-        let owed = match &held {
-            Some(bytes) => self.directory.lacks(bytes),
-            None => !self.directory.heads().is_empty(),
-        };
-        if owed {
-            let bytes = self.directory.save();
-            store.edit_document(WORKSPACES_RESOURCE, move |document| {
-                let mut source =
-                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            });
-        }
-        self.synced = Some((*store.changes().borrow(), self.directory.heads()));
-        taken
+        self.write(&[WorkspaceList::SHOW_WORKSPACE.with((
+            workspace.to_string(),
+            hex::encode(device),
+            shown,
+        ))])
     }
 
     /// Take in the person's workspaces their hosts list that this device holds no copy of
-    /// (`listed`, by workspace): each one the list does not name yet is written to it, hosted by
-    /// the device that signed where it is reached, and with that address, so this device enters it
-    /// there as it enters every listed workspace ([`Self::adopt_into`]) and the person's other
-    /// devices read it too. A workspace the list names already keeps its name and hosts. Whether
-    /// the list moved.
+    /// (`listed`, by workspace), as writes of `list`: each one the list does not name yet is
+    /// listed, hosted by the device that signed where it is reached, and with that address, so
+    /// this device enters it there as it enters every listed workspace ([`Self::adopt_into`]) and
+    /// the person's other devices read it too. A workspace the list names already keeps its name
+    /// and host, and one taken off it stays off.
     pub(crate) fn take_hosted(
-        &mut self,
+        list: &WorkspaceList,
         listed: BTreeMap<WorkspaceId, crate::hosted_workspaces::Listed>,
-    ) -> bool {
-        if listed.is_empty() {
-            return false;
-        }
-        let named: BTreeSet<WorkspaceId> = entries_of(&self.directory)
-            .into_iter()
-            .map(|(workspace, _)| workspace)
-            .collect();
-        let mut moved = false;
+    ) -> Vec<ListWrite> {
+        let mut writes = Vec::new();
         for (workspace, entry) in listed {
-            let host = entry.host.host.writes_for();
+            let host = hex::encode(entry.host.host.writes_for());
             let Ok(hint) = postcard::to_allocvec(&entry.host) else {
                 continue;
             };
-            let written = (|| {
-                let mut changed = false;
-                if !named.contains(&workspace) {
-                    self.directory.add_workspace(workspace, &entry.name)?;
-                    self.directory.assign_host(workspace, host)?;
-                    changed = true;
-                }
-                // The address is the host's own word for where it answers: it is said under its key.
-                changed |= self.directory.set_host_hint(workspace, host, &hint)?;
-                Ok::<bool, tilo_user_identity::DirectoryError>(changed)
-            })();
-            match written {
-                Ok(changed) => moved |= changed,
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "a workspace a host lists for the person was not listed here");
-                }
-            }
-        }
-        if moved {
-            self.published = None;
-            self.persist();
-        }
-        moved
-    }
-
-    /// Say where this device reaches the host of each listed workspace it holds, as each workspace's
-    /// own state names it (`hints`, by workspace id): a device of the person's that does not hold one
-    /// yet enters it there.
-    pub(crate) fn say_hints(&mut self, hints: &[(String, Vec<u8>)]) {
-        let listed: BTreeSet<WorkspaceId> = entries_of(&self.directory)
-            .into_iter()
-            .map(|(workspace, _)| workspace)
-            .collect();
-        let mut said = false;
-        for (workspace, hint) in hints {
-            let Some(workspace) = WorkspaceId::parse(workspace) else {
-                continue;
-            };
-            if !listed.contains(&workspace) {
+            let hint = hex::encode(hint);
+            if list.went(workspace) {
                 continue;
             }
-            match self.directory.set_host_hint(workspace, self.device, hint) {
-                Ok(changed) => said |= changed,
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "where a workspace's host is reached was not listed");
-                }
+            let id = workspace.to_string();
+            let named = list.get(workspace);
+            if named.is_none() {
+                writes.push(WorkspaceList::LIST_WORKSPACE.with((id.clone(), entry.name.clone())));
+                writes.push(WorkspaceList::HOST_WORKSPACE.with((id.clone(), host.clone())));
+            }
+            // The address is the host's own word for where it answers: it is said under its key.
+            if named.and_then(|named| named.addresses.get(&host)) != Some(&hint) {
+                writes.push(WorkspaceList::REACH_WORKSPACE.with((id, host, hint)));
             }
         }
-        if said {
-            self.persist();
-        }
+        writes
     }
 
-    /// Where `workspace` 's host is reached, as a device of the person's that holds it said in their
-    /// list. `None` while none of them said it yet.
+    /// Say where this device reaches the host of each listed workspace it holds, as each
+    /// workspace's own state names it (`hints`, by workspace id), as writes of `list`: a device of
+    /// the person's that does not hold one yet enters it there.
+    fn say_hints(&self, list: &WorkspaceList, hints: &[(String, Vec<u8>)]) -> Vec<ListWrite> {
+        let device = hex::encode(self.device);
+        hints
+            .iter()
+            .filter_map(|(workspace, hint)| {
+                let listed = list.get(WorkspaceId::parse(workspace)?)?;
+                let hint = hex::encode(hint);
+                (listed.addresses.get(&device) != Some(&hint)).then(|| {
+                    WorkspaceList::REACH_WORKSPACE.with((workspace.clone(), device.clone(), hint))
+                })
+            })
+            .collect()
+    }
+
+    /// Where `workspace` 's host is reached, as a device of the person's that holds it said in
+    /// `list`. `None` while none of them said it yet.
     pub(crate) fn host_hint(
-        &self,
+        list: &WorkspaceList,
         workspace: WorkspaceId,
     ) -> Option<tilo_peer_state::join::TransportHint> {
-        let bytes = self.directory.host_hint(workspace)?;
+        let bytes = list.get(workspace)?.address()?;
         match postcard::from_bytes(&bytes) {
             Ok(hint) => Some(hint),
             Err(error) => {
@@ -1009,69 +721,29 @@ impl Personal {
             }
         }
     }
+}
 
-    /// The person's workspaces as their keys read them: every one the list carries, in the person's
-    /// order, each with the signed address of its host: `hints` (by workspace id) where this device
-    /// holds it, else where the person's devices said it is reached; and with the part the person
-    /// takes in it as its governance names it (`roles`, by workspace), none where no governance here
-    /// says yet.
-    pub(crate) fn readable(
-        &self,
-        hints: &BTreeMap<String, Vec<u8>>,
-        roles: &BTreeMap<WorkspaceId, String>,
-    ) -> tilo_server_protocol::workspaces::PersonalList {
-        let mut listed = self.directory.list_workspaces();
-        listed.sort_by(|a, b| {
-            a.order
-                .unwrap_or(f64::INFINITY)
-                .total_cmp(&b.order.unwrap_or(f64::INFINITY))
-                .then(a.id.cmp(&b.id))
-        });
-        let workspaces = listed
-            .into_iter()
-            .map(|meta| {
-                let workspace = meta.id;
-                let host = hints
-                    .get(&workspace.to_string())
-                    .cloned()
-                    .or_else(|| self.directory.host_hint(workspace))
-                    .and_then(|hint| {
-                        tilo_server_protocol::workspaces::KeepingDeviceAddress::of_hint(&hint)
-                    });
-                tilo_server_protocol::workspaces::PersonalWorkspace {
-                    name: meta.name,
-                    host,
-                    role: roles.get(&workspace).cloned(),
-                    workspace: workspace.to_string(),
-                    labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-                    unattended: false,
-                    enter_at: None,
-                    made_at_ms: None,
-                }
-            })
-            .collect();
-        tilo_server_protocol::workspaces::PersonalList { workspaces }
+/// Put this session's workspaces in the person's order: the workspaces the list names, in its
+/// order, then the rest as they were. Whether they moved.
+fn arrange(handle: &DesktopHandle, present: &[WorkspaceId], order: &[WorkspaceId]) -> bool {
+    let mut wanted: Vec<WorkspaceId> = order
+        .iter()
+        .copied()
+        .filter(|workspace| present.contains(workspace))
+        .collect();
+    let rest: Vec<WorkspaceId> = present
+        .iter()
+        .copied()
+        .filter(|workspace| !wanted.contains(workspace))
+        .collect();
+    wanted.extend(rest);
+    if wanted == present {
+        return false;
     }
-
-    fn persist(&mut self) {
-        let Some(store) = &self.store else {
-            return;
-        };
-        let stored = Stored {
-            directory: self.directory.save(),
-            agreed: self
-                .agreed
-                .iter()
-                .map(|(workspace, listed)| (workspace.to_string(), listed.clone()))
-                .collect(),
-            agreed_order: self.agreed_order.iter().map(ToString::to_string).collect(),
-            borrowed: self.borrowed.iter().map(ToString::to_string).collect(),
-        };
-        let Ok(bytes) = postcard::to_allocvec(&stored) else {
-            return;
-        };
-        store.replace(bytes);
-    }
+    let mut tree = handle.read(Clone::clone);
+    reorder(&mut tree, &wanted);
+    handle.replace_tree(tree);
+    true
 }
 
 /// Put `tree` 's workspaces in the order `wanted` names: those it names, in its order, then the
@@ -1101,23 +773,16 @@ fn reorder(tree: &mut Layout, wanted: &[WorkspaceId]) -> bool {
     before != after
 }
 
-/// The part `person` takes in each workspace of `tree`, as the workspace's governance names it
-/// there: `owner` for one of theirs, else the role they hold. A workspace whose governance names
-/// nobody yet is missing: the person's list never guesses whose it is.
-pub(crate) fn governed_roles(tree: &Layout, person: &str) -> BTreeMap<WorkspaceId, String> {
-    tree.workspaces
-        .iter()
-        .filter_map(|workspace| {
-            let role = workspace.role_of(person)?;
-            Some((workspace.id(), role.key().to_owned()))
-        })
-        .collect()
-}
-
-/// The person's own workspaces as this computer can keep them: nothing when this computer knows no
-/// identity to keep them for.
-pub(crate) fn personal_for(state: Option<&Path>) -> Option<RefCell<Personal>> {
-    crate::sync::device_identity().map(|identity| RefCell::new(Personal::open(identity, state)))
+/// The person's own workspaces as this session follows them at `daemon`: nothing when this
+/// computer knows no identity to follow them for.
+pub(crate) fn personal_for(
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
+    wake: &tilo_service::Wake,
+) -> Option<RefCell<Personal>> {
+    let identity = crate::sync::device_identity()?;
+    let mut personal = Personal::open(identity);
+    personal.follow(daemon, std::sync::Arc::clone(wake));
+    Some(RefCell::new(personal))
 }
 
 impl crate::Shared {
@@ -1136,15 +801,6 @@ impl crate::Shared {
     /// Who each workspace has in it follows the same rule: what the workspace's own governance here
     /// names is what the session shows, so a change another member's device made shows on this session.
     pub(crate) fn own_workspaces(&self) {
-        // A list this computer kept but could not read starts empty here, so the person is told why
-        // instead of finding their workspaces gone.
-        if let Some(personal) = &self.personal
-            && personal.borrow_mut().take_unreadable()
-        {
-            self.notifications
-                .borrow()
-                .tell(&crate::notices::workspaces_notice());
-        }
         let borrowed = self
             .personal
             .as_ref()
@@ -1609,9 +1265,9 @@ impl crate::Shared {
             .unwrap_or_default()
     }
 
-    /// Keep the person's own workspaces as all their devices hold them: list what this session has,
-    /// take what the others listed, open here what they made there, take off the shell what they
-    /// took off theirs, and say again what this device has when theirs was missing something.
+    /// Keep the person's own workspaces as all their devices hold them: write to their list what
+    /// this session made, renamed, moved or took off since the last pass, open here what the list
+    /// names that this device does not hold, and take off the shell what it no longer names here.
     pub(crate) fn follow_personal(
         &self,
         hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
@@ -1625,27 +1281,24 @@ impl crate::Shared {
         if let Some(hosted) = hosted {
             hosted.follow_lists(&self.wake_handle);
         }
-        let news = {
+        let moved = {
             let mut personal = personal.borrow_mut();
+            // Until the list is read nothing says which workspaces are the person's: the shell
+            // stays as it is.
+            let Some(list) = personal.read() else {
+                return;
+            };
             // Where this device holds each of its workspaces, as the workspaces themselves say: the
             // list names the device hosting a workspace, never the one that happens to hold it
             // here.
             personal.refresh_hosts(self.engine.as_deref());
-            let store = self.sync.as_ref().and_then(|sync| sync.person_resources());
-            // What the person's other devices wrote to the list is taken in before this session's
-            // pass is written over it, so the pass reconciles against their list.
-            let mut news = store
-                .as_ref()
-                .is_some_and(|store| personal.sync_store(store));
+            let mut writes = Vec::new();
             if let Some(hosted) = hosted {
-                news |= personal.take_hosted(hosted.take_listed());
+                writes.extend(Personal::take_hosted(&list, hosted.take_listed()));
             }
-            news |= personal.publish_local(&self.handle);
-            news |= self.fleet_moved(&mut personal);
             if let Some(engine) = &self.engine {
-                personal.say_hints(&engine.host_hints());
+                writes.extend(personal.say_hints(&list, &engine.host_hints()));
             }
-            personal.ask_again_due();
             // A workspace whose governance holds no certificate of this device's is held as the
             // device this machine was copied from.
             let device = personal.device;
@@ -1663,7 +1316,11 @@ impl crate::Shared {
                         .unwrap_or(false)
                 })
             };
-            let adoption = personal.adopt_into(&self.handle, &unknown_here);
+            let Some((list, adoption)) =
+                personal.reconcile(&self.handle, list, writes, &unknown_here)
+            else {
+                return;
+            };
             let mut enter = adoption.enter;
             // A workspace on this session the person's list does not carry (one
             // joined at someone's site) is entered as this device at the host
@@ -1694,7 +1351,7 @@ impl crate::Shared {
                 }
             }
             for opened in enter {
-                self.enter_listed(&mut personal, &opened);
+                self.enter_listed(&mut personal, &list, &opened);
             }
             for workspace in adoption.release {
                 self.release_workspace(workspace);
@@ -1706,48 +1363,22 @@ impl crate::Shared {
                     self.release_workspace(workspace);
                 }
             }
-            self.settle_seed(&mut personal, hosted);
-            // What this pass wrote to the list goes to the person's own workspace, which carries it
-            // to their other devices.
-            if let Some(store) = &store {
-                news |= personal.sync_store(store);
-            }
-            self.keep_readable(
-                &mut personal,
-                hosted.map(|hosted| {
-                    hosted as &dyn tilo_workspace_service::apps::services::HostedWorkspaces
-                }),
-                news,
-            );
+            self.settle_seed(&mut personal, &list, hosted);
+            personal.passed(&self.handle);
             if adoption.changed {
                 self.keep_layout_now();
             }
-            news
+            personal.moved()
         };
         // The list moved, so what an open sheet says of the person's devices may have too: a device
         // they linked, or a choice made on another one, arrives in the list alone.
-        if news {
+        if moved {
             self.ws_settings_fed.set(None);
             workspace_settings::refresh(
                 self.workspace_settings.as_ref(),
                 &self.workspace_settings_feed(),
             );
         }
-    }
-
-    /// Whether the fleet this device's root certifies moved since the last pass, which says the
-    /// person's list again: the record keeps the keys with it, and a device paired here — a
-    /// certificate the helper signed into the fleet, on a thread of its own — is in no record
-    /// until the list is said. A fleet whose files stand still costs this pass two stamps.
-    fn fleet_moved(&self, personal: &mut Personal) -> bool {
-        let Some(engine) = &self.engine else {
-            return false;
-        };
-        let stamps =
-            crate::identity_admin::fleet_stamps(&engine.identity().device_cert.user_public_key);
-        let moved = stamps != personal.fleet;
-        personal.fleet = stamps;
-        moved
     }
 
     /// Settle the workspace the shell started with on a device that kept none
@@ -1758,6 +1389,7 @@ impl crate::Shared {
     fn settle_seed(
         &self,
         personal: &mut Personal,
+        list: &WorkspaceList,
         hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
     ) {
         if personal.seed().is_none() {
@@ -1792,45 +1424,7 @@ impl crate::Shared {
                     })
                     .collect()
             });
-        personal.settle_seed(&self.handle, &held, listed.as_ref(), &owned);
-    }
-
-    /// The part the person takes in each workspace on the shell ([`governed_roles`]).
-    fn governed_roles(&self) -> BTreeMap<WorkspaceId, String> {
-        self.handle.read(|tree| governed_roles(tree, &self.person))
-    }
-
-    /// Keep the person's list where their keys read it, when it moved: this device's API answers
-    /// it to a key of theirs that dials it, and every dedicated host of a workspace held here keeps
-    /// it for the keys that reach no device of theirs.
-    fn keep_readable(
-        &self,
-        personal: &mut Personal,
-        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
-        moved: bool,
-    ) {
-        let owed = personal.kept.is_none() || (hosted.is_some() && !personal.kept_on_hosts);
-        // A workspace's governance naming the person's part in it arrives after the workspace
-        // does: the list says it again then.
-        let roles = self.governed_roles();
-        if !moved && !owed && roles == personal.kept_roles {
-            return;
-        }
-        let hints: BTreeMap<String, Vec<u8>> = self
-            .engine
-            .as_ref()
-            .map(|engine| engine.host_hints().into_iter().collect())
-            .unwrap_or_default();
-        let list = personal.readable(&hints, &roles);
-        personal.kept_roles = roles;
-        if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
-            return;
-        }
-        if let (Some(engine), Some(hosted)) = (&self.engine, hosted) {
-            crate::hosted_workspaces::keep_on_hosts(hosted, engine, &list);
-        }
-        personal.kept_on_hosts = hosted.is_some();
-        personal.kept = Some(list);
+        personal.settle_seed(&self.handle, list, &held, listed.as_ref(), &owned);
     }
 
     /// Take one of the person's workspaces in that this device does not hold: the list says which
@@ -1838,7 +1432,7 @@ impl crate::Shared {
     /// asks the host to take it in as a further device of the person's
     /// ([`crate::sync::Client::enter`]). Nothing is invited here: a workspace that never arrives
     /// leaves the session as it found it.
-    fn enter_listed(&self, personal: &mut Personal, opened: &ToEnter) {
+    fn enter_listed(&self, personal: &mut Personal, list: &WorkspaceList, opened: &ToEnter) {
         let workspace = opened.workspace.to_string();
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
             // Nothing here can take a workspace in: the session shows it as this computer keeps it.
@@ -1849,7 +1443,7 @@ impl crate::Shared {
         };
         // A workspace this session holds already says itself where its host is
         // reached, should none of the person's devices have said it yet.
-        let hint = personal.host_hint(opened.workspace).or_else(|| {
+        let hint = Personal::host_hint(list, opened.workspace).or_else(|| {
             opened
                 .held
                 .then(|| {
@@ -2008,16 +1602,6 @@ mod tests {
     use tilo_session_core::desktop::seed_tree;
     use tilo_user_identity::DeviceCert;
 
-    /// The list as a later session opens it.
-    fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Personal {
-        Personal::open(identity, state)
-    }
-
-    /// The file the device's store keeps the list in, under `state`.
-    fn kept_file(state: &Path) -> std::path::PathBuf {
-        crate::kept::local_path(state, crate::kept::WORKSPACES)
-    }
-
     /// A device of the person's, certified for their own root key.
     fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
@@ -2036,6 +1620,81 @@ mod tests {
         tilo_network_actor::DeviceIdentity::kept(cert, this)
     }
 
+    /// The person whose devices the tests run, by the daemon that holds their own workspace,
+    /// where their list is. The daemon's root is the fixture's `[1; 32]`.
+    struct Person {
+        daemon: crate::daemon_fixture::TestDaemon,
+    }
+
+    impl Person {
+        fn start() -> Self {
+            let daemon = crate::daemon_fixture::TestDaemon::start();
+            let workspaces = daemon.workspaces().clone();
+            tilo_rt::app()
+                .block_on(async move {
+                    tilo_workspace_service::workspaces::person_workspace::found(&workspaces).await
+                })
+                .expect("the daemon holds the person's own workspace");
+            Self { daemon }
+        }
+
+        /// A session of theirs on the device `device`, called `label`, following their list.
+        fn device(&self, device: u8, label: &str) -> Personal {
+            let mut personal = Personal::open(identity(1, device, label));
+            personal.follow(&self.daemon.shell(), std::sync::Arc::new(|| {}));
+            personal
+        }
+    }
+
+    /// A pass of `personal`'s session over `session`, as the session makes one on a device whose
+    /// workspaces nothing hosts elsewhere: what changed here goes to the list, and the list comes
+    /// onto the shell. The workspaces it lets go leave the shell, as the session's own action
+    /// takes them off.
+    fn pass(personal: &mut Personal, session: &DesktopHandle) -> Adoption {
+        personal
+            .list
+            .as_ref()
+            .expect("the list is followed")
+            .refresh();
+        let list = personal.read().expect("the person's list reads");
+        let (_, adoption) = personal
+            .reconcile(session, list, Vec::new(), &|_| false)
+            .expect("the daemon takes the pass's writes");
+        if !adoption.release.is_empty() {
+            let mut tree = session.read(Clone::clone);
+            for workspace in &adoption.release {
+                tree.take_off(*workspace);
+            }
+            session.replace_tree(tree);
+        }
+        personal.passed(session);
+        adoption
+    }
+
+    /// Read `personal`'s list again now, as the follow does once the daemon wrote it.
+    fn fresh(personal: &Personal) {
+        personal
+            .list
+            .as_ref()
+            .expect("the list is followed")
+            .refresh();
+    }
+
+    /// What `personal`'s list names: each workspace by id, with its name and host, in order.
+    fn listed(personal: &Personal) -> Vec<(WorkspaceId, String, Option<[u8; 32]>)> {
+        personal
+            .list
+            .as_ref()
+            .expect("the list is followed")
+            .refresh();
+        personal
+            .read()
+            .expect("the person's list reads")
+            .listed()
+            .map(|(workspace, entry)| (workspace, entry.name.clone(), entry.host()))
+            .collect()
+    }
+
     /// The session a fresh device starts from.
     fn session() -> DesktopHandle {
         let mut minter = IdMinter::new(1);
@@ -2046,298 +1705,287 @@ mod tests {
         policy.handle().clone()
     }
 
-    /// The workspaces on `handle` 's session: their id and name, in order.
-    fn on_shell(handle: &DesktopHandle) -> Vec<(WorkspaceId, String)> {
-        handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .map(|workspace| (workspace.id(), workspace.name.clone()))
-                .collect()
-        })
+    /// The workspaces on `handle` 's session, in order.
+    fn on_shell(handle: &DesktopHandle) -> Vec<WorkspaceId> {
+        handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect())
     }
 
-    /// Put the workspace `workspace` on `handle` 's session, as the session's own action for making one
-    /// does.
+    /// Put the workspace `workspace` on `handle` 's session, as the session's own action for making
+    /// one does.
     fn open_here(handle: &DesktopHandle, workspace: WorkspaceId, name: &str) {
         let mut tree = handle.read(Clone::clone);
         tree.workspaces.push(Workspace::new(workspace, name));
         handle.replace_tree(tree);
     }
 
-    /// The list's entry for the workspace `workspace` , if it names one.
-    fn listed(personal: &Personal, workspace: WorkspaceId) -> Option<Listed> {
-        entries_of(&personal.directory)
-            .into_iter()
-            .find(|(named, _)| *named == workspace)
-            .map(|(_, entry)| Listed {
-                name: entry.name,
-                host: entry.host_devices.first().copied(),
-            })
+    /// The device key of `identity(1, device, _)`.
+    fn key(device: u8) -> [u8; 32] {
+        identity(1, device, "").device_cert.device_public_key
     }
 
-    tilo_test_env::scenario! {
-        fn the_persons_list_names_each_workspace_and_the_device_that_hosts_it;
+    /// Whether `personal`'s list names `workspace`.
+    fn names(personal: &Personal, workspace: WorkspaceId) -> bool {
+        listed(personal)
+            .iter()
+            .any(|(listed, _, _)| *listed == workspace)
+    }
 
-        phase a_fresh_shells_workspace_is_listed_and_kept;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let session = session();
-            let workspaces = on_shell(&session);
-            let [(id, name)] = workspaces.as_slice() else {
-                panic!("a fresh session holds one workspace");
-            };
-            let (id, name) = (*id, name.clone());
-            let identity = identity(0x11, 0x21, "The laptop");
-            let device = identity.device_cert.device_public_key;
-            let mut personal = open(identity.clone(), Some(state.path()));
-            assert!(
-                personal.publish_local(&session),
-                "the workspace the session starts from is the person's own"
-            );
-            assert_eq!(
-                listed(&personal, id),
-                Some(Listed {
-                    name,
-                    host: Some(device),
-                }),
-                "the list names it, hosted by the device that made it"
-            );
+    /// A person's laptop with two workspaces of its own, which their desktop then enters at the
+    /// laptop and shows in the person's order; and a workspace kept off the desktop leaves it while
+    /// it stays theirs.
+    #[test]
+    fn the_persons_list_carries_what_one_device_does_to_the_others() {
+        let person = Person::start();
+        let laptop_shell = session();
+        let [first] = on_shell(&laptop_shell)
+            .try_into()
+            .expect("a fresh session holds one workspace");
+        let mut laptop = person.device(0x21, "The laptop");
+        pass(&mut laptop, &laptop_shell);
+        assert_eq!(
+            listed(&laptop),
+            [(first, "Session".to_owned(), Some(key(0x21)))],
+            "the list names it, hosted by the device that made it"
+        );
+        let list = laptop.read().expect("the list reads");
+        assert_eq!(
+            list.devices
+                .get(&hex::encode(key(0x21)))
+                .map(String::as_str),
+            Some("The laptop"),
+            "the device names itself among the person's devices"
+        );
+        assert!(
+            laptop.publish_local(&laptop_shell, &list).is_empty(),
+            "a pass with nothing new writes nothing"
+        );
 
-            // Kept beside the session: the next session starts with the same list and has nothing to
-            // write.
-            crate::kept::flush(Some(state.path()));
-            let kept = kept_file(state.path());
-            assert!(kept.is_file(), "the list is kept");
-            let mode = std::os::unix::fs::PermissionsExt::mode(
-                &std::fs::metadata(state.path().join("tilo").join("documents"))
-                    .expect("the device's store")
-                    .permissions(),
-            );
-            assert_eq!(mode & 0o777, 0o700, "the person's list is theirs alone");
-            let mut reopened = open(identity, Some(state.path()));
-            assert!(
-                !reopened.take_unreadable(),
-                "a list that reads back says nothing"
-            );
-            assert!(!reopened.publish_local(&session), "nothing changed since");
-            assert_eq!(
-                reopened.agreed, personal.agreed,
-                "the list survives the session"
-            );
-        }
+        // A workspace made here, then the first renamed and moved after it.
+        let second = WorkspaceId::new();
+        open_here(&laptop_shell, second, "Second");
+        pass(&mut laptop, &laptop_shell);
+        let mut tree = laptop_shell.read(Clone::clone);
+        tree.workspaces.reverse();
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id() == first)
+            .expect("the first workspace")
+            .name = "Renamed".to_owned();
+        laptop_shell.replace_tree(tree);
+        pass(&mut laptop, &laptop_shell);
+        assert_eq!(
+            listed(&laptop),
+            [
+                (second, "Second".to_owned(), Some(key(0x21))),
+                (first, "Renamed".to_owned(), Some(key(0x21))),
+            ],
+            "the person's order and names, as this device last left them"
+        );
 
-        phase the_list_a_key_reads_names_each_workspace_and_where_it_is_hosted;
-        // The list the person's keys read names every workspace of theirs in their order, with its
-        // host as the host's own signed address names it, and the part they take in it as its
-        // governance names it: a workspace they were let in to is not listed as theirs.
-        {
-            let session = session();
-            let [(first, _)] = on_shell(&session)
-                .try_into()
-                .expect("a fresh session holds one workspace");
-            let second = WorkspaceId::new();
-            open_here(&session, second, "Second");
-            let identity = identity(0x11, 0x21, "The laptop");
-            let mut personal = open(identity.clone(), None);
-            assert!(personal.publish_local(&session));
-            let workspace = first.to_string();
-            let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
-                version: 1,
-                holds_keys: true,
-                runs_work: false,
-                label: String::new(),
-                cloud: false,
-                origin: None,
-                workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
-                endpoint_addr: iroh::EndpointAddr::new(
-                    iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
-                        .expect("a key"),
-                ),
-                user_public_key: identity.device_cert.user_public_key,
-                device_certificate: identity.device_cert.clone(),
-                packet_relay_url: "iroh:direct".into(),
-            }
-            .transport_hint(identity.signer.as_ref())
-            .expect("a signed address");
-            let hint = postcard::to_stdvec(&hint).expect("an address's bytes");
-            let roles = BTreeMap::from([(first, "owner".to_owned()), (second, "editor".to_owned())]);
-            let list = personal.readable(&BTreeMap::from([(workspace.clone(), hint)]), &roles);
-            let read: Vec<_> = list
-                .workspaces
+        // The desktop enters them where the laptop hosts them.
+        let desktop_shell = session();
+        let [own] = on_shell(&desktop_shell)
+            .try_into()
+            .expect("a fresh session holds one workspace");
+        let mut desktop = person.device(0x22, "The desktop");
+        let adoption = pass(&mut desktop, &desktop_shell);
+        let entered: Vec<(WorkspaceId, [u8; 32])> = adoption
+            .enter
+            .iter()
+            .map(|opened| (opened.workspace, opened.host))
+            .collect();
+        assert_eq!(
+            entered,
+            [(second, key(0x21)), (first, key(0x21))],
+            "the laptop's workspaces are entered where the laptop hosts them"
+        );
+        assert!(
+            listed(&desktop)
                 .iter()
-                .map(|entry| {
-                    (
-                        entry.workspace.clone(),
-                        entry.name.clone(),
-                        entry.host.as_ref().map(|host| host.name.clone()),
-                        entry.role.clone(),
-                    )
-                })
-                .collect();
-            assert_eq!(
-                read,
-                [
-                    (
-                        workspace,
-                        "Session".to_owned(),
-                        Some("The laptop".to_owned()),
-                        Some("owner".to_owned())
-                    ),
-                    (
-                        second.to_string(),
-                        "Second".to_owned(),
-                        None,
-                        Some("editor".to_owned())
-                    ),
-                ],
-                "the person's order, each named by the host that signed its address"
-            );
-            let address = list.workspaces[0]
-                .host
-                .as_ref()
-                .and_then(|host| host.address().ok())
-                .expect("the address reads back, signed");
-            assert_eq!(address.workspace_id, first);
-        }
+                .any(|(workspace, _, host)| *workspace == own && *host == Some(key(0x22))),
+            "and the desktop's own is listed beside them"
+        );
+        open_here(&desktop_shell, second, "Second");
+        open_here(&desktop_shell, first, "Renamed");
+        let adoption = pass(&mut desktop, &desktop_shell);
+        assert!(adoption.enter.is_empty() && adoption.release.is_empty());
+        assert_eq!(
+            on_shell(&desktop_shell),
+            [second, first, own],
+            "they arrive in the person's order, which their arriving does not move"
+        );
 
-        phase a_list_that_cannot_be_read_is_told_to_the_person;
-        // A list this computer kept but cannot read does not leave the person with an empty list and
-        // no word: they are told once, and what this computer kept is not written over.
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let kept = kept_file(state.path());
-            std::fs::create_dir_all(kept.parent().expect("the list's directory"))
-                .expect("the state directory");
-            std::fs::write(&kept, b"not a workspace list").expect("a file this build cannot read");
+        // The laptop keeps the first off the desktop.
+        fresh(&laptop);
+        let choices: BTreeSet<(String, bool, bool)> = laptop
+            .device_choices(first)
+            .into_iter()
+            .map(|choice| (choice.label, choice.shown, choice.here))
+            .collect();
+        assert_eq!(
+            choices,
+            BTreeSet::from([
+                ("The laptop".to_owned(), true, true),
+                ("The desktop".to_owned(), true, false),
+            ]),
+            "each device of the person's shows it"
+        );
+        assert!(
+            laptop.set_shown(first, key(0x22), false),
+            "the choice is written"
+        );
+        assert!(!laptop.set_shown(first, key(0x22), false), "once");
+        let adoption = pass(&mut desktop, &desktop_shell);
+        assert_eq!(adoption.release, [first], "the desktop lets it go");
+        assert_eq!(on_shell(&desktop_shell), [second, own]);
+        pass(&mut desktop, &desktop_shell);
+        assert!(names(&laptop, first), "and it stays the person's");
+        assert_eq!(laptop.shown_on(first, &key(0x22)), Some(false));
 
-            let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
-            assert!(
-                personal.take_unreadable(),
-                "the person is told their list could not be read"
-            );
-            assert!(!personal.take_unreadable(), "and told once");
-            assert!(personal.agreed.is_empty(), "the list starts empty");
-            assert_eq!(
-                std::fs::read(&kept).expect("the list is still there"),
-                b"not a workspace list",
-                "what this computer kept is not written over before the list is rebuilt"
-            );
-        }
+        // Shown there again, the desktop enters it again.
+        assert!(laptop.set_shown(first, key(0x22), true));
+        let adoption = pass(&mut desktop, &desktop_shell);
+        assert!(
+            adoption
+                .enter
+                .iter()
+                .any(|opened| opened.workspace == first),
+            "a workspace shown on the desktop again is entered there"
+        );
+    }
 
-        phase a_workspace_hosted_on_another_device_is_listed_at_that_device;
-        // The workspace the person's other device made and hosts, as this device's list names it.
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let session = session();
-            let workspaces = on_shell(&session);
-            let [(id, _)] = workspaces.as_slice() else {
-                panic!("a fresh session holds one workspace");
-            };
-            let id = *id;
-            let host = identity(0x11, 0x22, "The desktop");
-            let host_device = host.device_cert.device_public_key;
-            let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
-            // The workspace this session holds is hosted by the person's other device: the list names that
-            // device, never the one that holds it here.
-            personal.hosts.insert(id, host_device);
-            personal.publish_local(&session);
-            assert_eq!(
-                listed(&personal, id).map(|listed| listed.host),
-                Some(Some(host_device)),
-                "a workspace that joined a host is listed at its host"
-            );
-        }
+    /// A workspace taken off on one device of the person's is let go of on another that was away
+    /// meanwhile: when that one's session starts again over a shell that still shows it, the list
+    /// says it went, and it is neither listed again nor kept.
+    #[test]
+    fn a_workspace_taken_off_elsewhere_stays_gone_after_a_restart() {
+        let person = Person::start();
+        let laptop_shell = session();
+        let shared = WorkspaceId::new();
+        open_here(&laptop_shell, shared, "Shared");
+        let mut laptop = person.device(0x21, "The laptop");
+        pass(&mut laptop, &laptop_shell);
+        assert!(names(&laptop, shared));
 
-        phase a_workspace_joined_through_its_api_is_not_this_persons_to_list;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let session = session();
-            let workspaces = on_shell(&session);
-            let [(own_id, _)] = workspaces.as_slice() else {
-                panic!("a fresh session holds one workspace");
-            };
-            let own_id = *own_id;
-            let joined =
-                WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
-            open_here(&session, joined, "Book club");
-            let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
-            personal.joined(joined);
-            personal.publish_local(&session);
-            assert!(listed(&personal, own_id).is_some(), "their own is listed");
-            assert_eq!(
-                listed(&personal, joined),
-                None,
-                "a workspace someone else let them into is joined on each device, never listed"
-            );
-        }
+        let desktop_shell = session();
+        let mut desktop = person.device(0x22, "The desktop");
+        pass(&mut desktop, &desktop_shell);
+        open_here(&desktop_shell, shared, "Shared");
+        pass(&mut desktop, &desktop_shell);
+        drop(desktop);
 
-        phase a_device_never_named_shows_no_name;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let a = session();
-            let a_identity = identity(0x11, 0x21, tilo_user_identity::UNNAMED_PRIMARY_DEVICE);
-            let mut a_list = open(a_identity, Some(state.path()));
-            a_list.publish_local(&a);
-            let held = on_shell(&a);
-            let [(a_id, _)] = held.as_slice() else {
-                panic!("the session holds one workspace");
-            };
-            let a_id = *a_id;
+        // The laptop takes it off while the desktop is away.
+        let mut tree = laptop_shell.read(Clone::clone);
+        tree.take_off(shared);
+        laptop_shell.replace_tree(tree);
+        pass(&mut laptop, &laptop_shell);
+        assert!(!names(&laptop, shared), "it goes from the list");
 
-            let choices = a_list.device_choices(a_id);
-            let here = choices.iter().find(|choice| choice.here).expect("its row");
-            assert_eq!(
-                here.label, "",
-                "the stand-in provisioning fills in is no name of the person's"
-            );
-            assert!(
-                a_list.directory.devices().is_empty(),
-                "and it is no name to list this device by either"
-            );
-        }
+        // The desktop starts again, its shell as it kept it.
+        assert!(on_shell(&desktop_shell).contains(&shared));
+        let mut desktop = person.device(0x22, "The desktop");
+        let adoption = pass(&mut desktop, &desktop_shell);
+        assert_eq!(adoption.release, [shared], "the desktop lets it go");
+        assert!(!on_shell(&desktop_shell).contains(&shared));
+        assert!(!names(&desktop, shared), "and does not list it again");
+        pass(&mut desktop, &desktop_shell);
+        assert!(!names(&laptop, shared), "nor does a later pass");
+    }
 
-        phase a_listed_workspace_is_asked_for_at_the_host_its_list_names;
-        // What this device asks the host its list names for, from what it was told: at the address the
-        // host signed, once.
-        {
-            let workspace =
-                WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
-            let host = identity(0x11, 0x22, "The desktop");
-            let hint = host_hint(&host, "the desktop's address");
-            let opened = to_enter(workspace, host.device_cert.device_public_key);
+    /// A workspace the person joined on one device through someone's invitation is that person's
+    /// workspace, not theirs: each device of theirs joins it on its own, so their list never names
+    /// it, also when the session starts again and nothing remembers the join but the workspace
+    /// itself, which says it is hosted at the device that let them in.
+    #[test]
+    fn a_workspace_joined_through_someones_invitation_is_never_listed() {
+        let person = Person::start();
+        let laptop_shell = session();
+        let mut laptop = person.device(0x21, "The laptop");
+        pass(&mut laptop, &laptop_shell);
+        let club = WorkspaceId::new();
+        laptop.joined(club);
+        open_here(&laptop_shell, club, "Book club");
+        pass(&mut laptop, &laptop_shell);
+        assert!(!names(&laptop, club), "a joined workspace is not listed");
 
-            assert_eq!(
-                crate::Shared::entry_to_ask(&BTreeMap::new(), &opened, None),
-                None,
-                "a workspace whose host nobody said is reached waits"
-            );
-            let entering = crate::Shared::entry_to_ask(&BTreeMap::new(), &opened, Some(hint.clone()))
-                .expect("the host its list names is asked at its address");
-            assert_eq!(entering.workspace_id, workspace);
-            assert_eq!(entering.name, "Notes");
-            assert_eq!(entering.host, hint, "it is asked where its host is");
+        // The session starts again: where the workspace is held says it is hosted by the device
+        // of the person who let them in, as this device's workspace service reads it.
+        let mut laptop = person.device(0x21, "The laptop");
+        laptop.hosts.insert(club, key(0x33));
+        let adoption = pass(&mut laptop, &laptop_shell);
+        assert!(!names(&laptop, club), "nor after a restart");
+        assert!(adoption.release.is_empty(), "and it stays on the shell");
+        assert!(on_shell(&laptop_shell).contains(&club));
+    }
 
-            let asked = BTreeMap::from([(workspace, hint.clone())]);
-            assert_eq!(
-                crate::Shared::entry_to_ask(&asked, &opened, Some(hint.clone())),
-                None,
-                "the same host at the same address is not asked again"
-            );
-            let moved = host_hint(&host, "the desktop's new address");
-            assert!(
-                crate::Shared::entry_to_ask(&asked, &opened, Some(moved)).is_some(),
-                "a newer address for the host is a new ask"
-            );
-            assert_eq!(
-                crate::Shared::entry_to_ask(
-                    &BTreeMap::new(),
-                    &to_enter(workspace, [0x33; 32]),
-                    Some(hint),
-                ),
-                None,
-                "a list naming another host waits for the host it names"
-            );
-        }
+    /// A device the person never named shows no name of its own, and names none to their others.
+    #[test]
+    fn a_device_never_named_shows_no_name() {
+        let person = Person::start();
+        let shell = session();
+        let [own] = on_shell(&shell)
+            .try_into()
+            .expect("a fresh session holds one workspace");
+        let mut phone = person.device(0x23, tilo_user_identity::UNNAMED_PRIMARY_DEVICE);
+        pass(&mut phone, &shell);
+        let choices = phone.device_choices(own);
+        let here = choices.iter().find(|choice| choice.here).expect("its row");
+        assert_eq!(
+            here.label, "",
+            "the stand-in provisioning fills in is no name of the person's"
+        );
+        assert!(
+            phone
+                .read()
+                .expect("the list reads")
+                .devices
+                .get(&hex::encode(key(0x23)))
+                .is_none(),
+            "and it is no name to list this device by either"
+        );
+    }
+
+    /// What this device asks the host its list names for, from what it was told: at the address
+    /// the host signed, once.
+    #[test]
+    fn a_listed_workspace_is_asked_for_at_the_host_its_list_names() {
+        let workspace =
+            WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
+        let host = identity(0x11, 0x22, "The desktop");
+        let hint = host_hint(&host, "the desktop's address");
+        let opened = to_enter(workspace, host.device_cert.device_public_key);
+
+        assert_eq!(
+            crate::Shared::entry_to_ask(&BTreeMap::new(), &opened, None),
+            None,
+            "a workspace whose host nobody said is reached waits"
+        );
+        let entering = crate::Shared::entry_to_ask(&BTreeMap::new(), &opened, Some(hint.clone()))
+            .expect("the host its list names is asked at its address");
+        assert_eq!(entering.workspace_id, workspace);
+        assert_eq!(entering.name, "Notes");
+        assert_eq!(entering.host, hint, "it is asked where its host is");
+
+        let asked = BTreeMap::from([(workspace, hint.clone())]);
+        assert_eq!(
+            crate::Shared::entry_to_ask(&asked, &opened, Some(hint.clone())),
+            None,
+            "the same host at the same address is not asked again"
+        );
+        let moved = host_hint(&host, "the desktop's new address");
+        assert!(
+            crate::Shared::entry_to_ask(&asked, &opened, Some(moved)).is_some(),
+            "a newer address for the host is a new ask"
+        );
+        assert_eq!(
+            crate::Shared::entry_to_ask(
+                &BTreeMap::new(),
+                &to_enter(workspace, [0x33; 32]),
+                Some(hint),
+            ),
+            None,
+            "a list naming another host waits for the host it names"
+        );
     }
 
     /// Where `identity` is reached for a workspace, as it signed it: `opaque` says which address.

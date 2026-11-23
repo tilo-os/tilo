@@ -16,7 +16,7 @@ use tilo_server_client::login::{Entry, SignIn};
 use tilo_server_client::{CertifyError, DeviceSigner, LinkError};
 use tilo_server_protocol::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    KEEP_PERSONAL, LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
+    LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
@@ -569,7 +569,7 @@ impl Device {
                 record: IDENTITY_LIST.1.to_owned(),
                 joined: false,
                 wait_ms: after.as_ref().map(|_| PERSON_LIST_WAIT_MS),
-                document: false,
+                document: true,
                 listing: false,
                 after: after.clone(),
             };
@@ -640,21 +640,6 @@ impl Device {
         serde_json::from_value(listed).map_err(|error| {
             DeviceRefusal::malformed(format!("The host answered no workspace list: {error}"))
         })
-    }
-
-    /// Keep `list` on the host as the person's workspace list: what their keys read back with [`Self::personal_list`]. Only a device of the person's own
-    /// keeps it.
-    ///
-    /// # Errors
-    /// The host did not answer or refused.
-    pub async fn keep_personal(&self, list: &PersonalList) -> Result<(), DeviceRefusal> {
-        let mut arguments = Map::new();
-        arguments.insert(
-            "list".to_owned(),
-            serde_json::to_value(list)
-                .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
-        );
-        self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
     /// The server's own operation `action` with `arguments`, asked in the workspace this

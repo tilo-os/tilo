@@ -18,10 +18,14 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCapabilities;
 
+use tilo_resource::Replica;
+use tilo_user_identity::WorkspaceList;
+
 use super::{Client, Entering, Entry, OwnPresence};
 use crate::engine::Engine;
 use crate::platform::fabric::Continuity;
 use crate::workspace_keys::KeyLink;
+use crate::workspaces::{ListWrite, Personal};
 
 /// One session's side of the workspace: its engine, and its peer network.
 struct Device {
@@ -260,6 +264,27 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 }
 
 /// The session a fresh device starts from: one workspace of its own, nothing of the person's.
+/// The person's list as a device of theirs holds it, with nothing listed yet.
+fn empty_list() -> Replica<WorkspaceList> {
+    Replica::new().as_invoker("person")
+}
+
+/// Make `writes` on `list`, as the device's daemon makes a session's, and answer how it stands.
+fn written(list: &mut Replica<WorkspaceList>, writes: Vec<ListWrite>) -> WorkspaceList {
+    for write in writes {
+        list.apply(write)
+            .expect("the list takes the session's write");
+    }
+    list.state().expect("the list reads")
+}
+
+/// The workspaces `list` names, in the person's order.
+fn listed_ids(list: &WorkspaceList) -> Vec<String> {
+    list.listed()
+        .map(|(workspace, _)| workspace.to_string())
+        .collect()
+}
+
 fn fresh_session() -> tilo_session_core::desktop::state::DesktopHandle {
     let mut minter = tilo_desktop_model::IdMinter::new(1);
     let (policy, _surface) = tilo_desktop_policy::DesktopPolicy::with_tree(
@@ -367,16 +392,15 @@ impl Restore {
 
     /// The restored computer enters the person's Notes where its list says the host answers, and
     /// holds it.
-    fn enter_notes(&self, personal: &mut crate::workspaces::Personal) {
-        let adoption = personal.adopt_into(&fresh_session(), &|_| false);
+    fn enter_notes(&self, personal: &mut Personal, list: &WorkspaceList) {
+        let adoption = personal.adopt_into(&fresh_session(), list, &|_| false);
         let entering = adoption
             .enter
             .iter()
             .find(|opened| opened.workspace == self.notes)
             .expect("the restored computer enters the person's workspace");
         assert_eq!(entering.name, "Notes");
-        let hint = personal
-            .host_hint(self.notes)
+        let hint = Personal::host_hint(list, self.notes)
             .expect("the list says where the workspace's host is reached");
         assert!(
             hint.host.is_of_device(&entering.host),
@@ -428,13 +452,12 @@ fn a_computer_restored_from_its_root_enters_the_workspaces_its_host_lists_for_th
     );
 
     // The session takes the list in and enters the workspace where the host said it answers.
-    let mut personal =
-        crate::workspaces::Personal::open(restore.restored.engine.identity().clone(), None);
-    assert!(
-        personal.take_hosted(listed),
-        "the person's list gains the workspace"
-    );
-    restore.enter_notes(&mut personal);
+    let mut personal = Personal::open(restore.restored.engine.identity().clone());
+    let mut list = empty_list();
+    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
+    assert!(!taken.is_empty(), "the person's list gains the workspace");
+    let list = written(&mut list, taken);
+    restore.enter_notes(&mut personal, &list);
     wait_for(&restore.restored, restore.notes, earlier);
 }
 
@@ -449,8 +472,8 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     let [seed] = on_shell(&session)
         .try_into()
         .expect("a fresh shell shows one workspace");
-    let mut personal =
-        crate::workspaces::Personal::open(restore.restored.engine.identity().clone(), None);
+    let mut personal = Personal::open(restore.restored.engine.identity().clone());
+    let mut list = empty_list();
     personal.hold_seed(seed);
     // The site's home came onto the shell as the computer joined it, as a joined workspace does.
     personal.joined(restore.lounge);
@@ -461,18 +484,17 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
 
     // Before the host answered, nothing says what the person has: the workspace waits, unlisted.
     let held = restore.restored.engine.workspaces();
-    assert!(!personal.settle_seed(&session, &held, None, &std::collections::BTreeSet::new()));
+    let state = list.state().expect("the list reads");
+    assert!(!personal.settle_seed(
+        &session,
+        &state,
+        &held,
+        None,
+        &std::collections::BTreeSet::new()
+    ));
     assert_eq!(personal.seed(), Some(seed), "it waits for the host's list");
-    personal.publish_local(&session);
-    let listed: Vec<String> = personal
-        .readable(
-            &std::collections::BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-        )
-        .workspaces
-        .into_iter()
-        .map(|entry| entry.workspace)
-        .collect();
+    let writes = personal.publish_local(&session, &state);
+    let listed = listed_ids(&written(&mut list, writes));
     assert!(
         listed.is_empty(),
         "neither the waiting workspace nor the site's home is on the person's list: {listed:?}"
@@ -481,9 +503,12 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     // The host lists the person's Notes: they have a workspace, so the shell's own goes.
     restore.follow();
     let (from_hosts, everywhere) = restore.listed();
-    assert!(personal.take_hosted(from_hosts));
+    let taken = Personal::take_hosted(&list.state().expect("the list reads"), from_hosts);
+    assert!(!taken.is_empty());
+    let state = written(&mut list, taken);
     assert!(personal.settle_seed(
         &session,
+        &state,
         &held,
         Some(&everywhere),
         &std::collections::BTreeSet::new()
@@ -494,16 +519,8 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
         [restore.lounge],
         "the workspace the shell started with is taken off it, unfounded"
     );
-    personal.publish_local(&session);
-    let listed: Vec<String> = personal
-        .readable(
-            &std::collections::BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-        )
-        .workspaces
-        .into_iter()
-        .map(|entry| entry.workspace)
-        .collect();
+    let writes = personal.publish_local(&session, &state);
+    let listed = listed_ids(&written(&mut list, writes));
     assert_eq!(
         listed,
         [restore.notes.to_string()],
@@ -522,13 +539,12 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
         "A new person's computer",
         DeviceCapabilities::member(),
     );
-    let mut new = crate::workspaces::Personal::open(
-        tilo_network_actor::DeviceIdentity::kept(cert, key),
-        None,
-    );
+    let mut new = Personal::open(tilo_network_actor::DeviceIdentity::kept(cert, key));
+    let mut theirs = empty_list();
     new.hold_seed(first);
     assert!(new.settle_seed(
         &alone,
+        &theirs.state().expect("the list reads"),
         &[],
         Some(&std::collections::BTreeSet::new()),
         &std::collections::BTreeSet::new(),
@@ -536,16 +552,8 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     assert_eq!(new.seed(), None);
     assert_eq!(on_shell(&alone), [first], "it stays on the shell");
     assert!(new.made_here(first), "and is founded here, as theirs");
-    new.publish_local(&alone);
-    let listed: Vec<String> = new
-        .readable(
-            &std::collections::BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-        )
-        .workspaces
-        .into_iter()
-        .map(|entry| entry.workspace)
-        .collect();
+    let writes = new.publish_local(&alone, &theirs.state().expect("the list reads"));
+    let listed = listed_ids(&written(&mut theirs, writes));
     assert_eq!(listed, [first.to_string()], "and listed as theirs");
 }
 
@@ -566,10 +574,7 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
         "A restored computer",
         DeviceCapabilities::member(),
     );
-    let mut personal = crate::workspaces::Personal::open(
-        tilo_network_actor::DeviceIdentity::kept(cert, key),
-        None,
-    );
+    let mut personal = Personal::open(tilo_network_actor::DeviceIdentity::kept(cert, key));
     personal.hold_seed(seed);
     let site = WorkspaceId::parse("0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918").expect("a workspace id");
     personal.joined(site);
@@ -581,7 +586,7 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
     // No host has answered a list, and the workspace's governance names the person its owner: they
     // have a workspace of their own, so the one this shell started with goes.
     let owned = std::collections::BTreeSet::from([site]);
-    assert!(personal.settle_seed(&session, &[site], None, &owned));
+    assert!(personal.settle_seed(&session, &WorkspaceList::default(), &[site], None, &owned));
     assert_eq!(personal.seed(), None);
     assert_eq!(
         on_shell(&session),
@@ -592,20 +597,21 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
 
 /// A workspace the restored computer takes from its host's list is not claimed as the person's
 /// own: the person was invited into it, and the part they take in it is what its governance says
-/// once the workspace is here, which is what the list their keys read names.
+/// once the workspace is here.
 #[test]
 fn an_invited_workspace_a_restored_computer_takes_from_its_host_is_listed_as_invited() {
     let restore = Restore::new(0x55);
     restore.follow();
     let (listed, _) = restore.listed();
-    let mut personal =
-        crate::workspaces::Personal::open(restore.restored.engine.identity().clone(), None);
-    assert!(personal.take_hosted(listed));
+    let mut personal = Personal::open(restore.restored.engine.identity().clone());
+    let mut list = empty_list();
+    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
+    let list = written(&mut list, taken);
     assert!(
         !personal.made_here(restore.notes),
         "a workspace entered from the host's list is not one this device founds, nor claims"
     );
-    restore.enter_notes(&mut personal);
+    restore.enter_notes(&mut personal, &list);
 
     // The shell shows the workspace with the people its governance names, as every pass projects
     // them.
@@ -629,22 +635,21 @@ fn an_invited_workspace_a_restored_computer_takes_from_its_host_is_listed_as_inv
     tree.workspaces.push(notes);
     session.replace_tree(tree);
     let person = hex::encode(restore.restored.person());
-    let roles = session.read(|tree| crate::workspaces::governed_roles(tree, &person));
+    let role = session.read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|workspace| workspace.id() == restore.notes)
+            .and_then(|workspace| workspace.role_of(&person))
+            .map(|role| role.key().to_owned())
+    });
     assert_eq!(
-        roles.get(&restore.notes).map(String::as_str),
+        role.as_deref(),
         Some("editor"),
-        "the person takes the part they were invited at"
+        "the person takes the part they were invited at, not their own"
     );
-    let entry = personal
-        .readable(&std::collections::BTreeMap::new(), &roles)
-        .workspaces
-        .into_iter()
-        .find(|entry| entry.workspace == restore.notes.to_string())
-        .expect("the person's list names the workspace");
-    assert_eq!(
-        entry.role.as_deref(),
-        Some("editor"),
-        "the list names the workspace as one they were invited into, not as their own"
+    assert!(
+        list.get(restore.notes).is_some(),
+        "the person's list names the workspace"
     );
 }
 
@@ -656,10 +661,11 @@ fn a_workspace_its_host_drops_from_the_persons_list_leaves_the_device() {
     let restore = Restore::new(0x56);
     restore.follow();
     let (listed, _) = restore.listed();
-    let mut personal =
-        crate::workspaces::Personal::open(restore.restored.engine.identity().clone(), None);
-    assert!(personal.take_hosted(listed));
-    restore.enter_notes(&mut personal);
+    let mut personal = Personal::open(restore.restored.engine.identity().clone());
+    let mut list = empty_list();
+    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
+    let list = written(&mut list, taken);
+    restore.enter_notes(&mut personal, &list);
     assert!(restore.restored.engine.holds(restore.notes));
     // A list that still names it lets nothing go.
     let deadline = tilo_test_env::hang_deadline();

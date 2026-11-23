@@ -552,17 +552,6 @@ pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
     )
 }
 
-/// The notice that the workspaces this computer remembered do not read back: an empty list would
-/// otherwise look like workspaces that are gone.
-pub(crate) fn workspaces_notice() -> Notice {
-    Notice::new(
-        t("workspaces-app-name"),
-        1,
-        t("workspaces-unreadable-title"),
-        t("workspaces-unreadable-body"),
-    )
-}
-
 /// The notice that a workspace this session made is not on this computer's workspace service yet:
 /// founding it there is asked for again, and until it lands the workspace exists only here.
 pub(crate) fn workspace_not_founded_notice(name: &str, reason: &str) -> Notice {
@@ -1186,32 +1175,13 @@ mod tests {
         }
 
         phase what_this_computer_could_not_read_reaches_the_person;
-        // What this computer could not read of the person's workspaces and of its
-        // own update reaches them as ordinary notifications: what did not read,
-        // and what is still true for them.
+        // What this computer could not read of its own update reaches the person as an ordinary
+        // notification: what did not read, and what is still true for them.
         {
             let notifications = Notifications::new();
-            tell_daemon(&workspaces_notice(), &notifications);
             tell_daemon(&update_state_notice(), &notifications);
 
             let live = notifications.live();
-            assert_eq!(live.len(), 2, "each failure is its own notice");
-
-            let workspaces = live
-                .iter()
-                .find(|notification| notification.summary == "Your workspaces could not be read")
-                .expect("the workspaces notice");
-            assert_eq!(workspaces.app_name, "Workspaces");
-            assert!(
-                workspaces.body.contains("Nothing was removed"),
-                "an empty list is not lost workspaces: {}",
-                workspaces.body
-            );
-            assert!(
-                workspaces.machine_wide,
-                "the person's list is their news on every display"
-            );
-
             let update = live
                 .iter()
                 .find(|notification| notification.summary == "The update state could not be read")

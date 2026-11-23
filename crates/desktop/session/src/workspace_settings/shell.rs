@@ -980,7 +980,7 @@ fn toggle_device(
     let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::id)) else {
         return false;
     };
-    let mut personal = personal.borrow_mut();
+    let personal = personal.borrow();
     let Some(shown) = personal.shown_on(workspace_id, &device) else {
         return false;
     };

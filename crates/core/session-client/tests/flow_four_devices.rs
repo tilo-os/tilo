@@ -22,8 +22,8 @@ use tilo_actions::remote::{person_models, person_vault};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalList,
-    PersonalWorkspace, WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
@@ -135,23 +135,6 @@ async fn four_devices() -> Four {
     }
 }
 
-/// The list the desktop keeps for the person: their workspaces.
-fn personal(f: &Four) -> PersonalList {
-    let workspace = |id: &str, name: &str| PersonalWorkspace {
-        workspace: id.to_owned(),
-        name: name.to_owned(),
-        host: None,
-        role: Some("owner".into()),
-        labels: WorkspaceLabels::new(),
-        made_at_ms: None,
-        unattended: false,
-        enter_at: None,
-    };
-    PersonalList {
-        workspaces: vec![workspace(&f.work, "Work"), workspace(&f.home, "Home")],
-    }
-}
-
 /// The keys of the person's devices, as the record of their own workspace holds them on the
 /// server, which every device of theirs holds too.
 async fn recorded(f: &Four) -> Vec<String> {
@@ -180,13 +163,7 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
         "the always-on server governs every workspace of the person"
     );
 
-    // The desktop's device says which workspaces are the person's, and each device their root
-    // certified is in the record of their devices.
-    let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
-    desktop
-        .keep_personal(&personal(&f))
-        .await
-        .expect("a device of the person's keeps their list on the host");
+    // Each device their root certified is in the record of their devices.
     for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
         workspaces.keep_issued_device(&certified.cert, "").await;
     }

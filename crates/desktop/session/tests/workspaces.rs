@@ -1,8 +1,7 @@
-//! The person's own workspaces, as every device of theirs knows them: the workspace a fresh device
-//! starts from is theirs and is kept in their list beside the shell, and the workspaces they make
-//! are added to it — so their other devices learn of them and open them there.
-//! The list outlives the session: coming back to a device finds the same workspaces listed, none of
-//! them twice.
+//! The person's workspaces on one device: the workspace a fresh device starts from, and the ones
+//! they make, come back with the shell when they come back to it, none of them twice. Their list,
+//! which carries them to their other devices, is a resource of their own workspace
+//! (`tests/person_workspace.rs`).
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,13 +17,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_app::framework::testing::HeadlessApp;
 use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
-use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 
-/// A session keeping this device's shell, and the person's list of their own workspaces, under
-/// `state` .
+/// A session keeping this device's shell under `state` .
 fn session_keeping(state: &Path) -> Session {
     crate::common::headless(Options {
         collab: false,
@@ -47,21 +43,6 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             })
             .collect()
     })
-}
-
-/// Where this computer keeps the person's list of their own workspaces, once it is written.
-fn list_path(state: &Path) -> std::path::PathBuf {
-    kept_file(state, "so.tilo.session-workspaces")
-}
-/// The file the device's store keeps the session's document `name` in under `state`, once what the
-/// session handed the store is written.
-fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
-    use durable_store::DurableStore as _;
-    let root = state.join("tilo").join("documents");
-    app_state::shared_store(&root)
-        .flush(None)
-        .expect("what the session keeps is written");
-    root.join(name).join(app_state::DOCUMENT_FILE)
 }
 
 /// This computer's person: a device of theirs, certified for their own root key, kept in an
@@ -102,7 +83,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
 }
 
 #[test]
-fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
+fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let _identity = this_computer(&mut env);
     let state = tempfile::tempdir().expect("a state directory");
@@ -119,10 +100,6 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
             id,
             workspace.to_string(),
             "the workspace the session starts from is known by that id"
-        );
-        assert!(
-            list_path(state.path()).is_file(),
-            "the person's list of their own workspaces is kept beside the session"
         );
         (name, workspace.to_string())
     };
@@ -143,7 +120,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
 }
 
 #[test]
-fn a_workspace_the_person_makes_here_is_listed_for_their_other_devices() {
+fn a_workspace_the_person_makes_here_comes_back_with_the_shell() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let _identity = this_computer(&mut env);
     let state = tempfile::tempdir().expect("a state directory");
@@ -165,142 +142,6 @@ fn a_workspace_the_person_makes_here_is_listed_for_their_other_devices() {
         held(&again),
         made,
         "both of the person's workspaces came back as they were"
-    );
-}
-
-/// The control the person uses: the sheet they open from the workspace menu,
-/// lent the state the session lends its own, so a press arrives as theirs.
-fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
-    let state = session
-        .workspace_settings()
-        .expect("the session hosts workspace settings")
-        .clone();
-    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state)
-        .expect("the sheet");
-    app.harness().resize((1280, 900)).expect("a screen");
-    app.settle();
-    app
-}
-
-/// Press the control `id` of `app` , as the person's own gesture.
-fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
-    app.harness()
-        .perform_named(id, &ui::a11y::Action::Activate)
-        .unwrap_or_else(|error| panic!("press {id}: {error}"));
-    app.settle();
-}
-
-/// Workspace settings offers the person's devices for the workspace, and keeping this one off it
-/// takes the workspace off this session, where it stays: the choice is theirs and their other devices
-/// keep it in step.
-#[test]
-fn keeping_a_workspace_off_this_device_takes_it_off_this_shells() {
-    let _settled = ui::motion::testing::settled();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env);
-    let state = tempfile::tempdir().expect("a state directory");
-    let mut session = session_keeping(state.path());
-    session.step(Duration::from_millis(1)).expect("a frame");
-    // Two workspaces, so the shell may let one go without leaving the person with none.
-    session
-        .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
-        .expect("the session makes a workspace");
-    session.step(Duration::from_millis(1)).expect("a frame");
-    assert_eq!(held(&session).len(), 2, "two workspaces to choose between");
-    let front = session
-        .handle()
-        .read(|tree| {
-            tree.active_workspace()
-                .map(tilo_desktop_model::Workspace::id)
-        })
-        .map(|workspace| workspace.to_string())
-        .expect("a workspace in front");
-    session
-        .invoke(
-            CHROME_RESOURCE,
-            "workspace-settings",
-            &serde_json::Map::new(),
-        )
-        .expect("settings opens on the workspace in front");
-    session.step(Duration::from_millis(1)).expect("a frame");
-    let mut app = sheet(&session);
-    let general = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .settings()
-        .general;
-    assert_eq!(general.devices.title, "Your devices");
-    let [device] = general.device_rows.as_slice() else {
-        panic!(
-            "the person's one device is offered: {:?}",
-            general.device_rows
-        );
-    };
-    assert!(
-        device.label.ends_with("(this device)"),
-        "the device this session runs on says so: {device:?}"
-    );
-    assert!(device.shown && device.toggle == "Shown", "{device:?}");
-    let key = device.key.clone();
-
-    // A press on the device's row keeps the workspace off it.
-    press(&mut app, &format!("ws-general-device-{key}"));
-    session.step(Duration::from_millis(1)).expect("a frame");
-    let after = held(&session);
-    assert_eq!(
-        after.len(),
-        1,
-        "the workspace kept off this device is off its session: {after:?}"
-    );
-    assert!(
-        !after.iter().any(|(_, _, workspace)| *workspace == front),
-        "the workspace in front is the one kept off"
-    );
-    // It stays off: the choice is in the person's own list, not only on the shell it was made at.
-    for _ in 0..3 {
-        session.step(Duration::from_millis(1)).expect("a frame");
-    }
-    assert_eq!(
-        held(&session),
-        after,
-        "the workspace kept off here is not brought back"
-    );
-
-    let mut again = session_keeping(state.path());
-    again.step(Duration::from_millis(1)).expect("a frame");
-    assert_eq!(
-        held(&again),
-        after,
-        "and comes back off the session in the next session"
-    );
-
-    // The shell keeps the person one workspace: their last one is not kept off this device, and its
-    // row says it still shows here.
-    session
-        .invoke(
-            CHROME_RESOURCE,
-            "workspace-settings",
-            &serde_json::Map::new(),
-        )
-        .expect("settings opens on the workspace that is left");
-    session.step(Duration::from_millis(1)).expect("a frame");
-    let mut app = sheet(&session);
-    press(&mut app, &format!("ws-general-device-{key}"));
-    session.step(Duration::from_millis(1)).expect("a frame");
-    assert_eq!(
-        held(&session),
-        after,
-        "the person is never left with no workspace"
-    );
-    let rows = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .settings()
-        .general
-        .device_rows;
-    assert!(
-        rows.iter().all(|row| row.shown),
-        "and its row still says the workspace shows here: {rows:?}"
     );
 }
 

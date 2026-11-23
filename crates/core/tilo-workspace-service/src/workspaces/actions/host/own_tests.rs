@@ -208,10 +208,9 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             DELETE_WORKSPACE,
             tilo_server_protocol::workspaces::LIST_WORKSPACES,
             tilo_server_protocol::workspaces::LIST_PERSONAL,
-            tilo_server_protocol::workspaces::KEEP_PERSONAL,
         ],
-        "a stranger makes, branches, deletes and lists the workspaces of their own, keeps and \
-         reads their list, and nothing else"
+        "a stranger makes, branches, deletes and lists the workspaces of their own, reads their \
+         list, and nothing else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await
@@ -1783,9 +1782,6 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
         DeviceCapabilities::server_key_grant(),
     );
     waits(&on_host(&host, &server, &as_key(&server), own_request(json!({}))).await);
-    let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_server_protocol::workspaces::KEEP_PERSONAL.into();
-    waits(&invoke(&host, &stranger, keep).await);
     for person in [stranger.user_public_key, root.verifying_key().to_bytes()] {
         assert!(
             workspaces.own_workspaces_of(&person).is_empty(),
@@ -1913,12 +1909,6 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
     .await
     .unwrap();
     assert_eq!(entered.workspace.workspace, created.workspace.workspace);
-    // The host holds their own workspace, where their list is kept: it is a resource of it.
-    super::personal_tests::hold_person_workspace(&workspaces, stranger.user_public_key).await;
-    // Their workspace list is kept: they take part here.
-    let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_server_protocol::workspaces::KEEP_PERSONAL.into();
-    invoke(&host, &stranger, keep).await.unwrap();
     // Invited into a workspace here, they are past the site's invite-only
     // sign-up: a workspace of their own is theirs to make too.
     let mine = create_own(&host, &stranger, json!({"name": "Mine"}))
@@ -2036,7 +2026,6 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
 /// that may be gone, and a workspace not open right now is no other device's.
 #[tokio::test]
 async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said() {
-    use tilo_server_protocol::workspaces::{PersonalList, PersonalWorkspace};
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2048,33 +2037,17 @@ async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said()
     let person = root.verifying_key().to_bytes();
     let_in(workspaces, &home, person).await;
     let device = tab_of(&root, "Firefox on Linux");
-    // The host holds their own workspace, where the list a device keeps is written.
+    // The host holds their own workspace, where a device of theirs lists their workspaces.
     super::personal_tests::hold_person_workspace(workspaces, person).await;
     // A workspace of theirs this host records, kept closed here as it is when its runtime
-    // was let go; a device of theirs kept a list naming its own address for it.
+    // was let go; a device of theirs listed it.
     let workspace = uuid::Uuid::new_v4().to_string();
     workspaces
         .own()
         .unwrap()
         .record(&person, &workspace)
         .unwrap();
-    let named = PersonalList {
-        workspaces: vec![PersonalWorkspace {
-            workspace: workspace.clone(),
-            name: "Company".into(),
-            host: Some(tilo_server_protocol::workspaces::KeepingDeviceAddress {
-                name: "Ada's laptop".into(),
-                hint: Some("00".into()),
-            }),
-            role: None,
-            labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
-            made_at_ms: None,
-            unattended: false,
-            enter_at: None,
-        }],
-        devices: Vec::new(),
-    };
-    workspaces.keep_personal(&device, named).await.unwrap();
+    super::personal_tests::list_workspaces(workspaces, person, &[(&workspace, "Company")]).await;
 
     let listed = workspaces.personal_of(&device).await;
     let entry = listed

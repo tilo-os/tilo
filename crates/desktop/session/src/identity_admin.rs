@@ -140,15 +140,6 @@ pub(crate) fn fleet_store() -> Result<tilo_identity::device_fleet::DeviceFleetSt
     Ok(Store::from_env()?.fleets())
 }
 
-/// What the files `person`'s fleet is read from looked like, as a value the
-/// session's pass over the shell compares with the one it last saw: a pairing
-/// writes a certificate into the fleet on a thread of its own, and the
-/// person's record keeps the keys with their list, so a fleet that moved
-/// says the list again.
-pub(crate) fn fleet_stamps(person: &[u8; 32]) -> Option<tilo_identity::device_fleet::FleetStamps> {
-    fleet_store().ok()?.stamps(&hex::encode(person))
-}
-
 /// Take `step` with `args`, which the API bound to [`params`] after it
 /// decided the caller administers the identity the caller's workspace
 /// selected, in `store`.
