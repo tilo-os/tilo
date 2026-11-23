@@ -71,9 +71,11 @@ fn an_accounts_calendars_and_entries_sync_into_records() {
     assert_eq!(rig.text("Event", &events[0], "title"), "Review");
     assert_eq!(
         rig.text("Event", &events[0], "start"),
-        "2026-11-19T19:00:00Z"
+        "2026-11-19T19:00:00"
     );
+    assert_eq!(rig.text("Event", &events[0], "timezone"), "UTC");
     assert_eq!(rig.text("Event", &events[0], "day"), "2026-11-19");
+    assert_eq!(rig.text("Event", &events[0], "end_day"), "2026-11-19");
     assert_eq!(
         rig.reference("Event", &events[0], "calendar").as_ref(),
         Some(&calendars[0])
