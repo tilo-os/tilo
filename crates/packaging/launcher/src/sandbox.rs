@@ -479,9 +479,7 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
-/// The variable that tells a runtime's binary where the package it runs is mounted (see
-/// [`ManifestView::entrypoint`]'s `runtime`).
-pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
+pub use crate::manifest::APP_MODULE_ENV;
 
 /// The sandbox directory the entrypoint's binary paths are relative to: the mount of the runtime bundle
 /// `[entrypoint].runtime` names, else the package's own payload.

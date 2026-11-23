@@ -8,7 +8,7 @@
 //! the host is ending ends the process at once, as that signal does.
 
 use std::io;
-use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// The signals that stop the host.
@@ -57,13 +57,19 @@ impl Stop {
     /// # Errors
     /// The pipe could not be made, or a handler could not be set.
     pub fn install() -> io::Result<Self> {
-        let mut fds = [0 as libc::c_int; 2];
-        // SAFETY: pipe2 writes two fresh descriptors into the two-element array it is given.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(io::Error::last_os_error());
+        let (read, write) = io::pipe()?;
+        let (read, write) = (OwnedFd::from(read), OwnedFd::from(write));
+        // Neither end ever waits: the handler's write into a full pipe is a stop already rung.
+        for end in [&read, &write] {
+            let fd = end.as_raw_fd();
+            // SAFETY: fcntl with integer arguments on a descriptor this function owns.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            // SAFETY: as above.
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
-        // SAFETY: the successful pipe2 above transfers sole ownership of both descriptors.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         RING_FD.store(write.as_raw_fd(), Ordering::SeqCst);
         for signal in STOPPING {
             // SAFETY: a zeroed sigaction is a valid starting point; the handler does only

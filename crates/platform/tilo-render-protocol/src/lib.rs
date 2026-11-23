@@ -21,10 +21,10 @@
 //! - [`validate`]: the CPU pass every scene passes before a GPU sees it, and
 //!   the per-app [`Limits`] it enforces. A scene is hostile until it passes.
 //! - [`control`]: the messages on the control channel ("frame N is in the
-//!   ring", "frame N is in buffer B", "frame N was presented"), and on Linux
-//!   [`channel`] carries them with descriptors over a `SOCK_SEQPACKET` pair,
-//!   and [`shm`] the sealed memfds: the ring frames are written to, and the
-//!   images an app uploads once.
+//!   ring", "frame N is in buffer B", "frame N was presented"), and on Unix
+//!   [`channel`] carries them with descriptors over a packet socket pair, and
+//!   [`shm`] the shared memory: the ring frames are written to, and the images
+//!   an app uploads once.
 //! - [`patch`]: beside scenes, the component patches a tilolang app sends the
 //!   room's UI host instead of pixels, the events, bindings, focus and
 //!   composition that come back, and the check every batch passes.
@@ -36,11 +36,12 @@ pub mod patch;
 pub mod scene;
 pub mod validate;
 
+// The render service's broker serves the Linux session's apps alone.
 #[cfg(target_os = "linux")]
 pub mod broker;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod channel;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod shm;
 
 mod bytes;

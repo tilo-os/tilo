@@ -93,7 +93,7 @@ fn request_with(f: &Fixture, exe: &Path, op: &str, arg: OsString) -> LaunchReque
         executable: exe.to_path_buf(),
         args: vec![OsString::from(op), arg],
         payload_dir: f.payload.clone(),
-        runtime_dylib_dir: None,
+        runtime_dir: None,
         container_dir: f.container.clone(),
         capabilities: CapabilityPlan::empty(),
         egress: EgressDecision::Blocked,

@@ -15,7 +15,7 @@
 )]
 
 pub mod app;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod hosted;
 pub mod i18n;
 #[cfg(target_arch = "wasm32")]

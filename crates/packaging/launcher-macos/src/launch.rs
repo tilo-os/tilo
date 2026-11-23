@@ -58,12 +58,15 @@ unsafe extern "C" {
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
     pub package_id: String,
-    /// The Mach-O to exec; must resolve inside [`Self::payload_dir`].
+    /// The Mach-O to exec; must resolve inside [`Self::payload_dir`], or inside
+    /// [`Self::runtime_dir`] for an app whose entrypoint is a runtime's binary.
     pub executable: PathBuf,
     pub args: Vec<OsString>,
     /// The installed package, already verified against the registry's signed index.
     pub payload_dir: PathBuf,
-    pub runtime_dylib_dir: Option<PathBuf>,
+    /// The installed runtime package the entrypoint names, verified like the payload: the app
+    /// runs its binary over its own payload.
+    pub runtime_dir: Option<PathBuf>,
     pub container_dir: PathBuf,
     pub capabilities: CapabilityPlan,
     /// A [`EgressDecision::Filtered`] launch is served by a [`LoopbackProxy`] the launched app holds.
@@ -85,7 +88,7 @@ pub enum LaunchError {
         #[source]
         source: io::Error,
     },
-    #[error("{executable} is not inside the payload directory {payload}")]
+    #[error("{executable} is not inside the payload or runtime directory {payload}")]
     OutsidePayload {
         executable: PathBuf,
         payload: PathBuf,
@@ -153,7 +156,9 @@ impl LaunchedApp {
 /// [`LaunchError`] when the executable is outside its payload, the policy cannot be resolved, the
 /// chosen sandbox cannot be applied or verified, or the process cannot be spawned.
 pub fn launch(request: &LaunchRequest) -> Result<LaunchedApp, LaunchError> {
-    let payload = resolve(&request.payload_dir)?;
+    // The binary comes from the runtime package when the entrypoint names one, else from the
+    // app's own payload: only there may code run from.
+    let payload = resolve(request.runtime_dir.as_ref().unwrap_or(&request.payload_dir))?;
     let executable = resolve(&request.executable)?;
     if executable == payload || !executable.starts_with(&payload) {
         return Err(LaunchError::OutsidePayload {
@@ -250,7 +255,7 @@ fn start_seatbelted(
     let private_stores = private_store_roots();
     let policy = SeatbeltPolicy::resolve(&PolicyInputs {
         payload_dir: &request.payload_dir,
-        runtime_dylib_dir: request.runtime_dylib_dir.as_deref(),
+        runtime_dir: request.runtime_dir.as_deref(),
         container_dir: &request.container_dir,
         capabilities: &request.capabilities,
         egress: &request.egress,
@@ -573,7 +578,7 @@ mod tests {
             executable: PathBuf::from(executable),
             args: Vec::new(),
             payload_dir: PathBuf::from("/"),
-            runtime_dylib_dir: None,
+            runtime_dir: None,
             container_dir: PathBuf::from("/nonexistent"),
             capabilities: CapabilityPlan::empty(),
             egress: EgressDecision::Blocked,

@@ -50,17 +50,17 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             "it runs on the tilolang runtime bundle"
         );
         assert_eq!(entrypoint.bin, Path::new(package::RUNTIME_BIN));
-        // It runs where the runtime bundle runs, which is a Linux binary: a device offering it
-        // elsewhere is told so rather than failing to start it.
+        // It runs where the runtime bundle runs: a device the runtime is not built for is told so
+        // rather than failing to start it.
         assert_eq!(
             manifest.package.platforms(),
-            [Platform::Linux, Platform::Web],
+            [Platform::Linux, Platform::Macos, Platform::Web],
             "{} names the platforms its runtime runs on",
             app.app
         );
         assert!(
-            manifest.package.platform_reason.is_some(),
-            "a narrowed list says why"
+            manifest.package.platform_reason.is_none(),
+            "a list that narrows nothing gives no reason"
         );
         assert_eq!(manifest.package.icon.as_deref(), Some("icon.svg"));
         assert!(app.payload.join("icon.svg").is_file());
@@ -259,10 +259,6 @@ fn the_platforms_a_package_names_are_the_runtimes() {
         .map(|platform| format!("\"{}\"", platform.as_str()))
         .collect();
     assert_eq!(format!("[{}]", named.join(", ")), package::PLATFORMS);
-    assert_eq!(
-        runtime.package.platform_reason.as_deref(),
-        Some(package::PLATFORM_REASON)
-    );
 }
 
 #[test]

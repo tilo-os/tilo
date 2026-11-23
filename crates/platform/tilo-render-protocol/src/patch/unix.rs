@@ -1,8 +1,8 @@
-//! The patch transport between processes: a [`Channel`] (`SOCK_SEQPACKET`, one batch a packet)
-//! for what fits a packet, and a sealed memfd riding along for a larger batch (a window's first
-//! tree of a long list), so no batch is split or streamed. The receiver copies a batch out of
-//! the memfd once, into its own memory, before it reads it: the sender cannot change what the
-//! receiver validated.
+//! The patch transport between processes: a [`Channel`] (one batch a packet) for what fits a
+//! packet, and an immutable shared buffer ([`sealed_blob`]) riding along for a larger batch (a
+//! window's first tree of a long list), so no batch is split or streamed. The receiver copies a
+//! batch out of the buffer once, into its own memory, before it reads it: the sender cannot
+//! change what the receiver validated.
 
 use std::io;
 
@@ -121,5 +121,11 @@ mod tests {
         assert_eq!(window.recv(), Ok(None));
         drop(app);
         assert_eq!(window.recv(), Err(WireError::Closed), "the app went away");
+        assert_eq!(window.recv(), Err(WireError::Closed), "and stays gone");
+        assert_eq!(
+            window.send(vec![1]),
+            Err(WireError::Closed),
+            "nothing reaches it"
+        );
     }
 }

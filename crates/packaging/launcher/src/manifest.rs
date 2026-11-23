@@ -10,6 +10,11 @@ pub use tilo_app_package::view::{
     ServiceReq, read_manifest,
 };
 
+/// The variable that tells a runtime's binary where the package it runs is (see
+/// [`ManifestView::entrypoint`]'s `runtime`): where the sandbox mounts it on Linux, its installed
+/// payload on macOS.
+pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
+
 /// A service requirement written as a manifest would (`"required@1"`).
 #[cfg(test)]
 pub(crate) fn service_req(raw: &str) -> ServiceReq {

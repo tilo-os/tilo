@@ -1576,6 +1576,18 @@ on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
+name = "tilolang-macos"
+# The fonts' and crates' downloads come from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+# A tilolang app on the Mac, on the paths Linux runs it on: its window runs the instance in its own
+# process over the app's document, patches crossing a real channel and shared memory, and an
+# action a person's click runs is counted and named in history.
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\n# The channel and the shared memory every patch and module crosses, and the Seatbelt profile the\n# runtime confines an app with.\ncargo test --locked -p tilo-render-protocol --lib\ncargo test --locked -p launcher-macos --lib\n# A person's click runs the counter's action through the app's window and its tilolang host.\ncargo test --locked -p tilolang-app --test it hosted::counter -- --exact hosted::counter::a_persons_click_on_a_button_runs_the_action_and_history_names_them\n# The package built as a session installs it, opened by the runtime binary on its payload.\ncargo build --locked -p tilolang-cli --bin tilolang -p tilolang-app --bin tilolang-app\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nexport XDG_STATE_HOME=\"$TMPDIR/state\"\n\"$bin/tilolang\" build apps/tl/counter --out \"$TMPDIR/built\"\npayload=$(ls -d \"$TMPDIR\"/built/*/payload | head -n 1)\ntest -s \"$payload/app.wasm\"\nTILO_APP_MODULE=\"$payload\" TILO_PACKAGE_ID=so.tilo.lang.counter \"$bin/tilolang-app\" --shots \"$TMPDIR/counter.png\"\ntest -s \"$TMPDIR/counter.png\"\n# Every package runs where its runtime runs, the Mac included.\nfor app in notes mail tube; do\n  \"$bin/tilolang\" build \"apps/tl/$app\" --out \"$TMPDIR/built-$app\"\n  for manifest in \"$TMPDIR/built-$app\"/*/manifest.toml; do\n    grep -qx 'platforms = \\[\"linux\", \"macos\", \"web\"\\]' \"$manifest\"\n  done\ndone\n"
+requires = ["os=macos", "arch=arm64"]
+on = ["dispatch", "idle"]
+heavy = true
+
+[[check]]
 name = "apps-macos"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }

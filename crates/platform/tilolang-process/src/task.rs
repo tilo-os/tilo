@@ -692,7 +692,7 @@ struct Apps {
     unreachable: Vec<Unreachable>,
 }
 
-/// The apps the sealed memfd `fd` holds, `len` bytes of them.
+/// The apps the immutable shared buffer `fd` holds, `len` bytes of them.
 fn apps(fd: &OwnedFd, len: u64) -> Result<Apps, String> {
     let len = usize::try_from(len).map_err(|error| error.to_string())?;
     let mapping = tilo_render_protocol::shm::Mapping::map_sealed(fd, true, len, len)

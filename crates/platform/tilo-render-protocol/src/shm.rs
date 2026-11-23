@@ -1,9 +1,11 @@
-//! Sealed memfds: the ring an app writes its frames into, and the images
-//! and fonts it uploads once.
+//! Shared memory between an app and the processes it draws through: the ring an app writes its
+//! frames into, and the images, fonts and large patch batches it hands over once.
 //!
-//! The app creates every memfd, so its pages are charged to the app's
-//! cgroup: an app cannot push its memory onto the service. The service maps
-//! them read-only, and only after checking their seals:
+//! The app creates every buffer, so its pages are charged to the app: an app cannot push its
+//! memory onto the service.
+//!
+//! On Linux a buffer is a sealed memfd, and the service maps it read-only only after checking its
+//! seals:
 //!
 //! - every memfd is sealed against shrinking, so a mapping the service reads
 //!   can never turn into `SIGBUS` under it, and against growing and further
@@ -15,16 +17,26 @@
 //! read from the ring twice: a frame is decoded into the service's own
 //! memory in one pass ([`crate::scene::decode`]), and only that copy is
 //! validated and drawn.
+//!
+//! Other Unix systems (macOS) cannot seal memory. There an immutable buffer is unlinked POSIX
+//! shared memory ([`tilo_sandbox::shm`]), and [`Mapping::map_sealed`] copies it once into this
+//! process's own read-only memory: the sender can still write the object, but never what the
+//! receiver validated. The writable ring and `SharedMemory` need seals, so they stay Linux's.
 
+#[cfg(target_os = "linux")]
 use std::collections::VecDeque;
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::NonNull;
 
+#[cfg(target_os = "linux")]
 use rustix::fs::{MemfdFlags, SealFlags};
 use rustix::mm::{MapFlags, ProtFlags};
 
 /// Seals every memfd carries.
+#[cfg(target_os = "linux")]
 const SIZE_SEALS: SealFlags = SealFlags::SHRINK
     .union(SealFlags::GROW)
     .union(SealFlags::SEAL);
@@ -45,6 +57,7 @@ impl Mapping {
     /// Map `fd` read-only after checking it is a memfd sealed against
     /// resizing (and against writes when `immutable`), at least `min_len`
     /// bytes and at most `max_len`.
+    #[cfg(target_os = "linux")]
     pub fn map_sealed(
         fd: &OwnedFd,
         immutable: bool,
@@ -86,6 +99,83 @@ impl Mapping {
         }?;
         let ptr =
             NonNull::new(ptr.cast::<u8>()).ok_or_else(|| io::Error::from(io::ErrorKind::Other))?;
+        Ok(Self { ptr, len })
+    }
+
+    /// The bytes of the immutable buffer `fd`, at least `min_len` and at most `max_len` of them,
+    /// copied once into this process's own read-only memory: nothing seals the buffer here, so a
+    /// sender that kept it could still change it, but never the copy. A shared memory object's
+    /// size is rounded up to whole pages, so it may exceed `max_len` by less than a page; what
+    /// lies beyond `max_len` is not copied. A writable buffer (`immutable` false) needs seals and
+    /// is refused.
+    #[cfg(not(target_os = "linux"))]
+    pub fn map_sealed(
+        fd: &OwnedFd,
+        immutable: bool,
+        min_len: usize,
+        max_len: usize,
+    ) -> io::Result<Self> {
+        /// The largest page size of a supported system: Apple silicon's 16 KiB.
+        const MAX_PAGE: usize = 16 * 1024;
+        let out_of_range = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a shared buffer's size is out of range",
+            )
+        };
+        if !immutable {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a writable shared buffer needs sealed memory, which only Linux has",
+            ));
+        }
+        let size = rustix::fs::fstat(fd)?.st_size;
+        let size =
+            usize::try_from(size).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let len = size.min(max_len);
+        if size < min_len || len == 0 || size.saturating_sub(max_len) >= MAX_PAGE {
+            return Err(out_of_range());
+        }
+        // SAFETY: a fresh shared read-only mapping of a file we hold, at an address the kernel
+        // chooses, read once below and unmapped before returning. A shared memory object cannot
+        // be resized once sized, so no page of it disappears while it is mapped.
+        let shared = unsafe {
+            rustix::mm::mmap(
+                std::ptr::null_mut(),
+                len,
+                ProtFlags::READ,
+                MapFlags::SHARED,
+                fd,
+                0,
+            )
+        }?;
+        // SAFETY: fresh private anonymous memory of `len` bytes, this process's alone.
+        let private = unsafe {
+            rustix::mm::mmap_anonymous(
+                std::ptr::null_mut(),
+                len,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE,
+            )
+        };
+        let private = match private {
+            Ok(private) => private,
+            Err(error) => {
+                // SAFETY: unmaps exactly the shared mapping made above.
+                let _ = unsafe { rustix::mm::munmap(shared, len) };
+                return Err(error.into());
+            }
+        };
+        // SAFETY: both regions are `len` mapped bytes and distinct. The sender may write the
+        // shared one meanwhile, which only changes what this one copy holds.
+        unsafe {
+            std::ptr::copy_nonoverlapping(shared.cast::<u8>(), private.cast::<u8>(), len);
+            let _ = rustix::mm::munmap(shared, len);
+        }
+        // SAFETY: the private region made above, read-only from now on for its life.
+        unsafe { rustix::mm::mprotect(private, len, rustix::mm::MprotectFlags::READ) }?;
+        let ptr = NonNull::new(private.cast::<u8>())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::Other))?;
         Ok(Self { ptr, len })
     }
 
@@ -156,6 +246,7 @@ impl Drop for Mapping {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn memfd(name: &str) -> io::Result<OwnedFd> {
     Ok(rustix::fs::memfd_create(
         name,
@@ -163,22 +254,14 @@ fn memfd(name: &str) -> io::Result<OwnedFd> {
     )?)
 }
 
-/// A memfd holding `bytes`, sealed immutable: what an app registers an
-/// image's pixels or a font's bytes in.
+/// An immutable buffer holding `bytes`: what an app registers an image's pixels or a font's
+/// bytes in, and hands a large patch batch or a module over in. A memfd sealed against writes and
+/// resizing on Linux, unlinked shared memory elsewhere; [`Mapping::map_sealed`] reads either.
 pub fn sealed_blob(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
-    let fd = memfd(name)?;
-    let mut written = 0_usize;
-    while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
-        let n = rustix::io::write(&fd, rest)?;
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::WriteZero));
-        }
-        written = written.saturating_add(n);
-    }
-    rustix::fs::fcntl_add_seals(&fd, SIZE_SEALS.union(SealFlags::WRITE))?;
-    Ok(fd)
+    tilo_sandbox::shm::from_bytes(name, bytes)
 }
 
+#[cfg(target_os = "linux")]
 /// The app's side of the ring: a writable mapping and the records the
 /// service has not finished with yet.
 pub struct RingWriter {
@@ -191,10 +274,12 @@ pub struct RingWriter {
     head: usize,
 }
 
+#[cfg(target_os = "linux")]
 // SAFETY: the writable mapping belongs to this value alone; moving it to
 // another thread moves the only writer.
 unsafe impl Send for RingWriter {}
 
+#[cfg(target_os = "linux")]
 impl RingWriter {
     /// A ring of `len` bytes, sealed against resizing.
     pub fn create(len: usize) -> io::Result<Self> {
@@ -301,6 +386,7 @@ impl RingWriter {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for RingWriter {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the mapping made in `create`.
@@ -308,6 +394,7 @@ impl Drop for RingWriter {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// A writable shared memfd: a buffer the service without a GPU draws into
 /// and the app attaches as `wl_shm`. Sealed against shrinking, so the
 /// compositor's mapping of it never faults.
@@ -317,9 +404,11 @@ pub struct SharedMemory {
     len: usize,
 }
 
+#[cfg(target_os = "linux")]
 // SAFETY: the writable mapping belongs to this value alone.
 unsafe impl Send for SharedMemory {}
 
+#[cfg(target_os = "linux")]
 impl SharedMemory {
     /// `len` zeroed bytes.
     pub fn create(name: &str, len: usize) -> io::Result<Self> {
@@ -354,6 +443,7 @@ impl SharedMemory {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the mapping made in `create`.

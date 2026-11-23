@@ -523,8 +523,9 @@ impl TilolangProcess {
     }
 
     /// A development session verified a later build of an app this host runs, and handed its
-    /// module over the API in the sealed memfd `module`: every instance of the app takes it over,
-    /// in place when it reads the state the one before wrote, else starting over on its data.
+    /// module over the API in the immutable shared buffer `module`: every instance of the app
+    /// takes it over, in place when it reads the state the one before wrote, else starting over
+    /// on its data.
     ///
     /// # Errors
     /// The module does not read, or it is another app's.
@@ -1068,7 +1069,7 @@ fn arrived_early(
     }
 }
 
-/// The bundle the sealed memfd `fd` holds, `len` bytes of it.
+/// The bundle the immutable shared buffer `fd` holds, `len` bytes of it.
 fn module_bundle(fd: &OwnedFd, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
@@ -1093,7 +1094,30 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     // SAFETY: one initialized pollfd naming an owned descriptor; a zero timeout makes it a
     // nonblocking query.
     let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
-    ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    if ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        return true;
+    }
+    // A channel on macOS is a datagram pair, whose peer's close `poll` does not report as a
+    // hang-up: the close disconnects it instead.
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: zeroed storage is a valid `sockaddr_storage`.
+        let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut len = libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>())
+            .unwrap_or(libc::socklen_t::MAX);
+        // SAFETY: `peer` is writable for `len` bytes, and `len` says so.
+        let named = unsafe {
+            libc::getpeername(
+                fd.as_raw_fd(),
+                (&raw mut peer).cast::<libc::sockaddr>(),
+                &raw mut len,
+            )
+        };
+        if named != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOTCONN) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

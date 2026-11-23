@@ -40,7 +40,7 @@ use crate::WireError;
 
 pub mod diff;
 pub mod local;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod unix;
 pub mod validate;
 

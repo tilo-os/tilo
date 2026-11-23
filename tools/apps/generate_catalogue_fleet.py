@@ -215,10 +215,9 @@ def native_apps(root: pathlib.Path) -> list[dict]:
 def tilolang_platforms(root: pathlib.Path) -> list[str]:
     """Where a tilolang app runs: where its runtime bundle runs.
 
-    The runtime (`apps/tilolang/tilo-runtime.toml`) is a Linux binary, baked into the OS image
-    beside the Tilo runtime and executed by the session's launcher, and a web bundle a browser
-    tab runs. No macOS build of it exists, so a tilolang app is never declared for the default
-    platforms.
+    The runtime (`apps/tilolang/tilo-runtime.toml`) is a Linux binary baked into the OS image, a
+    macOS binary shipped in Tilo.app, and a web bundle a browser tab runs; its apps run where it
+    does.
     """
     manifest = tomllib.loads((root / "apps/tilolang/tilo-runtime.toml").read_text(encoding="utf-8"))
     platforms = manifest.get("package", {}).get("platforms")
