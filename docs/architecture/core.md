@@ -106,6 +106,14 @@ use the same addresses.
 - What an app's code may reach (paths, devices, network hosts) is a separate
   grant, given at install or through a picker. An app acting for a person
   does only what both may.
+- A visitor with no identity (joining a wait list, reading a public
+  directory) is a caller too: the page makes a key on the visitor's device
+  and signs each call with it, and a grant to any key names exactly the
+  actions a workspace opens to visitors, limited per client address. There
+  is no unsigned caller. When the visitor later signs up, that key is
+  certified as one of their devices, so what they did is already theirs.
+- An automation, like a wait list's confirmation mail, runs as the member who
+  set it up, within that member's grants.
 
 ### Apps
 
