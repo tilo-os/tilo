@@ -143,6 +143,9 @@ mod files_put_by_key;
 #[path = "workspace_actions/files_window_view.rs"]
 mod files_window_view;
 #[cfg(test)]
+#[path = "workspace_actions/flow_customer_workspaces.rs"]
+mod flow_customer_workspaces;
+#[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
 #[cfg(test)]

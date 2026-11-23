@@ -243,11 +243,13 @@ on = ["dispatch"]
 # tests, in the package whose tests they are and the way that package's family runs them: a default
 # check, so every change it reaches runs it.
 #
-# A flow whose tests another package holds adds a matrix entry with its own `-p` and filter. The
-# flows in crates/session/client/tests start the server's workspace service the way a deployment
-# does, which the ci profile's setup builds for them (.config/nextest.toml, `lounge-siblings`), so
-# their run names `-p tilo-session-client --test it`. The VM-only steps of flow 1 (a hosted
-# Browser and a command in a VM) are KVM and stay in os/containers/tilo-sh/check.sh.
+# A flow whose tests another package holds adds a matrix entry with its own `-p` and filter, and a
+# run names what it starts the way that package's family does. The flows in
+# crates/session/client/tests start the server's workspace service as a deployment does: the ci
+# profile's `lounge-siblings` setup builds it for the tests its filter matches, so a flow module it
+# should build goes in that filter (.config/nextest.toml) and the entry is `-p tilo-session-client
+# --test it -E 'test(flow_<name>::)'`. The VM-only steps of flow 1 (a hosted Browser and a command
+# in a VM) are KVM and stay in os/containers/tilo-sh/check.sh.
 [[check]]
 name = "flows/{flow}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
