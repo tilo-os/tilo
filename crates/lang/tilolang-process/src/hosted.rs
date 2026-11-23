@@ -1107,10 +1107,32 @@ impl Hosted {
         for (call, run, action) in store.open_runs() {
             let reason = format!("`{action}` stopped when its app restarted");
             tracing::warn!(app = spec.app, %call, %run, %reason);
-            if let Some(host) = instance.host()
-                && let Err(error) = host.runtime().abandon_run(&run, &reason)
-            {
-                tracing::warn!(app = spec.app, %run, %error, "a waiting run could not be ended");
+            let Some(host) = instance.host() else {
+                continue;
+            };
+            match host.runtime().abandon_run(&run, &reason) {
+                Ok(Some((request, invocation))) => {
+                    // The person sees it where the invocation shows: its own record says it
+                    // ended, with why.
+                    let Ok(invocation) = invocation.parse() else {
+                        continue;
+                    };
+                    let update = failed(invocation, Refused::new("action_failed", reason.clone()));
+                    if let Err(error) =
+                        connection
+                            .manager()
+                            .try_send(CollabRequest::UpdateInvocation {
+                                id: request,
+                                update,
+                            })
+                    {
+                        tracing::warn!(app = spec.app, %run, %error, "the ended invocation was not answered");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(app = spec.app, %run, %error, "a waiting run could not be ended");
+                }
             }
         }
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
@@ -2216,6 +2238,14 @@ impl Hosted {
         served: Option<(u64, tilo_actions::InvocationId)>,
         person: Option<String>,
     ) {
+        // The invocation this run serves outlives this host: it is recorded with the run, so a
+        // host starting over the store answers it if the run cannot go on.
+        if let (Some(run), Some((id, invocation)), Some(host)) =
+            (&run, &served, self.instance.host())
+            && let Err(error) = host.runtime().serving(run, *id, &invocation.0.to_string())
+        {
+            tracing::warn!(%run, %error, "the served invocation was not kept with the run");
+        }
         self.children.borrow_mut().insert(
             call,
             Child {

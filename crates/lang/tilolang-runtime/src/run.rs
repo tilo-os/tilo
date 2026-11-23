@@ -228,6 +228,11 @@ pub struct Journal {
     /// ([`crate::exec`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub invocation: String,
+    /// The invocation the host serves this run as, when it serves one: the host's request id and
+    /// the invocation's own id, which outlives the host, so a host starting over this store can
+    /// answer it if the run cannot go on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served: Option<(u64, String)>,
 }
 
 /// How a run ended for now.

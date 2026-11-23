@@ -225,6 +225,16 @@ const PUBLISHED: &[Published] = &[
     },
 ];
 
+/// The device's surfaces as the file beside the session holds them: what the shell compiles
+/// against and its own test holds to what the session publishes.
+///
+/// # Errors
+///
+/// A surface the file holds that does not read.
+pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> {
+    surfaces_of(include_str!("../../../session/session/device-surface.json"))
+}
+
 /// The platform's resources a view reads, each as the session publishes it (`power:battery`)
 /// and as the view's type names it (`so.tilo.device#Battery`): what the host reads for them.
 #[must_use]

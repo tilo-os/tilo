@@ -852,8 +852,22 @@ impl Runtime {
     /// # Errors
     ///
     /// `NotPending` when the run waits on nothing; `NotFound` when no run is; a store failure.
-    pub fn abandon_run(&self, run: &RunId, reason: &str) -> Result<(), RuntimeError> {
+    pub fn abandon_run(
+        &self,
+        run: &RunId,
+        reason: &str,
+    ) -> Result<Option<(u64, String)>, RuntimeError> {
         self.core.abandon_run(run, reason)
+    }
+
+    /// Record that the run `run` is the invocation `request` (its own id `invocation`) the host
+    /// serves ([`crate::exec::Core::serving`]).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when no run is; a store failure.
+    pub fn serving(&self, run: &RunId, request: u64, invocation: &str) -> Result<(), RuntimeError> {
+        self.core.serving(run, request, invocation)
     }
 
     /// Answer the call the run `run` waits on ([`crate::exec::Core::answer_call`]): what it came

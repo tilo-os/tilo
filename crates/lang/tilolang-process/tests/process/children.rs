@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
         // the call went out as died with the host, and what the run held went with it), so it is
         // ended with the failure that is true of it rather than left waiting for ever.
         let mut restarted = TilolangProcess::new(wake());
-        let (mut window, _sent, inbox) =
+        let (mut window, sent, inbox) =
             instance_with_store(&mut restarted, attributes, bundles(), &route, &bus, store);
         settle(&mut restarted, &mut window);
         let restarted_instance = restarted.instances().next().unwrap();
@@ -304,6 +304,17 @@ tilo_test_env::scenario! {
             restarted_instance.store().open_runs().len(),
             0,
             "the run left waiting is ended, not left waiting"
+        );
+        // The invocation the run served ends with it, where the person sees it, saying why.
+        let ended = answered(&sent, 9).expect("the served invocation is answered");
+        let InvocationUpdate::Failed { invocation, error } = ended else {
+            panic!("the served invocation ends failed: {ended:?}");
+        };
+        assert_eq!(invocation, child.invocation);
+        assert!(
+            error.message.contains("stopped when its app restarted"),
+            "{}",
+            error.message
         );
         // An answer to the call arrives late: nobody waits on it any more, and nothing runs.
         receipt(&inbox, child.invocation, completed(serde_json::json!(2)));

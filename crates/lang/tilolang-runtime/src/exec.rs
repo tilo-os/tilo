@@ -88,6 +88,7 @@ impl ExecCtx {
             approved_by: self.approved_by.clone(),
             effects: 0,
             parent: None,
+            served: None,
             invocation,
         }
     }
@@ -1910,8 +1911,13 @@ impl Core {
     /// # Errors
     ///
     /// `NotPending` when the run waits on nothing; `NotFound` when no run is; a store failure.
-    pub fn abandon_run(&self, run: &RunId, reason: &str) -> Result<(), RuntimeError> {
+    pub fn abandon_run(
+        &self,
+        run: &RunId,
+        reason: &str,
+    ) -> Result<Option<(u64, String)>, RuntimeError> {
         let mut journal = self.waiting_journal(run)?;
+        let served = journal.served.clone();
         let action = match journal.pending.take() {
             Some(Pending::Call { action, .. }) => action,
             _ => journal.action.clone().unwrap_or_default(),
@@ -1925,7 +1931,23 @@ impl Core {
         if !journal.invocation.is_empty() {
             self.store.borrow_mut().abort_run(&journal.invocation);
         }
-        Ok(())
+        Ok(served)
+    }
+
+    /// Record that the run `run` is the invocation `request` (its own id `invocation`) the host
+    /// serves: what a host starting over the store answers when the run cannot go on.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when no run is; a store failure.
+    pub fn serving(&self, run: &RunId, request: u64, invocation: &str) -> Result<(), RuntimeError> {
+        let mut journal = self
+            .store
+            .borrow_mut()
+            .load_journal(run)?
+            .ok_or_else(|| RuntimeError::NotFound(format!("run {run}")))?;
+        journal.served = Some((request, invocation.to_owned()));
+        self.store.borrow_mut().save_journal(run, &journal)
     }
 
     /// The journal of `run`, which waits on something.
