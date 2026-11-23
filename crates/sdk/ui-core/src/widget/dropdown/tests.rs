@@ -1347,6 +1347,53 @@ fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
     );
 }
 
+/// An open dropdown's options are controls a screen reader and an agent meet
+/// by name, where they stand: the list the person presses is the list the
+/// window publishes.
+#[test]
+fn an_open_languages_options_are_controls_by_name_that_choose() {
+    let _settled = crate::motion::testing::settled();
+    let chosen = crate::LocalState::new(String::new());
+    let picker = Dropdown::from_state(
+        vec![
+            "Device".to_string(),
+            "English".to_string(),
+            "Deutsch".to_string(),
+        ],
+        &chosen,
+    )
+    .with_accessible_name("Language")
+    .with_id("language-picker");
+    let mut frame =
+        crate::headless::FrameHarness::new(crate::State::new(), Box::new(picker), (480, 260));
+
+    let opener = frame
+        .a11y_node_named("Language")
+        .expect("the chooser is announced");
+    frame
+        .perform_a11y_action(opener, &crate::a11y::Action::Expand)
+        .expect("the chooser opens");
+    frame.relayout();
+
+    let controls = frame.controls();
+    let option = controls
+        .iter()
+        .find(|control| control.name.as_deref() == Some("Deutsch"))
+        .unwrap_or_else(|| {
+            let names: Vec<_> = controls.iter().filter_map(|c| c.name.clone()).collect();
+            panic!("the open list publishes its options by name: {names:?}")
+        });
+    let bounds = option
+        .bounds
+        .expect("the option stands where the list draws it");
+    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+
+    frame
+        .operate_control(&option.id, &crate::headless::ControlInput::Press)
+        .expect("the option is pressed by the name it shows");
+    assert_eq!(chosen.get(), "Deutsch");
+}
+
 tilo_test_env::scenario! {
     /// The language dropdown.
     /// Each phase was a test of its own and builds its own fixture.

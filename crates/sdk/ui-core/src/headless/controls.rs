@@ -699,19 +699,10 @@ impl FrameHarness {
     }
 }
 
+/// Whether a person presses a control of `role`: the one rule, shared with the window and the
+/// session that offer the same controls by name ([`crate::a11y::pressable_role`]).
 fn is_pressable(role: Role) -> bool {
-    matches!(
-        role,
-        Role::Button
-            | Role::CheckBox
-            | Role::RadioButton
-            | Role::Switch
-            | Role::Tab
-            | Role::MenuItem
-            | Role::Link
-            | Role::ListItem
-            | Role::TreeItem
-    )
+    crate::a11y::pressable_role(role)
 }
 
 /// Whether `spec` is a projected control's action rather than one an app declared.

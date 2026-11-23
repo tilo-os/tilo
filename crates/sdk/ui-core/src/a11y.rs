@@ -257,6 +257,9 @@ pub(crate) fn activation_role(role: Role) -> bool {
 
 /// [`activation_role`] of a role as the exported tree names it: the same roles, read back from a
 /// node a widget described ([`crate::accesskit_bridge::map_role`]).
+///
+/// A list box's option is one of them: a dropdown's open list is drawn, and its options are the
+/// rows a press chooses, so a screen reader and an agent are offered them as controls.
 #[must_use]
 pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
     matches!(
@@ -269,6 +272,7 @@ pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
             | crate::accesskit::Role::MenuItem
             | crate::accesskit::Role::ListItem
             | crate::accesskit::Role::TreeItem
+            | crate::accesskit::Role::ListBoxOption
             | crate::accesskit::Role::Link
     )
 }
