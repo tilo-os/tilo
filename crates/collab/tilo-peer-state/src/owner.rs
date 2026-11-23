@@ -1,67 +1,54 @@
-//! A device's workspaces: replicas of workspaces a remote durable host governs, and
-//! workspaces this device governs itself.
+//! A device's workspaces: the admitted state of every workspace the device takes
+//! part in ([`NativeCommittedView`]), and the durable record of it
+//! ([`NativeAuthorityStorage`]). Every change is admitted into a candidate,
+//! made durable through the device's [`Store`] and only then installed, so no
+//! reader ever sees state the disk may not hold.
 //!
-//! [`NativeWorkspaceOwner`] holds the admitted state of every workspace this
-//! device enrolled in or created ([`NativeCommittedView`]) and is the only writer of
-//! their durable record, [`NativeAuthorityStorage`]. Every change is admitted
-//! into a candidate, published through the host's [`Store`] and only then
-//! installed, so no reader or receipt ever sees state the disk may not hold.
-//! A host keeps that record beside its state file: an index naming each
-//! workspace's file, and one file per workspace ([`open_file`]).
-//! [`enroll`] redeems an invitation with the host that issued it, and
-//! [`session`] holds the server co-edit session with that host.
+//! [`crate::enroll`] redeems an invitation with the device that issued it, and
+//! [`session`] holds the link to the device the workspace is kept on.
 mod answers;
-mod backlog;
-mod behind;
-mod certified;
-mod document_read;
-mod draft;
-mod effect_history;
-mod effect_receipt;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod enroll;
-mod enrollment;
+mod compact;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_store;
+mod history_content;
+mod history_keys;
+mod journal;
+mod journaled;
 #[cfg(test)]
 #[path = "owner/fixture_tests.rs"]
 pub(crate) mod fixture;
-#[cfg(not(target_arch = "wasm32"))]
-mod history_content;
-mod journal;
-mod journaled;
-mod limits;
+pub(crate) mod limits;
 mod publication;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
-mod stored;
+pub(crate) mod stored;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
 mod tests;
-mod vouched;
-mod workspace_membership;
 pub(crate) mod write;
 
-pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-pub use document_read::{
-    CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
-};
-pub use draft::{LocalWrite, admit_local_write, draft_local_write};
 #[cfg(not(target_arch = "wasm32"))]
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
-#[cfg(not(target_arch = "wasm32"))]
-pub use history_content::HistoryContent;
-pub use journaled::{JournalParts, Journaled};
-pub use publication::{
-    DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
-    outgoing_bytes, ownership_run_name, validate_file_layout,
+pub use crate::certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+pub use crate::document_read::{
+    CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
+pub use crate::draft::{LocalWrite, admit_local_write, draft_local_write};
+pub(crate) use crate::enrollment;
+pub(crate) use crate::vouched;
+pub use crate::enroll;
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
-pub use write::{Committed, WriteRefusal};
+pub use history_keys::SealedHistoryKeys;
+#[cfg(not(target_arch = "wasm32"))]
+pub use history_content::HistoryContent;
+#[cfg(not(target_arch = "wasm32"))]
+pub use journaled::{JournalParts, Journaled};
+pub use publication::{ownership_name_between, ownership_run_name};
+pub use write::{DocumentWrites, WorkspaceDocumentWrite, WriteRefusal};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -232,20 +219,6 @@ struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
-    /// The records a compaction of which drafted nothing, each resting a
-    /// while before it is tried again.
-    resting: publication::Resting,
-    /// What this device read of the ownership kept beside its workspaces
-    /// ([`backlog::Backlog`]): every question about what ownership still holds
-    /// reads it, and none of it changes once kept.
-    backlogs: backlog::Backlog,
-    /// The outgoing entries of each workspace this device's replica was checked to hold: a
-    /// write's bytes never change, so a pass checks the entries it has not seen and no others.
-    verified: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
-    /// Sealed compactions each workspace's replica refused for an epoch's content key this
-    /// device does not hold yet, by the encoded message: kept in the workspace's record
-    /// ([`NativeWorkspaceOwner::retry_kept_compactions`]) until the key arrives.
-    kept_compactions: Mutex<BTreeMap<WorkspaceId, Vec<stored::StoredKeptCompaction>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -489,47 +462,6 @@ pub struct NativeFenceSubscription {
 }
 
 impl SharedOwner {
-    /// The compactions `workspace` keeps for a content key this device does not hold yet.
-    fn kept(&self, workspace: WorkspaceId) -> Vec<stored::StoredKeptCompaction> {
-        self.kept_compactions
-            .lock()
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default()
-    }
-    /// Keep `message`, a compaction refused for an epoch's key this device lacks, in
-    /// `workspace`'s record. Answers whether it was not kept already.
-    fn keep_compaction(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
-        let Ok(encoded) = postcard::to_allocvec(message) else {
-            return false;
-        };
-        let kept = stored::StoredKeptCompaction { message: encoded };
-        let mut all = self.kept_compactions.lock();
-        let held = all.entry(workspace).or_default();
-        if held.contains(&kept) {
-            return false;
-        }
-        held.push(kept);
-        drop(all);
-        true
-    }
-    /// Forget `message`, a compaction `workspace` kept, once it was taken or refused for good.
-    fn forget_compaction(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
-        let Ok(encoded) = postcard::to_allocvec(message) else {
-            return false;
-        };
-        let mut all = self.kept_compactions.lock();
-        let Some(held) = all.get_mut(&workspace) else {
-            return false;
-        };
-        let before = held.len();
-        held.retain(|kept| kept.message != encoded);
-        let removed = held.len() != before;
-        if held.is_empty() {
-            all.remove(&workspace);
-        }
-        removed
-    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
@@ -570,14 +502,6 @@ impl SharedOwner {
         policy: bool,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
-        // What the published state no longer names is nothing this session reads again.
-        self.backlogs.retain(
-            &next
-                .workspaces
-                .values()
-                .flat_map(publication::kept_hashes)
-                .collect(),
-        );
         let result = self.store.publish(next, change, install);
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
@@ -614,10 +538,6 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            resting: publication::Resting::default(),
-            backlogs: backlog::Backlog::default(),
-            verified: Mutex::default(),
-            kept_compactions: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -640,15 +560,8 @@ impl NativeWorkspaceOwner {
         }
         for (workspace, record) in &authority.workspaces {
             let view = enrollment::restore(*workspace, record, now)?;
-            effect_receipt::validate_history(&view, store.as_ref())?;
             current.workspaces.insert(*workspace, Arc::new(view));
         }
-        let kept_compactions = authority
-            .workspaces
-            .iter()
-            .filter(|(_, record)| !record.kept_compactions.is_empty())
-            .map(|(workspace, record)| (*workspace, record.kept_compactions.clone()))
-            .collect::<BTreeMap<_, _>>();
         Ok(Self(Arc::new(SharedOwner {
             store,
             authority: RwLock::new(authority),
@@ -656,10 +569,6 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            resting: publication::Resting::default(),
-            backlogs: backlog::Backlog::default(),
-            verified: Mutex::default(),
-            kept_compactions: Mutex::new(kept_compactions),
         })))
     }
     #[must_use]
@@ -764,11 +673,6 @@ impl NativeWorkspaceOwner {
         Ok(self.view(workspace)?.replica.clone())
     }
 
-    /// `workspace`'s store, for the ownership it keeps beside the workspace.
-    fn ownership(&self, workspace: WorkspaceId) -> backlog::Ownership<'_> {
-        (self.0.store.as_ref(), workspace, &self.0.backlogs)
-    }
-
     /// The workspace's committed view, fenced workspaces included in the check.
     fn view(&self, workspace: WorkspaceId) -> Result<Arc<NativeCommittedView>, String> {
         let current = self.0.current.read();
@@ -796,16 +700,15 @@ impl NativeWorkspaceOwner {
 
     fn persist_locked(&self, workspace: WorkspaceId) -> Result<(), String> {
         let view = self.view(workspace)?;
-        let previous = view.record.publication.clone();
         let mut record = view.record.clone();
         let durable = {
             let live = view.live();
-            publication::refresh_governance_checkpoint(&live, &mut record)?;
             stored::DurablePeer::from(live.durable_layout()?)
         };
-        if durable == record.peer && record.publication == previous {
+        if durable == record.peer {
             return Ok(());
         }
+        record.peer = durable;
         self.publish(workspace, &view.replica, record, None)
     }
 
@@ -892,61 +795,26 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let replica = candidate.replica.clone();
-        let previous_publication = candidate.record.publication.clone();
-        let previous_kept = candidate.record.kept_compactions.clone();
         let mut reports = Vec::with_capacity(inputs.len());
-        // The workspace changes admitted from its other devices, as they came:
-        // their hashes are read only to retire changes of this device's own
-        // ([`publication::retire_member_changes`]), which a device that
-        // published none (a page entering a workspace) never has.
-        let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        // Ownership, as the host's compactions of records this device compacted ahead of it
-        // leave it.
-        let mut publication = candidate.record.publication.clone();
         for (origin, message) in inputs {
-            let received = Self::received_changes(origin, &message).cloned();
-            let report = match publication
-                .as_mut()
-                .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
-            {
-                Some(report) => report.map_err(crate::AdmissionError::malformed),
-                None => self.admit_with_keys(&candidate, origin, message, now),
-            };
-            if report.is_ok()
-                && let Some(changes) = received
-            {
-                governed.push(changes);
-            }
+            let report = self.admit_with_keys(&candidate, origin, message, now);
             reports.push(report);
         }
         if reports.iter().all(Result::is_err) {
             // Every input was refused: nothing changed to commit.
             return Ok(reports);
         }
+        // One snapshot under the replica's lock: the durable bytes that show
+        // whether anything changed are the ones published, encoded once.
         let mut record = candidate.record.clone();
-        record.publication = publication;
-        // The compactions this turn kept for keys it does not hold yet: the record carries them
-        // so a restart keeps them too.
-        record.kept_compactions = self.0.kept(workspace);
-        // One snapshot under the replica's lock, as [`Self::publish`] takes
-        // it: the durable bytes that show whether anything changed are the
-        // ones published, encoded once.
         let snapshot = {
             let live = replica.lock();
-            publication::retire(&live, &mut record)?;
-            publication::settle(&mut record, self.ownership(workspace))?;
-            publication::retire_member_changes(&live, &mut record, &governed)?;
-            publication::refresh_governance_checkpoint(&live, &mut record)?;
             let durable = stored::DurablePeer::from(live.durable_layout()?);
             // Authentication and causal admission still run for every replay.
-            // Reuse the actual committed barrier only when both durable peer
-            // state and outgoing ownership are byte-for-byte unchanged. In
-            // particular, newly settled prerequisites or retired obligations
+            // Reuse the actual committed barrier only when the durable peer
+            // state is byte-for-byte unchanged: newly settled prerequisites
             // still require publication before they can be observed.
-            if durable == record.peer
-                && record.publication == previous_publication
-                && record.kept_compactions == previous_kept
-            {
+            if durable == record.peer {
                 return Ok(reports);
             }
             record.peer = durable;
@@ -959,23 +827,6 @@ impl NativeWorkspaceOwner {
         self.install_snapshot(workspace, &replica, record, snapshot, None)?;
         Ok(reports)
     }
-    /// The workspace changes `message` carries, from any device of the workspace: each
-    /// key holder admits every other's, and the workspace's governance that now
-    /// carries what this device published retires it
-    /// ([`publication::retire_member_changes`]). A delta that does not
-    /// carry them all retires nothing.
-    fn received_changes(origin: TransportOrigin, message: &NeighbourMsg) -> Option<&Vec<Vec<u8>>> {
-        if !matches!(
-            origin,
-            TransportOrigin::ServerDelta(_) | TransportOrigin::RetainedServerDelta(_)
-        ) {
-            return None;
-        }
-        match message {
-            NeighbourMsg::SyncResp { changes, .. } => Some(changes),
-            _ => None,
-        }
-    }
     /// [`Self::admit_input`], with a compaction the replica refuses decided once more with the
     /// keys this device holds ([`Self::receive_behind`]).
     fn admit_with_keys(
@@ -985,16 +836,7 @@ impl NativeWorkspaceOwner {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::AdmissionError> {
-        let compaction = behind::carries_compaction(&message).then(|| message.clone());
-        match (
-            Self::admit_input(candidate, origin, message, now),
-            compaction,
-        ) {
-            (Err(refusal), Some(compaction)) if !refusal.is_device_failure() => self
-                .receive_behind(candidate, &compaction, &refusal, now)
-                .unwrap_or(Err(refusal)),
-            (report, _) => report,
-        }
+        Self::admit_input(candidate, origin, message, now)
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
     ///
@@ -1019,11 +861,7 @@ impl NativeWorkspaceOwner {
         if matches!(&message, NeighbourMsg::AppDocument { .. })
             && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
         {
-            let exact = live.lookup_exact_document_report(origin, &message, now)?;
-            if let Some(exact) = exact
-                && publication::exact_replay_unchanged(&live, &candidate.record)
-                    .map_err(crate::AdmissionError::malformed)?
-            {
+            if let Some(exact) = live.lookup_exact_document_report(origin, &message, now)? {
                 return Ok(exact);
             }
         }
@@ -1088,28 +926,14 @@ impl NativeWorkspaceOwner {
         // link admitted after it.
         let snapshot = {
             let live = replica.lock();
-            publication::settle(&mut record, self.ownership(workspace))?;
-            publication::refresh_governance_checkpoint(&live, &mut record)?;
             record.peer = live.durable_layout()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)
     }
 
-    /// The rest of a publication's snapshot of `live`, whose durable bytes
-    /// `record` holds: the effect history root, and the replica as published.
-    fn snapshot(
-        live: &StatePeer,
-        record: &mut stored::StoredWorkspace,
-    ) -> Result<StatePeer, String> {
-        // The signed root is the replica's, and the store's blocks follow
-        // it: the record mirrors it rather than deciding it, so a
-        // publication that did not reach disk still converges on the next.
-        if live.admitted_workspace().is_some() {
-            record.effect_history_root = live
-                .workspace()
-                .workspace_effect_history_root(&record.device)?;
-        }
+    /// The replica as the record publishes it.
+    fn snapshot(live: &StatePeer, _record: &mut stored::StoredWorkspace) -> Result<StatePeer, String> {
         Ok(live.clone())
     }
 

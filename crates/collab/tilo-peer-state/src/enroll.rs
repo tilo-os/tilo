@@ -6,9 +6,10 @@ use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
 };
 use crate::join_transport::{WorkspaceJoinClient, invitation_host};
+use crate::enrollment::ns as now_ns;
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
-    VerifiedNativeEnrollmentIntent, enrollment::ns as now_ns,
+    VerifiedNativeEnrollmentIntent,
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;

@@ -8,7 +8,6 @@
 
 use collab_types::sign_op;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
-use tilo_peer_state::owner_commit::CommitOperation;
 
 use super::Workspaces;
 
@@ -45,7 +44,7 @@ impl Workspaces {
             .await
             .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
         let drafting = crate::timing::start();
-        let (mut request, author) = {
+        let (mut envelope, author) = {
             let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
             let picked = match sealed {
                 Some(_) => None,
@@ -74,21 +73,15 @@ impl Workspaces {
                 },
             )?
         };
-        let CommitOperation::Document { envelope, .. } = &mut request.operation else {
-            return Err(WriteRefusal::Refused(
-                "a local write is a document write".to_owned(),
-            ));
-        };
         crate::timing::event("own_write.draft", drafting, changes.len() as u64);
         let signing = crate::timing::start();
-        sign_op(envelope, &*device.signer)
+        sign_op(&mut envelope, &*device.signer)
             .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-        let envelope = (**envelope).clone();
         crate::timing::event("own_write.sign", signing, 0);
         let committing = crate::timing::start();
         crate::timing::said_if_long(
             "the commit to the workspace",
-            self.commit_local_document(workspace, request),
+            self.commit_local_document(workspace, app, document, readers, envelope.clone()),
         )
         .await?;
         crate::timing::event("own_write.commit", committing, 0);

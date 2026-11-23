@@ -481,52 +481,66 @@ pub struct Sending {
 }
 
 impl Sending {
-    /// Send each write of `workspace`'s ownership in `owner` that may leave now and this
-    /// connection has not sent, through `send`, once `authorize` accepted the ownership as it
-    /// stands. A write still held that may not leave now stays sent.
+    /// Send each frame of `workspace`'s this device wrote and this connection has not sent,
+    /// through `send`, dropping it from the record once the transport took it by `sent`.
     ///
     /// Returns whether the transport took everything: `false` once `send` took no more.
     ///
     /// # Errors
-    /// The ownership cannot be read, or `authorize` refused it.
+    /// The record cannot be written after a frame went.
     pub fn drive(
         &mut self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-        authorize: impl FnOnce(&tilo_peer_state::owner::NativeCommittedView) -> Result<(), String>,
-        send: impl FnMut(Outgoing<'_>) -> bool,
+        mut sent: impl FnMut(&[u8]) -> Result<(), String>,
+        mut send: impl FnMut(Outgoing<'_>) -> bool,
     ) -> Result<bool, String> {
-        // Nothing owed sends nothing, and the device's standing in the workspace is not asked
-        // after: a device that entered and wrote nothing (a key granted a workspace it only reads)
-        // is not on its roster until it writes, and each pass would find it absent again.
-        if owner.owes_nothing(workspace).unwrap_or(false) {
+        let frames = owner.frames(workspace);
+        if frames.is_empty() {
             self.held = 0;
             self.sent.clear();
+            self.sent_writes.clear();
             self.awaiting_ready.clear();
             return Ok(true);
         }
-        owner.with_outgoing(workspace, tilo_clock::wall(), |view, outgoing| {
-            authorize(view)?;
-            let (queued, sendable) = (outgoing.queued().count(), outgoing.entries().count());
-            self.held = queued.saturating_sub(sendable);
-            tracing::debug!(
-                %workspace,
-                queued,
-                sendable,
-                sent_before = self.sent.len(),
-                "this device's ownership of the workspace goes to its link"
-            );
-            Ok(self.pass(
-                outgoing.queued(),
-                outgoing.entries().map(|entry| Outgoing {
-                    id: entry.id(),
-                    bytes: entry.bytes(),
-                    channel: entry.channel(),
-                    retention: entry.retention(),
+        let mut entries: Vec<([u8; 32], [u8; 32], neighbour_wire::Retention)> = Vec::new();
+        for bytes in &frames {
+            let Ok(message) = neighbour_wire::NeighbourMsg::decode(bytes) else {
+                continue;
+            };
+            let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
+                continue;
+            };
+            entries.push((*blake3::hash(bytes).as_bytes(), channel, retention));
+        }
+        self.held = 0;
+        let queued: Vec<[u8; 32]> = entries.iter().map(|(id, ..)| *id).collect();
+        let mut written = None;
+        let took = self.pass(
+            queued.into_iter(),
+            entries
+                .iter()
+                .zip(&frames)
+                .map(|((id, channel, retention), bytes)| Outgoing {
+                    id: *id,
+                    bytes,
+                    channel: *channel,
+                    retention: *retention,
                 }),
-                send,
-            ))
-        })
+            |write| {
+                if !send(write) {
+                    return false;
+                }
+                if let Err(error) = sent(write.bytes) {
+                    written = Some(error);
+                }
+                true
+            },
+        );
+        match written {
+            Some(error) => Err(error),
+            None => Ok(took),
+        }
     }
 
     /// How many writes held the last [`Self::drive`] held back: a sealed write past its

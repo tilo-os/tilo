@@ -366,7 +366,7 @@ impl JoinedChannel {
         verify_session_author(&current_identity, envelope.author)
             .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
         state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        let owner_required = state.durable_owner_required || state.publisher.has_owner();
+        let owner_required = state.durable_owner_required || state.publisher.has_commits();
         let _owner_order = if owner_required {
             Some(state.owner_commit_order.lock().await)
         } else {
@@ -377,16 +377,12 @@ impl JoinedChannel {
         let envelope = if owner_required {
             state.revalidate_admission(&route, &self.verified_identity)?;
             state
-                .commit_owner_document(
-                    tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        workspace: route.cluster_id.clone(),
-                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                            app: route.app_id.clone(),
-                            document: route.document_id.clone(),
-                            envelope: Box::new(envelope),
-                            readers: None,
-                        },
-                    },
+                .commit_document(
+                    route.cluster_id.clone(),
+                    route.app_id.clone(),
+                    route.document_id.clone(),
+                    None,
+                    envelope,
                     self.resource_type.clone(),
                 )
                 .await?
@@ -647,19 +643,13 @@ impl JoinedChannel {
             let state = self.state.clone();
             let route = self.route();
             let identity = self.verified_identity.clone();
+            let redacted =
+                serde_json::to_vec(&receipt).map_err(|e| BrokerError::failed(e.to_string()))?;
+            let workspace = surface.route.cluster_id.clone();
             return Ok(Box::pin(async move {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
-                state
-                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        workspace: surface.route.cluster_id,
-                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                            invocation: update.invocation().0,
-                            redacted: serde_json::to_vec(&receipt)
-                                .map_err(|e| BrokerError::failed(e.to_string()))?,
-                        },
-                    })
-                    .await?;
+                state.record_effect(workspace, redacted).await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())
             }));
@@ -1151,12 +1141,12 @@ impl JoinedChannel {
         let route = self.route();
         let identity = self.verified_identity.clone();
         Box::pin(async move {
-            let _owner_order = if state.durable_owner_required || state.publisher.has_owner() {
+            let _owner_order = if state.durable_owner_required || state.publisher.has_commits() {
                 Some(state.owner_commit_order.lock().await)
             } else {
                 None
             };
-            if state.durable_owner_required || state.publisher.has_owner() {
+            if state.durable_owner_required || state.publisher.has_commits() {
                 state.revalidate_admission(&route, &identity)?;
             }
             let completion = InvocationCompletion { code, message };
@@ -1210,7 +1200,7 @@ impl JoinedChannel {
             state
                 .commit_effect_before_terminal(&staged, &update)
                 .await?;
-            if state.durable_owner_required || state.publisher.has_owner() {
+            if state.durable_owner_required || state.publisher.has_commits() {
                 state.revalidate_admission(&route, &identity)?;
             }
             state

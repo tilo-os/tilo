@@ -6,7 +6,9 @@ use super::*;
 
 pub(super) struct PreparedEffectCommit {
     pub(super) update: tilo_actions::InvocationUpdate,
-    pub(super) request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    pub(super) workspace: String,
+    pub(super) invocation: uuid::Uuid,
+    pub(super) redacted: Vec<u8>,
 }
 
 impl AppBrokerState {
@@ -249,18 +251,19 @@ impl AppBrokerState {
         {
             return Err(reason.clone());
         }
-        self.publisher.owner_commit_health()
+        self.publisher.commits_health()
     }
-    pub(super) async fn commit_owner_request(
+    pub(super) async fn record_effect(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        workspace: String,
+        redacted: Vec<u8>,
     ) -> Result<(), BrokerError> {
         self.owner_health().map_err(BrokerError::failed)?;
         let waiting = OwnerWait::on(&self.owner_commit_failure);
-        let result = self.publisher.commit_owner(request, None).await;
+        let result = self.publisher.record_effect(workspace, redacted).await;
         waiting.answered();
-        result.map(drop).map_err(|reason| {
-            // The owner answered: retain its actual refusal/failure for
+        result.map_err(|reason| {
+            // The record answered: retain its actual refusal/failure for
             // later clients instead of labeling this as a dropped RPC.
             self.retain_owner_failure(&reason);
             BrokerError::failed(reason)
@@ -271,33 +274,26 @@ impl AppBrokerState {
     /// is answered the refusal and takes the write back out, and nothing else
     /// waits on it. An answer that does not prove the write leaves the owner
     /// unknown, as a dropped wait does.
-    pub(super) async fn commit_owner_document(
+    pub(super) async fn commit_document(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: SignedOp,
         resource_type: Option<String>,
     ) -> Result<SignedOp, BrokerError> {
         self.owner_health().map_err(BrokerError::failed)?;
         let waiting = OwnerWait::on(&self.owner_commit_failure);
         let answered = self
             .publisher
-            .commit_owner_document(request.clone(), resource_type)
+            .commit_document(workspace, app, document, readers, envelope, resource_type)
             .await;
         waiting.answered();
-        let (committed, receipt) = answered.map_err(BrokerError::failed)?;
-        receipt
-            .validate_local_document(&request, &committed)
-            .map_err(|reason| {
-                self.retain_owner_failure(&reason);
-                BrokerError::failed(reason)
-            })?;
-        match committed.operation {
-            tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } => {
-                Ok(*envelope)
-            }
-            _ => Err(BrokerError::failed(
-                "the owner committed no document".into(),
-            )),
-        }
+        answered.map_err(|reason| {
+            self.retain_owner_failure(&reason);
+            BrokerError::failed(reason)
+        })
     }
     pub(super) fn retain_owner_failure(&self, reason: &str) {
         if let Ok(mut failure) = self.owner_commit_failure.lock() {
@@ -322,7 +318,7 @@ impl AppBrokerState {
         }
         let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
             .ok_or_else(|| BrokerError::failed("nonterminal effect receipt".into()))?;
-        let request = {
+        let prepared = {
             let mut prepared = pending.prepared_effect.lock().map_err(|_| {
                 BrokerError::failed("effect receipt preparation unavailable".into())
             })?;
@@ -332,7 +328,7 @@ impl AppBrokerState {
                         "effect terminal outcome changed".into(),
                     ));
                 }
-                previous.request.clone()
+                previous.clone()
             } else {
                 let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                     update.invocation(),
@@ -341,19 +337,15 @@ impl AppBrokerState {
                     status,
                     tilo_clock::unix_now_i64(),
                 );
-                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: pending.cluster_id.clone(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                        invocation: update.invocation().0,
-                        redacted: serde_json::to_vec(&receipt)
-                            .map_err(|error| BrokerError::failed(error.to_string()))?,
-                    },
-                };
-                *prepared = Some(PreparedEffectCommit {
+                let fresh = PreparedEffectCommit {
                     update: update.clone(),
-                    request: request.clone(),
-                });
-                request
+                    workspace: pending.cluster_id.clone(),
+                    invocation: update.invocation().0,
+                    redacted: serde_json::to_vec(&receipt)
+                        .map_err(|error| BrokerError::failed(error.to_string()))?,
+                };
+                *prepared = Some(fresh.clone());
+                fresh
             }
         };
         if let Some(key) = &pending.journal_key {
@@ -365,11 +357,18 @@ impl AppBrokerState {
                 .map_err(|error| BrokerError::failed(error.clone()))?
                 .as_mut()
                 .ok_or_else(|| BrokerError::failed("durable admission unavailable".into()))?
-                .stage_prepared_effect(key, update.clone(), &request)
+                .stage_prepared_effect(
+                    key,
+                    update.clone(),
+                    &prepared.workspace,
+                    prepared.invocation,
+                    &prepared.redacted,
+                )
                 .map_err(BrokerError::failed)?;
             durable.wait().await.map_err(BrokerError::failed)?;
         }
-        self.commit_owner_request(request).await
+        self.record_effect(prepared.workspace, prepared.redacted)
+            .await
     }
     /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
     #[cfg(test)]
@@ -388,7 +387,12 @@ impl AppBrokerState {
         self.owner_health()?;
         // The normal service supplies actual current governor ownership and exact owner retry.
         // A saved request grants no authority, and no unavailable service fallback is allowed.
-        if let Err(error) = self.publisher.commit_owner(prepared.request(), None).await {
+        let (workspace, redacted) = prepared.receipt();
+        if let Err(error) = self
+            .publisher
+            .record_effect(workspace.to_owned(), redacted.to_vec())
+            .await
+        {
             tracing::warn!(%error, "prepared effect remains uncertain");
             authorize()?;
             return Ok(record);

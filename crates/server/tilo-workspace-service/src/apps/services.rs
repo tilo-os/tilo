@@ -63,11 +63,18 @@ pub trait WorkspaceMemberships: Send + Sync {
         Err("workspace membership owner continuity is unavailable".into())
     }
 
+    /// Write `command` into `workspace`'s governance as `caller`'s device.
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture;
+        workspace: String,
+        caller: tilo_user_identity::DeviceCert,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> WorkspaceMembershipFuture;
 }
+
+/// A membership command on its way into the workspace it changes.
+pub type WorkspaceMembershipFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// One checked change to a workspace's saved shortcuts. The broker mints
 /// `invocation` and has checked the change against what `actor` is offered.

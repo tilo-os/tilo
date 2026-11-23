@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use collab_types::SignedOp;
 use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -34,7 +35,6 @@ use tilo_peer_state::join::{
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::owner::session::hosted_by;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::DeviceCert;
@@ -1237,18 +1237,14 @@ impl Workspaces {
     pub async fn commit_member_effect_receipt(
         &self,
         workspace: &str,
-        request: &OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, String> {
-        let CommitOperation::EffectReceipt { redacted, .. } = &request.operation else {
-            return Err("not an effect receipt".into());
-        };
+        redacted: &[u8],
+    ) -> Result<(), String> {
         if !self.is_member(workspace).await? {
             return Err("this workspace is not held here as a member copy".into());
         }
         let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
             serde_json::from_slice(redacted).map_err(|error| error.to_string())?;
         let device = self.member_identity()?;
-        let binding = request.binding()?;
         let state = self
             .workspace(workspace)
             .await
@@ -1256,19 +1252,11 @@ impl Workspaces {
         let messages = {
             let governed = state.lock().await;
             let now = tilo_clock::wall();
-            let generation = governed.record.generation.saturating_add(1);
-            let peer = governed.peer();
-            let mut candidate = peer.clone();
+            let mut candidate = governed.peer().clone();
             candidate
                 .workspace_mut()
                 .apply_own_effect_receipt(&device.cert, &receipt, now)?;
-            let messages = candidate.publication_mut().durable_mutation_messages(
-                &peer,
-                device.signer.as_ref(),
-                now,
-                generation,
-            )?;
-            drop(peer);
+            let messages = vec![candidate.workspace_message()];
             *governed.peer.lock() = candidate;
             drop(governed);
             messages
@@ -1284,45 +1272,33 @@ impl Workspaces {
             })
             .transpose()?;
         // A receipt whose change produced nothing is one the workspace already
-        // holds; the answer still binds the request.
+        // holds.
         if let Some(commit) = commit {
             let _ = self.commit_member_document(workspace, commit).await?;
         }
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: 1,
-            aggregate_hash: *blake3::hash(redacted).as_bytes(),
-        })
+        Ok(())
     }
 
     /// Commit `request`, a document write this device makes to `workspace`: admitted into the
     /// workspace's own persistence when this service governs it, else taken into the member copy
-    /// and carried to the device serving the workspace. Answers the receipt that binds it.
+    /// and carried to the device serving the workspace.
     ///
     /// # Errors
     ///
     /// [`WriteRefusal::Waiting`] while this device is still taking the workspace in (joining it,
-    /// or opening it as it starts): the same write is kept once it holds it. Otherwise the
-    /// request is not a document write of this device's, or the write could not be kept.
+    /// or opening it as it starts): the same write is kept once it holds it. Otherwise the write
+    /// is not this device's, or it could not be kept.
     pub async fn commit_local_document(
         &self,
         workspace: &str,
-        request: OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, WriteRefusal> {
+        app: &str,
+        document: &str,
+        readers: Option<&str>,
+        envelope: SignedOp,
+    ) -> Result<(), WriteRefusal> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| WriteRefusal::Refused(format!("{workspace} is not a workspace id")))?;
         let device = self.signing_device();
-        let CommitOperation::Document {
-            app,
-            document,
-            envelope,
-            readers,
-        } = &request.operation
-        else {
-            return Err(WriteRefusal::Refused(
-                "a local commit is a document write".into(),
-            ));
-        };
         if envelope.author.as_bytes() != &device.device() {
             return Err(WriteRefusal::Refused(
                 "the document's signer differs from this device".into(),
@@ -1334,15 +1310,16 @@ impl Workspaces {
         }
         let message = NeighbourMsg::AppDocument {
             peer: neighbour_wire::peer_handle(&device.device()),
-            app_id: app.clone(),
+            app_id: app.to_owned(),
             cluster_id: workspace_id.to_string(),
-            document_id: document.clone(),
-            envelope: envelope.clone(),
-            readers: readers.clone(),
+            document_id: document.to_owned(),
+            envelope: Box::new(envelope.clone()),
+            readers: readers.map(str::to_owned),
         };
-        let binding = request.binding()?;
         if !member {
-            return Ok(self.commit_own_document(workspace, request).await?);
+            return self
+                .commit_own_document(workspace, app, document, readers, &envelope)
+                .await;
         }
         if neighbour_wire::retention(&message, false).is_none() {
             return Err(WriteRefusal::Refused(
@@ -1350,31 +1327,27 @@ impl Workspaces {
             ));
         }
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        let aggregate_hash = *blake3::hash(&body).as_bytes();
-        let order = self
-            .commit_member_document(workspace, HostCommit { body })
+        self.commit_member_document(workspace, HostCommit { body })
             .await?;
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: order.max(1),
-            aggregate_hash,
-        })
+        Ok(())
     }
 
-    /// Admit `request`, an app's signed write this device makes to
-    /// `workspace`, the profile's own workspace this service holds and
-    /// governs: into its ordered persistence, answered with the receipt that
-    /// binds it, and carried to the workspace's other devices.
+    /// Admit a write this device makes to `workspace`, the profile's own workspace this service
+    /// holds and governs: into its ordered persistence, carried to the workspace's other
+    /// devices.
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, the request is not a document of
-    /// this device's, or the write could not be kept.
+    /// The workspace is not governed here, the write is not this device's, or it could not be
+    /// kept.
     pub async fn commit_own_document(
         &self,
         workspace: &str,
-        request: OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, String> {
+        app: &str,
+        document: &str,
+        readers: Option<&str>,
+        envelope: &SignedOp,
+    ) -> Result<(), String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
         let device = self.signing_device();
         if self.is_member(workspace).await? {
@@ -1383,11 +1356,17 @@ impl Workspaces {
         if self.governed_copy(workspace_id).await.is_none() {
             return Err("this workspace is not governed here".into());
         }
-        let (message, receipt) =
-            self.retain_local_document(workspace_id, device.device(), &request)?;
+        let message = self.local_document_message(
+            workspace_id,
+            device.device(),
+            app,
+            document,
+            readers,
+            envelope,
+        )?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         self.absorb(workspace, device.device(), &body).await?;
-        Ok(receipt)
+        Ok(())
     }
 
     /// Keep a locally drafted document, using its authenticated writer, and
@@ -1396,45 +1375,41 @@ impl Workspaces {
         &self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
-        request: &OwnerCommitRequest,
-    ) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
-        let CommitOperation::Document {
-            app,
-            document: record,
-            envelope,
-            readers,
-        } = &request.operation
-        else {
-            return Err("an app writes documents to its workspace".into());
-        };
-        if envelope.author.as_bytes() != &author
-            || WorkspaceId::parse(&request.workspace) != Some(workspace_id)
-        {
-            return Err("the document's signer differs from this device".into());
-        }
-        let binding = request.binding()?;
-        let message = NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(&author),
-            app_id: app.clone(),
-            cluster_id: workspace_id.to_string(),
-            document_id: record.clone(),
-            envelope: envelope.clone(),
-            readers: readers.clone(),
-        };
+        app: &str,
+        document: &str,
+        readers: Option<&str>,
+        envelope: &SignedOp,
+    ) -> Result<NeighbourMsg, String> {
+        let message =
+            self.local_document_message(workspace_id, author, app, document, readers, envelope)?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        let aggregate_hash = *blake3::hash(&body).as_bytes();
-        let order = self
-            .inner
+        self.inner
             .records
             .carry(workspace_id, author, &HostCommit { body })?;
-        Ok((
-            message,
-            OwnerCommitReceipt {
-                binding,
-                generation: order.max(1),
-                aggregate_hash,
-            },
-        ))
+        Ok(message)
+    }
+
+    /// The frame a write of `author`'s goes out as.
+    fn local_document_message(
+        &self,
+        workspace_id: WorkspaceId,
+        author: [u8; 32],
+        app: &str,
+        document: &str,
+        readers: Option<&str>,
+        envelope: &SignedOp,
+    ) -> Result<NeighbourMsg, String> {
+        if envelope.author.as_bytes() != &author {
+            return Err("the document's signer differs from this device".into());
+        }
+        Ok(NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&author),
+            app_id: app.to_owned(),
+            cluster_id: workspace_id.to_string(),
+            document_id: document.to_owned(),
+            envelope: Box::new(envelope.clone()),
+            readers: readers.map(str::to_owned),
+        })
     }
 
     /// Write `command`, this device's own membership change (a lease it
@@ -1457,9 +1432,7 @@ impl Workspaces {
         let state = self.workspace(workspace).await.map_err(|e| e.to_string())?;
         let governed = state.lock().await;
         let now = tilo_clock::wall();
-        let generation = governed.record.generation.saturating_add(1);
-        let peer = governed.peer();
-        let mut candidate = peer.clone();
+        let mut candidate = governed.peer().clone();
         candidate
             .workspace_mut()
             .apply_workspace_membership_command(
@@ -1468,18 +1441,8 @@ impl Workspaces {
                 device.signer.as_ref(),
                 now,
             )?;
-        let messages = candidate.publication_mut().durable_mutation_messages(
-            &peer,
-            device.signer.as_ref(),
-            now,
-            generation,
-        )?;
-        drop(peer);
+        let message = candidate.workspace_message();
         *governed.peer.lock() = candidate;
-        let message = messages
-            .into_iter()
-            .next()
-            .ok_or("the membership change wrote nothing")?;
         neighbour_wire::retention(&message, false).ok_or("the write carries no retention route")?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         drop(governed);

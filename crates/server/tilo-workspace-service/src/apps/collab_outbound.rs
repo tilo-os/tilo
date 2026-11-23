@@ -58,7 +58,7 @@ pub trait PeerPublishSink: Send + Sync {
 /// has one answer per session.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
-    owner_commit: Option<Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>>,
+    commits: Option<Arc<dyn tilo_broker_core::workspace_commits::WorkspaceCommits>>,
     /// Set the first time a publish is dropped for no network — keeps
     /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
@@ -69,89 +69,76 @@ impl PeerPublisher {
     pub fn new(sink: Arc<dyn PeerPublishSink>) -> Arc<Self> {
         Arc::new(Self {
             sink: Some(sink),
-            owner_commit: None,
+            commits: None,
             warned_no_network: AtomicBool::new(false),
         })
     }
 
-    /// Attach the host-local fsync barrier independently from network publication.
+    /// Attach the host-local durable record independently from network publication.
     /// A legacy sink's wired status never supplies this authority.
-    pub fn with_owner_commit(
+    pub fn with_commits(
         sink: Arc<dyn PeerPublishSink>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        commits: Arc<dyn tilo_broker_core::workspace_commits::WorkspaceCommits>,
     ) -> Arc<Self> {
-        Self::with_optional_owner_commit(Some(sink), owner)
+        Self::with_optional_commits(Some(sink), commits)
     }
-    /// Keep a real local durable owner even when no network sink is installed.
-    pub fn with_optional_owner_commit(
+    /// Keep a real local durable record even when no network sink is installed.
+    pub fn with_optional_commits(
         sink: Option<Arc<dyn PeerPublishSink>>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        commits: Arc<dyn tilo_broker_core::workspace_commits::WorkspaceCommits>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sink,
-            owner_commit: Some(owner),
+            commits: Some(commits),
             warned_no_network: AtomicBool::new(false),
         })
     }
-    /// Whether a durable owner is installed here: every workspace's document writes
+    /// Whether a durable record is installed here: every workspace's document writes
     /// cross it.
-    pub fn has_owner(&self) -> bool {
-        self.owner_commit.is_some()
+    pub fn has_commits(&self) -> bool {
+        self.commits.is_some()
     }
-    /// Whether `workspace`'s effect receipts are the installed owner's to
-    /// commit ([`tilo_peer_state::owner_commit::OwnerCommitService::records_effects`]).
+    /// Whether `workspace`'s effect receipts are recorded here.
     pub fn records_effects_for(&self, workspace: &str) -> bool {
-        self.owner_commit
-            .as_ref()
-            .is_some_and(|owner| owner.records_effects(workspace))
+        self.commits.as_ref().is_some_and(|commits| {
+            tilo_desktop_model::WorkspaceId::parse(workspace)
+                .is_some_and(|workspace| commits.projects_workspace(workspace))
+        })
     }
-    /// Health of the installed durable owner commit.
-    pub fn owner_commit_health(&self) -> Result<(), String> {
-        self.owner_commit
+    /// Health of the installed durable record.
+    pub fn commits_health(&self) -> Result<(), String> {
+        self.commits
             .as_ref()
-            .ok_or("durable owner commit unsupported")?
+            .ok_or("durable workspace record unsupported")?
             .health()
     }
-    /// Commits one request through the installed durable owner. A document
-    /// write carries the resource kind its app named for the record.
-    pub async fn commit_owner(
+    /// Commit a document write of this device through the installed record, with the resource
+    /// kind its app named for the record: the write as the record took it.
+    pub async fn commit_document(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: collab_types::SignedOp,
         resource_type: Option<String>,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-        let owner = self
-            .owner_commit
+    ) -> Result<collab_types::SignedOp, String> {
+        let commits = self
+            .commits
             .as_ref()
-            .ok_or("durable owner commit unsupported")?;
-        owner.health()?;
-        let receipt = owner
-            .commit_with_resource_type(request.clone(), resource_type)
-            .await?;
-        receipt.validate_for(&request)?;
-        Ok(receipt)
+            .ok_or("durable workspace record unsupported")?;
+        commits.health()?;
+        commits
+            .document(workspace, app, document, readers, envelope, resource_type)
+            .await
     }
-
-    /// Commits a document write of this device through the installed durable
-    /// owner, with the resource kind its app named for the record: the write
-    /// as the record took it and its receipt, for the caller to check
-    /// ([`tilo_peer_state::owner_commit::OwnerCommitReceipt::validate_local_document`]).
-    pub async fn commit_owner_document(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        resource_type: Option<String>,
-    ) -> Result<
-        (
-            tilo_peer_state::owner_commit::OwnerCommitRequest,
-            tilo_peer_state::owner_commit::OwnerCommitReceipt,
-        ),
-        String,
-    > {
-        let owner = self
-            .owner_commit
+    /// Record an effect's terminal receipt in `workspace`.
+    pub async fn record_effect(&self, workspace: String, redacted: Vec<u8>) -> Result<(), String> {
+        self.commits
             .as_ref()
-            .ok_or("durable owner commit unsupported")?;
-        owner.health()?;
-        owner.commit_local_document(request, resource_type).await
+            .ok_or("durable workspace record unsupported")?
+            .effect(workspace, redacted)
+            .await
     }
 
     /// A publisher with nowhere to publish. Every call is a no-op,
@@ -159,7 +146,7 @@ impl PeerPublisher {
     pub fn disabled() -> Arc<Self> {
         Arc::new(Self {
             sink: None,
-            owner_commit: None,
+            commits: None,
             warned_no_network: AtomicBool::new(false),
         })
     }
@@ -490,48 +477,5 @@ mod tests {
                 }],
             );
         }
-    }
-
-    #[tokio::test]
-    async fn an_owner_commit_carries_the_record_kind_to_the_owner() {
-        use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest};
-        #[derive(Default)]
-        struct Recording(std::sync::Mutex<Vec<Option<String>>>);
-        impl tilo_peer_state::owner_commit::OwnerCommitService for Recording {
-            fn commit(&self, _: OwnerCommitRequest) -> CommitFuture {
-                Box::pin(async { Err("only commits naming their kind are expected".into()) })
-            }
-            fn commit_with_resource_type(
-                &self,
-                _: OwnerCommitRequest,
-                resource_type: Option<String>,
-            ) -> CommitFuture {
-                self.0.lock().unwrap().push(resource_type);
-                Box::pin(async { Err("recorded".into()) })
-            }
-            fn health(&self) -> Result<(), String> {
-                Ok(())
-            }
-        }
-        let owner = Arc::new(Recording::default());
-        let publisher = PeerPublisher::with_optional_owner_commit(None, owner.clone());
-        let request = OwnerCommitRequest {
-            workspace: "77777777-7777-4777-8777-777777777777".into(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                invocation: uuid::Uuid::from_u128(1),
-                redacted: b"{}".to_vec(),
-            },
-        };
-        for kind in [Some("notes.notebook".to_owned()), None] {
-            let error = publisher
-                .commit_owner(request.clone(), kind)
-                .await
-                .unwrap_err();
-            assert_eq!(error, "recorded");
-        }
-        assert_eq!(
-            *owner.0.lock().unwrap(),
-            [Some("notes.notebook".to_owned()), None]
-        );
     }
 }

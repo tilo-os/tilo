@@ -3,8 +3,8 @@
 //!
 //! Every holder of a device's documents — a workspace service's copy, a page's replica and a
 //! session's engine — writes through here, so a write is drafted, sealed and signed in one
-//! place whatever holds the replica. What a session does with it afterwards is publish it as it
-//! was signed ([`super::NativeWorkspaceOwner::commit_admitted`]), never draft it again.
+//! place whatever holds the replica. What it is sent as afterwards is the signed write itself,
+//! never drafted again.
 
 use std::sync::Arc;
 
@@ -14,8 +14,7 @@ use tilo_action_policy::MemberAccess;
 use tilo_desktop_model::WorkspaceId;
 use web_time::SystemTime;
 
-use crate::owner::{AppWrite, WriteRefusal};
-use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
+use crate::owner::{AppWrite, NativeWorkspaceOwner, WriteRefusal};
 use crate::replica::Replica;
 use crate::workspace_documents::DocumentWrite;
 use crate::{NotAdmitted, SealCheckpoint, StatePeer};
@@ -91,8 +90,8 @@ impl OwnedWrite {
     }
 }
 
-/// The `write` as `device` makes it to `workspace`: the request to commit, and the author's
-/// access in the workspace. Nothing is signed or admitted here.
+/// The `write` as `device` makes it to `workspace`: the signed-shaped op to sign and admit, and
+/// the author's access in the workspace. Nothing is signed or admitted here.
 ///
 /// # Errors
 ///
@@ -102,7 +101,7 @@ pub fn draft_local_write(
     workspace: &str,
     device: &[u8; 32],
     write: LocalWrite<'_>,
-) -> Result<(OwnerCommitRequest, MemberAccess), WriteRefusal> {
+) -> Result<(collab_types::SignedOp, MemberAccess), WriteRefusal> {
     let LocalWrite {
         app,
         document,
@@ -154,18 +153,7 @@ pub fn draft_local_write(
             now,
         )
         .map_err(WriteRefusal::Refused)?;
-    Ok((
-        OwnerCommitRequest {
-            workspace: workspace.to_owned(),
-            operation: CommitOperation::Document {
-                app: app.to_owned(),
-                document: document.to_owned(),
-                envelope: Box::new(envelope),
-                readers: readers.map(str::to_owned),
-            },
-        },
-        author,
-    ))
+    Ok((envelope, author))
 }
 
 /// Draft `write` against `replica` as it stands, sign it as `device` by `signer`, and admit it
@@ -183,7 +171,7 @@ pub fn draft_local_write(
 /// signer answers through a promise, and no link admits in between the draft and the admission.
 pub fn admit_local_write(
     replica: Replica,
-    owner: Option<super::NativeWorkspaceOwner>,
+    owner: Option<NativeWorkspaceOwner>,
     device: [u8; 32],
     signer: Arc<dyn DeviceSigner>,
     workspace: &str,
@@ -238,13 +226,8 @@ async fn signed_local_write(
     write: &OwnedWrite,
 ) -> Result<AppWrite, WriteRefusal> {
     let drafted = replica.read(StatePeer::clone);
-    let (mut request, author) =
+    let (mut envelope, author) =
         draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
-    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
-        return Err(WriteRefusal::Refused(
-            "a local write is a document write".to_owned(),
-        ));
-    };
     let bytes = envelope
         .signing_bytes()
         .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
@@ -256,7 +239,6 @@ async fn signed_local_write(
         .await
         .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
     envelope.signature = collab_types::Signature(signature);
-    let envelope = (**envelope).clone();
     replica
         .write(|peer| {
             peer.admit_new_local_document_read_by(

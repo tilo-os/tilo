@@ -92,41 +92,24 @@ pub(crate) struct StoredWorkspace {
     pub peer: DurablePeer,
     pub generation: u64,
     pub continuity: u64,
-    /// Outgoing publication state; required on every committed workspace record.
+    /// The record layout a build before the one path kept: its outgoing
+    /// ownership and the answers it took for it. This build writes none and
+    /// reads what an entry holds so the journal beside it replays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::owner::publication::StoredPublication>,
-    /// Original person membership command outcomes, private to the owning host.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub workspace_memberships:
-        BTreeMap<String, crate::owner::workspace_membership::StoredMembershipReceipt>,
-    /// Exact broker terminal bindings, committed with the signed workspace checkpoint.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub effect_receipts: BTreeMap<String, crate::owner::effect_receipt::StoredEffectReceipt>,
-    /// Retired with the shortcut commit family: a saved shortcut is one of the
-    /// workspace's settings. A record kept before then still names the receipt
-    /// its published checkpoint was committed under, so it stays here to read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shortcut_change: Option<crate::owner_commit::OwnerCommitReceipt>,
-    /// Content-addressed cold UUID index, also anchored in signed public workspace history.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_history_root: Option<[u8; 32]>,
-    /// The join admissions committed here, by the digest of their binding:
-    /// the workspace delta that carried each one is published under its receipt.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub join_admissions: BTreeMap<String, StoredJoinReceipt>,
-    /// Sealed compactions this device refused because they are sealed under an epoch it holds no
-    /// content key for: kept until the key arrives
-    /// ([`crate::NativeWorkspaceOwner::retry_kept_compactions`]), so a restart loses none.
+    /// This device's own frames a peer has not been sent yet, oldest first:
+    /// what makes a write durable here before any peer holds it, and sends it
+    /// when one links. A frame is sent once and a peer that took it drops a
+    /// second copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kept_compactions: Vec<StoredKeptCompaction>,
+    pub frames: Vec<FrameToSend>,
 }
 
-/// A compaction kept for a key this device does not hold yet: the message as it reached the
-/// device, so the same admission takes it once the key is here.
+/// One frame of this device's own, kept until a link carried it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct StoredKeptCompaction {
-    /// The message, postcard-encoded: a document write of the record's history.
-    pub message: Vec<u8>,
+pub(crate) struct FrameToSend {
+    #[serde(with = "base64_bytes")]
+    pub bytes: Vec<u8>,
 }
 
 impl StoredWorkspace {
@@ -146,22 +129,11 @@ impl StoredWorkspace {
                 &record.vouched,
                 &record.host_hint,
                 record.continuity,
-                &record.workspace_memberships,
-                &record.effect_receipts,
-                &record.shortcut_change,
-                &record.join_admissions,
             ))
             .ok()
         };
         access(self).is_some_and(|ours| Some(ours) == access(other))
     }
-}
-
-/// The receipt of one join admission this device committed, by the digest of
-/// its binding: what the workspace delta it published is admitted as.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct StoredJoinReceipt {
-    pub(crate) receipt: crate::owner_commit::OwnerCommitReceipt,
 }
 
 /// The signed join a device enrolled in a host-governed workspace with, and the

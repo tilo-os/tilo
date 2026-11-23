@@ -1,10 +1,12 @@
 use crate::owner::{
-    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
-    PendingEnrollmentId, PendingEnrollmentStatus, StatePeer, SystemTime, TransportOrigin,
-    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
-    stored,
+    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
+    PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
+    VerifiedNativeEnrollmentIntent, limits, stored,
 };
-use stored::{StoredPendingEnrollment, StoredWorkspace};
+use crate::owner::stored::{StoredPendingEnrollment, StoredWorkspace};
+use crate::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_desktop_model::WorkspaceId;
+use web_time::SystemTime;
 
 pub(crate) fn validate_pending(
     workspace: WorkspaceId,
@@ -43,7 +45,7 @@ pub(crate) fn restore(
             if record.host_hint.is_some() {
                 return Err("native workspace record holds a vouch and a host hint".into());
             }
-            crate::owner::vouched::validate(workspace, record, &vouched.bootstrap)?;
+            crate::vouched::validate(workspace, record, &vouched.bootstrap)?;
         }
         // A workspace this device's own host keeps was founded here
         // ([`NativeWorkspaceOwner::create_workspace`]): no other device
@@ -74,8 +76,6 @@ pub(crate) fn restore(
         return Err("native committed workspace requires exact admissions".into());
     }
     let view = NativeCommittedView::new(peer, record.clone());
-    publication::validate(&view)?;
-    crate::owner::effect_receipt::validate(&view)?;
     Ok(view)
 }
 fn validate_enrollment(
@@ -359,13 +359,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: Some(publication::StoredPublication::default()),
-            workspace_memberships: std::collections::BTreeMap::new(),
-            effect_receipts: std::collections::BTreeMap::new(),
-            shortcut_change: None,
-            effect_history_root: None,
-            join_admissions: std::collections::BTreeMap::new(),
-            kept_compactions: Vec::new(),
         };
         Ok(self.publish_workspace(
             workspace,

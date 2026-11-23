@@ -19,11 +19,14 @@ pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
+pub mod commits;
 mod evidence_signer;
 pub mod local_document_action;
 /// Nearby Send published as a resource: the devices in reach, the offers another
 /// device made, and the actions that answer them.
 pub mod nearby_send;
+/// What a host answers for this device's writes, shared with the hosts that run the broker.
+pub use tilo_broker_core::workspace_commits;
 pub mod policy_clock;
 pub mod published_authorization;
 /// The route an app's traffic is addressed on, the same on every host.

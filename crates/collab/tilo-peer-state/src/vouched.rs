@@ -9,7 +9,8 @@
 use crate::StatePeer;
 use crate::join::{JoinTransportResponse, Role};
 use crate::owner::stored::{StoredVouch, StoredWorkspace};
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner};
+use tilo_desktop_model::WorkspaceId;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
@@ -163,13 +164,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: Some(publication::StoredPublication::default()),
-            workspace_memberships: std::collections::BTreeMap::new(),
-            effect_receipts: std::collections::BTreeMap::new(),
-            shortcut_change: None,
-            effect_history_root: None,
-            join_admissions: std::collections::BTreeMap::new(),
-            kept_compactions: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)
@@ -229,7 +223,7 @@ impl NativeWorkspaceOwner {
             &bootstrap.revocations,
             now,
         )?;
-        crate::owner::enrollment::install_governance(&mut peer, bootstrap, now)
+        crate::enrollment::install_governance(&mut peer, bootstrap, now)
             .map_err(|error| error.to_string())?;
         if !peer.has_governance() {
             return Err("a member's workspace arrived without its governance".into());
@@ -257,13 +251,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: Some(publication::StoredPublication::default()),
-            workspace_memberships: std::collections::BTreeMap::new(),
-            effect_receipts: std::collections::BTreeMap::new(),
-            shortcut_change: None,
-            effect_history_root: None,
-            join_admissions: std::collections::BTreeMap::new(),
-            kept_compactions: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)

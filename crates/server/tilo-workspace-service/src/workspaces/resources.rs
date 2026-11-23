@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
 #[cfg(any(feature = "apps", feature = "agents"))]
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 #[cfg(any(feature = "apps", feature = "agents"))]
 use tilo_resource_store::Schema;
 use tilo_resource_store::{Admit, Received, Refusal, Store};
@@ -621,7 +620,7 @@ impl GovernedWorkspace {
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
-    ) -> Result<OwnerCommitRequest, String> {
+    ) -> Result<collab_types::SignedOp, String> {
         let now = tilo_clock::wall();
         let named = (collab_types::is_store_document(&write.doc)
             && write.readers != collab_types::EVERY_MEMBER)
@@ -656,7 +655,7 @@ impl GovernedWorkspace {
         } else {
             write.change.raw_bytes().to_vec()
         };
-        let (mut request, _) = tilo_peer_state::owner::draft_local_write(
+        let (mut envelope, _) = tilo_peer_state::owner::draft_local_write(
             peer,
             self.workspace(),
             &device.device(),
@@ -672,10 +671,8 @@ impl GovernedWorkspace {
             },
         )
         .map_err(|error| error.to_string())?;
-        if let CommitOperation::Document { envelope, .. } = &mut request.operation {
-            collab_types::sign_op(envelope, &*device.signer).map_err(|error| error.to_string())?;
-        }
-        Ok(request)
+        collab_types::sign_op(&mut envelope, &*device.signer).map_err(|error| error.to_string())?;
+        Ok(envelope)
     }
 }
 
@@ -813,13 +810,13 @@ impl Workspaces {
             }
         }
         let mut candidate = governed.peer().clone();
-        let request = self
+        let envelope = self
             .admit_resource_write(governed, &mut candidate, device, app, write)
             .await?;
         if !still_live(governed) {
             return Err("the resource writer is no longer authorized".into());
         }
-        self.keep_resource_write(governed, device, app, (write, &request), true)
+        self.keep_resource_write(governed, device, app, write, &envelope, true)
             .await
     }
 
@@ -831,29 +828,26 @@ impl Workspaces {
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
-    ) -> Result<OwnerCommitRequest, String> {
+    ) -> Result<collab_types::SignedOp, String> {
         use neighbour_wire::NeighbourMsg;
 
         let document = &write.doc;
         let author = device.device();
         let now = tilo_clock::wall();
         governed.may_start(author, (app, document), now)?;
-        let request = governed
+        let envelope = governed
             .draft_resource_document(candidate, device, app, write)
             .await?;
-        let CommitOperation::Document {
-            envelope, readers, ..
-        } = &request.operation
-        else {
-            return Err("a resource write must name its document".into());
-        };
+        let named = (collab_types::is_store_document(document)
+            && write.readers != collab_types::EVERY_MEMBER)
+            .then_some(write.readers.as_str());
         let message = NeighbourMsg::AppDocument {
             peer: neighbour_wire::peer_handle(&author),
             app_id: app.to_owned(),
             cluster_id: governed.workspace().to_owned(),
             document_id: document.clone(),
-            envelope: envelope.clone(),
-            readers: readers.clone(),
+            envelope: Box::new(envelope.clone()),
+            readers: named.map(str::to_owned),
         };
         let device_keys = governed
             .device
@@ -886,7 +880,7 @@ impl Workspaces {
         {
             return Err("the staged resource change did not pass document admission".into());
         }
-        Ok(request)
+        Ok(envelope)
     }
 
     #[cfg(any(feature = "apps", feature = "agents"))]
@@ -895,7 +889,8 @@ impl Workspaces {
         governed: &mut GovernedWorkspace,
         device: &super::MemberDevice,
         app: &str,
-        (write, request): (&tilo_resource_store::Written, &OwnerCommitRequest),
+        write: &tilo_resource_store::Written,
+        envelope: &collab_types::SignedOp,
         compact: bool,
     ) -> Result<(), String> {
         let author = device.device();
@@ -904,7 +899,17 @@ impl Workspaces {
             .store_with_surfaces(&self.inner.host.surfaces)
             .check_write(write, author)
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
-        let (message, _) = self.retain_local_document(governed.workspace_id(), author, request)?;
+        let named = (collab_types::is_store_document(document)
+            && write.readers != collab_types::EVERY_MEMBER)
+            .then_some(write.readers.as_str());
+        let message = self.retain_local_document(
+            governed.workspace_id(),
+            author,
+            app,
+            document,
+            named,
+            envelope,
+        )?;
         let neighbour_wire::NeighbourMsg::AppDocument {
             envelope, readers, ..
         } = &message
@@ -1189,7 +1194,7 @@ impl Workspaces {
         // A cancelled caller never starts the next frame of a batch.
         tokio::spawn(async move {
             let result = async {
-                for (index, (write, request)) in writes.iter().zip(&requests).enumerate() {
+                for (index, (write, envelope)) in writes.iter().zip(&requests).enumerate() {
                     if complete.is_closed() {
                         return Err("the resource writer was cancelled".into());
                     }
@@ -1198,7 +1203,8 @@ impl Workspaces {
                             &mut governed,
                             &device,
                             &app,
-                            (write, request),
+                            write,
+                            envelope,
                             // Compaction can consume a sequence the batch already drafted.
                             index.saturating_add(1) == requests.len(),
                         )

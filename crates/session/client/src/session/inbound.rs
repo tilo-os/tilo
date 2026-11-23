@@ -225,13 +225,12 @@ impl Task {
                 self.workspaces_reply(request_id, &frame);
             }
             answer @ Envelope::AgentSessionAnswer { .. } => self.agent_run_answered(answer),
-            Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
-            Envelope::CommitRefused { op, refusal, .. } => {
+            Envelope::Committed { .. } => {}
+            Envelope::CommitRefused { refusal, .. } => {
                 // A host not ready for the write yet takes it once it is: nothing failed.
                 if !refusal.passes_once_ready() {
                     self.fail("protocol-rejected", refusal.to_string());
                 }
-                self.acknowledge(op, Err(refusal));
             }
             content @ Envelope::DocumentContent { .. } => self.document_content(content, now),
             envelope => {

@@ -1523,37 +1523,63 @@ impl Engine {
     }
 }
 
-/// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
-/// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
-/// with the workspace's host.
-impl tilo_broker_core::owner_service::OwnerService for Engine {
+/// What the broker's writes ask of this device's workspaces: the engine's owner is the
+/// canonical copy of every workspace it holds, and what it commits leaves on the peer network's
+/// session with the workspace's other devices.
+impl tilo_broker_core::workspace_commits::WorkspaceCommits for Engine {
     fn projects_workspace(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
     }
 
-    /// The engine opened its owner before the session started.
-    fn opened_owner(&self, _unavailable: &str) -> Result<NativeWorkspaceOwner, String> {
-        Ok(self.owner.clone())
+    fn health(&self) -> Result<(), String> {
+        self.owner.health()
     }
 
-    fn resolve_owner(&self) -> Result<NativeWorkspaceOwner, String> {
-        Ok(self.owner.clone())
-    }
-
-    fn check_ownership(
+    fn document(
         &self,
-        owner: &NativeWorkspaceOwner,
-        workspace_id: WorkspaceId,
-    ) -> Result<(), String> {
-        self.ownership.check(owner, workspace_id, &self.identity)
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: collab_types::SignedOp,
+        _resource_type: Option<String>,
+    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+        let owner = self.owner.clone();
+        let now = tilo_clock::wall();
+        Box::pin(async move {
+            let workspace_id = WorkspaceId::parse(&workspace)
+                .ok_or_else(|| format!("{workspace} is not a workspace"))?;
+            owner
+                .admit_writes(
+                    workspace_id,
+                    vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
+                        app,
+                        document,
+                        readers,
+                        envelope: envelope.clone(),
+                    }],
+                    now,
+                )
+                .map_err(|refusal| refusal.to_string())?;
+            Ok(envelope)
+        })
     }
 
-    /// Send the owner's outgoing ownership of `workspace` to its peers soon: what was just committed
-    /// leaves this device. Queued, never awaited.
-    fn schedule_publication(&self, workspace_id: WorkspaceId) {
-        if let Some(link) = self.link() {
-            link.publish_ownership(workspace_id);
-        }
+    fn effect(
+        &self,
+        workspace: String,
+        redacted: Vec<u8>,
+    ) -> tilo_broker_core::workspace_commits::EffectFuture {
+        let owner = self.owner.clone();
+        let caller = self.identity.device_cert.clone();
+        let now = tilo_clock::wall();
+        Box::pin(async move {
+            let workspace_id = WorkspaceId::parse(&workspace)
+                .ok_or_else(|| format!("{workspace} is not a workspace"))?;
+            let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
+            owner.record_effect(workspace_id, &caller, &receipt, now)
+        })
     }
 }
 
@@ -1770,39 +1796,20 @@ mod tests {
         let frame = collab_types::DocumentMutation::Snapshot(written.to_vec())
             .encode()
             .expect("a frame");
-        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
-            let mut seal = |plaintext: &[u8]| {
-                keys.seal_content(
-                    artifact,
-                    collab_types::ContentRetention::of_frame(plaintext),
-                    plaintext,
-                )
-                .map_err(|error| error.to_string())
-            };
-            let op = view.peer().draft_write(
-                (app, doc),
-                None,
-                &frame,
-                Some(&mut seal),
-                device,
-                0,
-                now,
-            )?;
-            Ok(vec![tilo_peer_state::owner_commit::OwnerCommitRequest {
-                workspace: workspace.to_string(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                    app: app.to_owned(),
-                    document: doc.to_owned(),
-                    envelope: Box::new(op),
-                    readers: None,
-                },
-            }])
-        };
-        pollster::block_on(engine.owner.write(
+        pollster::block_on(engine.owner.write_local(
             workspace,
-            draft,
-            engine.identity.signer.as_ref(),
-            now,
+            device,
+            engine.identity.signer.clone(),
+            tilo_peer_state::owner::LocalWrite {
+                app,
+                document: doc,
+                readers: None,
+                changes: written,
+                founding: false,
+                snapshot: true,
+                sealed: Some(keys),
+                now,
+            },
         ))
         .expect("the laptop writes its note");
     }

@@ -1,19 +1,21 @@
 //! This device's writes to its workspaces' records. Every writer (a page, an agent, the desktop,
-//! an app's broker) writes the same way: one owner turn drafts and commits the write, and the
-//! device's signer signs what the turn asked for between its runs (a page's key signs through a
-//! promise), so a run that still asked for a signature commits nothing and runs again.
+//! an app's broker) writes the same way: one turn drafts and commits the write, and the device's
+//! signer signs what the turn asked for between its runs (a page's key signs through a promise),
+//! so a run that still asked for a signature commits nothing and runs again.
+//!
+//! A write this device makes is admitted into its own replica, made durable in its record, and
+//! kept there until a link carried it to a peer: nothing hands it to a host to be ordered or
+//! answered.
 
 use crate::AdmissionError;
 use crate::owner::{
-    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, answers,
-    publication,
+    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, stored,
 };
-use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use crate::replica::Replica;
+use collab_types::signer::DeviceSigner;
+use std::sync::Arc;
 
-/// A write as the owner committed it, with its receipt.
-pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
-
-/// Why the owner committed none of a device's writes ([`NativeWorkspaceOwner::write`]).
+/// Why the device committed none of a write.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum WriteRefusal {
     /// The sealed history of `record` of `app` has no room for the writes, and this device could
@@ -39,8 +41,8 @@ pub enum WriteRefusal {
         detail: String,
     },
     /// The workspace's rules refused the change before it went: the document it writes, the
-    /// changes it carries and why, as a server's refusal of a change names them. Its author's
-    /// session is told it, and it is filed where the person's activity reads it.
+    /// changes it carries and why. Its author's session is told it, and it is filed where the
+    /// person's activity reads it.
     #[error("{0}")]
     ChangeRefused(Box<crate::ChangeRefused>),
 }
@@ -86,6 +88,16 @@ impl From<String> for WriteRefusal {
     }
 }
 
+/// This device's writes to one record it has not been sent to a peer yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DocumentWrites {
+    pub pending: usize,
+    pub durable: u64,
+    pub refused: u64,
+    /// The latest order a peer kept of the record; none, now that no peer answers.
+    pub last_order: Option<u64>,
+}
+
 /// An error of a signed turn ([`signed_turn`]): what its turn refused, or its signer's failure.
 pub(crate) trait TurnError: From<String> {
     /// The signer did not sign what the turn asked for.
@@ -109,10 +121,10 @@ impl TurnError for WriteRefusal {
 /// one it just wrote) runs once per link of that chain.
 pub(crate) const SIGNED_RUNS: usize = 16;
 
-/// This device's signatures as one owner turn takes them: what its signer signed for an earlier
-/// run of the same turn answers at once; anything else answers with a blank signature, and is kept
-/// to be signed outside the turn, so the run still asks for every signature that does not sign
-/// over another. A run that asked for one commits nothing ([`Self::settled`]).
+/// This device's signatures as one turn takes them: what its signer signed for an earlier run of
+/// the same turn answers at once; anything else answers with a blank signature, and is kept to be
+/// signed outside the turn, so the run still asks for every signature that does not sign over
+/// another. A run that asked for one commits nothing ([`Self::settled`]).
 pub(crate) struct Signatures {
     device: [u8; 32],
     signed: parking_lot::Mutex<std::collections::BTreeMap<Vec<u8>, [u8; 64]>>,
@@ -121,7 +133,7 @@ pub(crate) struct Signatures {
 
 impl Signatures {
     /// The signatures of one turn of `signer`, none given yet.
-    pub(crate) fn of(signer: &dyn collab_types::signer::DeviceSigner) -> Self {
+    pub(crate) fn of(signer: &dyn DeviceSigner) -> Self {
         Self {
             device: signer.device_public_key(),
             signed: parking_lot::Mutex::default(),
@@ -131,10 +143,7 @@ impl Signatures {
 
     /// Have `signer` sign what the last run asked for, for the next run to answer at once.
     /// Answers whether the run asked for any: a run that asked for none is the turn's last.
-    pub(crate) async fn sign_wanted(
-        &self,
-        signer: &dyn collab_types::signer::DeviceSigner,
-    ) -> Result<bool, String> {
+    pub(crate) async fn sign_wanted(&self, signer: &dyn DeviceSigner) -> Result<bool, String> {
         let wanted = std::mem::take(&mut *self.wanted.lock());
         let asked = !wanted.is_empty();
         for message in wanted {
@@ -158,19 +167,17 @@ impl Signatures {
     }
 }
 
-pub(crate) const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
+pub(crate) const UNSIGNED: &str = "the device signer signs this change outside the turn";
 
 /// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
 /// ownership of its key: a run that asks for a signature `signer` has not given yet commits
-/// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the owner's
-/// turn, and the turn runs again, until one run signed everything it wrote. A run sees what
-/// the runs before it saw, or asks again for what changed. A turn whose drafts differ on every
-/// run (a sealed write's ciphertext) keeps what its first run drafted.
+/// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the turn, and the
+/// turn runs again, until one run signed everything it wrote.
 ///
 /// # Errors
 /// `turn` refused, signing failed, or the turn still asked for signatures after its last run.
 pub(crate) async fn signed_turn<T, E: TurnError>(
-    signer: &dyn collab_types::signer::DeviceSigner,
+    signer: &dyn DeviceSigner,
     mut turn: impl FnMut(&Signatures) -> Result<T, E>,
 ) -> Result<T, E> {
     let signatures = Signatures::of(signer);
@@ -184,8 +191,7 @@ pub(crate) async fn signed_turn<T, E: TurnError>(
 }
 
 /// What a signed turn drafts in its first run, with `draft`, which its later runs sign and
-/// commit as they are: a draft whose bytes differ every time it is made (a sealed write's
-/// ciphertext) is signed once.
+/// commit as they are.
 pub(crate) fn drafted_once<'a, D>(
     memo: &'a mut Option<D>,
     draft: &mut Option<impl FnOnce(&NativeCommittedView) -> Result<D, String>>,
@@ -198,7 +204,7 @@ pub(crate) fn drafted_once<'a, D>(
         .ok_or_else(|| "the turn's first run drafted nothing".to_owned())
 }
 
-impl collab_types::signer::DeviceSigner for Signatures {
+impl DeviceSigner for Signatures {
     fn device_public_key(&self) -> [u8; 32] {
         self.device
     }
@@ -213,12 +219,32 @@ impl collab_types::signer::DeviceSigner for Signatures {
     }
 }
 
+/// One write this device makes to a record of one of its workspaces: the app, the record, the
+/// readers where only some members read it, and the write as this device signed it.
+pub struct WorkspaceDocumentWrite {
+    pub app: String,
+    pub document: String,
+    pub readers: Option<String>,
+    pub envelope: collab_types::SignedOp,
+}
+
+/// The message a write of this device goes out as.
+fn message_of(workspace: WorkspaceId, write: &WorkspaceDocumentWrite) -> NeighbourMsg {
+    NeighbourMsg::AppDocument {
+        peer: crate::peer_handle(write.envelope.author.as_bytes()),
+        app_id: write.app.clone(),
+        cluster_id: workspace.to_string(),
+        document_id: write.document.clone(),
+        envelope: Box::new(write.envelope.clone()),
+        readers: write.readers.clone(),
+    }
+}
+
 impl NativeWorkspaceOwner {
     /// Keep this device's verdicts on the document writes `heard` names, each with what
     /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
-    /// refused write reaches its author, as the next sync carries the verdict back (a device that
-    /// hosts the workspace hands it to the members linked to it as it is kept), and a write that
-    /// landed clears the verdict it lands on. One carrier, the workspace document itself.
+    /// refused write reaches its author, as the next sync carries the verdict back, and a write
+    /// that landed clears the verdict it lands on.
     ///
     /// # Errors
     /// The workspace is not held here, `signer` is not this device's, signing failed, or the
@@ -230,7 +256,7 @@ impl NativeWorkspaceOwner {
             &NeighbourMsg,
             &Result<crate::AdmissionReport, crate::AdmissionError>,
         )],
-        signer: &dyn collab_types::signer::DeviceSigner,
+        signer: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         let heard = heard
@@ -240,7 +266,7 @@ impl NativeWorkspaceOwner {
         if heard.is_empty() {
             return Ok(());
         }
-        crate::owner::write::signed_turn(signer, |signed| {
+        signed_turn(signer, |signed| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().clone();
@@ -284,573 +310,288 @@ impl NativeWorkspaceOwner {
         .await
     }
 
-    /// Commit the writes `prepare` drafts from `workspace` as it stands, in order, in one signed
-    /// turn of `signer`, this device's ownership of its key: what `prepare` drafted unsigned, and a
-    /// write a local writer of this device signed before whose sequence a later write took, is
-    /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Ownership
-    /// takes every one of them, however many wait for the workspace's host already.
+    /// Admit `writes`, this device's own signed document writes, into `workspace`, keep each as
+    /// a frame a link carries to the workspace's other devices, and make them durable: one
+    /// record publication for all of them.
     ///
-    /// A sealed history is never too long for a write of the device holding its keys: one that
-    /// used most of its bound is compacted first ([`Self::compact_outgoing`]), and one the writes
-    /// would overflow is compacted then ([`Self::compact_document`]), the writes committed after
-    /// the compaction, which ownership sends before them.
+    /// An exact write the record holds already is answered as taken, and a frame it was never
+    /// given one for is kept now. Nothing is committed on [`WriteRefusal::HistoryFull`] or a
+    /// refusal of the workspace; every write is its own verdict then.
     ///
     /// # Errors
-    /// [`WriteRefusal::HistoryFull`] when a document's history has no room even compacted,
-    /// [`WriteRefusal::Unsigned`] when signing failed, and [`WriteRefusal::Refused`] when the
-    /// workspace is not held here, `prepare` refused, or a write is not this device's, not for
-    /// `workspace`, or not admitted; nothing is committed then.
-    pub async fn write(
+    /// [`WriteRefusal::HistoryFull`], [`WriteRefusal::Waiting`], [`WriteRefusal::Declined`],
+    /// [`WriteRefusal::ChangeRefused`], or [`WriteRefusal::Refused`] when the workspace is not
+    /// held here or a write is not this device's.
+    pub fn admit_writes(
         &self,
         workspace: WorkspaceId,
-        prepare: impl FnOnce(&NativeCommittedView) -> Result<Vec<OwnerCommitRequest>, String>,
-        signer: &dyn collab_types::signer::DeviceSigner,
-        now: SystemTime,
-    ) -> Result<Vec<Committed>, WriteRefusal> {
-        if let Err(error) = self.compact_outgoing(workspace, signer, now).await {
-            tracing::warn!(%error, "sealed histories stay uncompacted before a write");
-        }
-        let mut prepare = Some(prepare);
-        let mut drafted = None;
-        let mut refused = None;
-        let first = {
-            let mut turn = |signed: &Signatures| {
-                let _turn = self.0.mutation.lock();
-                let candidate = self.view(workspace)?;
-                let writes = drafted_once(&mut drafted, &mut prepare, &candidate)?;
-                self.commit_writes(
-                    workspace,
-                    &candidate,
-                    writes,
-                    Some(signed),
-                    now,
-                    &mut refused,
-                )
-            };
-            signed_turn(signer, &mut turn).await
-        };
-        let full = match first {
-            Err(WriteRefusal::HistoryFull { app, record }) => (app, record),
-            written => {
-                return self
-                    .answered(workspace, written, refused, signer, now)
-                    .await;
-            }
-        };
-        // A full record takes no write of anyone's until it is compacted, so it is compacted
-        // now even while a compaction that failed before waits out its passes: those are only
-        // counted while a history is due, and a history a write overflows before it is due
-        // (one large write) would wait for them for good, its writes and every write ownership
-        // holds behind them with it.
-        let compacted = self
-            .compact_document(workspace, (&full.0, &full.1), signer, now)
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "a full sealed history stays uncompacted");
-                0
-            });
-        if compacted == 0 {
-            let (app, record) = full;
-            return Err(WriteRefusal::HistoryFull { app, record });
-        }
-        // Drafted before the compaction took a sequence of this device: numbered past it again.
-        let declined = {
-            let mut turn = |signed: &Signatures| {
-                let _turn = self.0.mutation.lock();
-                let candidate = self.view(workspace)?;
-                let writes = drafted_once(&mut drafted, &mut prepare, &candidate)?;
-                self.commit_writes(
-                    workspace,
-                    &candidate,
-                    writes,
-                    Some(signed),
-                    now,
-                    &mut refused,
-                )
-            };
-            signed_turn(signer, &mut turn).await
-        };
-        self.answered(workspace, declined, refused, signer, now)
-            .await
-    }
-
-    /// What an owner turn came to, a change the workspace's rules refused filed where the person's
-    /// activity reads it: its author's session is told the same typed refusal a server's refusal
-    /// of a change is, and the workspace's write refusals name the document, the changes it would
-    /// have brought and why.
-    async fn answered(
-        &self,
-        workspace: WorkspaceId,
-        written: Result<Vec<Committed>, WriteRefusal>,
-        refused: Option<NeighbourMsg>,
-        signer: &dyn collab_types::signer::DeviceSigner,
-        now: SystemTime,
-    ) -> Result<Vec<Committed>, WriteRefusal> {
-        if let (Err(WriteRefusal::ChangeRefused(change)), Some(message)) = (&written, refused) {
-            let heard = Err(crate::AdmissionError::ChangeRefused(change.clone()));
-            if let Err(error) = self
-                .keep_verdicts(workspace, &[(&message, &heard)], signer, now)
-                .await
-            {
-                tracing::warn!(%error, "a change this device refused was not filed");
-            }
-        }
-        written
-    }
-
-    /// [`Self::write`] for one write a local writer of this device signed before the owner's turn.
-    ///
-    /// # Errors
-    /// As [`Self::write`].
-    pub async fn commit_local_document(
-        &self,
-        request: OwnerCommitRequest,
-        signer: &dyn collab_types::signer::DeviceSigner,
-        now: SystemTime,
-    ) -> Result<Committed, WriteRefusal> {
-        let workspace = WorkspaceId::parse(&request.workspace)
-            .ok_or_else(|| WriteRefusal::Refused("invalid native document workspace".into()))?;
-        self.write(workspace, |_| Ok(vec![request]), signer, now)
-            .await?
-            .pop()
-            .ok_or_else(|| WriteRefusal::Refused("native document write committed nothing".into()))
-    }
-
-    /// Commit one write this device signed before the owner's turn, with its outgoing ownership.
-    ///
-    /// # Sequence contract
-    /// The envelope is signed before the owner's turn, so its sequence must come from
-    /// [`collab_types::next_unordered_document_sequence`]; a writer that needs its write ordered
-    /// in the turn writes through [`Self::write`].
-    ///
-    /// # Errors
-    /// As [`Self::write`].
-    pub fn commit_document(
-        &self,
-        request: OwnerCommitRequest,
-        now: SystemTime,
-    ) -> Result<OwnerCommitReceipt, String> {
-        let workspace =
-            WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        let mut refused = None;
-        self.commit_writes(
-            workspace,
-            &candidate,
-            &mut [request],
-            None,
-            now,
-            &mut refused,
-        )?
-        .pop()
-        .map(|(_, receipt)| receipt)
-        .ok_or_else(|| "native document write committed nothing".to_owned())
-    }
-
-    /// [`Self::commit_document`] for many writes in one turn: one publication for all of them.
-    #[cfg(test)]
-    pub(crate) fn commit_documents(
-        &self,
-        mut requests: Vec<OwnerCommitRequest>,
-        now: SystemTime,
-    ) -> Result<Vec<OwnerCommitReceipt>, String> {
-        let Some(first) = requests.first() else {
-            return Ok(Vec::new());
-        };
-        let workspace =
-            WorkspaceId::parse(&first.workspace).ok_or("invalid native document workspace")?;
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        let mut refused = None;
-        Ok(self
-            .commit_writes(
-                workspace,
-                &candidate,
-                &mut requests,
-                None,
-                now,
-                &mut refused,
-            )?
-            .into_iter()
-            .map(|(_, receipt)| receipt)
-            .collect())
-    }
-
-    /// Admit and durably commit writes of this device to `workspace`, in order and in the owner's
-    /// turn with their outgoing ownership: one durable publication for all of them. A write the
-    /// document holds already is an exact retry, answered as it was taken. A write whose sequence
-    /// an earlier write took is numbered past it, and one whose signature does not hold is signed
-    /// by `signed`; a run that asked it for a signature commits nothing
-    /// ([`Signatures::settled`]). Without `signed`, every write is committed as it was signed.
-    /// Nothing is committed on [`WriteRefusal::HistoryFull`] when a document's history has no room
-    /// even compacted, [`WriteRefusal::Unsigned`] when signing failed,
-    /// [`WriteRefusal::Refused`] when the workspace is not held here, `prepare` refused, or a
-    /// write is not this device's, not for `workspace`, or not admitted, and
-    /// [`WriteRefusal::ChangeRefused`] when the workspace's rules refuse a change: `refused` then
-    /// names the message of the write refused, for the verdict its author's session is told and
-    /// the workspace keeps.
-    /// Publish `writes`, this device's own document writes that it signed and its replica
-    /// admitted already, as its outgoing ownership: what a write made through [`Self::write`]
-    /// leaves behind, without drafting, numbering or admitting them a second time. Each op goes
-    /// out as it was signed, once; ownership carries it until its host answers.
-    ///
-    /// # Errors
-    /// [`WriteRefusal::HistoryFull`] when a document's history has no room, and
-    /// [`WriteRefusal::Refused`] when the workspace is not held here, or a write is not this
-    /// device's, not for `workspace`, or not admitted by this replica. Nothing is committed
-    /// then.
-    pub fn commit_admitted(
-        &self,
-        workspace: WorkspaceId,
-        writes: Vec<OwnerCommitRequest>,
-        now: SystemTime,
-    ) -> Result<Vec<Committed>, WriteRefusal> {
-        if writes.is_empty() {
-            return Ok(Vec::new());
-        }
-        let candidate = self.view(workspace)?;
-        let device = candidate.device().device_public_key;
-        let runs = self.ownership(workspace);
-        let mut full = None;
-        let mut waiting: Option<WriteRefusal> = None;
-        let changed = {
-            let _turn = self.0.mutation.lock();
-            candidate.change(|live, stored| {
-                let mut taken = Vec::new();
-                for request in writes {
-                    let CommitOperation::Document {
-                        app,
-                        document,
-                        envelope,
-                        ..
-                    } = &request.operation
-                    else {
-                        return Err("unsupported native owner commit family".into());
-                    };
-                    if WorkspaceId::parse(&request.workspace) != Some(workspace) {
-                        return Err("native document write names another workspace".into());
-                    }
-                    if envelope.author.as_bytes() != &device {
-                        return Err(
-                            "native local publication signer differs from selected device".into(),
-                        );
-                    }
-                    // The replica must hold this exact op as this device's own write: what the
-                    // holder signed and admitted, and nothing else.
-                    match live.lookup_exact_local_document(app, document, envelope, now) {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            return Err("a published write is not admitted by this replica".into());
-                        }
-                        Err(AdmissionError::ChangeRefused(change)) => {
-                            waiting = Some(WriteRefusal::ChangeRefused(change));
-                            return Err("the workspace refuses the change".into());
-                        }
-                        Err(error) => return Err(error.to_string()),
-                    }
-                    let outgoing = publication::prepare(&request)?;
-                    // Published once: a write ownership already carries is not appended again.
-                    if publication::has_exact(stored, &outgoing, runs)? {
-                        continue;
-                    }
-                    if !live.sealed_history_takes(app, document, envelope) {
-                        full = Some((app.clone(), document.clone()));
-                        return Err("sealed record history is full".into());
-                    }
-                    publication::append_local(stored, outgoing)?;
-                    answers::note_unanswered(stored, envelope)?;
-                    taken.push(request);
-                }
-                if taken.is_empty() {
-                    return Ok(Vec::new());
-                }
-                stored.generation = stored
-                    .generation
-                    .checked_add(1)
-                    .ok_or("native owner generation exhausted")?;
-                let generation = stored.generation;
-                let aggregate_hash = live.durable_hash()?;
-                taken
-                    .into_iter()
-                    .map(|request| {
-                        let binding = request.binding()?;
-                        Ok((
-                            request,
-                            OwnerCommitReceipt {
-                                binding,
-                                generation,
-                                aggregate_hash,
-                            },
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-            })
-        };
-        let (committed, stored) = changed.map_err(|error| match (full, waiting) {
-            (Some((app, record)), _) => WriteRefusal::HistoryFull { app, record },
-            (None, Some(refusal)) => refusal,
-            (None, None) => WriteRefusal::Refused(error),
-        })?;
-        if stored.generation != candidate.generation() {
-            // One durable publication for every write taken.
-            self.publish_document(workspace, &candidate, stored, None)?;
-        }
-        Ok(committed)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one owner turn: numbering, admission, the verdict a refused change leaves, and \
-                  the publication, read top to bottom"
-    )]
-    fn commit_writes(
-        &self,
-        workspace: WorkspaceId,
-        candidate: &NativeCommittedView,
-        writes: &mut [OwnerCommitRequest],
-        signed: Option<&Signatures>,
-        now: SystemTime,
-        refused: &mut Option<NeighbourMsg>,
-    ) -> Result<Vec<Committed>, WriteRefusal> {
-        if writes.is_empty() {
-            return Ok(Vec::new());
-        }
-        let device = candidate.device().device_public_key;
-        let own = candidate.device().clone();
-        if signed.is_some_and(|signed| signed.device != device) {
-            return Err(WriteRefusal::Refused(
-                "native local publication signer differs from selected device".into(),
-            ));
-        }
-        let runs = self.ownership(workspace);
-        let mut full = None;
-        let mut waiting: Option<WriteRefusal> = None;
-        let changed = candidate.change(|live, stored| {
-            let ready = numbered(live, workspace, device, writes, signed, now)?;
-            let mut taken = Vec::new();
-            let mut fresh = false;
-            for (request, checked) in ready {
-                let outgoing = publication::prepare(&request)?;
-                let CommitOperation::Document {
-                    app,
-                    document,
-                    envelope,
-                    readers,
-                    ..
-                } = &request.operation
-                else {
-                    return Err("unsupported native owner commit family".into());
-                };
-                // `checked`: the turn numbered this write itself, so nothing admits it yet.
-                let held = if checked {
-                    None
-                } else {
-                    Some(live.lookup_exact_local_document(app, document, envelope, now))
-                };
-                match held {
-                    None | Some(Ok(None)) => {}
-                    Some(Ok(Some(_))) => {
-                        if !publication::has_exact(stored, &outgoing, runs)?
-                            && !publication::retry_covered(live, stored, &outgoing)?
-                        {
-                            return Err(
-                                "exact local admission has no retained publication ownership"
-                                    .into(),
-                            );
-                        }
-                        taken.push(request);
-                        continue;
-                    }
-                    // The workspace's rules refuse the change, as deciding it says: its author's
-                    // session is told the same typed refusal a server's refusal is.
-                    Some(Err(AdmissionError::ChangeRefused(change))) => {
-                        *refused = Some(NeighbourMsg::AppDocument {
-                            peer: crate::peer_handle(envelope.author.as_bytes()),
-                            app_id: app.clone(),
-                            cluster_id: workspace.to_string(),
-                            document_id: document.clone(),
-                            envelope: envelope.clone(),
-                            readers: None,
-                        });
-                        waiting = Some(WriteRefusal::ChangeRefused(change));
-                        return Err("the workspace refuses the change".into());
-                    }
-                    Some(Err(error)) => return Err(error.to_string()),
-                }
-                if !live.sealed_history_takes(app, document, envelope) {
-                    full = Some((app.clone(), document.clone()));
-                    return Err("sealed record history is full".into());
-                }
-                publication::append_local(stored, outgoing)?;
-                if let Err(declined) = Self::admit_local_write(
-                    live,
-                    (app, document),
-                    readers.as_deref(),
-                    envelope,
-                    now,
-                ) {
-                    if matches!(declined, WriteRefusal::ChangeRefused(_)) {
-                        *refused = Some(NeighbourMsg::AppDocument {
-                            peer: crate::peer_handle(envelope.author.as_bytes()),
-                            app_id: app.clone(),
-                            cluster_id: workspace.to_string(),
-                            document_id: document.clone(),
-                            envelope: envelope.clone(),
-                            readers: None,
-                        });
-                        waiting = Some(declined.clone());
-                    } else {
-                        waiting =
-                            matches!(declined, WriteRefusal::Waiting(_)).then(|| declined.clone());
-                    }
-                    return Err(declined.to_string());
-                }
-                // A write of this device the workspace takes says the verdict on it, if there was
-                // one, says nothing any more.
-                if let Some(signed) = signed {
-                    let landed = NeighbourMsg::AppDocument {
-                        peer: crate::peer_handle(envelope.author.as_bytes()),
-                        app_id: app.clone(),
-                        cluster_id: workspace.to_string(),
-                        document_id: document.clone(),
-                        envelope: envelope.clone(),
-                        readers: None,
-                    };
-                    live.workspace_mut()
-                        .clear_landed_write(&own, &landed, signed, now)?;
-                }
-                answers::note_unanswered(stored, envelope)?;
-                taken.push(request);
-                fresh = true;
-            }
-            if fresh {
-                stored.generation = stored
-                    .generation
-                    .checked_add(1)
-                    .ok_or("native owner generation exhausted")?;
-            }
-            let generation = stored.generation;
-            let aggregate_hash = live.durable_hash()?;
-            let committed = taken
-                .into_iter()
-                .map(|request| {
-                    let binding = request.binding()?;
-                    Ok((
-                        request,
-                        OwnerCommitReceipt {
-                            binding,
-                            generation,
-                            aggregate_hash,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            Ok(committed)
-        });
-        let (committed, stored) = changed.map_err(|error| match (full, waiting) {
-            (Some((app, record)), _) => WriteRefusal::HistoryFull { app, record },
-            (None, Some(refusal)) => refusal,
-            (None, None) => WriteRefusal::Refused(error),
-        })?;
-        if stored.generation != candidate.generation() {
-            // One durable publication for every write the turn took.
-            self.publish_document(workspace, candidate, stored, None)?;
-        }
-        Ok(committed)
-    }
-
-    /// Admit one local write into the turn's candidate, naming what it waits for when the
-    /// workspace has not admitted it here yet.
-    fn admit_local_write(
-        live: &mut crate::StatePeer,
-        route: (&str, &str),
-        readers: Option<&str>,
-        envelope: &collab_types::SignedOp,
+        writes: Vec<WorkspaceDocumentWrite>,
         now: SystemTime,
     ) -> Result<(), WriteRefusal> {
-        match live.admit_new_local_document_read_by(route, readers, envelope.clone(), now) {
-            Ok(()) => Ok(()),
-            Err(crate::NotAdmitted::Waiting(prerequisite)) => {
-                Err(WriteRefusal::Waiting(prerequisite))
-            }
-            Err(crate::NotAdmitted::Refused { reason, detail }) => {
-                Err(WriteRefusal::Declined { reason, detail })
-            }
-            Err(crate::NotAdmitted::HistoryFull) => Err(WriteRefusal::HistoryFull {
-                app: route.0.to_owned(),
-                record: route.1.to_owned(),
-            }),
-            Err(crate::NotAdmitted::ChangeRefused(refused)) => {
-                Err(WriteRefusal::ChangeRefused(refused))
-            }
+        if writes.is_empty() {
+            return Ok(());
         }
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let device = candidate.device().device_public_key;
+        let (changed, mut record) = candidate.change(|live, record| {
+            let mut changed = false;
+            for write in &writes {
+                if write.envelope.author.as_bytes() != &device {
+                    return Err(WriteRefusal::Refused(
+                        "native local write signer differs from selected device".into(),
+                    ));
+                }
+                match live.lookup_exact_local_document(
+                    &write.app,
+                    &write.document,
+                    &write.envelope,
+                    now,
+                ) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        if !live.sealed_history_takes(&write.app, &write.document, &write.envelope)
+                        {
+                            return Err(WriteRefusal::HistoryFull {
+                                app: write.app.clone(),
+                                record: write.document.clone(),
+                            });
+                        }
+                        live.admit_new_local_document_read_by(
+                            (&write.app, &write.document),
+                            write.readers.as_deref(),
+                            write.envelope.clone(),
+                            now,
+                        )
+                        .map_err(refusal_of)?;
+                    }
+                    Err(AdmissionError::ChangeRefused(change)) => {
+                        return Err(WriteRefusal::ChangeRefused(change));
+                    }
+                    Err(error) => return Err(WriteRefusal::Refused(error.to_string())),
+                }
+                let bytes = postcard::to_stdvec(&message_of(workspace, write))
+                    .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+                if !record.frames.iter().any(|frame| frame.bytes == bytes) {
+                    record.frames.push(stored::FrameToSend { bytes });
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        })?;
+        if !changed {
+            return Ok(());
+        }
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_document(workspace, &candidate, record, None)?;
+        Ok(())
+    }
+
+    /// Draft, seal and sign `write` as `device` by `signer`, admit it into `workspace`, and keep
+    /// it as a frame a link carries.
+    ///
+    /// # Errors
+    /// As [`crate::draft::admit_local_write`], and when the record could not be made durable.
+    pub async fn write_local(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+        signer: Arc<dyn DeviceSigner>,
+        write: crate::draft::LocalWrite<'_>,
+    ) -> Result<crate::owner::AppWrite, WriteRefusal> {
+        let replica = self.replica(workspace).map_err(WriteRefusal::Refused)?;
+        let written = crate::draft::admit_local_write(
+            replica,
+            Some(self.clone()),
+            device,
+            signer,
+            &workspace.to_string(),
+            write,
+        )
+        .await?;
+        self.keep_frame(
+            workspace,
+            &NeighbourMsg::AppDocument {
+                peer: written.peer,
+                app_id: written.app_id.clone(),
+                cluster_id: written.cluster_id.clone(),
+                document_id: written.document_id.clone(),
+                envelope: Box::new(written.envelope.clone()),
+                readers: None,
+            },
+        )
+        .map_err(WriteRefusal::Refused)?;
+        Ok(written)
+    }
+
+    /// Write `command` into `workspace`'s governance as `caller`, signed by `signer`, and make it
+    /// durable.
+    ///
+    /// # Errors
+    /// The workspace is not held here, this device may not make the change, or it could not be
+    /// made durable.
+    pub async fn commit_membership(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_user_identity::DeviceCert,
+        command: &crate::workspace_membership::WorkspaceMembershipCommand,
+        signer: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, WriteRefusal> {
+        signed_turn(signer, |key| {
+            let _turn = self.0.mutation.lock();
+            let candidate = self.view(workspace)?;
+            let (changed, mut record) = candidate.change(|live, record| {
+                live.governance_mut()
+                    .drop_names_of_nobody(key, now)
+                    .map_err(WriteRefusal::from)?;
+                let changed = live
+                    .workspace_mut()
+                    .apply_workspace_membership_command(caller, command, key, now)
+                    .map_err(WriteRefusal::from)?;
+                key.settled()?;
+                if changed {
+                    record.generation = record.generation.checked_add(1).ok_or_else(|| {
+                        WriteRefusal::Refused("native owner generation exhausted".into())
+                    })?;
+                }
+                Ok(changed)
+            })?;
+            if changed {
+                self.publish_document(workspace, &candidate, record, None)
+                    .map_err(WriteRefusal::from)?;
+            }
+            Ok(changed)
+        })
+        .await
+    }
+
+    /// Record `receipt`, the terminal audit of an invocation `caller` served, in its own slice of
+    /// `workspace`, as the device's own change, and make it durable.
+    ///
+    /// # Errors
+    /// The workspace is not held here, the receipt is not the caller's, or it could not be made
+    /// durable.
+    pub fn record_effect(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_user_identity::DeviceCert,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let (changed, mut record) = candidate.change(|live, _record| {
+            live.workspace_mut()
+                .apply_own_effect_receipt(caller, receipt, now)
+        })?;
+        if !changed {
+            return Ok(());
+        }
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_document(workspace, &candidate, record, None)
+    }
+
+    /// Keep `message`, a frame of this device's own, in `workspace`'s record until a link carried
+    /// it, and make the record durable.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the record could not be made durable.
+    pub fn keep_frame(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> Result<(), String> {
+        let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let mut record = candidate.record.clone();
+        if !record.frames.iter().any(|frame| frame.bytes == bytes) {
+            record.frames.push(stored::FrameToSend { bytes });
+        }
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_document(workspace, &candidate, record, None)
+    }
+
+    /// This device's own frames of `workspace` a peer was not sent yet, oldest first,
+    /// postcard-encoded.
+    #[must_use]
+    pub fn frames(&self, workspace: WorkspaceId) -> Vec<Vec<u8>> {
+        self.with_current(workspace, |view| {
+            Ok(view
+                .record
+                .frames
+                .iter()
+                .map(|frame| frame.bytes.clone())
+                .collect())
+        })
+        .unwrap_or_default()
+    }
+
+    /// Drop `frame`, one of this device's own, once a link carried it to a peer.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the record could not be made durable.
+    pub fn sent(&self, workspace: WorkspaceId, frame: &[u8]) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let mut record = candidate.record.clone();
+        let before = record.frames.len();
+        record.frames.retain(|kept| kept.bytes != frame);
+        if record.frames.len() == before {
+            return Ok(());
+        }
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_document(workspace, &candidate, record, None)
+    }
+
+    /// This device's writes to each record of `workspace` a peer was not sent yet.
+    #[must_use]
+    pub fn document_writes(
+        &self,
+        workspace: WorkspaceId,
+    ) -> std::collections::BTreeMap<(String, String), DocumentWrites> {
+        self.with_current(workspace, |view| {
+            let mut writes: std::collections::BTreeMap<(String, String), DocumentWrites> =
+                std::collections::BTreeMap::new();
+            for frame in &view.record.frames {
+                let message = tilo_failure::ignored!(
+                    "a frame this device kept is one it encoded",
+                    NeighbourMsg::decode(&frame.bytes)
+                );
+                if let Some(NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                }) = message
+                {
+                    let kept = writes.entry((app_id, document_id)).or_default();
+                    kept.pending = kept.pending.saturating_add(1);
+                }
+            }
+            Ok(writes)
+        })
+        .unwrap_or_default()
     }
 }
 
-/// `writes` as `workspace`'s record commits them: numbered past what the record holds and what the
-/// writes before them took, and signed by `signed`, which asks for every signature this run needs
-/// at once. A number is taken once: each write keeps it, so the turn's next run signs the same
-/// write. Without `signed`, every write is as it was signed.
-/// Whether the document was checked to hold each write already: it does not hold one the turn
-/// numbered and signed itself.
-fn numbered(
-    live: &crate::StatePeer,
-    workspace: WorkspaceId,
-    device: [u8; 32],
-    writes: &mut [OwnerCommitRequest],
-    signed: Option<&Signatures>,
-    now: SystemTime,
-) -> Result<Vec<(OwnerCommitRequest, bool)>, String> {
-    let mut taken = std::collections::BTreeMap::new();
-    let mut ready = Vec::with_capacity(writes.len());
-    for kept in writes.iter_mut() {
-        if WorkspaceId::parse(&kept.workspace) != Some(workspace) {
-            return Err("native document write names another workspace".into());
-        }
-        let mut request = kept.clone();
-        let CommitOperation::Document {
-            app,
-            document,
-            envelope,
-            ..
-        } = &mut request.operation
-        else {
-            return Err("unsupported native owner commit family".into());
-        };
-        if envelope.author.as_bytes() != &device {
-            return Err("native local publication signer differs from selected device".into());
-        }
-        let mut checked = false;
-        if let Some(signed) = signed {
-            // A write signed before the turn (an app's, signed by the identity service) names the
-            // governance this owner admits it under, and is signed again for it; one the document
-            // holds already is a retry, kept as it was taken. A draft this turn made is admitted
-            // nowhere: the document is asked nothing of it.
-            let retry = collab_types::verify_op(envelope).is_ok()
-                && matches!(
-                    live.lookup_exact_local_document(app, document, envelope, now),
-                    Ok(Some(_))
-                );
-            if !retry {
-                envelope.name_governance(&live.governance_heads()?);
-                **envelope = live
-                    .sequenced_local_document(app, document, (**envelope).clone(), now)?
-                    .0;
-                let before = taken.entry((app.clone(), document.clone())).or_insert(0);
-                if envelope.seq <= *before {
-                    envelope.seq = before.checked_add(1).ok_or("sequence exhausted")?;
-                }
-                *before = envelope.seq;
-                if collab_types::verify_op(envelope).is_err() {
-                    collab_types::sign_op(envelope, signed).map_err(|error| error.to_string())?;
-                }
-                checked = true;
-            }
-            kept.clone_from(&request);
-        }
-        ready.push((request, checked));
+/// What admission refused, as the write path's refusal.
+fn refusal_of(refused: crate::NotAdmitted) -> WriteRefusal {
+    match refused {
+        crate::NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
+        crate::NotAdmitted::HistoryFull => WriteRefusal::HistoryFull {
+            app: String::new(),
+            record: String::new(),
+        },
+        crate::NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
+        crate::NotAdmitted::ChangeRefused(refused) => WriteRefusal::ChangeRefused(refused),
     }
-    signed.map(Signatures::settled).transpose()?;
-    Ok(ready)
 }

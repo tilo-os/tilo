@@ -13,12 +13,14 @@ pub mod actor;
 pub mod collab_core;
 pub mod collab_history;
 pub mod delivery;
-pub mod owner_service;
+pub mod held;
+pub mod workspace_commits;
 pub mod published;
 pub mod route;
 pub mod services;
 pub mod shown;
 pub mod steps;
+pub mod workspace_commits;
 
 pub use actor::{BrokerActor, person_id_for_root};
 pub use published::{

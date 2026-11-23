@@ -372,7 +372,6 @@ fn session_task(
         kept_why: BTreeMap::new(),
         pending_signed: BTreeMap::new(),
         owed_since: BTreeMap::new(),
-        answered: Vec::new(),
         arrived: Vec::new(),
         let_go: BTreeSet::new(),
         held_inbound: BTreeMap::new(),
@@ -390,7 +389,6 @@ fn session_task(
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
         sending: BTreeMap::new(),
-        governance_answered: BTreeMap::new(),
         not_ready: BTreeSet::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
@@ -494,17 +492,6 @@ enum Exit {
     Unproved(LinkError),
 }
 
-/// The host's answer to a write held, waiting to retire from it.
-struct Answered {
-    workspace: tilo_desktop_model::WorkspaceId,
-    /// The ownership entry.
-    id: [u8; 32],
-    /// Durable at this order, or refused, and why.
-    outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
-    /// What a refusal withdraws from the replica.
-    withdrawn: Option<Event>,
-}
-
 /// A document the host delivered, waiting for its workspace's replica to decide it.
 struct Arrived {
     workspace_id: WorkspaceId,
@@ -592,7 +579,7 @@ struct Task {
     kept_why: BTreeMap<DocumentRoute, crate::Waits>,
     /// Signed writes of this device whose publication waits for what they need: their record
     /// here, or a signature. Their replica holds them already; only their ownership is owed.
-    pending_signed: BTreeMap<DocumentRoute, Vec<tilo_peer_state::owner_commit::OwnerCommitRequest>>,
+    pending_signed: BTreeMap<DocumentRoute, Vec<collab_types::SignedOp>>,
     /// Since when each document has committed writes of this device its holder has not answered.
     owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
@@ -602,7 +589,6 @@ struct Task {
     let_go: BTreeSet<DocumentRoute>,
     /// What the host answered of the writes this connection sent, retired from ownership
     /// together: the workspace, the ownership entry, the answer and what a refusal withdraws.
-    answered: Vec<Answered>,
     /// The records whose last write the replica did not take in, and why.
     held_inbound: BTreeMap<DocumentRoute, String>,
     /// The documents a compaction of which this device's replica refused: it holds only part of
@@ -632,7 +618,6 @@ struct Task {
     /// The write carrying this device's governance of each workspace the host last answered as
     /// durable: it stays in ownership after, and a barrier of the workspace waits for it only
     /// while it is not this one ([`outbound::Scope::Workspaces`]).
-    governance_answered: BTreeMap<tilo_desktop_model::WorkspaceId, [u8; 32]>,
     /// The writes the host was not ready for: each is sent again once the host says the
     /// workspace is ready, and refused if the host turns it away again.
     not_ready: BTreeSet<[u8; 32]>,
@@ -2464,7 +2449,6 @@ impl Task {
     async fn settle_channels(&mut self, client: Option<&ServerClient>) -> bool {
         let mut delivered = true;
         self.keep_arrived();
-        self.retire_answered();
         if self.workspace_keys.signing() {
             self.workspace_keys.signatures().await;
             self.pump_channels(false);

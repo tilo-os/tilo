@@ -49,7 +49,7 @@ impl NativeWorkspaceOwner {
             return Err("the answer is not this workspace's renewal".into());
         }
         let ((), record) = candidate.change(|live, record| {
-            crate::owner::enrollment::install_governance(live, bootstrap, now)
+            crate::enrollment::install_governance(live, bootstrap, now)
                 .map_err(|error| error.to_string())?;
             if !live.certificates().contains(renewed) {
                 return Err(

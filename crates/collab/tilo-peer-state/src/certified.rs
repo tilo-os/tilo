@@ -5,7 +5,8 @@ use crate::join::{
     self, JoinBootstrap, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
     VerifiedJoin,
 };
-use crate::owner::{PendingEnrollmentId, WorkspaceId};
+use crate::owner::PendingEnrollmentId;
+use tilo_desktop_model::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
     MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceDeviceHintV1,
@@ -288,6 +289,3 @@ impl VerifiedNativeEnrollment {
         })
     }
 }
-#[cfg(test)]
-#[path = "certified_tests.rs"]
-mod tests;

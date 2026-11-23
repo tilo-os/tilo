@@ -135,7 +135,7 @@ impl Reach {
 
     /// Prove this device's membership of `connect`'s workspace with the renewal
     /// of the certificate its record holds, when ownership holds one
-    /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
+    /// ([`crate::enroll::renew_membership`]). Answers whether it
     /// renewed.
     pub async fn renew(
         &self,
@@ -150,7 +150,7 @@ impl Reach {
         let client = self
             .join_client(hosted_here, own)
             .ok_or("this device's workspace host is not running")?;
-        crate::owner::enroll::renew_membership(
+        crate::enroll::renew_membership(
             client,
             identity.clone(),
             connect.owner().clone(),

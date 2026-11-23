@@ -281,8 +281,8 @@ impl ActorState {
             route
                 .connect
                 .owner()
-                .unadmitted_writes(route.connect.workspace())
-                .unwrap_or(0)
+                .frames(route.connect.workspace())
+                .len()
         };
         crate::workspace_sync::unsynced(ws, unsynced);
     }

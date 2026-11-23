@@ -135,7 +135,7 @@ impl AppBrokerState {
         };
         let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
 
-        if offered.0.app_id == tilo_peer_state::owner_commit::desktop_command::APP_ID
+        if offered.0.app_id == tilo_desktop_model::commands::APP_ID
             && self
                 .pending_invocations
                 .lock()

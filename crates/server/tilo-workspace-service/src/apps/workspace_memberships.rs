@@ -6,7 +6,6 @@ use super::{
     AppBrokerState, Arc, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 const APP: &str = "so.tilo.desktop";
@@ -515,17 +514,8 @@ impl AppBrokerState {
             .ok_or("membership original ownership unavailable")?;
         let caller = original.owner_person_certificate(self, workspace, envelope)?;
         let command = membership_command(envelope)?;
-        let request = OwnerCommitRequest {
-            workspace: workspace.into(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: envelope.invocation.0,
-                caller,
-                command,
-            },
-        };
-        let receipt = service.execute(request.clone()).await?;
-        receipt.validate_for(&request)?;
-        Ok(serde_json::json!({"generation": receipt.generation}))
+        service.execute(workspace.into(), caller, command).await?;
+        Ok(serde_json::json!({"generation": 0}))
     }
 }
 

@@ -371,8 +371,8 @@ pub struct Sealed {
 /// its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
-    /// The calls this session's apps join: the service a view's call steps
-    /// reach.
+    /// The calls this session's apps join: the service an app's
+    /// `join-call` reaches.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
     /// The records' content in that index, read from the records themselves:
@@ -382,9 +382,6 @@ pub struct Hosted {
     /// The workspace's shortcuts as the broker saves and runs them, from this device's own
     /// workspace service; no session without a device identity keeps any.
     pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
-    /// The workspace's events and its assistant's look-round, saved through those shortcuts:
-    /// what a person and their assistant set up, change and pause.
-    pub initiative: Option<tilo_workspace_service::agents::initiative::Initiative>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -420,13 +417,15 @@ pub struct Hosted {
     /// the write is committed by the service, into the copy the session's own writes reach and its
     /// reads answer from, and the owner keeps only a workspace the service holds none of.
     pub service: tilo_workspace_service::service::ServiceSlot,
-    /// The shell link the device's daemon handed this session, or why it has none: each app this
-    /// session launches is joined at the daemon on a connection vouched for on it, and its
-    /// documents are answered there.
-    pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
-    /// Each write the daemon takes, as the session follows them: what a query an agent holds open
-    /// here is asked again on.
-    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
+    /// The resources of the workspaces this device's own service holds, as the broker reads them.
+    pub documents: crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
+    >,
+    /// The one store of the workspaces this device's service holds, as apps write and read their
+    /// resources in it.
+    pub resources: crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
+    >,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -528,27 +527,17 @@ pub fn serve(
                 journal_root,
                 certificate_authority: std::sync::Arc::clone(&certificates) as _,
             });
+    let engine = hosted.engine.clone();
     // The apps this device has, as its lists last read them: what the broker
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
-    // An app's writes go to the device's daemon on its own connection there; the receipts of the
-    // effects the actions this session runs had are recorded by the daemon too.
-    let publisher = match hosted.daemon.clone() {
-        Ok(link) => PeerPublisher::with_optional_owner_commit(
-            None,
-            std::sync::Arc::new(tilo_session_client::daemon_documents::DaemonReceipts(
-                tilo_session_client::daemon_documents::DaemonShell::new(
-                    Ok(link),
-                    tilo_rt::app().handle().clone(),
-                ),
-            )),
-        ),
-        Err(reason) => {
-            tracing::warn!(%reason, "no daemon records the effects of this session's actions");
-            PeerPublisher::disabled()
-        }
-    };
+    // What search reads of the records themselves, for the changes this
+    // session commits and takes in below.
+    let records = hosted.records.clone();
+    // Where the broker's writes go: this device's workspace service takes the
+    // workspaces it holds, and the engine's owner the rest.
+    let publisher = owner_publisher(engine, hosted.service.clone(), records);
     let (services, hosting) = host_services_with_hosts(
         link,
         launches,
@@ -573,6 +562,28 @@ pub fn serve(
         hosting.serve_inbound(host.device_host());
     }
     Ok((broker, hosting))
+}
+
+/// Where the broker's writes go beyond this device's own apps: an app's
+/// documents into this device's workspace service, and its effect receipts
+/// into the engine's owner. A session that holds no workspaces keeps its
+/// apps' writes among them.
+pub(crate) fn owner_publisher(
+    engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    service: tilo_workspace_service::service::ServiceSlot,
+    records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
+) -> std::sync::Arc<PeerPublisher> {
+    let records = records.map(|records| {
+        records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
+    });
+    engine.map_or_else(PeerPublisher::disabled, |_engine| {
+        PeerPublisher::with_optional_commits(
+            None,
+            std::sync::Arc::new(tilo_workspace_service::apps::commits::ServiceCommits::new(
+                service, records,
+            )),
+        )
+    })
 }
 
 /// The session the broker's thread decides against: the workspaces it shows and
@@ -868,19 +879,27 @@ impl WorkspaceMemberships for SessionMemberships {
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        workspace: String,
+        caller: tilo_user_identity::DeviceCert,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> tilo_workspace_service::apps::services::WorkspaceMembershipFuture {
         let engine = std::sync::Arc::clone(&self.engine);
         Box::pin(async move {
             let identity = engine.identity();
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or("a membership command names an invalid workspace")?;
             engine
                 .owner()
-                .commit_workspace_membership_command(
-                    request,
+                .commit_membership(
+                    workspace,
+                    &caller,
+                    &command,
                     identity.signer.as_ref(),
                     std::time::SystemTime::now(),
                 )
                 .await
+                .map(drop)
+                .map_err(|error| error.to_string())
         })
     }
 }
@@ -908,30 +927,27 @@ impl SessionGrants {
         &self,
         workspace: &str,
         change: tilo_action_policy::Change,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    ) -> tilo_workspace_service::apps::services::WorkspaceMembershipFuture {
         let engine = std::sync::Arc::clone(&self.engine);
-        let request = OwnerCommitRequest {
-            workspace: workspace.to_owned(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(),
-                caller: engine.identity().device_cert.clone(),
-                command:
-                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                        change,
-                    },
-            },
-        };
+        let command =
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member { change };
+        let workspace = workspace.to_owned();
         Box::pin(async move {
             let identity = engine.identity();
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or("a membership change names an invalid workspace")?;
             engine
                 .owner()
-                .commit_workspace_membership_command(
-                    request,
+                .commit_membership(
+                    workspace,
+                    &identity.device_cert,
+                    &command,
                     identity.signer.as_ref(),
                     std::time::SystemTime::now(),
                 )
                 .await
+                .map(drop)
+                .map_err(|error| error.to_string())
         })
     }
 
@@ -1088,7 +1104,6 @@ fn broker_services(
         records,
         layout,
         shortcuts,
-        initiative,
         activity,
         agents,
         agent_sessions,
@@ -1099,8 +1114,8 @@ fn broker_services(
         answering: _,
         service,
         device_actions: hosted_device_actions,
-        daemon,
-        daemon_writes,
+        documents,
+        resources,
         document_content,
         action_offload,
         journal_root,
@@ -1172,20 +1187,10 @@ fn broker_services(
         approved_checks: BrokerService::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // The device's daemon keeps the workspaces: an app's Open of a record is answered there,
-        // on the connection the router joins for it, and an agent's read of one is read from it
-        // over the shell's link, never from a copy here.
-        committed_documents: BrokerService::when(daemon.clone().ok().map(|link| {
-            std::sync::Arc::new(crate::broker_services::DaemonRecordReads(
-                tilo_session_client::daemon_documents::DaemonDocuments(
-                    tilo_session_client::daemon_documents::DaemonShell::new(
-                        Ok(link),
-                        tilo_rt::app().handle().clone(),
-                    ),
-                ),
-            ))
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>
-        })),
+        // This device's own copy of each workspace's records: an app's Open of a record the
+        // workspace holds, and an agent's task read, are answered from it, sealed writes opened
+        // with the record channel's keys.
+        committed_documents: documents,
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: BrokerService::when(native_media.map(|media| {
@@ -1361,26 +1366,11 @@ fn broker_services(
             std::sync::Arc::new(hosting)
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
-        // Apps write and read their resources in the device's one store, which the daemon keeps:
-        // the router sends an app's commands there, and an agent this session admits reads them
-        // over the shell's link.
-        resources: BrokerService::when(daemon.clone().ok().map(|link| {
-            std::sync::Arc::new(crate::broker_services::DaemonResources {
-                shell: tilo_session_client::daemon_documents::DaemonShell::new(
-                    Ok(link),
-                    tilo_rt::app().handle().clone(),
-                ),
-                writes: daemon_writes,
-            })
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
-        })),
-        shell: BrokerService::unserved(
-            "the person's shell is answered by this computer's Tilo service, never by a session",
-        ),
-        // An app's documents are the person's workspaces', which the device's daemon keeps: each
-        // app this session launches is joined there too, on a connection vouched for on the shell
-        // link, and this session answers only the services it keeps itself.
-        device_daemon: BrokerService::served(daemon),
+        // Apps write and read their resources in this device's one store, which holds every
+        // workspace's: no app keeps a store of its own.
+        resources,
+        // The person's shell connects to the device daemon's broker, which answers it.
+        shell: BrokerService::unserved("the device daemon's broker answers the person's shell"),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, a ticket for a new
         // computer, administering their identities and the devices trusted
@@ -1446,23 +1436,8 @@ fn broker_services(
                     .map(|settings| settings as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
                     .collect(),
-                // The workspace's events and its assistant's look-round, each a shortcut of
-                // its person's, saved and signed through the library above.
-                initiative
-                    .map(|initiative| {
-                        vec![
-                            initiative.events_served() as std::sync::Arc<dyn HostStepServices>,
-                            std::sync::Arc::new(initiative),
-                        ]
-                    })
-                    .unwrap_or_default(),
             ]
             .concat(),
-        ),
-        // What this device's embedder registered is answered by the device's daemon, which keeps
-        // the registry and admits every call of it, from this device and from others alike.
-        providers: BrokerService::unserved(
-            "a provider the device registers is answered by the device's daemon",
         ),
     }
 }
@@ -1591,7 +1566,7 @@ impl AppWire {
                 .and_then(|broker| {
                     crate::calls::channel_name(
                         &broker.surfaces(),
-                        (&call.workspace, &call.app),
+                        (&call.workspace, &call.app, &call.record),
                         &call.channel,
                     )
                 })
@@ -1679,7 +1654,6 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
         crate::mcp_server::SessionServices::new(tilo_service::LoopWake::default().handle(), "Pat");
     std::sync::Arc::new(crate::session_actions::SessionActions::new(
         std::sync::Arc::new(services),
-        None,
     ))
 }
 
@@ -1797,7 +1771,6 @@ mod tests {
                 Names::default(),
             )),
             shortcuts: None,
-            initiative: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -1826,12 +1799,11 @@ mod tests {
             device_actions: None,
             answering: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
-            daemon: Err("a test's session has no daemon".to_owned()),
-            daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed::start(
-                &tilo_session_client::daemon_documents::DaemonShell::new(
-                    Err("a test's session has no daemon".to_owned()),
-                    tilo_rt::app().handle().clone(),
-                ),
+            documents: crate::broker_services::document_reads(
+                tilo_workspace_service::service::ServiceSlot::default(),
+            ),
+            resources: crate::broker_services::resources(
+                tilo_workspace_service::service::ServiceSlot::default(),
             ),
         }
     }
@@ -1958,6 +1930,38 @@ mod tests {
             assert!(
                 speakers.changed(0).is_some(),
                 "and it tells Settings when that changes"
+            );
+        }
+
+        phase a_session_serves_the_resources_of_its_own_workspace_service;
+        // A session reads an app's resource outside the app from this device's own workspace
+        // service: what that service holds answers. A service that holds no workspace (and a
+        // session serving none at all) leaves every resource where the app keeps it.
+        {
+            let wake: Wake = std::sync::Arc::new(|| ());
+            let reads = |service: tilo_workspace_service::service::ServiceSlot| {
+                let mut hosted = hosted(None);
+                hosted.documents = crate::broker_services::document_reads(service);
+                host_services(
+                    Link::new(std::sync::Arc::clone(&wake)),
+                    std::sync::Arc::new(Launches::default()),
+                    None,
+                    hosted,
+                    None,
+                    None,
+                )
+                .committed_documents
+                .expect("the session serves the resources of its own workspaces")
+            };
+            let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
+            assert_eq!(
+                reads(tilo_workspace_service::service::ServiceSlot::default()).resource_read(
+                    &elsewhere,
+                    "so.tilo.notes",
+                    "note-1"
+                ),
+                tilo_workspace_service::apps::services::ResourceRead::Own,
+                "a session whose service holds no workspace reads a resource only where the app keeps it"
             );
         }
 
@@ -2419,7 +2423,6 @@ mod tests {
             None,
             Hosted {
                 shortcuts: Some(std::sync::Arc::new(library)),
-                initiative: None,
                 ..hosted(None)
             },
             None,
@@ -2441,7 +2444,6 @@ mod tests {
             .store(ShortcutLibraryRequest {
                 workspace: workspace.clone(),
                 actor: tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
-                acting_for: None,
                 change: serde_json::from_value(serde_json::json!({
                     "save": { "id": "tidy", "name": "Tidy", "steps": [], "triggers": [] },
                 }))

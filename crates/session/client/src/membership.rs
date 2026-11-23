@@ -11,7 +11,6 @@ use crate::engine::Engine;
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 pub use tilo_peer_state::workspace_membership::MemberPlace;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
@@ -245,29 +244,18 @@ impl<'a> Membership<'a> {
     /// saying why when the workspace refuses it or cannot publish it.
     async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
         let identity = self.engine.identity();
-        let request = OwnerCommitRequest {
-            workspace: self.workspace_id.to_string(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(),
-                caller: identity.device_cert.clone(),
-                command,
-            },
-        };
         self.engine
             .owner()
-            .commit_workspace_membership_command(
-                request,
+            .commit_membership(
+                self.workspace_id,
+                &identity.device_cert,
+                &command,
                 identity.signer.as_ref(),
                 tilo_clock::wall(),
             )
-            .await?;
-        // What this device just committed leaves for the workspace's other devices now, rather
-        // than with whatever it next writes there.
-        tilo_broker_core::owner_service::OwnerService::schedule_publication(
-            self.engine,
-            self.workspace_id,
-        );
-        Ok(())
+            .await
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 }
 

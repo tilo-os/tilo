@@ -10,9 +10,8 @@
 use std::{sync::Arc, time::SystemTime};
 
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, LocalDocumentFuture, OwnerCommitReceipt, OwnerCommitRequest,
-    OwnerCommitService,
+use tilo_workspace_service::apps::workspace_commits::{
+    DocumentFuture, EffectFuture, WorkspaceCommits,
 };
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::Workspaces;
@@ -64,56 +63,47 @@ impl ServiceCommits {
     }
 }
 
-impl OwnerCommitService for ServiceCommits {
+impl WorkspaceCommits for ServiceCommits {
     /// The service keeps each device's own effect receipts in its copy of the
     /// workspace: a member copy's are this device's.
-    fn records_effects(&self, workspace: &str) -> bool {
-        if WorkspaceId::parse(workspace).is_none() {
-            return false;
-        }
+    fn projects_workspace(&self, workspace: WorkspaceId) -> bool {
         let copies = self.copies().clone();
-        let workspace = workspace.to_owned();
         super::workspaces::block_on_owned(async move {
-            copies.is_member(&workspace).await.unwrap_or(false)
+            copies
+                .is_member(&workspace.to_string())
+                .await
+                .unwrap_or(false)
         })
     }
 
-    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+    fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
         let copies = self.copies().clone();
         Box::pin(async move {
             copies
-                .commit_member_effect_receipt(&request.workspace, &request)
+                .commit_member_effect_receipt(&workspace, &redacted)
                 .await
-                .map_err(|error| format!("owner commit failed: {error}"))
+                .map_err(|error| format!("the effect receipt was not recorded: {error}"))
         })
     }
 
-    fn commit_with_resource_type(
+    fn document(
         &self,
-        request: OwnerCommitRequest,
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: collab_types::SignedOp,
         resource_type: Option<String>,
-    ) -> CommitFuture {
-        let parts = CommitParts {
-            service: Arc::clone(&self.service),
-            device: self.device,
-            creation: Arc::clone(&self.creation),
-        };
-        Box::pin(async move { parts.commit(request, resource_type).await })
-    }
-
-    fn commit_local_document(
-        &self,
-        request: OwnerCommitRequest,
-        resource_type: Option<String>,
-    ) -> LocalDocumentFuture {
+    ) -> DocumentFuture {
         let parts = CommitParts {
             service: Arc::clone(&self.service),
             device: self.device,
             creation: Arc::clone(&self.creation),
         };
         Box::pin(async move {
-            let receipt = parts.commit(request.clone(), resource_type).await?;
-            Ok((request, receipt))
+            parts
+                .commit(workspace, app, document, readers, envelope, resource_type)
+                .await
         })
     }
 
@@ -133,35 +123,30 @@ struct CommitParts {
 impl CommitParts {
     async fn commit(
         &self,
-        request: OwnerCommitRequest,
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: collab_types::SignedOp,
         resource_type: Option<String>,
-    ) -> Result<OwnerCommitReceipt, String> {
-        let Some(workspace) = WorkspaceId::parse(&request.workspace) else {
+    ) -> Result<collab_types::SignedOp, String> {
+        let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
             return Err("invalid exact workspace".to_owned());
         };
         let copies = self.service.workspaces();
         // What type a new resource may be is this device's rule only in the workspace it
         // governs, where the apps installed here say it; a member copy's writes are the
         // governing device's to admit.
-        let (peer, governs) = match copies.member_copy(workspace).await {
+        let (peer, governs) = match copies.member_copy(workspace_id).await {
             Some((_, peer)) => (peer, false),
             None => (
                 copies
-                    .governed_copy(workspace)
+                    .governed_copy(workspace_id)
                     .await
                     .map(|(_, peer)| peer)
                     .ok_or_else(|| "this device holds no such workspace".to_owned())?,
                 true,
             ),
-        };
-        let (app, document, envelope) = match &request.operation {
-            CommitOperation::Document {
-                app,
-                document,
-                envelope,
-                ..
-            } => (app.clone(), document.clone(), envelope.clone()),
-            _ => return Err("an app writes documents to its workspace".into()),
         };
         if envelope.author.as_bytes() != &self.device {
             return Err("the document's signer differs from this device".into());
@@ -189,7 +174,15 @@ impl CommitParts {
             ));
         }
         drop(peer);
-        let workspace = request.workspace.clone();
-        Ok(copies.commit_local_document(&workspace, request).await?)
+        copies
+            .commit_local_document(
+                &workspace,
+                &app,
+                &document,
+                readers.as_deref(),
+                envelope.clone(),
+            )
+            .await?;
+        Ok(envelope)
     }
 }

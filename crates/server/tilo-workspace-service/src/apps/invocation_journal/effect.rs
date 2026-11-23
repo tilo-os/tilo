@@ -4,7 +4,6 @@ use super::{
     InvocationUpdate,
 };
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,32 +33,22 @@ fn terminal_update<'de, D: serde::Deserializer<'de>>(d: D) -> Result<InvocationU
 impl PreparedEffect {
     pub(super) fn new(
         update: InvocationUpdate,
-        request: &OwnerCommitRequest,
+        workspace: &str,
+        invocation: uuid::Uuid,
+        redacted: &[u8],
     ) -> Result<Self, String> {
-        let CommitOperation::EffectReceipt {
-            invocation,
-            redacted,
-        } = &request.operation
-        else {
-            return Err("prepared effect requires an effect receipt".into());
-        };
         Ok(Self {
             version: 1,
             update,
-            workspace: request.workspace.clone(),
-            invocation: *invocation,
-            redacted: redacted.clone(),
+            workspace: workspace.to_owned(),
+            invocation,
+            redacted: redacted.to_vec(),
         })
     }
 
-    pub(crate) fn request(&self) -> OwnerCommitRequest {
-        OwnerCommitRequest {
-            workspace: self.workspace.clone(),
-            operation: CommitOperation::EffectReceipt {
-                invocation: self.invocation,
-                redacted: self.redacted.clone(),
-            },
-        }
+    /// The workspace the receipt is recorded in, and its exact bytes.
+    pub(crate) fn receipt(&self) -> (&str, &[u8]) {
+        (&self.workspace, &self.redacted)
     }
 
     pub(super) fn validate(&self, record: &DurableInvocation) -> Result<(), String> {
@@ -82,7 +71,6 @@ impl PreparedEffect {
         {
             return Err("prepared effect identity, kind or bounds invalid".into());
         }
-        self.request().binding()?;
         let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
             serde_json::from_slice(&self.redacted).map_err(|_| "prepared receipt invalid")?;
         let owner_actor = match &record.key.owner {
@@ -136,11 +124,14 @@ impl InvocationJournal {
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
-        request: &OwnerCommitRequest,
+        workspace: &str,
+        invocation: uuid::Uuid,
+        redacted: &[u8],
     ) -> Result<PreparedEffect, String> {
         let at = self.position(key).ok_or("unknown prepared invocation")?;
         let started = self.snapshot.records.get(at).cloned();
-        let (prepared, durable) = self.stage_prepared_effect(key, update, request)?;
+        let (prepared, durable) =
+            self.stage_prepared_effect(key, update, workspace, invocation, redacted)?;
         let started = started.ok_or("unknown prepared invocation")?;
         self.settle(at, &started, durable)?;
         Ok(prepared)
@@ -166,10 +157,12 @@ impl InvocationJournal {
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
-        request: &OwnerCommitRequest,
+        workspace: &str,
+        invocation: uuid::Uuid,
+        redacted: &[u8],
     ) -> Result<(PreparedEffect, Durable), String> {
         self.ready()?;
-        let prepared = PreparedEffect::new(update, request)?;
+        let prepared = PreparedEffect::new(update, workspace, invocation, redacted)?;
         let (at, record) = self
             .document_mut(key)
             .map_err(|_| "unknown prepared invocation")?;

@@ -1,12 +1,12 @@
-//! Keys used to renew and compact the sealed history of workspace documents.
+//! Keys used to compact the sealed history of workspace documents.
 
 use super::{StatePeer, WorkspaceId};
 use collab_types::{EncryptionMetadata, SignedOp};
 use web_time::SystemTime;
 
 /// The channel keys a device holds for the sealed records of its workspaces:
-/// what its owner compacts their histories with
-/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+/// what it compacts their histories with
+/// ([`NativeWorkspaceOwner::keep_sealed_histories`](super::NativeWorkspaceOwner::keep_sealed_histories)).
 pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
     /// Open `write`, an admitted write of a sealed record's history of
     /// `workspace` (a compaction included), under any epoch whose key this
@@ -42,28 +42,6 @@ pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
         _snapshot: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         Err("this device cannot seal a checkpoint for a restricted document yet".into())
-    }
-    /// Seal `write` again under its channel's current epoch: one of this device's sealed writes
-    /// of `workspace` that expired held before its host took it. Answers the encryption and
-    /// payload its renewal carries.
-    ///
-    /// # Errors
-    /// This device holds no key that opens it, or none of its channel's current epoch.
-    fn renew(
-        &self,
-        workspace: WorkspaceId,
-        write: &SignedOp,
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
-    /// Renew a pending write under the document's current group.
-    fn renew_scoped(
-        &self,
-        _workspace: WorkspaceId,
-        _document: (&str, &str),
-        _named: Option<&str>,
-        _readers: &std::collections::BTreeSet<[u8; 32]>,
-        _write: &SignedOp,
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        Err("this device cannot renew a write to a restricted document".into())
     }
 }
 
