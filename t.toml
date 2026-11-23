@@ -4439,8 +4439,8 @@ requires = ["os=macos", "arch=arm64"]
 outputs = ["/target/macos/{arch}/build/*"]
 default = false
 # A cold release build of the imager took 68 minutes on the Mac node with an
-# empty compiler cache, and the library's tests compile beside it.
-timeout_secs = 10800
+# empty compiler cache.
+timeout_secs = 7200
 on = ["dispatch", "idle"]
 [check.matrix]
 arch = ["aarch64", "x86_64"]
