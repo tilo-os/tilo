@@ -79,9 +79,6 @@ registry-server = { path = "../../crates/packaging/registry-server" }
 messages = { path = "../../apps/messages" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tokio = { workspace = true, features = ["rt"] }
-# Agreement test across all seven canonical JSON writers.
-runtime-collab = { path = "../../crates/runtime/runtime-collab" }
-tilo-workspace-service = { path = "../../crates/server/tilo-workspace-service", features = ["apps"] }
 
 [lints]
 workspace = true
