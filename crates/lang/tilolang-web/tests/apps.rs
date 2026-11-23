@@ -209,7 +209,7 @@ fn layout(second_at: (i64, i64)) -> tilo_desktop_model::reading::LayoutReading {
 
 #[test]
 fn a_hosted_canvas_follows_the_layout_its_host_reads() {
-    let packages = std::rc::Rc::new(tilolang_web::Packages(
+    let packages = std::rc::Rc::new(tilolang_web::Packages::new(
         std::rc::Rc::new(tilolang_tilo::shell::compile().expect("the shell compiles")),
         tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages"),
     ));

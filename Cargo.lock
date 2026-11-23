@@ -23882,6 +23882,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app-window",
+ "tilo-clipboard",
  "tilo-desktop-model",
  "tilo-font-catalog",
  "tilo-render-protocol",

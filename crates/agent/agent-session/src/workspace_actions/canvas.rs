@@ -33,7 +33,10 @@ fn shell_packages() -> Result<Rc<tilolang_web::Packages>, String> {
         held.get_or_init(|| {
             let shell = tilolang_tilo::shell::compile()?;
             let platform = tilolang_tilo::platform_apps::platform_packages()?;
-            Ok(Rc::new(tilolang_web::Packages(Rc::new(shell), platform)))
+            Ok(Rc::new(tilolang_web::Packages::new(
+                Rc::new(shell),
+                platform,
+            )))
         })
         .clone()
     })

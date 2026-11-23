@@ -150,7 +150,7 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         Some(named) => Some(named).filter(|name| !name.is_empty()),
     };
     let compiled = Rc::new(built.iter().map(|b| b.compiled.clone()).collect::<Vec<_>>());
-    let packages = Rc::new(Packages(compiled, published));
+    let packages = Rc::new(Packages::new(compiled, published));
     let staging = Staging {
         scenario: scenario.as_deref(),
         root: options.root.as_deref(),

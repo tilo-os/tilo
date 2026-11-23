@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use std::rc::Rc;
+use tilo_clipboard::{ClipboardBackend, ClipboardImage, ClipboardTarget};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{GlobalLocale, Locale, Platform};
 use tilolang_tilo::tilolang::Compiled;
@@ -19,10 +20,55 @@ static WEB_LOCALE: GlobalLocale = tilo_app_window::platform_locale!(GlobalLocale
 /// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
 /// whose actions run at their own action APIs, and the platform's (the device's, Settings') whose
 /// published resources it reads.
-pub struct Packages(
-    pub Rc<Vec<Compiled>>,
-    pub Vec<tilolang_tilo::tilolang::PackageMeta>,
-);
+pub struct Packages {
+    pub compiled: Rc<Vec<Compiled>>,
+    pub platform: Vec<tilolang_tilo::tilolang::PackageMeta>,
+    /// The clipboard its apps copy to and paste from: the browser's on a page, the page's own in
+    /// memory when nothing lays it out.
+    clipboard: Arc<dyn ClipboardBackend>,
+}
+
+impl Packages {
+    /// The packages a window of a page runs, with the page's browser clipboard.
+    #[must_use]
+    pub fn new(
+        compiled: Rc<Vec<Compiled>>,
+        platform: Vec<tilolang_tilo::tilolang::PackageMeta>,
+    ) -> Self {
+        Self {
+            compiled,
+            platform,
+            clipboard: page_clipboard(),
+        }
+    }
+
+    /// The same packages, with `clipboard` in place of the page's: what a test hands a page to
+    /// see what its apps copy and paste.
+    #[must_use]
+    pub fn with_clipboard(mut self, clipboard: Arc<dyn ClipboardBackend>) -> Self {
+        self.clipboard = clipboard;
+        self
+    }
+}
+
+/// The clipboard a page copies to: the browser's, the one the Rust apps of the page copy to
+/// and paste from ([`tilo_clipboard::system`]); a page laid out with no browser keeps it in its
+/// own memory, so laying a window out never touches a person's clipboard.
+fn page_clipboard() -> Arc<dyn ClipboardBackend> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        tilo_clipboard::system()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        Arc::new(tilo_clipboard::InProcessClipboard::default())
+    }
+}
+
+/// What a pasted image's media type is, from the type the selection offers.
+fn image_of(image: &ClipboardImage) -> (String, Vec<u8>) {
+    (image.mime.to_owned(), image.bytes.clone())
+}
 
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
@@ -30,14 +76,14 @@ impl Platform for Packages {
         // read as each declares when nothing is published: a view over the
         // sound or the battery lays out as it does on a computer without
         // them.
-        for meta in &self.1 {
+        for meta in &self.platform {
             if let Err(error) = host.runtime().load_foreign(meta.clone()) {
                 eprintln!("tilolang: a platform package did not load: {error}");
             }
         }
         for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
             if !self
-                .1
+                .platform
                 .iter()
                 .any(|meta| ty.starts_with(&format!("{}#", meta.app)))
             {
@@ -52,7 +98,7 @@ impl Platform for Packages {
                 None => eprintln!("tilolang: `{published}` names no resource"),
             }
         }
-        for compiled in self.0.iter() {
+        for compiled in self.compiled.iter() {
             if let Err(error) = host.load_compiled(compiled) {
                 eprintln!("tilolang: a package did not load: {error}");
             }
@@ -74,6 +120,39 @@ impl Platform for Packages {
 
     fn moment(&self) -> tilolang_tilo::instance::Zoned {
         tilolang_tilo::instance::wall_moment()
+    }
+
+    /// `clipboard.copy` and `clipboard.copy_image`: the browser offers a page a text copy inside
+    /// the person's click and nothing else, so a text is offered as the person's copy and an image
+    /// answers false, as a device that carries no image does.
+    fn copy_clipboard(&self, mime: &str, bytes: &[u8]) -> bool {
+        if mime != "text/plain" {
+            return false;
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        self.clipboard.set_text(ClipboardTarget::Clipboard, text)
+    }
+
+    /// `clipboard.paste` and `clipboard.paste_image`: what the person's selection holds, read
+    /// from the browser's clipboard events; outside one a read answers nothing, as a page that
+    /// was not granted it does.
+    fn paste_clipboard(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+        for wanted in types {
+            if *wanted == "text/plain" {
+                if let Some(text) = self.clipboard.text(ClipboardTarget::Clipboard) {
+                    return Some(((*wanted).to_owned(), text.into_bytes()));
+                }
+                continue;
+            }
+            if let Some(image) = self.clipboard.image()
+                && wanted.eq_ignore_ascii_case(image.mime)
+            {
+                return Some(image_of(&image));
+            }
+        }
+        None
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
@@ -123,7 +202,7 @@ mod tests {
         ui::i18n::I18nManager::set_locale("en-US");
 
         let (compiled, actions) = compile_probe();
-        let platform = Rc::new(Packages(Rc::new(vec![compiled]), Vec::new()));
+        let platform = Rc::new(Packages::new(Rc::new(vec![compiled]), Vec::new()));
         let utc = ui::clock::Zone::of(ui::format::TimeZone::UTC);
         let mut harness = LocalAgreementHost::open(
             "Packages",
@@ -148,6 +227,97 @@ mod tests {
             catalog_rev(),
             rev_before,
             "switching display locale moves words_revision"
+        );
+    }
+
+    /// A clipboard the browser refused: nothing written, nothing read back, as a page outside
+    /// the person's click.
+    #[derive(Default)]
+    struct Refusing;
+
+    impl ClipboardBackend for Refusing {
+        fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+            false
+        }
+
+        fn text(&self, _: ClipboardTarget) -> Option<String> {
+            None
+        }
+
+        fn name(&self) -> &'static str {
+            "refusing"
+        }
+    }
+
+    /// A selection holding one image, as a screenshot or a picture copied in a browser.
+    struct Holding(ClipboardImage);
+
+    impl ClipboardBackend for Holding {
+        fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+            false
+        }
+
+        fn text(&self, _: ClipboardTarget) -> Option<String> {
+            None
+        }
+
+        fn image(&self) -> Option<ClipboardImage> {
+            Some(ClipboardImage {
+                mime: self.0.mime,
+                bytes: self.0.bytes.clone(),
+            })
+        }
+
+        fn name(&self) -> &'static str {
+            "holding"
+        }
+    }
+
+    fn page(clipboard: Arc<dyn ClipboardBackend>) -> Packages {
+        Packages::new(Rc::new(Vec::new()), Vec::new()).with_clipboard(clipboard)
+    }
+
+    #[test]
+    fn a_page_copies_text_and_pastes_it_back() {
+        let packages = page(Arc::new(tilo_clipboard::InProcessClipboard::default()));
+        assert!(
+            packages.copy_clipboard("text/plain", "42".as_bytes()),
+            "the app's text is the person's copy"
+        );
+        assert_eq!(
+            packages.paste_clipboard(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"42".to_vec()))
+        );
+        assert!(
+            !packages.copy_clipboard("image/png", b"\x89PNG"),
+            "a page offers a text copy and no image"
+        );
+    }
+
+    #[test]
+    fn a_copy_the_browser_refuses_answers_false_and_a_paste_nothing() {
+        let packages = page(Arc::new(Refusing));
+        assert!(
+            !packages.copy_clipboard("text/plain", "42".as_bytes()),
+            "a copy outside the person's click is refused, and the action is told so"
+        );
+        assert_eq!(
+            packages.paste_clipboard(&["text/plain", "image/png"]),
+            None,
+            "a read outside a clipboard event is granted nothing"
+        );
+    }
+
+    #[test]
+    fn an_image_the_selection_holds_pastes_under_its_media_type() {
+        let packages = page(Arc::new(Holding(ClipboardImage {
+            mime: "image/png",
+            bytes: vec![0x89, b'P', b'N', b'G'],
+        })));
+        assert_eq!(
+            packages.paste_clipboard(&["image/png", "image/jpeg"]),
+            Some(("image/png".to_owned(), vec![0x89, b'P', b'N', b'G'])),
+            "an image pastes as its bytes under the type it was offered as"
         );
     }
 }

@@ -164,7 +164,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     };
     let compiled: Rc<Vec<tilolang_tilo::tilolang::Compiled>> =
         Rc::new(built.into_iter().map(|built| built.compiled).collect());
-    let packages = Rc::new(stage::Packages(Rc::clone(&compiled), published));
+    let packages = Rc::new(stage::Packages::new(Rc::clone(&compiled), published));
     // The scenario named, else the app's first: `layout-check` checks every one, and a profile of
     // an app nobody stages is of the workspace before anything was made.
     let scenario = options

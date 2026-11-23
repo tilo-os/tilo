@@ -1221,7 +1221,7 @@ impl Worker<'_> {
         };
         // A copy of what the app's own read compiled: the window loads packages of its own, and
         // compiling them again would spend seconds of every worker's first unit on it.
-        let packages = Rc::new(stage::Packages(
+        let packages = Rc::new(stage::Packages::new(
             Rc::new(held.compiled.clone()),
             held.platform.clone(),
         ));
@@ -2612,7 +2612,7 @@ mod board_list {
         let (built, platform) = super::build(&dir, &search).expect("the board fixture compiles");
         let app = built.last().expect("the fixture").compiled.meta.app.clone();
         assert_eq!(app, BOARD, "the fixture's app id");
-        Rc::new(stage::Packages(
+        Rc::new(stage::Packages::new(
             Rc::new(built.into_iter().map(|b| b.compiled).collect()),
             platform,
         ))
