@@ -96,10 +96,6 @@ fn two_agents_each_run_four_transforms_and_a_fifth_is_refused_for_that_agent() {
 /// A transform cancelled while its model answers stops the call, asks nothing again and reads
 /// cancelled in the broker's own state.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered scenario: link a model, admit, run, cancel, observe"
-)]
 fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
