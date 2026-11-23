@@ -405,3 +405,109 @@ tilo_test_env::scenario! {
         assert_eq!(held[0].changes, refused.changes);
     }
 }
+
+/// A write of `signer`'s device at `seq` whose change names no one: a resource store's stamp with
+/// no invoker, as a history kept before every change named who made it holds.
+fn nameless_at(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    value: &str,
+    seq: u64,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let nameless = collab_types::Stamp {
+        verb: "set".into(),
+        invocation: format!("i{seq}"),
+        ..collab_types::Stamp::default()
+    };
+    let mut envelope = unsigned_commit(copy, signer, &nameless.message(), value, now);
+    envelope.seq = seq;
+    let bytes = envelope.signing_bytes().unwrap();
+    envelope.signature =
+        collab_types::Signature(collab_types::signer::sign_now(signer, bytes).unwrap());
+    document_message(envelope)
+}
+
+/// A history one of the person's own devices kept before every change named who made it comes
+/// in with one import step: what it made naming no one is the person's, the step that said so is
+/// kept in the workspace's governance, and a later write naming no one is refused as any is.
+#[test]
+fn an_imported_historys_nameless_changes_are_the_persons_and_a_later_one_is_refused() {
+    let (mut receiver, a, ac, b, bc, now) = seeded_with(RevocationList::new());
+    let person = ac.user_public_key;
+    let record = neighbour_wire::app_document_group(APP, RECORD);
+    let through = |seq| {
+        vec![crate::Imported {
+            device: bc.device_public_key,
+            record,
+            seq,
+        }]
+    };
+    let kept = nameless_at(&receiver, &b, "kept", 1, now);
+    let refused = take(&mut receiver, kept, now).unwrap_err();
+    assert!(
+        refused.reason.contains("names no invoker"),
+        "{}",
+        refused.reason
+    );
+
+    // Device a imports what device b kept, through b's third write.
+    let step = crate::ImportedHistory::signed(WORKSPACE, person, through(3), &a);
+    assert!(
+        receiver
+            .governance_mut()
+            .author_imported_history(&step, &a, now)
+            .unwrap()
+    );
+    assert_eq!(
+        receiver.governance().imported_histories(),
+        vec![step.clone()]
+    );
+    assert!(
+        !receiver
+            .governance_mut()
+            .author_imported_history(&step, &a, now)
+            .unwrap(),
+        "one import is one step"
+    );
+
+    let imported = nameless_at(&receiver, &b, "imported", 2, now);
+    take(&mut receiver, imported, now).unwrap();
+    assert_eq!(value(&receiver), "\"imported\"");
+    assert_eq!(
+        receiver
+            .governance()
+            .imported_as(&bc.device_public_key, &record, 2),
+        Some(person),
+        "what the imported write made naming no one is the person's"
+    );
+
+    // A later write that names no one is no part of the import.
+    let later = nameless_at(&receiver, &b, "later", 4, now);
+    let refused = take(&mut receiver, later, now).unwrap_err();
+    assert!(
+        refused.reason.contains("names no invoker"),
+        "{}",
+        refused.reason
+    );
+    assert_eq!(value(&receiver), "\"imported\"");
+
+    // Only a device of the person signs a step for them.
+    let (_root, key, _cert) = stranger();
+    let forged = crate::ImportedHistory::signed(WORKSPACE, person, through(9), &key);
+    assert!(
+        receiver
+            .governance_mut()
+            .author_imported_history(&forged, &a, now)
+            .is_err()
+    );
+    let mut widened = step;
+    widened.through = through(9);
+    assert!(
+        receiver
+            .governance_mut()
+            .author_imported_history(&widened, &a, now)
+            .is_err(),
+        "a step changed after it was signed is not one"
+    );
+}

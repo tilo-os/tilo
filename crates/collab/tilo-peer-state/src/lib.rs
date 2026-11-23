@@ -100,6 +100,7 @@ pub use state::{
 };
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).
 pub use state::{DURABLE_VERSION, kept_before_own_removal};
+pub use state::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 pub use state::{changes_since, saved_whole};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;

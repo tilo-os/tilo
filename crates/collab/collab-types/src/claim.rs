@@ -309,6 +309,29 @@ impl ChangeClaim {
             },
         })
     }
+
+    /// [`Self::of_change`], for a change of a history a device of `imported`'s imported, when
+    /// it is one: a change that names no invoker is that person's, as the import step said
+    /// ([`crate::receipt::decide_op_imported`]). Without one it is refused as any is.
+    ///
+    /// # Errors
+    /// As [`Self::of_change`].
+    pub fn of_imported_change(
+        hash: [u8; 32],
+        message: Option<&str>,
+        units: Vec<UnitPath>,
+        imported: Option<&tilo_action_policy::Acting>,
+    ) -> Result<Self, ClaimError> {
+        match (Self::of_change(hash, message, units.clone()), imported) {
+            (Err(ClaimError::NoInvoker), Some(person)) => Ok(Self {
+                change: hash,
+                action: ClaimedAction::whole_resource_edit(String::new()),
+                units,
+                invoker: Some(person.clone()),
+            }),
+            (claim, _) => claim,
+        }
+    }
 }
 
 /// The invoker a resource store's [`crate::Stamp`] names: a person, or an

@@ -1326,7 +1326,12 @@ impl StatePeer {
                     _ => true,
                 }
             };
-        let decided = collab_types::decide_op_pinned(
+        // A write of a history one of the person's devices imported: what it made naming no one
+        // is the person's, as the import step said.
+        let imported = self
+            .governance()
+            .imported_invoker(source, app_id, record, envelope.seq);
+        let decided = collab_types::decide_op_imported(
             changes,
             &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,
@@ -1337,6 +1342,7 @@ impl StatePeer {
             document.map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
+            imported.as_ref(),
         )
         .and_then(|receipt| match receipt {
             collab_types::Receipt::Admit => self.recorded_invocations(envelope).map(|()| receipt),
@@ -1440,6 +1446,14 @@ impl StatePeer {
                 )
             })?;
             let Some(invoker) = context.invoker.as_ref() else {
+                // Made naming no one: the person's own, when an import step holds the write.
+                if self
+                    .governance()
+                    .imported_invoker(source, app_id, record, envelope.seq)
+                    .is_some()
+                {
+                    continue;
+                }
                 return Err(refused_no_invoker(&route, source, envelope));
             };
             if invoker.device.is_none() {
