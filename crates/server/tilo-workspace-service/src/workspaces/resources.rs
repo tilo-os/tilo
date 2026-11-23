@@ -1360,7 +1360,7 @@ fn stamp_resource_invoker(
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.
-#[cfg(any(feature = "apps", feature = "agents"))]
+#[cfg(feature = "apps")]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
 }
