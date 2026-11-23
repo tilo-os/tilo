@@ -1922,14 +1922,14 @@ mod tests {
             }
         })
         .await;
-        let served = restarted
+        let reached_by = restarted
             .node_addr()
             .relay_urls()
             .next()
             .expect("the restarted server names its packet relay")
             .to_string();
         assert_eq!(
-            named, served,
+            named, reached_by,
             "the entry names the packet relay the server is reached through"
         );
         restarted.shutdown().await;
