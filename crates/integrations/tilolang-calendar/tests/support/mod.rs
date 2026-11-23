@@ -88,6 +88,21 @@ impl Rig {
     }
 
     /// Polls until nothing is left to do: a sync answered, a write taken.
+    /// Restarts the connector: a fresh engine and a fresh origin over the same records, as a
+    /// connector process that went and came again.
+    pub fn restart(&mut self) {
+        let read = Arc::clone(&self.accounts);
+        let source: AccountSource = Arc::new(move || {
+            read.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+        self.origin = Box::new(CalDavOrigin::new(
+            Box::new(DirectConnector::new(source)),
+            Arc::new(AtomicBool::new(true)),
+        ));
+    }
+
     /// Polls as frames do until everything asked has been taken in: a sync answered, a write
     /// taken.
     pub fn settle(&mut self) {

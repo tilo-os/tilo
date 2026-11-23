@@ -7,6 +7,7 @@ type Calendar (origin: caldav.calendar) {
     name: Text
     color: Text
     writable: Bool
+    sync_token: Text merge register
 }
 
 /// Somebody an entry names.
@@ -21,6 +22,7 @@ type Attendee (origin: caldav.attendee) {
 type Event (origin: caldav.event, title: title) {
     key: Text merge register
     href: Text merge register
+    etag: Text merge register
     title: Text
     start: Text
     end: Text

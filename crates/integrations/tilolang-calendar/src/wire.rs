@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-use crate::connector::{AccountRef, Entry, Event, Request};
+use crate::connector::{AccountRef, CalendarKnown, Entry, Event, Request};
 
 /// The largest frame either side accepts: a sync of a calendar whose entries each hold their
 /// text fits many times over.
@@ -22,6 +22,8 @@ pub enum ToConnector {
     Sync {
         request: Request,
         account: String,
+        /// Where each calendar's last pull ended, as the workspace kept it.
+        known: Vec<CalendarKnown>,
     },
     Put {
         request: Request,
@@ -126,6 +128,7 @@ mod tests {
         let sent = ToConnector::Sync {
             request: uuid::Uuid::new_v4(),
             account: "caldav:ada@calendar.example".into(),
+            known: Vec::new(),
         };
         let mut bytes = Vec::new();
         write(&mut bytes, &sent).unwrap();
