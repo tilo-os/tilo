@@ -203,12 +203,9 @@ for entry in declared_entries:
     assert f'"{entry} "' not in site_publisher, entry
 
 # Imager's native Windows release includes `ui`, and with it the host
-# services that re-export the clipboard crate. The Wayland clipboard backend
-# consumes Unix file descriptors, so it must stay on the Linux target of
-# `tilo-clipboard` and never enter non-Linux builds through ui or tilo-host.
-# The worker attaches to the app's own display through `wayland-backend`'s
-# system (libwayland) client backend, so that dependency is declared on the
-# Linux target as well.
+# services that re-export the clipboard crate. `arboard` reads and writes a
+# Wayland selection over data-control and falls back to X11, so it must stay on
+# the targets that have those protocols and never enter the page's build.
 for manifest in (
     "crates/sdk/ui-core/Cargo.toml",
     "crates/sdk/tilo-process-services/Cargo.toml",
@@ -222,7 +219,8 @@ clipboard_manifest = tomllib.loads(
 linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "linux")'][
     "dependencies"
 ]
-assert "wayland-backend" in linux_clipboard_dependencies
+assert "arboard" in linux_clipboard_dependencies
+assert "wayland-data-control" in linux_clipboard_dependencies["arboard"]["features"]
 
 # The package jobs build the same immutable app store as releases. Exercise the job's own
 # preflight before it fetches or compiles anything: an absent authority must fail at once,
