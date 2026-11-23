@@ -430,6 +430,30 @@ impl MediaEngine {
         accepted
     }
 
+    /// Jump to the live edge of a live stream: the newest point a broadcast has aired, where a
+    /// person drops to when they come back to it. A recorded stream has no edge and refuses it.
+    pub fn seek_to_live_edge(&mut self) -> bool {
+        let accepted = match &mut self.backend {
+            Backend::Synth(s) => {
+                let end = s.duration;
+                s.seek(end);
+                true
+            }
+            #[cfg(gst_decode)]
+            Backend::Gst(g) => g.seek_live(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
+            #[cfg(web_page)]
+            Backend::Web(w) => {
+                // A page's media element clamps a seek past what it buffered to the live edge.
+                w.seek(u64::MAX);
+                true
+            }
+        };
+        self.refresh_handoff();
+        accepted
+    }
+
     /// Seek to `ms` and pump until the picture for that time has landed, the
     /// pipeline fails, or `timeout` elapses.
     ///

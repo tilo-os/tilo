@@ -42,6 +42,9 @@ pub struct VideoPlayerProps {
     pub muted: bool,
     /// The speed it plays at, `0.25..=4`; absent at normal speed.
     pub rate: Option<f64>,
+    /// Whether the source airs as it plays (an HLS or DASH manifest): the player says where it
+    /// stands is live and a jump goes to the live edge rather than to a place in a recording.
+    pub live: bool,
     /// Whether it begins again when it ends.
     pub repeat: bool,
     /// The audio track by its index in `audio_tracks`; absent leaves the engine's choice.
@@ -162,6 +165,7 @@ impl DeclaredVideo {
             volume,
             muted,
             rate,
+            live,
             repeat,
             audio_track,
             subtitle_track,
@@ -178,6 +182,7 @@ impl DeclaredVideo {
         } = props;
         let _ = set_volume;
         let mut player = VideoPlayer::new();
+        player.set_live(live);
         if let Some(engine) = engine {
             player.set_engine(engine);
         }
@@ -223,7 +228,11 @@ impl DeclaredVideo {
         if playing {
             player.play();
         }
-        if let Some(position) = position {
+        // A live stream has no place to resume from: it starts at its edge, and `seek_to_ms`
+        // would send it there anyway.
+        if let Some(position) = position
+            && !live
+        {
             player.seek_to_ms(seconds_to_ms(position));
         }
         let reporting = seek.clone();

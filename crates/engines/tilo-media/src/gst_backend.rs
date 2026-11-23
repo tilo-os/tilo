@@ -345,6 +345,8 @@ pub struct GstState {
     // stale query result while the seek settles.
     seek_target_ms: Option<u64>,
     deferred_seek: Option<(u64, SeekMode)>,
+    // A jump to the live edge asked for before the pipeline could take one.
+    deferred_live: bool,
 
     volume: f32,
     muted: bool,
@@ -530,6 +532,7 @@ impl GstState {
             seek_in_flight: false,
             seek_target_ms: None,
             deferred_seek: None,
+            deferred_live: false,
             volume: 0.8,
             muted: false,
             rate: 1.0,
@@ -581,6 +584,7 @@ impl GstState {
         self.seek_in_flight = false;
         self.seek_target_ms = None;
         self.deferred_seek = None;
+        self.deferred_live = false;
         self.frames_stored = 0;
         self.frames_at_seek = 0;
         self.audio_buffers
@@ -831,6 +835,20 @@ impl GstState {
 
     fn apply_deferred_seek(&mut self) {
         let Some((ms, mode)) = self.deferred_seek else {
+            if self.deferred_live {
+                let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+                if self.frames_stored == 0
+                    && matches!(
+                        self.playbin.state(gst::ClockTime::ZERO).0,
+                        Ok(gst::StateChangeSuccess::Async)
+                    )
+                {
+                    return;
+                }
+                if current >= gst::State::Paused && self.issue_live_seek() {
+                    self.deferred_live = false;
+                }
+            }
             return;
         };
         let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
@@ -844,6 +862,56 @@ impl GstState {
         }
         if current >= gst::State::Paused && self.issue_seek(ms, mode) {
             self.deferred_seek = None;
+        }
+    }
+
+    /// Jump to the live edge: the newest bytes a live stream has aired. `GStreamer` takes a
+    /// `Set` seek to `ClockTime::NONE` as the live position, and a recorded stream, having no
+    /// edge, refuses it. Held until the pipeline can take a flushing seek, as [`Self::seek`] is.
+    pub fn seek_live(&mut self) -> bool {
+        if self.frames_stored == 0
+            && matches!(
+                self.playbin.state(gst::ClockTime::ZERO).0,
+                Ok(gst::StateChangeSuccess::Async)
+            )
+        {
+            self.deferred_live = true;
+            return true;
+        }
+        let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+        if current < gst::State::Paused {
+            self.deferred_live = true;
+            return true;
+        }
+        self.deferred_live = false;
+        self.issue_live_seek()
+    }
+
+    fn issue_live_seek(&mut self) -> bool {
+        if let Some(output) = &self.governed_output {
+            output.flush();
+        }
+        let flags = gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT;
+        match self.playbin.seek(
+            f64::from(self.rate),
+            flags,
+            gst::SeekType::Set,
+            gst::ClockTime::NONE,
+            gst::SeekType::None,
+            gst::ClockTime::NONE,
+        ) {
+            Ok(()) => {
+                // The edge's position is the pipeline's to say, so nothing is reported as the
+                // target; the frames before it belong to where it stood.
+                self.seek_in_flight = true;
+                self.seek_target_ms = None;
+                self.frames_at_seek = self.frames_stored;
+                true
+            }
+            Err(error) => {
+                tracing::debug!(%error, "media: live-edge seek not accepted");
+                false
+            }
         }
     }
 
@@ -1177,7 +1245,7 @@ impl GstState {
                     }
                 }
                 MessageView::AsyncDone(_) => {
-                    self.seek_in_flight = self.deferred_seek.is_some();
+                    self.seek_in_flight = self.deferred_seek.is_some() || self.deferred_live;
                     if let Some((ms, playing)) = self.resume.take() {
                         if ms > 0 {
                             self.seek(ms, SeekMode::Accurate);
