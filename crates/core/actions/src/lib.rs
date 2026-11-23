@@ -196,7 +196,10 @@ pub use action::{
     OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
-pub use api::{ActionAddress, ActionDescriptor, ApiError, InputSpec, ResourceViewDescriptor};
+pub use api::{
+    ActionAddress, ActionDescriptor, ApiError, InputSpec, NOT_THE_ASKED_PERSON,
+    ResourceViewDescriptor,
+};
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, current, register,

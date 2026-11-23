@@ -178,3 +178,53 @@ async fn an_update_changes_what_shows_and_keeps_the_asker_waiting() {
     assert!(asked.await.is_some());
     assert!(!questions.update("q", serde_json::Value::Null), "answered");
 }
+
+/// Only the person a question is asked of answers it: an agent whose own request raised it is
+/// refused, and so is anyone else who is not that person, with the question left up for them.
+#[tokio::test]
+async fn only_the_asked_person_answers_a_question() {
+    use tilo_actions::{ActionInvoker, MemberId};
+
+    let mut questions = Questions::new();
+    Service::own_person(&mut questions, "pat", &[]);
+    let asked = questions.ask(question("portal:1"));
+    let answer = |member: MemberId, action: &str| {
+        let mut held = questions.clone();
+        Service::invoke_as(
+            &mut held,
+            &ActionInvoker::member(member),
+            &question_resource("portal:1"),
+            action,
+            &serde_json::Map::new(),
+        )
+    };
+
+    for (who, member) in [
+        (
+            "the agent whose request raised it",
+            MemberId::agent("org.example.Editor"),
+        ),
+        (
+            "another member who was not asked",
+            MemberId::agent("someone-else"),
+        ),
+        ("another person", MemberId::person("sam")),
+    ] {
+        for action in ["answer", "cancel"] {
+            let refused = answer(member.clone(), action);
+            assert!(
+                matches!(refused, Err(ApiError::Refused { ref code, .. }) if code == tilo_actions::NOT_THE_ASKED_PERSON),
+                "{who}'s {action} is refused: {refused:?}"
+            );
+            assert_eq!(
+                questions.pending().len(),
+                1,
+                "{who}'s {action} leaves the question up"
+            );
+        }
+    }
+
+    let done = answer(MemberId::person("pat"), "answer");
+    assert!(done.is_ok(), "the person answers: {done:?}");
+    assert!(asked.await.is_some(), "the asker hears the answer");
+}

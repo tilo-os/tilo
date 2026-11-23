@@ -1377,8 +1377,21 @@ impl App {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        self.invoke_local_resource_action_as(&actor, address, arguments)
+    }
+
+    /// [`Self::invoke_local_resource_action`] as `actor` (an agent or a script): what the API
+    /// admits for whoever asked, so what acts on this device's person alone is refused to
+    /// anyone else.
+    pub fn invoke_local_resource_action_as(
+        &mut self,
+        actor: &tilo_actions::Actor,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let capture = self.begin_local_input_capture();
-        let result = self.invoke_local_resource_action_captured(address, arguments);
+        let result = self.invoke_local_resource_action_captured(actor, address, arguments);
         drop(capture);
         self.drain_local_input_capture();
         result
@@ -1386,11 +1399,11 @@ impl App {
 
     fn invoke_local_resource_action_captured(
         &mut self,
+        actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let _entry = self.enter_wake_scope();
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -1405,7 +1418,7 @@ impl App {
                 .unwrap_or_else(|| Err(tilo_actions::ApiError::Unknown(address.clone())));
         }
         self.invoke_resource_action(
-            ResourceInvocation::new(address, &actor).argument(Some(&argument)),
+            ResourceInvocation::new(address, actor).argument(Some(&argument)),
         )
     }
 

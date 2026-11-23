@@ -521,6 +521,31 @@ impl crate::SheetState for PortalState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
+
+    /// A question is the asked person's to answer: the sheet admits its person's presses, and
+    /// refuses an agent's — never the one whose own request raised the question, and never one
+    /// acting for the person, since answering for them is not a step any agent takes in their
+    /// name. The asker withdraws instead by dropping its request, which its host reports.
+    ///
+    /// # Errors
+    /// It is not the person the sheet asks.
+    fn admits(
+        &self,
+        _action: &str,
+        actor: Option<&tilo_actions::Actor>,
+        person: &tilo_actions::MemberId,
+    ) -> Result<(), String> {
+        let Some(actor) = actor else {
+            // The person at this device, whose own input it is.
+            return Ok(());
+        };
+        if actor.member_id() == Some(person) {
+            return Ok(());
+        }
+        Err("A question is the asked person's to answer. Ask them to answer it; \
+             an asker withdraws its own request by dropping it."
+            .to_owned())
+    }
 }
 
 impl PortalState {

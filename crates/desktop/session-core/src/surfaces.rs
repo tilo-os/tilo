@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use ui::device_local_api::SharedApi;
 use ui::host_operation::ResourceOperationStart;
-use ui::tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use ui::tilo_actions::{ActionAddress, Actor, ApiError, ResourceSpec};
 
 /// A picture of a window, as a surface answers with one: the address it is
 /// kept at, and how large it is.
@@ -238,7 +238,22 @@ pub fn through_api(
     arguments: &serde_json::Map<String, serde_json::Value>,
     serve: impl FnOnce(),
 ) -> Result<ResourceOperationStart, ApiError> {
-    let answer = api.invoke(address.clone(), arguments.clone());
+    through_api_as(api, None, address, arguments, serve)
+}
+
+/// [`through_api`] as `actor` (an agent or a script), whose invocation the surface's admission
+/// decides; `None` asks as the person at this device.
+///
+/// # Errors
+/// The app's refusal, or none came: nothing there publishes `address`.
+pub fn through_api_as(
+    api: &SharedApi,
+    actor: Option<&Actor>,
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    serve: impl FnOnce(),
+) -> Result<ResourceOperationStart, ApiError> {
+    let answer = api.invoke_as(actor.cloned(), address.clone(), arguments.clone());
     serve();
     let answered = answer.borrow_mut().take();
     answered.unwrap_or_else(|| Err(ApiError::Unknown(address.clone())))

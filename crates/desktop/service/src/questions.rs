@@ -128,6 +128,8 @@ struct State {
     pending: Vec<Pending>,
     wake: Option<Wake>,
     asked: u64,
+    /// The person this device sits at, who the questions are asked of.
+    person: Option<tilo_actions::MemberId>,
 }
 
 /// The questions pending now, shared by the services that ask them and the
@@ -257,6 +259,22 @@ impl Questions {
     pub fn decline(&self, handle: &str) -> bool {
         self.take(handle).is_some()
     }
+
+    /// Whether `invoker` may answer a question: only the person it is asked of. An agent, an
+    /// app or a script is refused — never the identity whose request raised it, and never one
+    /// acting for the person, as answering is the person's own decision. Where this service
+    /// was not told who sits here, any person is the one asked.
+    fn admits_answer(&self, invoker: &tilo_actions::ActionInvoker) -> Result<(), String> {
+        let asking = invoker.acting.by.member_id();
+        let person = self.state.lock_recover().person.clone();
+        let admitted = match &person {
+            Some(person) => asking == Some(person),
+            None => asking.is_some_and(tilo_actions::MemberId::is_person),
+        };
+        admitted.then_some(()).ok_or_else(|| {
+            "A question is the asked person's to answer. Ask them to answer it.".to_owned()
+        })
+    }
 }
 
 /// The questions pending now, as one resource of a declared type.
@@ -334,6 +352,33 @@ impl Service for Questions {
         } else {
             Err(unknown())
         }
+    }
+
+    /// Answering a question is the person's it is asked of: an agent, an app or a script is
+    /// refused, whether its own request raised the question or someone else's.
+    ///
+    /// # Errors
+    /// The person alone may answer it.
+    fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if resource.starts_with(QUESTION_PREFIX) {
+            self.admits_answer(invoker)
+                .map_err(|reason| ApiError::Refused {
+                    code: tilo_actions::NOT_THE_ASKED_PERSON.into(),
+                    reason,
+                })?;
+        }
+        self.invoke(resource, action, arguments)
+    }
+
+    /// What asking the person who sits here means for this service's actions.
+    fn own_person(&mut self, person: &str, _earlier: &[String]) {
+        self.state.lock_recover().person = tilo_actions::MemberId::parsed_person(person);
     }
 }
 

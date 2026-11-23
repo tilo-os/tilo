@@ -23,6 +23,9 @@ struct State {
 }
 
 struct Queued {
+    /// Who asks: an agent or a script acting for someone, or `None` for the person at this
+    /// device, whose own input it is.
+    actor: Option<tilo_actions::Actor>,
     address: tilo_actions::ActionAddress,
     arguments: serde_json::Map<String, serde_json::Value>,
     answer: Answer,
@@ -47,15 +50,28 @@ impl SharedApi {
         self.0.borrow().revision
     }
 
-    /// Queue `address` for the host. The answer is `None` until the host
-    /// served it.
+    /// Queue `address` for the host, as the person at this device. The answer is `None` until
+    /// the host served it.
     pub fn invoke(
         &self,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Answer {
+        self.invoke_as(None, address, arguments)
+    }
+
+    /// Queue `address` for the host as `actor` (an agent or a script): whose invocation the
+    /// surface's admission decides, never the person at this device's. `None` asks as that
+    /// person. The answer is `None` until the host served it.
+    pub fn invoke_as(
+        &self,
+        actor: Option<tilo_actions::Actor>,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Answer {
         let answer = Answer::default();
         self.0.borrow_mut().queued.push(Queued {
+            actor,
             address,
             arguments,
             answer: Rc::clone(&answer),
@@ -71,14 +87,17 @@ impl SharedApi {
 
     /// Host: run what was queued through `app`'s API, oldest first.
     pub fn serve(&self, app: &mut dyn AppWidget) -> bool {
-        self.serve_with(|address, arguments| app.invoke_device_local_action(address, arguments))
+        self.serve_with(|actor, address, arguments| {
+            app.invoke_device_local_action_as(actor, address, arguments)
+        })
     }
 
     /// Host: run what was queued through `run`, the surface's API, oldest first: for a host holding the
-    /// surface as something other than an [`AppWidget`].
+    /// surface as something other than an [`AppWidget`]. `run` gets who asked beside the call.
     pub fn serve_with(
         &self,
         mut run: impl FnMut(
+            Option<&tilo_actions::Actor>,
             &tilo_actions::ActionAddress,
             &serde_json::Map<String, serde_json::Value>,
         ) -> Result<ResourceOperationStart, tilo_actions::ApiError>,
@@ -86,7 +105,11 @@ impl SharedApi {
         let queued = std::mem::take(&mut self.0.borrow_mut().queued);
         let ran = !queued.is_empty();
         for invocation in queued {
-            let started = run(&invocation.address, &invocation.arguments);
+            let started = run(
+                invocation.actor.as_ref(),
+                &invocation.address,
+                &invocation.arguments,
+            );
             *invocation.answer.borrow_mut() = Some(started);
         }
         ran

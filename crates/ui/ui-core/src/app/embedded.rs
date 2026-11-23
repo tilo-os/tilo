@@ -1067,6 +1067,25 @@ impl AppWidget for EmbeddedApp {
         self.wants_frame.set(true);
         started
     }
+    fn invoke_device_local_action_as(
+        &mut self,
+        actor: Option<&tilo_actions::Actor>,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let Some(actor) = actor else {
+            return self.invoke_device_local_action(address, arguments);
+        };
+        self.runs();
+        if !self.device_local {
+            return Err(tilo_actions::ApiError::Unknown(address.clone()));
+        }
+        let started = self
+            .app
+            .invoke_local_resource_action_as(actor, address, arguments);
+        self.wants_frame.set(true);
+        started
+    }
     fn app_kind(&self) -> AppKind {
         self.app_widget()
             .map_or(AppKind::Editor, AppWidget::app_kind)

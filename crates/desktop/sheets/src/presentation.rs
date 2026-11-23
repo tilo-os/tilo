@@ -31,6 +31,23 @@ pub trait SheetState: Clone + Default + 'static {
     /// coordinates: told to a sheet that covers every display at once, so it
     /// can draw something on each of them.
     fn covers(&self, _displays: Vec<Rect>) {}
+
+    /// Whether `actor` (an agent or a script) may invoke the sheet's action `action` now;
+    /// `None` asks as the person at this device. A sheet that asks the person something is
+    /// answered by the person it asks: an agent never answers a question, its own or another's.
+    /// A sheet that acts for the person alone says so here, so the refusal comes before the
+    /// action runs.
+    ///
+    /// # Errors
+    /// Why the sheet refuses it, in the caller's words.
+    fn admits(
+        &self,
+        _action: &str,
+        _actor: Option<&tilo_actions::Actor>,
+        _person: &tilo_actions::MemberId,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// One sheet's presentation, shared by the shell and the sheet's app.

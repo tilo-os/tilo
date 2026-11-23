@@ -317,6 +317,11 @@ impl ResourceViewDescriptor {
     }
 }
 
+/// Why answering a question was refused: it is the asked person's to answer, and the caller is
+/// not them. A question a request raised is the person's decision, never its asker's, and no
+/// agent answers another's on their behalf ([`ApiError::Refused`]'s code).
+pub const NOT_THE_ASKED_PERSON: &str = "question-not-yours";
+
 /// Why an address could not be performed. `Unknown` is "nothing publishes this address"; an action
 /// published there that the caller's permissions keep from them is refused as `permission_denied`
 /// ([`ApiError::Unavailable`]), saying why.

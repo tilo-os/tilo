@@ -85,6 +85,8 @@ pub(crate) fn set_theme(theme: &ui::Theme) {
 pub(crate) struct Sheet<S: SheetState> {
     host: AppProcess,
     state: S,
+    /// The person the sheet asks, as this device knows them.
+    person: tilo_actions::MemberId,
     /// The displays as the compositor last said they are.
     outputs: Vec<tilo_session_core::surface::SurfaceOutput>,
     role: Role,
@@ -116,6 +118,7 @@ impl<S: SheetState> Sheet<S> {
         Ok(Self {
             host: AppProcess::new(app, placement).named(definition.title()),
             state,
+            person: tilo_actions::MemberId::person(person),
             outputs: Vec::new(),
             role: Role::Presented,
         })
@@ -273,6 +276,25 @@ impl<S: SheetState> Published for Sheet<S> {
         look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ResourceOperationStart, ApiError> {
         self.host.invoke(address, arguments, look)
+    }
+
+    /// A sheet's action asked for as `actor` (an agent or a script): the sheet's own admission
+    /// decides first, so a question the sheet holds is answered by the person it asks, never by
+    /// an agent whose own request raised it.
+    fn invoke_as(
+        &mut self,
+        actor: &tilo_actions::Actor,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
+        self.state
+            .admits(address.action.as_str(), Some(actor), &self.person)
+            .map_err(|reason| ApiError::Refused {
+                code: tilo_actions::NOT_THE_ASKED_PERSON.to_owned(),
+                reason,
+            })?;
+        Published::invoke_as(&mut self.host, actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

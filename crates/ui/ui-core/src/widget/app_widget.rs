@@ -211,6 +211,19 @@ pub trait AppWidget: Widget {
         Err(tilo_actions::ApiError::Unknown(address.clone()))
     }
 
+    /// Invoke one of [`Self::device_local_resources`]' actions as `actor` (an agent or a script),
+    /// or as the window's own person when `None`: the same API, with the invocation admitted for
+    /// whoever asked, so an action that acts on this device's person alone is refused for anyone
+    /// else. A window that keeps no such distinction answers as it does for the person.
+    fn invoke_device_local_action_as(
+        &mut self,
+        _actor: Option<&tilo_actions::Actor>,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        self.invoke_device_local_action(address, arguments)
+    }
+
     /// What an app keeping its own document publishes for the search of its window: its resources and
     /// its search providers, which its host cannot read through its widgets.
     fn window_search(&self) -> Option<WindowPublication> {

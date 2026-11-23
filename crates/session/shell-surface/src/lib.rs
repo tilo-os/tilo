@@ -46,7 +46,7 @@ use frames::Frames;
 
 /// The API a hosted surface publishes through: every host's, so a surface app is reached the
 /// same on each.
-pub(crate) use tilo_session_core::surfaces::{Look, Published, through_api};
+pub(crate) use tilo_session_core::surfaces::{Look, Published, through_api, through_api_as};
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -177,9 +177,10 @@ impl AppProcess {
     /// frame. Whether anything ran.
     pub fn serve_api(&mut self) -> bool {
         let app = &mut self.app;
-        let ran = self
-            .api
-            .serve_with(|address, arguments| app.invoke_local_resource_action(address, arguments));
+        let ran = self.api.serve_with(|actor, address, arguments| match actor {
+            Some(actor) => app.invoke_local_resource_action_as(actor, address, arguments),
+            None => app.invoke_local_resource_action(address, arguments),
+        });
         if ran {
             self.wants = true;
         }
@@ -276,6 +277,23 @@ impl Published for AppProcess {
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
         through_api(&api, address, arguments, || {
+            self.serve_api();
+        })
+    }
+
+    /// The same as [`Self::invoke`], as `actor` (an agent or a script): the app's own API admits
+    /// the call for whoever asked, so an effect that acts on this device's person alone is
+    /// refused to anyone else.
+    fn invoke_as(
+        &mut self,
+        actor: &ui::tilo_actions::Actor,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut crate::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+        let api = self.api.clone();
+        self.revision = self.revision.wrapping_add(1);
+        through_api_as(&api, Some(actor), address, arguments, || {
             self.serve_api();
         })
     }

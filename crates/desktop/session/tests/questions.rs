@@ -25,7 +25,7 @@ use crate::common::publisher;
 use futures_util::FutureExt as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::Lifetime;
-use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, Actor, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
 use tilo_network_secret_agent::questions::{
     CannotJoinDetails, FieldDetails, FieldRule, Refusal, SecretsDetails, SimDetails, SimUnlockStep,
@@ -101,9 +101,10 @@ fn arguments(value: Value) -> Map<String, Value> {
     }
 }
 
-/// Press `effect` on the sheet publishing it, as the person would.
+/// The sheet publishing `effect`, and the arguments a press carries, with the question that is up
+/// named when it is one: as the person would press it.
 #[track_caller]
-fn press(session: &mut Session, effect: &str, args: Value) {
+fn press_args(session: &Session, effect: &str, args: Value) -> (String, Map<String, Value>) {
     let mut args = arguments(args);
     let handle = session
         .portal()
@@ -121,8 +122,47 @@ fn press(session: &mut Session, effect: &str, args: Value) {
         args.insert("handle".to_owned(), handle.into());
     }
     let sheet = publisher(session, effect).expect("the sheet publishes that");
+    (sheet, args)
+}
+
+/// Press `effect` on the sheet publishing it, as the person would.
+#[track_caller]
+fn press(session: &mut Session, effect: &str, args: Value) {
+    let (sheet, args) = press_args(session, effect, args);
     session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
+}
+
+/// Press `effect` on the sheet publishing it as `actor` (an agent, a script): what it was
+/// answered with.
+#[track_caller]
+fn press_as(
+    session: &mut Session,
+    actor: &Actor,
+    effect: &str,
+    args: Value,
+) -> Result<(), ApiError> {
+    let (sheet, args) = press_args(session, effect, args);
+    let pressed = session.invoke_with_actor(actor, &sheet, effect, &args);
+    session.step(Duration::from_millis(1)).expect("step");
+    pressed.map(|_| ())
+}
+
+/// `pressed` was refused because the question is the asked person's to answer, in words that say
+/// so.
+#[track_caller]
+fn refused_not_the_asked_person(pressed: Result<(), ApiError>, what: &str) {
+    match pressed {
+        Err(ApiError::Refused { code, reason }) => {
+            assert_eq!(code, tilo_actions::NOT_THE_ASKED_PERSON, "{what}: {reason}");
+            assert!(
+                reason.contains("person"),
+                "{what} is refused in words that say whose it is: {reason}"
+            );
+        }
+        Err(other) => panic!("{what} is refused as a question not the agent's: {other:?}"),
+        Ok(()) => panic!("{what} was not refused for an agent"),
+    }
 }
 
 /// The answer to `asked` , once the sheets answered it.
@@ -337,7 +377,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
 }
 
 #[test]
-fn an_agent_answers_a_question_through_the_sheets_published_actions() {
+fn an_agent_never_answers_a_question_asked_of_the_person() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking(Vec::new());
     // The sheet's answers are published while it is down, so an agent that finds a question
@@ -354,7 +394,8 @@ fn an_agent_answers_a_question_through_the_sheets_published_actions() {
         );
     }
 
-    // Confirm: the highlighted answer is taken.
+    // The access question an agent's own request raised: it may not confirm the allow, nor
+    // answer it with "Always", and the question stays up for the person to decide.
     let asked = ask(
         &questions,
         Some("org.example.Recorder"),
@@ -363,6 +404,54 @@ fn an_agent_answers_a_question_through_the_sheets_published_actions() {
         remembered(),
     );
     pump(&mut session, |_| questions.pending().len() == 1);
+    pump(&mut session, |session| {
+        session
+            .portal()
+            .is_some_and(|portal| portal.dialog().is_some())
+    });
+    let asker = crate::common::agent("org.example.Recorder");
+    for (what, effect, args) in [
+        ("confirm", PortalEffect::CONFIRM.id, json!({})),
+        (
+            "allow always",
+            PortalEffect::ANSWER.id,
+            json!({"index": 2}), // the Always row
+        ),
+        // Withdrawing its own ask is no step it takes on the sheet either: its host drops the
+        // request, which reports the question withdrawn and refuses the step it was for.
+        ("cancel", PortalEffect::CANCEL.id, json!({})),
+    ] {
+        refused_not_the_asked_person(
+            press_as(&mut session, &asker, effect, args),
+            &format!("the asking agent's {what}"),
+        );
+        assert_eq!(
+            questions.pending().len(),
+            1,
+            "the question stays up after the asking agent's {what}"
+        );
+        assert!(
+            session.portal().expect("portal sheet").dialog().is_some(),
+            "the sheet still shows it after the asking agent's {what}"
+        );
+    }
+    // Another member, who was asked nothing, is refused too: the question is the person's, not
+    // any agent's.
+    let elsewhere = crate::common::agent("someone-else");
+    for (what, effect, args) in [
+        ("confirm", PortalEffect::CONFIRM.id, json!({})),
+        (
+            "allow always",
+            PortalEffect::ANSWER.id,
+            json!({"index": 2}), // the Always row
+        ),
+    ] {
+        refused_not_the_asked_person(
+            press_as(&mut session, &elsewhere, effect, args),
+            &format!("another member's {what}"),
+        );
+    }
+    // The person answers the same question through the same published action.
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
     let answer = answered(&mut session, &questions, asked);
     assert_eq!(
@@ -371,22 +460,50 @@ fn an_agent_answers_a_question_through_the_sheets_published_actions() {
         "the answer the sheet showed first was taken"
     );
 
-    // Decline: the next question is refused through the same published action.
-    let asked = ask(
-        &questions,
-        Some("org.example.Recorder"),
-        "org.example.Recorder",
-        "portal.access",
-        remembered(),
-    );
-    pump(&mut session, |_| questions.pending().len() == 1);
-    press(&mut session, PortalEffect::CANCEL.id, json!({}));
-    declined(&mut session, &questions, asked);
-
-    // Typed text: a secret reaches the service only through the sheet's own published typing and
-    // the answer it submits.
+    // A secret prompt the person's network asked about: what is typed into it and the answer
+    // it submits are the person's, so an agent may do neither, its own ask or not.
     let asked = ask(&questions, None, "Home", "network.secrets", wifi(false));
-    pump(&mut session, |_| questions.pending().len() == 1);
+    pump(&mut session, |session| {
+        session.portal().is_some_and(|portal| {
+            matches!(portal.dialog().map(|dialog| dialog.body), Some(Body::Secret(_)))
+        })
+    });
+    for (what, effect, args) in [
+        (
+            "typing a secret",
+            PortalEffect::TYPE_SECRET.id,
+            json!({"field": 0, "value": "short horse"}),
+        ),
+        ("submitting", PortalEffect::SUBMIT.id, json!({})),
+        ("remembering", PortalEffect::REMEMBER.id, json!({})),
+    ] {
+        for agent in [&asker, &elsewhere] {
+            refused_not_the_asked_person(
+                press_as(&mut session, agent, effect, args.clone()),
+                &format!("an agent's {what}"),
+            );
+            assert!(
+                session
+                    .portal()
+                    .expect("portal sheet")
+                    .dialog()
+                    .is_some(),
+                "the secret prompt stays up after an agent's {what}"
+            );
+        }
+    }
+    let typed_into: Vec<String> = session
+        .portal()
+        .expect("portal sheet")
+        .secrets()
+        .iter()
+        .map(|buffer| buffer.lock().expect("the prompt's buffer").clone())
+        .collect();
+    assert!(
+        typed_into.iter().all(String::is_empty),
+        "nothing an agent typed reached the secret prompt: {typed_into:?}"
+    );
+    // The person types and submits it.
     press(
         &mut session,
         PortalEffect::TYPE_SECRET.id,
