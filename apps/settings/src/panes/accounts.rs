@@ -13,7 +13,6 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Element, Row, RowMenu, Spacer, TextInput, TextInputKind, Widget};
 
 use self::calendar_selection::{CalendarChoiceRow, CalendarChoices};
-use self::thunderbird_import::{AccountImport, AccountImportChoice};
 use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
@@ -21,8 +20,8 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Body, El, Item, SettingsSection, StatusTone, field_row, note, row, rows, section, setting_row,
-    setting_row_described, thing_row, untitled, value_row,
+    Body, El, Item, SettingsSection, StatusTone, field_row, note, row, rows, section, section_with,
+    setting_row, setting_row_described, thing_row, untitled, value_row,
 };
 
 mod add_email;
@@ -30,9 +29,7 @@ mod browser_sessions;
 mod calendar_selection;
 mod cloud_control;
 mod cloud_signin;
-mod import_review;
 mod row_view;
-mod thunderbird_import;
 mod vault_queue;
 pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
@@ -109,30 +106,6 @@ pub enum AccountsEffect {
     #[effect(kind = "outside")]
     #[effect(row, job, returns, destructive, on = BrowserServiceSessionRow)]
     RemoveBrowserServiceSession { session_id: String },
-    /// Discover only ordinary account metadata from a granted prefs.js path.
-    #[effect(job, returns, kind = "read")]
-    DiscoverThunderbirdAccounts { prefs: String },
-    /// Choose ordinary Thunderbird prefs through the existing file portal.
-    #[effect(attended, job, returns, kind = "read", on = AccountImport)]
-    ChooseThunderbirdMetadata,
-    /// Read the current metadata review and its exact revision; no secrets.
-    #[effect(returns, kind = "read", on = AccountImport)]
-    InspectThunderbirdImport,
-    /// Select a reviewed identity and an explicit supported sign-in method.
-    #[effect(view, on = AccountImportChoice)]
-    SelectThunderbirdAccount {
-        source: String,
-        authentication: String,
-        selected: bool,
-        revision: u64,
-    },
-    /// Import only selected configuration as pending sign-in metadata.
-    #[effect(kind = "outside", on = AccountImport)]
-    #[effect(job, returns, idempotent)]
-    CommitThunderbirdImport { revision: u64 },
-    /// Discard the metadata review and fence unfinished discovery callbacks.
-    #[effect(view, on = AccountImport)]
-    CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
     #[effect(kind = "outside")]
     #[effect(row, idempotent, on = BrowserIdentityRow)]
@@ -323,10 +296,6 @@ pub(crate) fn answer(
             return Ok(Effected::Pending);
         }
         add @ AccountsEffect::AddEmailAccount { .. } => return add_email::answer(app, add, cx),
-        AccountsEffect::DiscoverThunderbirdAccounts { prefs } => {
-            return thunderbird_import::discover(app, prefs, cx);
-        }
-        AccountsEffect::ChooseThunderbirdMetadata => return thunderbird_import::choose(app, cx),
         AccountsEffect::PublishBrowserIdentity { origin } => {
             app.publish_browser_identity(origin)?;
             return Ok(Effected::done());
@@ -372,40 +341,6 @@ pub(crate) fn answer(
     answer_model(app, effect, cx)
 }
 
-fn answer_import(
-    model: &mut AccountsPane,
-    effect: AccountsEffect,
-    cx: &mut EffectCx<Settings>,
-) -> Result<EffectAnswer, Box<AccountsEffect>> {
-    Ok(match effect {
-        AccountsEffect::DiscoverThunderbirdAccounts { .. }
-        | AccountsEffect::ChooseThunderbirdMetadata => Err(t("accounts-import-read-failed")),
-        AccountsEffect::InspectThunderbirdImport => {
-            model.import_review.inspect().map(Effected::value)
-        }
-        AccountsEffect::SelectThunderbirdAccount {
-            source,
-            authentication,
-            selected,
-            revision,
-        } => model
-            .import_review
-            .select(&source, &authentication, selected, revision)
-            .map(|()| {
-                model.changed = true;
-                Effected::done()
-            }),
-        AccountsEffect::CommitThunderbirdImport { revision } => {
-            commit_thunderbird_import(model, revision, cx)
-        }
-        AccountsEffect::CancelThunderbirdImport => model.import_review.cancel().map(|()| {
-            model.changed = true;
-            Effected::done()
-        }),
-        other => return Err(Box::new(other)),
-    })
-}
-
 fn answer_model(
     app: &SettingsApp,
     effect: AccountsEffect,
@@ -415,19 +350,7 @@ fn answer_model(
         .ok_or_else(crate::area::missing)?
         .model();
     let mut model = shared.borrow_mut();
-    let effect = match answer_import(&mut model, effect, cx) {
-        Ok(answer) => return answer,
-        Err(effect) => *effect,
-    };
     match effect {
-        AccountsEffect::DiscoverThunderbirdAccounts { .. }
-        | AccountsEffect::ChooseThunderbirdMetadata
-        | AccountsEffect::InspectThunderbirdImport
-        | AccountsEffect::SelectThunderbirdAccount { .. }
-        | AccountsEffect::CommitThunderbirdImport { .. }
-        | AccountsEffect::CancelThunderbirdImport => {
-            return Err(t("accounts-import-read-failed"));
-        }
         AccountsEffect::RemoveBrowserServiceSession { .. }
         | AccountsEffect::AddEmailAccount { .. }
         | AccountsEffect::PublishBrowserIdentity { .. }
@@ -508,37 +431,6 @@ fn submit_account_form(model: &mut AccountsPane) -> Result<(), String> {
     }
     model.command(AccountViewCommand::Submit);
     Ok(())
-}
-
-fn commit_thunderbird_import(
-    model: &mut AccountsPane,
-    revision: u64,
-    cx: &mut EffectCx<Settings>,
-) -> EffectAnswer {
-    if model.queue.is_idle() {
-        let root = model.account_root.clone();
-        let result = model.import_review.commit(&root, revision)?;
-        model.queue_reload();
-        model.changed = true;
-        return Ok(Effected::value(result));
-    }
-    // Otherwise in turn with the account mutations under way, which
-    // journal the stores this changes.
-    let reply = cx.reply();
-    model.run_in_queue(move |pane| {
-        let root = pane.account_root.clone();
-        let result = pane.import_review.commit(&root, revision);
-        if result.is_ok() {
-            pane.queue_reload();
-            pane.changed = true;
-        }
-        reply.finish(result.map(|status| ui::tilo_actions::ActionOutput {
-            value: Some(serde_json::Value::String(status)),
-            resources: Vec::new(),
-        }));
-        Step::Done
-    });
-    Ok(Effected::Pending)
 }
 
 fn recover_mode(
@@ -804,7 +696,6 @@ impl AccountsArea {
                 )
             })
             .collect();
-        published.extend(model.thunderbird_import_rows());
         published.extend(model.calendar_choice_rows());
         for account in store.of_type(accounts::person::TILO_IDENTITY_TYPE) {
             let id = account.id.as_str().to_owned();
@@ -969,7 +860,6 @@ pub struct AccountsPane {
     cloud: CloudMounts,
     browser_removal_error: Option<String>,
     browser_removal_pending: bool,
-    import_review: import_review::ImportReview,
     /// The session, where Settings runs in one: an email account's password goes to the
     /// workspace's vault through it, never into this device's credentials.
     session_secrets: Option<ui::collaboration::browser_service_sessions::Client>,
@@ -1053,7 +943,6 @@ impl AccountsPane {
             reauth_candidate: None,
             reauth_saving: false,
             reauth_round: 0,
-            import_review: import_review::ImportReview::default(),
             sign_in: None,
             sign_in_saving: false,
             sign_in_round: 0,
@@ -1553,15 +1442,6 @@ impl AccountsPane {
                 .unwrap_or_default();
             self.form_server.set(server.into());
         }
-        if shared.account(&view.id).is_some_and(|account| {
-            account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                && AccountConfig::from_value(account.config)
-                    .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
-        }) {
-            self.import_review.status = Some(t("accounts-import-oauth-step"));
-            self.changed = true;
-            return;
-        }
         self.next_form_round();
         self.form_kind = Some(kind);
         self.form_account_id = Some(view.id);
@@ -1619,17 +1499,12 @@ impl AccountsPane {
 
     fn open_reauthentication(&mut self, id: String) {
         let stored = self.account_root.store().account(&id);
+        // An account a Thunderbird import left waiting for its sign-in is completed in its
+        // edit form, as it always was; Mail's own accounts sign in again here.
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
         {
-            if AccountConfig::from_value(account.config.clone())
-                .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
-            {
-                self.import_review.status = Some(t("accounts-import-oauth-step"));
-                self.changed = true;
-            } else {
-                self.open_edit(&id);
-            }
+            self.open_edit(&id);
             return;
         }
         if let Some(account) = stored.as_ref()
@@ -1727,7 +1602,7 @@ impl AccountsPane {
             }
         }
         panel.push(adding.unwrap_or_else(|| Self::add_account_card(cx)));
-        panel.push(self.thunderbird_import_card(cx));
+        panel.push(Self::migration_card(cx));
         if !self
             .account_root
             .store()
@@ -1954,6 +1829,33 @@ impl AccountsPane {
             })
             .collect();
         section(&t("accounts-add"), rows(providers))
+    }
+
+    /// Opening Migrations: the app reads this computer's Thunderbird profile, lists the mail
+    /// accounts, address books and calendars it holds, and brings in what the person chooses.
+    fn migration_action() -> ui::tilo_actions::ActionSpec {
+        ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.migrate").spec(
+            "open-migrations",
+            &t("accounts-migrate-open"),
+            &t("accounts-migrate-open-description"),
+        )
+    }
+
+    /// Where this computer's Thunderbird accounts and address books come from: the migration
+    /// window, which reads the profile here and connects what its person chooses.
+    fn migration_card(cx: &ViewCx<Settings>) -> SettingsSection {
+        let spec = Self::migration_action();
+        let button = Box::new(match cx.actions().spec_binding(&spec) {
+            Some(binding) => {
+                Button::new("settings.accounts.migrate", &spec.label).bind_action(binding)
+            }
+            None => Button::new("settings.accounts.migrate", &spec.label).unavailable(),
+        });
+        section_with(
+            &t("accounts-migrate-title"),
+            button,
+            rows(vec![note(&t("accounts-migrate-about"))]),
+        )
     }
 
     fn mail_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {

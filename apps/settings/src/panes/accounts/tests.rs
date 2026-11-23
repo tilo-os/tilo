@@ -477,7 +477,7 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         assert_eq!(
             labels.len(),
             AccountKind::ALL.len() + 1,
-            "every provider kind can be added and metadata imported over the sample: {labels:?}"
+            "every provider kind can be added and Migrations opened over the sample: {labels:?}"
         );
         assert_eq!(
             labels
@@ -494,10 +494,10 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         assert_eq!(
             labels
                 .iter()
-                .filter(|label| **label == t("accounts-import-choose"))
+                .filter(|label| **label == t("accounts-migrate-open"))
                 .count(),
             1,
-            "one metadata import action"
+            "one action opens Migrations"
         );
         assert!(
             labels.iter().all(|label| *label != t("accounts-remove")),

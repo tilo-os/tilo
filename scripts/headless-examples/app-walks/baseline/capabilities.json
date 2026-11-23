@@ -7253,39 +7253,6 @@
        "label": "Test microphone",
        "params": []
       },
-      "so.tilo.settings settings.root#discover-thunderbird-accounts": {
-       "label": "Find Thunderbird accounts",
-       "params": [
-        "prefs"
-       ]
-      },
-      "so.tilo.settings settings.root#choose-thunderbird-metadata": {
-       "label": "Choose Thunderbird settings file",
-       "params": []
-      },
-      "so.tilo.settings settings.root#inspect-thunderbird-import": {
-       "label": "Review the Thunderbird import",
-       "params": []
-      },
-      "so.tilo.settings settings.root#select-thunderbird-account": {
-       "label": "Choose a Thunderbird account and sign-in",
-       "params": [
-        "authentication",
-        "revision",
-        "selected",
-        "source"
-       ]
-      },
-      "so.tilo.settings settings.root#commit-thunderbird-import": {
-       "label": "Import the chosen Thunderbird settings",
-       "params": [
-        "revision"
-       ]
-      },
-      "so.tilo.settings settings.root#cancel-thunderbird-import": {
-       "label": "Cancel the Thunderbird import",
-       "params": []
-      },
       "so.tilo.settings settings.root#publish-browser-identity": {
        "label": "Share this identity with the browser",
        "params": [
@@ -7830,22 +7797,6 @@
       },
       "so.tilo.settings settings.default-app-candidate#set-default-app": {
        "label": "Open text/plain with Notes",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#choose-thunderbird-metadata": {
-       "label": "Choose Thunderbird settings file",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#inspect-thunderbird-import": {
-       "label": "Review the Thunderbird import",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#commit-thunderbird-import": {
-       "label": "Import the chosen Thunderbird settings",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#cancel-thunderbird-import": {
-       "label": "Cancel the Thunderbird import",
        "params": []
       },
       "so.tilo.tasks tilo.ui.control#focus": {
@@ -22823,39 +22774,6 @@
        "label": "Test microphone",
        "params": []
       },
-      "so.tilo.settings settings.root#discover-thunderbird-accounts": {
-       "label": "Find Thunderbird accounts",
-       "params": [
-        "prefs"
-       ]
-      },
-      "so.tilo.settings settings.root#choose-thunderbird-metadata": {
-       "label": "Choose Thunderbird settings file",
-       "params": []
-      },
-      "so.tilo.settings settings.root#inspect-thunderbird-import": {
-       "label": "Review the Thunderbird import",
-       "params": []
-      },
-      "so.tilo.settings settings.root#select-thunderbird-account": {
-       "label": "Choose a Thunderbird account and sign-in",
-       "params": [
-        "authentication",
-        "revision",
-        "selected",
-        "source"
-       ]
-      },
-      "so.tilo.settings settings.root#commit-thunderbird-import": {
-       "label": "Import the chosen Thunderbird settings",
-       "params": [
-        "revision"
-       ]
-      },
-      "so.tilo.settings settings.root#cancel-thunderbird-import": {
-       "label": "Cancel the Thunderbird import",
-       "params": []
-      },
       "so.tilo.settings settings.root#publish-browser-identity": {
        "label": "Share this identity with the browser",
        "params": [
@@ -23400,22 +23318,6 @@
       },
       "so.tilo.settings settings.default-app-candidate#set-default-app": {
        "label": "Open text/plain with Notes",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#choose-thunderbird-metadata": {
-       "label": "Choose Thunderbird settings file",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#inspect-thunderbird-import": {
-       "label": "Review the Thunderbird import",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#commit-thunderbird-import": {
-       "label": "Import the chosen Thunderbird settings",
-       "params": []
-      },
-      "so.tilo.settings settings.account-import#cancel-thunderbird-import": {
-       "label": "Cancel the Thunderbird import",
        "params": []
       },
       "so.tilo.tasks tilo.ui.control#focus": {
