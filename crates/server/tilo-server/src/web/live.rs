@@ -406,11 +406,6 @@ impl LiveOrigin {
         }
     }
 
-    /// Who the live origin carries: the one account of who is here.
-    pub(crate) fn authority(&self) -> Arc<Authority> {
-        Arc::clone(&self.authority)
-    }
-
     /// The one task the live origin runs besides its sessions, which stands while
     /// the live origin does.
     pub(crate) fn tasks(&mut self) -> Vec<tokio::task::JoinHandle<()>> {

@@ -1,10 +1,10 @@
 //! The device's own web UI as a setting: on until its person turns it off, off at once
 //! when they do, and served again when they turn it back on.
 //!
-//! The listener itself is the embedder's ([`Server::serve_web`], or the server's own
-//! start); this keeps whether the device wants one, how to serve it again, and what stops
-//! it. The host operation `web.serve` and the server's entry among its person's servers
-//! both reach it here.
+//! The listener itself is the embedder's ([`crate::daemon::Server::serve_web`], or the
+//! server's own start); this keeps whether the device wants one, how to serve it again, and
+//! what stops it. The host operation `web.serve` and the server's entry among its person's
+//! servers both reach it here.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
@@ -57,12 +57,12 @@ impl Control {
     pub(crate) fn started(&self, parts: WebParts, handle: &WebHandle) {
         self.ready(parts);
         let tasks = handle.tasks();
-        if let Some(previous) = self
+        let previous = self
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(tasks)
-        {
+            .replace(tasks);
+        if let Some(previous) = previous {
             previous.stop();
         }
     }
@@ -120,12 +120,12 @@ impl Control {
         runtime.spawn(async move {
             match serve_parts(parts).await {
                 Ok(handle) => {
-                    if let Some(previous) = control
+                    let previous = control
                         .tasks
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .replace(handle.tasks())
-                    {
+                        .replace(handle.tasks());
+                    if let Some(previous) = previous {
                         previous.stop();
                     }
                     *control
