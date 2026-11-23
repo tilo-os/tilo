@@ -63,11 +63,10 @@ RUN test "$(cat /usr/lib/tilo/image-flavour)" = server \
 
 COPY --from=dev-component-files /image/ /
 # The manifest links the CLI's PATH name to `tilo`, the multicall that runs a
-# moved program from /usr/libexec/tilo; the server ships no `tilo` and links its
-# own programs' names straight to them (os/Containerfile.host), so this one is
-# linked the server's way.
-RUN test ! -e /usr/bin/tilo \
-    && test "$(readlink /usr/bin/tilo-vm)" = tilo \
+# moved program from /usr/libexec/tilo. The server links its own programs'
+# names straight to them (os/Containerfile.host), and its `tilo` is the command
+# line its first boot logs in with, so this one is linked the server's way.
+RUN test "$(readlink /usr/bin/tilo-vm)" = tilo \
     && ln -sfn ../libexec/tilo/tilo-vm /usr/bin/tilo-vm
 COPY vm-units/ /usr/lib/systemd/system/
 
