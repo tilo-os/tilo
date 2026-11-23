@@ -5562,6 +5562,92 @@
       }
     },
     {
+      "name": "Timeline",
+      "doc": "A day, week or month as a time grid: events at their hours laid side by side where they overlap, an all-day lane, the line where now is, and a month of days with what stands on each. Dragging an event moves it, dragging its edge resizes it, and dragging across empty hours makes one that starts and ends where the drag did; each is a typed event, and the grid never changes what it shows.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the grid is, for assistive technology: \"This week\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "range",
+          "doc": "The range shown: the day, the week of a day, or the month of a day.",
+          "type": {
+            "choice": {
+              "name": "TimelineMode",
+              "cases": [
+                "day",
+                "week",
+                "month"
+              ]
+            }
+          }
+        },
+        {
+          "name": "start",
+          "doc": "The day the period stands in.",
+          "type": "time",
+          "required": true
+        },
+        {
+          "name": "slot",
+          "doc": "The minutes a drag snaps to: a quarter hour by default.",
+          "type": "int"
+        },
+        {
+          "name": "show_now",
+          "doc": "Whether the line where now is shows, read from the frame's clock (views cannot read it).",
+          "type": "bool"
+        },
+        {
+          "name": "zoom",
+          "doc": "How tall an hour is drawn against its legible minimum: 1 is the minimum, 2 twice it.",
+          "type": "float"
+        },
+        {
+          "name": "rows",
+          "doc": "How many all-day rows the lane keeps, whatever the events need.",
+          "type": "int"
+        }
+      ],
+      "parts": [
+        {
+          "name": "items",
+          "doc": "What stands on the grid, in no particular order: each is placed by its own times.",
+          "accepts": {
+            "component": "TimelineItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "created",
+          "doc": "Empty hours were dragged across: carries where the new event starts and ends.",
+          "value": "time",
+          "at": "time"
+        },
+        {
+          "name": "open_day",
+          "doc": "A day's head was pressed: carries that day.",
+          "value": "time"
+        },
+        {
+          "name": "zoomed",
+          "doc": "The person zoomed the hours: carries the new zoom.",
+          "value": "float"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "Toggle",
       "doc": "A switch: the same two states as a checkbox, for a setting that takes effect at once rather than when a form is sent. Its knob slides to the side it turns to.",
       "props": [
@@ -7969,6 +8055,100 @@
       "semantics": {
         "role": "Image",
         "label": "name"
+      }
+    },
+    {
+      "name": "TimelineItem",
+      "doc": "One thing on the grid: a meeting in its hours, or something that takes whole days.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource it stands for: what a press, a move or a resize carries back.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it is called.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "start",
+          "doc": "The moment it starts: its day, and the time of day it is at.",
+          "type": "time",
+          "required": true
+        },
+        {
+          "name": "end",
+          "doc": "The moment it ends; a day's end for something that takes whole days.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "all_day",
+          "doc": "Whether it takes the whole day, or the days between its start and end.",
+          "type": "bool"
+        },
+        {
+          "name": "location",
+          "doc": "Where it happens.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The colour it picks from the theme's series.",
+          "type": {
+            "choice": {
+              "name": "TimelineTone",
+              "cases": [
+                "first",
+                "second",
+                "third",
+                "fourth",
+                "fifth",
+                "sixth",
+                "seventh",
+                "eighth",
+                "neutral"
+              ]
+            }
+          }
+        },
+        {
+          "name": "stack",
+          "doc": "Which column it takes among the events it overlaps, from 1; 0 lays it out by itself.",
+          "type": "int"
+        }
+      ],
+      "events": [
+        {
+          "name": "pressed",
+          "doc": "It was pressed: carries the resource it stands for.",
+          "value": "resource"
+        },
+        {
+          "name": "moved",
+          "doc": "It was dragged: carries it and the moment it now starts at, its length unchanged.",
+          "value": "resource",
+          "at": "time"
+        },
+        {
+          "name": "resized",
+          "doc": "Its edge was dragged: carries it and the moment it now ends at.",
+          "value": "resource",
+          "at": "time"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "presents": "item"
       }
     },
     {

@@ -667,6 +667,13 @@ d-wxq3apea = Data
     .w-collections = Collections
     .w-activity-timeline = Activity timeline
     .w-what-happened-to-a-document-newest = What happened to a document, newest first, each change open to revert.
+    .w-timeline = Timeline
+    .w-a-week-as-hours-events-where = A week as hours, events where their times put them, and the line where now is.
+    .w-this-week = This week
+    .w-standup = Standup
+    .w-design-review = Design review
+    .w-studio = Studio
+    .w-release = Release
 
 d-5cczuoub = Feedback
     .w-banners-badges-progress-and-numbers-the = Banners, badges, progress and numbers, the facts of a thing, and what is still loading.

@@ -2460,6 +2460,12 @@ pub mod timeline_density;
 pub use time_field::{TimeField, TimeFieldProps};
 pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
+pub mod timeline;
+pub use timeline::{
+    Ghost, MonthFace, MonthReport, MonthTarget, Timeline, TimelineFace, TimelineGeom, TimelineItem,
+    TimelineItemProps, TimelineMode, TimelineProps, TimelineReport, TimelineTarget, TimelineText,
+    TimelineTokens, TimelineTone,
+};
 pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
