@@ -38,9 +38,9 @@ TimeoutStopSec=20s
 # NoNewPrivileges must remain off. Settings' account store and the handoff
 # store are read through the read-only home; the handoff key comes from the
 # session's Secret Service. The accounts directory stays writable for the
-# account status store and for the credential helper this service runs,
-# which seals rotated grants back into the vault and publishes handoff
-# credentials; nothing else under the config directory is.
+# credential helper this service runs, which seals rotated grants back into
+# the vault and publishes handoff credentials; nothing else under the config
+# directory is.
 PrivateTmp=yes
 PrivateIPC=yes
 ProtectSystem=strict

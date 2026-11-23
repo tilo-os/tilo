@@ -927,14 +927,6 @@ env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 on = ["schedule:0 3 * * *", "dispatch", "idle"]
 heavy = true
 
-[[check]]
-name = "accounts-web-storage"
-# Installs Chrome stable with npx: npm and Google's download hosts, at no fixed version.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" > \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/integrations/accounts/web/run.mjs\n"
-env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
-requires = ["arch=x86_64"]
-
 # The web runtime's storage, transfer and pairing modules and the server's page handshake, run as
 # `node --test`: the fake persistence workers use Node 24's worker messaging, and the pairing
 # suite's country names come from Intl.DisplayNames, which the image's Fedora node (22) does not

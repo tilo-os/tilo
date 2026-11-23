@@ -156,6 +156,12 @@ mod vault_entries;
 pub mod account_logins;
 #[cfg(all(test, any(feature = "agents", feature = "apps")))]
 mod account_logins_tests;
+// The website sessions a person selected, each an entry of that vault.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod website_sessions;
+// Browser's asks for those website sessions, decided where the vault opens.
+#[cfg(all(not(target_arch = "wasm32"), feature = "apps"))]
+pub mod website_session_asks;
 #[cfg(not(target_arch = "wasm32"))]
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]

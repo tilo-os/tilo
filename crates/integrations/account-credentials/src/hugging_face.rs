@@ -2,19 +2,16 @@
 //!
 //! Settings signs the person in, in the system browser (PKCE over a
 //! loopback redirect) or with a device code on a device without one, and
-//! stores the result in the device vault where a pasted access token goes.
-//! The model manager reads it from there, renews the access token when
-//! Hugging Face gave a refresh token, and otherwise reports the sign-in
-//! ended so Settings asks for a new one. A pasted token stays a plain
-//! string; a sign-in is stored as [`HubCredential::encode`] writes it.
+//! keeps the grant as the workspace's Hugging Face account's sign-in, in the
+//! workspace's vault where a pasted access token goes. The workspace service
+//! renews it for [`HUGGING_FACE_DOWNLOADS`] and releases the model manager
+//! only its access token.
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::device::DeviceAuthorization;
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
-use zeroize::Zeroizing;
 
 use crate::{Capability, ClientTable, OAuthIssuer, OAuthUse};
 
@@ -30,46 +27,28 @@ const BROWSER_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// The descriptor and registration of [`HUGGING_FACE_DOWNLOADS`], `None`
 /// when this build has no Hugging Face client.
-pub fn config() -> Option<(Provider, Registration)> {
+fn config() -> Option<(Provider, Registration)> {
     ClientTable::defaults().config(HUGGING_FACE_DOWNLOADS)
 }
 
+/// Begin signing in by device code, on a device without a browser: the
+/// person opens its page elsewhere and enters its code there.
+///
+/// # Errors
+/// This build has no Hugging Face client, or Hugging Face refused to begin.
+pub fn begin_device() -> Result<DeviceAuthorization, OAuthError> {
+    let (provider, client) = config()
+        .ok_or_else(|| OAuthError::Protocol("this build has no Hugging Face sign-in".into()))?;
+    DeviceAuthorization::begin(&OAuthClient::new()?, &provider, &client)
+}
+
 /// A person signed in with Hugging Face: the grant and who it is.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubSignIn {
     pub tokens: TokenSet,
     pub username: String,
     /// Their display name, when it differs from the username.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}
-
-/// The stored form of a sign-in, apart from any pasted token.
-#[derive(Serialize, Deserialize)]
-struct Stored {
-    hugging_face_sign_in: HubSignIn,
-}
-
-/// What the device vault holds for Hugging Face.
-pub enum HubCredential {
-    /// An access token the person pasted.
-    Token(Zeroizing<String>),
-    SignedIn(HubSignIn),
-}
-
-impl HubCredential {
-    /// Read the vault's value: a sign-in, else a pasted token.
-    pub fn parse(stored: &str) -> Self {
-        serde_json::from_str::<Stored>(stored).map_or_else(
-            |_| Self::Token(Zeroizing::new(stored.trim().to_owned())),
-            |stored| Self::SignedIn(stored.hugging_face_sign_in),
-        )
-    }
-
-    /// The vault's value for `sign_in`.
-    pub fn encode(sign_in: &HubSignIn) -> Zeroizing<String> {
-        Zeroizing::new(serde_json::json!({ "hugging_face_sign_in": sign_in }).to_string())
-    }
 }
 
 impl HubSignIn {
@@ -93,30 +72,6 @@ impl HubSignIn {
             tokens,
             username,
             name,
-        })
-    }
-
-    /// Whether the access token's reported lifetime is over, or within a
-    /// minute of it. One reported without a lifetime is used until Hugging
-    /// Face refuses it.
-    pub fn due(&self) -> bool {
-        self.tokens.expires_at().is_some() && self.tokens.needs_refresh()
-    }
-
-    /// The sign-in with a fresh access token.
-    ///
-    /// # Errors
-    /// [`OAuthError::InvalidGrant`] when there is no refresh token or
-    /// Hugging Face no longer accepts it: the person signs in again.
-    pub fn renewed(
-        &self,
-        http: &OAuthClient,
-        (provider, client): &(Provider, Registration),
-    ) -> Result<Self, OAuthError> {
-        let tokens = http.refresh(provider, client, &self.tokens.refresh_token)?;
-        Ok(Self {
-            tokens,
-            ..self.clone()
         })
     }
 }
@@ -167,9 +122,9 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Signing in to Hugging Face, in the browser and by device code.
-        fn a_hugging_face_sign_in_knows_its_person_scopes_and_renewal;
+        fn a_hugging_face_sign_in_knows_its_person_and_scopes;
 
-        phase a_browser_sign_in_knows_who_signed_in_and_round_trips_through_the_vault;
+        phase a_browser_sign_in_knows_who_signed_in;
         {
             let server = FakeAuthorizationServer::start();
             let people = Responder::start(vec![person()]);
@@ -186,50 +141,6 @@ mod tests {
                 asked.header("authorization"),
                 Some(format!("Bearer {}", sign_in.tokens.access_token).as_str())
             );
-
-            let stored = HubCredential::encode(&sign_in);
-            let HubCredential::SignedIn(read) = HubCredential::parse(&stored) else {
-                panic!("a sign-in reads back as one");
-            };
-            assert_eq!(read, sign_in);
-            let HubCredential::Token(pasted) = HubCredential::parse(" hf_pasted \n") else {
-                panic!("a pasted token stays a token");
-            };
-            assert_eq!(pasted.as_str(), "hf_pasted");
-        }
-
-        phase a_due_sign_in_renews_and_one_without_a_refresh_token_must_sign_in_again;
-        {
-            let server = FakeAuthorizationServer::start();
-            server.accept_refresh_token("refresh-old");
-            let config = (server.provider(), Registration::public("hf"));
-            let http = OAuthClient::new().unwrap();
-            let mut sign_in = HubSignIn {
-                tokens: TokenSet {
-                    access_token: "old".into(),
-                    refresh_token: "refresh-old".into(),
-                    expires_in: 60,
-                    obtained_at: 1,
-                    scope: None,
-                },
-                username: "ada".into(),
-                name: None,
-            };
-            assert!(sign_in.due());
-            let renewed = sign_in.renewed(&http, &config).unwrap();
-            assert_ne!(renewed.tokens.access_token, "old");
-            assert_eq!(renewed.tokens.refresh_token, "refresh-old");
-            assert_eq!(renewed.username, "ada");
-            assert!(!renewed.due());
-
-            sign_in.tokens.refresh_token.clear();
-            assert_eq!(
-                sign_in.renewed(&http, &config).unwrap_err(),
-                OAuthError::InvalidGrant
-            );
-            // Without a reported lifetime the token is used until refused.
-            sign_in.tokens.expires_in = 0;
-            assert!(!sign_in.due());
         }
 
         phase a_device_sign_in_asks_for_the_downloads_scopes;

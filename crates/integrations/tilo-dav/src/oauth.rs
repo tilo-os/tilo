@@ -1,10 +1,9 @@
-//! Calendar access through the credential store. Refresh and discovery are blocking; run them off the
-//! async and UI threads. Credentials and unrestricted clients never leave here.
+//! Calendar access with the sign-in the session released for an account: a password, or the
+//! access token of the grant a provider's own page left. The grant itself, and its renewal, stay
+//! with the workspace's vault; this side only binds what it was handed to the account's server.
+//! Credentials and unrestricted clients never leave here.
 
-use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
-use accounts::{Account, SecretVault, cloud_types};
-
-use crate::discovery::{self, CalendarCollection};
+use crate::discovery;
 use crate::net::{self, DavResponse, Depth, Precondition, Url};
 use crate::{Credentials, Options, PropName, Redirects};
 
@@ -14,39 +13,24 @@ pub use pending::{PendingCalendars, PendingGoogleCalendar, PendingNextcloudCalen
 const GOOGLE_SERVER: &str = "https://apidata.googleusercontent.com/caldav/v2/";
 const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar";
 
-/// Read the password for the existing portable Nextcloud calendar projection,
-/// including protected copied grants. The caller must keep this value private.
-pub fn calendar_password(secret: &accounts::Secret) -> String {
-    account_credentials::password_credential(secret).to_string()
-}
+/// What a Google calendar is told when the session released no grant for it.
+const NO_GRANT: &str = "Google account has no calendar grant; sign in for calendar access";
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Service {
-    credential_store: CredentialStore,
     #[cfg(feature = "test-support")]
     fixture: Option<Url>,
 }
 
 impl Service {
     pub fn live() -> Self {
-        Self::new(CredentialStore::live())
-    }
-
-    pub fn new(credential_store: CredentialStore) -> Self {
-        Self {
-            credential_store,
-            #[cfg(feature = "test-support")]
-            fixture: None,
-        }
+        Self::default()
     }
 
     /// Trust exactly one loopback origin as a Google fixture. This is explicit per
     /// service and does not permit a second loopback server or arbitrary URL.
     #[cfg(feature = "test-support")]
-    pub fn for_test_origin(
-        credential_store: CredentialStore,
-        origin: &str,
-    ) -> Result<Self, String> {
+    pub fn for_test_origin(origin: &str) -> Result<Self, String> {
         let url = Url::parse(origin).map_err(|_| "invalid fixture origin")?;
         discovery::safe_url(&url, origin)?;
         let loopback = url.host_str().is_some_and(|host| {
@@ -59,70 +43,35 @@ impl Service {
         if !loopback || url.path() != "/" {
             return Err("fixture must be a loopback origin".into());
         }
-        Ok(Self {
-            credential_store,
-            fixture: Some(url),
-        })
+        Ok(Self { fixture: Some(url) })
     }
 
-    /// Discover collections with the credential of `account`, the workspace's Google or
-    /// Nextcloud account. Google requires the calendar grant, not a mail or files grant.
-    pub fn discover(
+    /// Build an opaque origin-bound async client signed in with `secret`, what the session
+    /// released for the account: a Google calendar's grant (`google`) as its bearer access
+    /// token, bound to Google's `CalDAV` endpoint, and any other calendar's password with
+    /// `username`. Every check precedes the credential's use.
+    pub fn authorised(
         &self,
-        account: &Account,
+        google: bool,
         server_url: &str,
         username: &str,
-        google: bool,
-    ) -> Result<Vec<CalendarCollection>, String> {
+        secret: &str,
+        target: &str,
+    ) -> Result<AuthorisedClient, String> {
         let binding = Self::binding(
             server_url,
             google,
             #[cfg(feature = "test-support")]
             self.fixture.as_ref(),
         )?;
-        let credentials = if google {
-            self.google_credential(account)?
-        } else {
-            require_type(account, cloud_types::NEXTCLOUD)?;
-            let vault = SecretVault::open_person(self.credential_store.config_root());
-            let secret = vault
-                .get(&account.id)
-                .ok_or("calendar credential is missing")?;
-            let password = account_credentials::password_credential(&secret);
-            if password.is_empty() {
-                return Err("calendar credential is unavailable".into());
-            }
-            Credentials::new(username, password.to_string())
-        };
-        let client = crate::DavClient::new(&options())
-            .map_err(|error| error.to_string())?
-            .with_credentials(credentials);
-        discovery::calendars_checked(&client, &binding.base, &|url| {
-            binding.check(url.as_str()).map(|_| ())
-        })
-    }
-
-    /// Build an opaque origin-bound async client. The workspace's Google account, when one is
-    /// named, signs in with its grant; without one, the supplied Basic password is used. Checks
-    /// precede any refresh or credential use. Refresh is blocking.
-    pub fn authorised(
-        &self,
-        account: Option<&Account>,
-        server_url: &str,
-        username: &str,
-        password: &str,
-        target: &str,
-    ) -> Result<AuthorisedClient, String> {
-        let binding = Self::binding(
-            server_url,
-            account.is_some(),
-            #[cfg(feature = "test-support")]
-            self.fixture.as_ref(),
-        )?;
         binding.check(target)?;
-        let credentials = match account {
-            Some(account) => self.google_credential(account)?,
-            None => Credentials::new(username, password),
+        let credentials = if google {
+            if secret.is_empty() {
+                return Err(NO_GRANT.into());
+            }
+            Credentials::bearer(secret)
+        } else {
+            Credentials::new(username, secret)
         };
         let client =
             net::DavClient::with_fetch_proxy(&options(), tilo_net::proxy::ProxyUse::CrossOrigin)
@@ -144,57 +93,6 @@ impl Service {
         binding.check(server)?;
         Ok(binding)
     }
-
-    fn google_credential(&self, account: &Account) -> Result<Credentials, String> {
-        require_type(account, cloud_types::GOOGLE_DRIVE)?;
-        let id = &account.id;
-        self.require_calendar_scope(id)?;
-        let token = self
-            .credential_store
-            .oauth_access_token(id, OAuthUse::calendar(OAuthIssuer::Google), false)
-            .map_err(|error| error.to_string())?;
-        // A refresh response can narrow the grant. Never transmit that token.
-        self.require_calendar_scope(id)?;
-        Ok(Credentials::bearer(token.to_string()))
-    }
-
-    fn require_calendar_scope(&self, id: &accounts::AccountId) -> Result<(), String> {
-        let scopes = self
-            .credential_store
-            .oauth_scopes(id)
-            .map_err(|error| error.to_string())?;
-        if !scopes.as_deref().is_some_and(|scopes| {
-            scopes
-                .split_whitespace()
-                .any(|scope| scope == CALENDAR_SCOPE)
-        }) {
-            return Err("Google account has no calendar grant; sign in for calendar access".into());
-        }
-        Ok(())
-    }
-}
-
-/// That `account` is turned on and of a type that reaches the calendar provider `expected`
-/// names: a Google calendar is the grant of a Google Drive account or a Google calendar server.
-fn require_type(account: &Account, expected: &str) -> Result<(), String> {
-    if !account.enabled {
-        return Err("calendar account is disabled".into());
-    }
-    let matches = if expected == cloud_types::GOOGLE_DRIVE {
-        account.type_id.as_str() == cloud_types::GOOGLE_DRIVE
-            || (account.type_id.as_str() == "caldav"
-                && account
-                    .config
-                    .get("calendar_provider")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("google"))
-    } else {
-        account.type_id.as_str() == expected
-    };
-    if !matches {
-        return Err("account type does not support this calendar provider".into());
-    }
-    Ok(())
 }
 
 fn options() -> Options {

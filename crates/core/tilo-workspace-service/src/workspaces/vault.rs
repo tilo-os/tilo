@@ -53,6 +53,12 @@ pub(crate) struct OpenVault {
 }
 
 impl OpenVault {
+    /// The document as it was read, where somebody made it.
+    #[cfg(test)]
+    pub(crate) fn document(&self) -> Option<&[u8]> {
+        self.document.as_deref()
+    }
+
     /// Every entry of the vault, each with the uses kept beside it.
     pub(crate) fn entries(&self) -> &[(SecretItem, Vec<UseRecord>)] {
         &self.entries
@@ -410,10 +416,18 @@ impl Workspaces {
     /// Who a write this device makes names as its invoker: the caller that asked, or, for a
     /// write the host makes of itself (a carried-over entry, a watch's use), the person this
     /// device acts for. Every change names who made it.
+    ///
+    /// An agent that asked under a key of its own is shown asking only by an invocation it
+    /// signed, which a change written here does not keep, so every receiver refuses a change
+    /// naming it. Its change names the person it works for, on whose word it asked.
     pub(crate) fn acting_or_own(&self, acting: Option<&Acting>) -> Acting {
-        acting.cloned().unwrap_or_else(|| {
-            Acting::person(hex::encode(self.signing_device().cert.user_public_key))
-        })
+        match acting {
+            Some(by) if by.is_agent() && !by.handed => by
+                .acted_for_person()
+                .map_or_else(|| by.clone(), |person| Acting::person(person.to_owned())),
+            Some(by) => by.clone(),
+            None => Acting::person(hex::encode(self.signing_device().cert.user_public_key)),
+        }
     }
 
     /// Open `workspace`'s vault, let `change` read and change its items, and write what it
@@ -593,8 +607,11 @@ impl VaultAt<'_> {
     /// As [`Workspaces::keep_workspace_account`].
     pub(crate) async fn keep_account(&self, account: &accounts::Account) -> Result<(), String> {
         match self {
-            Self::Workspace(workspaces, workspace, _) => {
-                workspaces.keep_workspace_account(workspace, account).await
+            Self::Workspace(workspaces, workspace, acting) => {
+                let by = workspaces.acting_or_own(*acting);
+                workspaces
+                    .keep_workspace_account((workspace, &by), account)
+                    .await
             }
             #[cfg(test)]
             Self::Held(held) => held
@@ -617,9 +634,10 @@ impl VaultAt<'_> {
         remove: &[&str],
     ) -> Result<(), String> {
         match self {
-            Self::Workspace(workspaces, workspace, _) => {
+            Self::Workspace(workspaces, workspace, acting) => {
+                let by = workspaces.acting_or_own(*acting);
                 workspaces
-                    .keep_workspace_accounts(workspace, keep, remove)
+                    .keep_workspace_accounts((workspace, &by), keep, remove)
                     .await
             }
             #[cfg(test)]
@@ -806,9 +824,6 @@ fn open_entry(key: &key_group::ContentKeys, id: &Id, sealed: &str) -> Result<Sec
 
 /// `entry` sealed at its id with `keys`, as a Passwords window seals it.
 fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<String, String> {
-    if !entry.may_share_with_workspace() {
-        return Err("a device credential must stay with its device".to_owned());
-    }
     let payload =
         Zeroizing::new(serde_json::to_vec(entry).map_err(|_| "invalid vault item".to_owned())?);
     keys.seal_private_field(&entry.id.0, &payload)

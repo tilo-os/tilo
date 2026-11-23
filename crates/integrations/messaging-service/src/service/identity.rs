@@ -1,14 +1,14 @@
-//! Who an account belongs to, and what it was granted.
+//! Who an account belongs to, and the key it keeps its state under.
 //!
 //! An [`Identity`] is an account owner admitted under the person's current
 //! device identity while their session is usable. A [`Credential`] binds one
-//! vault item Messages was granted to exactly that owner. A [`Permission`]
-//! is the request Passwords answers before a new account gets its key.
+//! account's profile key, an entry of the person's workspace vault, to
+//! exactly that owner.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
-use accounts::{AccessDecision, AccessRequest, CredentialBroker, CredentialOwner, CredentialScope};
+use crate::session::{Call, Reply, SessionLink};
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_messaging::SendError;
 use tilo_messaging_protocol::journal::Owner;
@@ -180,157 +180,88 @@ pub(crate) fn service_name(service: tilo_messaging_protocol::Service) -> &'stati
     }
 }
 
-pub(crate) fn credential_scope(owner: &Owner) -> CredentialScope {
-    CredentialScope {
-        actor: owner.actor.clone(),
-        device: owner.device.clone(),
-        service: service_name(owner.service).into(),
-        account: owner.account.clone(),
-        generation: owner.linking_generation,
-    }
-}
-
-/// One vault item Messages was granted, bound to one account owner. The
-/// broker is the vault's own: revoking the grant in Passwords revokes it here.
+/// One account's profile key, bound to exactly that account's owner. It is an
+/// entry of the person's workspace vault, which the compositor keeps; the
+/// running account holds it in memory, wiped when the account goes.
 #[derive(Clone)]
 pub(crate) struct Credential {
-    broker: Arc<Mutex<CredentialBroker>>,
-    pub(crate) request: AccessRequest,
+    key: secret_vault::VaultKey,
+    /// The vault entry that keeps the key.
+    pub(crate) item: String,
     pub(crate) owner: Owner,
 }
 
 impl Credential {
+    /// A fresh key for `identity`'s new account, kept in the person's
+    /// workspace vault for `origin` under `title`. Blocks.
+    ///
     /// # Errors
-    /// Another app, an unscoped request or an owner without an account.
-    pub(crate) fn new(
-        vault: &CredentialOwner,
+    /// Retired admission, or the compositor did not keep the key.
+    pub(crate) fn keep(
+        session: &SessionLink,
         identity: &Identity,
-        request: AccessRequest,
+        origin: &str,
+        title: String,
+    ) -> Result<Self, SendError> {
+        identity.check()?;
+        let key = secret_vault::VaultKey::generate().map_err(|_| SendError::Unavailable)?;
+        let call = Call::KeepKey {
+            title,
+            origin: origin.into(),
+            key: zeroize::Zeroizing::new(hex::encode(key.expose_secret())),
+        };
+        match session.call_blocking(call, KEPT) {
+            Some(Reply::Kept { item }) => Self::bound(identity, key, item),
+            Some(Reply::Refused) => Err(SendError::Revoked),
+            _ => Err(SendError::Unavailable),
+        }
+    }
+
+    /// The key the vault entry `item` keeps, for `identity`'s published
+    /// account. Blocks.
+    ///
+    /// # Errors
+    /// Retired admission, or the vault does not hand out the key.
+    pub(crate) fn kept(
+        session: &SessionLink,
+        identity: &Identity,
+        item: String,
+    ) -> Result<Self, SendError> {
+        identity.check()?;
+        let Some(Reply::Key { key }) =
+            session.call_blocking(Call::Key { item: item.clone() }, KEPT)
+        else {
+            return Err(SendError::Revoked);
+        };
+        let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+        hex::decode_to_slice(key.as_bytes(), bytes.as_mut()).map_err(|_| SendError::Revoked)?;
+        let key =
+            secret_vault::VaultKey::from_slice(bytes.as_ref()).map_err(|_| SendError::Revoked)?;
+        Self::bound(identity, key, item)
+    }
+
+    fn bound(
+        identity: &Identity,
+        key: secret_vault::VaultKey,
+        item: String,
     ) -> Result<Self, SendError> {
         let owner = &identity.owner;
-        if request.app_id != crate::MESSAGES_APP
-            || request.origin.is_none()
-            || owner.linking_generation == 0
-            || owner.account.is_empty()
-            || vault.actor() != owner.actor
-            || vault.device() != owner.device
-        {
+        if owner.linking_generation == 0 || owner.account.is_empty() || item.is_empty() {
             return Err(SendError::Revoked);
         }
         identity.check()?;
         Ok(Self {
-            broker: vault.broker().map_err(|_| SendError::Unavailable)?,
-            request,
+            key,
+            item,
             owner: owner.clone(),
         })
     }
 
-    /// # Errors
-    /// The grant is gone.
-    pub(crate) fn check(&self) -> Result<(), SendError> {
-        // The decrypted value clears itself at once; nothing copies it.
-        self.broker
-            .lock()
-            .map_err(|_| SendError::Unavailable)?
-            .request_existing_scoped(&self.request, &credential_scope(&self.owner))
-            .map(drop)
-            .map_err(|_| SendError::Revoked)
-    }
-
     /// The account's profile key.
-    ///
-    /// # Errors
-    /// The grant is gone or the item holds no key.
-    pub(crate) fn profile_key(&self) -> Result<secret_vault::VaultKey, SendError> {
-        let encoded = self
-            .broker
-            .lock()
-            .map_err(|_| SendError::Unavailable)?
-            .request_existing_profile_key(&self.request, &credential_scope(&self.owner))
-            .map_err(|_| SendError::Revoked)?;
-        let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
-        hex::decode_to_slice(encoded.as_bytes(), bytes.as_mut())
-            .map_err(|_| SendError::Unavailable)?;
-        secret_vault::VaultKey::from_slice(bytes.as_ref()).map_err(|_| SendError::Unavailable)
+    pub(crate) fn profile_key(&self) -> secret_vault::VaultKey {
+        self.key.clone()
     }
 }
 
-/// The key prepared for a new account and the request Passwords answers to
-/// grant Messages that key.
-pub(crate) struct Permission {
-    pub(crate) request: AccessRequest,
-    pub(crate) proposal: String,
-}
-
-/// Where the person stands on a [`Permission`].
-pub(crate) enum Grant {
-    Approved(Credential),
-    Pending,
-    Refused,
-}
-
-impl Permission {
-    /// Prepare a fresh key for `identity` and ask the person to let Messages
-    /// use it. When the request cannot be made, the key is removed again.
-    ///
-    /// # Errors
-    /// Retired admission, weaker ownership, an occupied scope or a full queue.
-    pub(crate) fn ask(
-        vault: &CredentialOwner,
-        identity: &Identity,
-        origin: &str,
-        purpose: String,
-    ) -> Result<Self, SendError> {
-        identity.check()?;
-        let scope = credential_scope(&identity.owner);
-        let item_id = vault
-            .prepare_profile_key(&scope, origin)
-            .map_err(|_| SendError::Revoked)?;
-        let request = AccessRequest {
-            app_id: crate::MESSAGES_APP.into(),
-            item_id,
-            purpose,
-            origin: Some(origin.into()),
-        };
-        let retained = identity.clone();
-        let proposal = identity
-            .check()
-            .map_err(|_| accounts::BrokerError::Denied)
-            .and_then(|()| {
-                vault.propose_scoped(
-                    request.clone(),
-                    scope,
-                    Arc::new(move || retained.check().is_ok()),
-                )
-            });
-        if let Ok(proposal) = proposal {
-            Ok(Self { request, proposal })
-        } else {
-            // Only the item this call created goes, never another key.
-            let _ = vault.edit(|store| store.remove(&request.item_id));
-            Err(SendError::Revoked)
-        }
-    }
-
-    pub(crate) fn grant(&self, vault: &CredentialOwner, identity: &Identity) -> Grant {
-        if let Ok(credential) = Credential::new(vault, identity, self.request.clone())
-            && credential.check().is_ok()
-        {
-            return Grant::Approved(credential);
-        }
-        let pending = vault
-            .proposals()
-            .is_ok_and(|proposals| proposals.iter().any(|p| p.id == self.proposal));
-        if pending {
-            Grant::Pending
-        } else {
-            Grant::Refused
-        }
-    }
-
-    /// Deny the request and remove the key it prepared.
-    pub(crate) fn withdraw(&self, vault: &CredentialOwner) {
-        let _ = vault.decide_proposal(&self.proposal, AccessDecision::Deny);
-        let _ = vault.edit(|store| store.remove(&self.request.item_id));
-    }
-}
+/// How long the compositor has to keep a key or hand one out.
+const KEPT: std::time::Duration = std::time::Duration::from_secs(10);

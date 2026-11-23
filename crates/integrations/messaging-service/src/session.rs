@@ -2,13 +2,17 @@
 //! over the service's standard input and output.
 //!
 //! The compositor alone holds the workspace's records (its accounts and
-//! contacts), shows the protected network prompt and owns the device's
-//! endpoint that carries private Tilo messages, so the service asks it for
-//! those. The compositor tells the service when the person's session stops
+//! contacts) and its vault, and shows the protected network prompt, so the
+//! service asks it for those. Each account's profile key, which seals what the
+//! account keeps on this device, is an entry of the person's workspace vault:
+//! the service has the compositor keep a new account's key there, and reads it
+//! back by the entry the published account names when it starts the account
+//! again. Whoever may read that vault may read the key; nothing asks first. The compositor tells the service when the person's session stops
 //! being usable (locked or ended), which retires every admission the service
 //! made under it. The service stops when that connection closes.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 /// An account the service publishes into the person's accounts record once
 /// the person approved it: its id, the name the person gave it and the
@@ -18,6 +22,9 @@ pub struct Publication {
     pub account: String,
     pub name: String,
     pub generation: u64,
+    /// The vault entry that keeps the account's profile key, which the
+    /// account names as its sign-in ([`accounts::email::PASSWORD_ITEM_KEY`]).
+    pub key: String,
     pub kind: PublicationKind,
 }
 
@@ -47,6 +54,17 @@ pub enum Call {
     Consent { key: String, hosts: Vec<String> },
     /// Service: the consent request `key` is no longer wanted.
     ConsentWithdrawn { key: String },
+    /// Service: keep `key`, a new account's profile key in hex, as a new entry
+    /// of the person's workspace vault titled `title` and kept for `origin`.
+    /// Answered with [`Reply::Kept`].
+    KeepKey {
+        title: String,
+        origin: String,
+        key: Zeroizing<String>,
+    },
+    /// Service: the profile key the vault entry `item` keeps, which a
+    /// published account names. Answered with [`Reply::Key`].
+    Key { item: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +81,10 @@ pub enum Reply {
     Refused,
     /// It could not be answered now.
     Unavailable,
+    /// The vault entry a key is kept in now.
+    Kept { item: String },
+    /// The profile key an entry keeps, in hex.
+    Key { key: Zeroizing<String> },
 }
 
 #[derive(Serialize, Deserialize)]

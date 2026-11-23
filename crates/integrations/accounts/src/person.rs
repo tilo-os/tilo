@@ -45,7 +45,38 @@ pub struct ListedAccount {
     pub enabled: bool,
     /// Tints the account's avatar so several read as distinct.
     pub tint: u8,
+    /// How its last sync went, as the device that last synced it reported.
+    pub sync: Option<AccountSync>,
 }
+
+/// How an account's sync is going, as the device that reported last saw it.
+/// Several devices may sync one account; the last report wins.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct AccountSync {
+    /// The device that reported it, by its key in hex.
+    pub device: String,
+    pub health: SyncHealth,
+    /// When that device last tried, in milliseconds since the Unix epoch.
+    pub attempted_ms: u64,
+    /// When a sync last went through.
+    pub succeeded_ms: Option<u64>,
+    /// When its person last signed in, while nothing has synced since: a
+    /// sign-in proves the account works before its first sync does.
+    pub signed_in_ms: Option<u64>,
+    /// What a person reads about it: a short summary, never a server's own
+    /// words, which can carry a credential.
+    pub message: String,
+}
+
+pub use crate::SyncHealth;
+
+/// The longest message a sync report keeps.
+pub const SYNC_MESSAGE_LIMIT: usize = 160;
+
+/// How much newer a success must be than the one kept before it is written
+/// again while nothing else changed: a device syncing every minute does not
+/// write every minute.
+pub const SYNC_SUCCESS_REFRESH_MS: u64 = 10 * 60 * 1000;
 
 /// Every account the workspace has, without their secrets. Which one a member's
 /// window shows is that member's own preference, kept beside their Mail settings.
@@ -71,6 +102,10 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
         for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
             retype_json::<serde_json::Value>(doc, &account, "config")?;
         }
+    } else if from == 3 {
+        // Version 4 adds each account's sync, which an older account has
+        // not reported yet.
+        return Ok(());
     } else if from != 2 {
         return Err(ModelError::invalid(format!(
             "no accounts migration from {from}"
@@ -93,7 +128,7 @@ impl AccountList {
 
 #[resource(
     kind = "tilo.accounts",
-    version = 3,
+    version = 4,
     migrate = upgrade,
     read_content = tilo_resource::read::fields
 )]
@@ -227,14 +262,17 @@ impl AccountList {
             return Err(Refusal::from("an account needs an id and a type"));
         }
         let key = Id::from_raw(id);
-        let account = ListedAccount {
+        let mut account = ListedAccount {
             type_id,
             display_name,
             config,
             enabled,
             tint,
+            sync: None,
         };
         if let Some(existing) = self.accounts.get_mut(&key) {
+            // Saving what an account is keeps how its sync went.
+            account.sync = existing.sync.take();
             *existing = account;
         } else {
             self.accounts.push(key, account);
@@ -257,6 +295,58 @@ impl AccountList {
         )
     }
 
+    /// Report how an account's sync went on the device `device`: what every
+    /// member's window says about it. The last report wins. A report that
+    /// says what the account already says is not written, unless it is a
+    /// success more than ten minutes newer than the one kept.
+    ///
+    /// Whoever may save an account may report its sync.
+    #[action]
+    pub fn report_sync(
+        &mut self,
+        #[param("The account's id")] account: Id,
+        #[param("The device that synced it, by its key in hex")] device: String,
+        #[param("Where its sync stands")] health: SyncHealth,
+        #[param("When, in milliseconds since the Unix epoch")] at_ms: u64,
+        #[param("Whether its person just signed in to it")] signed_in: bool,
+        #[param("A short summary a person reads, never a server's own words")] message: String,
+    ) -> Result<(), Refusal> {
+        let listed = self
+            .accounts
+            .get_mut(&account)
+            .ok_or_else(|| Refusal::from("there is no such account"))?;
+        let previous = listed.sync.clone().unwrap_or_default();
+        let message = sync_message(&message);
+        let succeeded = health == SyncHealth::Healthy;
+        let next = AccountSync {
+            device,
+            health,
+            attempted_ms: at_ms,
+            succeeded_ms: if succeeded {
+                Some(at_ms)
+            } else {
+                previous.succeeded_ms
+            },
+            // A sign-in stands until the next sync says how it went.
+            signed_in_ms: signed_in.then_some(at_ms),
+            message,
+        };
+        let unchanged = listed.sync.is_some()
+            && previous.health == next.health
+            && previous.message == next.message
+            && previous.signed_in_ms.is_some() == next.signed_in_ms.is_some()
+            && !(succeeded
+                && at_ms
+                    >= previous
+                        .succeeded_ms
+                        .unwrap_or_default()
+                        .saturating_add(SYNC_SUCCESS_REFRESH_MS));
+        if !unchanged {
+            listed.sync = Some(next);
+        }
+        Ok(())
+    }
+
     /// Remove account.
     #[action]
     pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {
@@ -265,6 +355,19 @@ impl AccountList {
             .map(|_| ())
             .ok_or_else(|| Refusal::from("there is no such account"))
     }
+}
+
+/// `message` as a sync report keeps it: one line, without control
+/// characters, at most [`SYNC_MESSAGE_LIMIT`] characters.
+fn sync_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(SYNC_MESSAGE_LIMIT)
+        .collect()
 }
 
 /// The account the record keeps as `id`, in the shape every account type reads.
@@ -324,6 +427,49 @@ impl AccountList {
     #[must_use]
     pub fn len(&self) -> usize {
         self.accounts.len()
+    }
+
+    /// How the account `id`'s sync went, when a device reported it.
+    #[must_use]
+    pub fn sync_of(&self, id: &str) -> Option<&AccountSync> {
+        self.accounts
+            .get(&Id::from_raw(id.to_owned()))
+            .and_then(|account| account.sync.as_ref())
+    }
+
+    /// The edit that reports `health` for the account `id` from `device` at `at_ms`, when it
+    /// changes what the record says: none when the record would say the same.
+    ///
+    /// # Errors
+    /// The record has no such account.
+    pub fn reporting(
+        &self,
+        id: &str,
+        device: &str,
+        health: SyncHealth,
+        at_ms: u64,
+        signed_in: bool,
+        message: &str,
+    ) -> Result<Option<Invoke<Self>>, Refusal> {
+        let mut reported = self.clone();
+        reported.report_sync(
+            Id::from_raw(id.to_owned()),
+            device.to_owned(),
+            health,
+            at_ms,
+            signed_in,
+            message.to_owned(),
+        )?;
+        Ok((reported != *self).then(|| {
+            Self::REPORT_SYNC.with((
+                Id::from_raw(id.to_owned()),
+                device.to_owned(),
+                health,
+                at_ms,
+                signed_in,
+                message.to_owned(),
+            ))
+        }))
     }
 
     /// Every account of the kind `type_id`.
@@ -564,7 +710,7 @@ mod tests {
         doc.commit();
         let mut old = doc.fork();
         assert!(evolution::migrate::<AccountList>(&mut old).unwrap());
-        assert_eq!(evolution::stored_version(&old), 3);
+        assert_eq!(evolution::stored_version(&old), 4);
         let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
         assert_eq!(accounts.accounts.len(), 1);
         let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
@@ -737,6 +883,144 @@ mod tests {
                 .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("gone")))
                 .is_err()
         );
+    }
+
+    /// The edit that reports `health` for `id` from `device` at `at_ms`.
+    fn report(
+        id: &str,
+        device: &str,
+        health: SyncHealth,
+        at_ms: u64,
+        message: &str,
+    ) -> Invoke<AccountList> {
+        AccountList::REPORT_SYNC.with((
+            Id::from_raw(id),
+            device.into(),
+            health,
+            at_ms,
+            false,
+            message.into(),
+        ))
+    }
+
+    /// Every member reads how an account's sync went from the device that
+    /// reported last; a report saying nothing new is not written, a success
+    /// is again once it is ten minutes newer, and saving the account keeps
+    /// what its sync says.
+    #[test]
+    fn the_last_device_to_report_says_how_an_accounts_sync_went() {
+        let mut replica = Replica::<AccountList>::new();
+        save(&mut replica, "work", "caldav", "dav.example");
+        let minute = 60_000;
+        let succeeded = |replica: &Replica<AccountList>| {
+            replica
+                .state()
+                .unwrap()
+                .sync_of("work")
+                .unwrap()
+                .succeeded_ms
+        };
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                minute,
+                "Up to date",
+            ))
+            .unwrap();
+        replica
+            .apply(report(
+                "work",
+                "phone",
+                SyncHealth::Offline,
+                2 * minute,
+                "Waiting\nfor a connection\u{7}",
+            ))
+            .unwrap();
+        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
+        assert_eq!(sync.device, "phone", "the last device wins");
+        assert_eq!(sync.health, SyncHealth::Offline);
+        assert_eq!(sync.succeeded_ms, Some(minute), "the last success stays");
+        assert_eq!(
+            sync.message, "Waiting for a connection",
+            "one line, no control characters"
+        );
+
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                3 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        let written = replica.save();
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                5 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        assert_eq!(
+            succeeded(&replica),
+            Some(3 * minute),
+            "the same success minutes later is not written"
+        );
+        assert_eq!(replica.save(), written, "nothing new is written");
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                14 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        assert_eq!(succeeded(&replica), Some(14 * minute));
+
+        let long = "x".repeat(400);
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Error,
+                15 * minute,
+                &long,
+            ))
+            .unwrap();
+        save(&mut replica, "work", "caldav", "dav.moved.example");
+        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
+        assert_eq!(
+            sync.health,
+            SyncHealth::Error,
+            "saving the account keeps its sync"
+        );
+        assert_eq!(sync.message.chars().count(), SYNC_MESSAGE_LIMIT);
+        assert!(
+            replica
+                .apply(report("gone", "laptop", SyncHealth::Healthy, minute, ""))
+                .is_err(),
+            "no report for an account the workspace does not have"
+        );
+    }
+
+    /// A sync report is a change of the same kind as saving an account, so
+    /// the grant that saves one reports its sync and nothing less does.
+    #[test]
+    fn whoever_saves_an_account_reports_its_sync() {
+        use tilo_resource::Operation as _;
+        let reporting = report("work", "laptop", SyncHealth::Healthy, 1, "")
+            .build(1)
+            .unwrap();
+        let saving = saving("work", "caldav", calendar("https://dav.example/"))
+            .build(1)
+            .unwrap();
+        assert_eq!(reporting.operation.kind(), saving.operation.kind());
     }
 
     /// The edit that saves the account `id` of `type_id` with `config`.

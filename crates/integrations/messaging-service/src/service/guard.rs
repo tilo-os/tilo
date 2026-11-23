@@ -1,6 +1,6 @@
 //! The one check every running account checks before and after each I/O:
-//! the account is not retired, its owner is still admitted, its grant still
-//! holds, and every route goes through the person's current records.
+//! the account is not retired, its owner is still admitted, and every route
+//! goes through the person's current records.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +23,7 @@ pub(crate) struct AccountGuard {
 
 impl AccountGuard {
     /// # Errors
-    /// The grant belongs to another owner.
+    /// The key belongs to another owner.
     pub(crate) fn new(
         identity: Identity,
         credential: Credential,
@@ -41,16 +41,12 @@ impl AccountGuard {
     }
 
     /// # Errors
-    /// The account was retired, its owner's admission or its grant ended.
+    /// The account was retired, or its owner's admission ended.
     pub(crate) fn check(&self) -> Result<(), SendError> {
         if self.stopped.load(Ordering::Acquire) {
             return Err(SendError::Revoked);
         }
-        self.identity.check()?;
-        if self.credential.owner != self.identity.owner {
-            return Err(SendError::Revoked);
-        }
-        self.credential.check()
+        self.identity.check()
     }
 
     fn checked(&self, authorization: Authorization) -> Result<Authorization, SendError> {

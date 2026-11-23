@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use accounts::{Account, AccountCredentials, AccountId, Secret};
+use accounts::{Account, AccountId, Secret, SecretVault};
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::device::DeviceAuthorization;
@@ -226,12 +226,7 @@ pub fn oauth_tokens(secret: &Secret) -> Option<TokenSet> {
 pub fn oauth_secret(tokens: &TokenSet) -> Secret {
     Secret {
         password: String::new(),
-        token: serde_json::to_string(&Grant::Oauth2 {
-            tokens: tokens.clone(),
-            copied: false,
-            copy_origin: None,
-        })
-        .ok(),
+        token: Some(crate::oauth_grant(tokens)),
     }
 }
 
@@ -685,15 +680,15 @@ impl CredentialStore {
         self.config_root.as_deref()
     }
 
-    fn credentials(&self) -> Result<AccountCredentials, CredentialError> {
-        AccountCredentials::open_person(self.config_root.as_deref())
-            .map_err(CredentialError::Storage)
-    }
-
-    fn reporter(&self, id: &AccountId) -> accounts::AccountSyncReporter {
-        match &self.config_root {
-            Some(root) => accounts::AccountSyncReporter::in_root(id.clone(), root.clone()),
-            None => accounts::AccountSyncReporter::new(id.clone()),
+    /// The person's vault under this store's root, refusing one that cannot be read rather than
+    /// reading it as empty.
+    fn credentials(&self) -> Result<SecretVault, CredentialError> {
+        let vault = SecretVault::open_person(self.config_root.as_deref());
+        match vault.recovery_error() {
+            Some(error) => Err(CredentialError::Storage(format!(
+                "vault recovery required; restore access and reopen: {error}"
+            ))),
+            None => Ok(vault),
         }
     }
 
@@ -976,7 +971,7 @@ impl CredentialStore {
 
     fn fresh_oauth_tokens(
         &self,
-        credentials: &mut AccountCredentials,
+        credentials: &mut SecretVault,
         id: &AccountId,
         oauth_use: OAuthUse,
         force: bool,
@@ -1099,37 +1094,15 @@ impl CredentialStore {
         Ok(tokens)
     }
 
-    /// Say that `id` signed in again: its sync health is no longer "sign in again".
-    ///
-    /// # Errors
-    /// Its sync status could not be written.
-    pub fn signed_in(&self, id: &AccountId) -> Result<(), CredentialError> {
-        self.reporter(id)
-            .signed_in()
-            .map_err(|error| CredentialError::Storage(error.to_string()))
-    }
-
     /// What `account`'s drive signs in with now, made in memory from the grant this device
     /// keeps: an `OAuth` account's current access token, renewed when it is due (or when
     /// `force`, after the drive refused it), or an iCloud account's session headers. Nothing of
     /// it is written anywhere but the renewed grant, back into the vault. A grant the provider
-    /// no longer takes moves the account to "sign in again".
+    /// no longer takes is [`CredentialError::NeedsAuthentication`]: its person signs in again.
     ///
     /// # Errors
     /// The account is disabled, signs in with no grant here, or its grant was not renewed.
     pub fn file_credential(
-        &self,
-        account: &Account,
-        force: bool,
-    ) -> Result<cloud_source::Credential, CredentialError> {
-        let result = self.made_file_credential(account, force);
-        if result.as_ref().err() == Some(&CredentialError::NeedsAuthentication) {
-            let _ = self.reporter(&account.id).needs_authentication();
-        }
-        result
-    }
-
-    fn made_file_credential(
         &self,
         account: &Account,
         force: bool,

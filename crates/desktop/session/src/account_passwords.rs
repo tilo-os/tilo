@@ -15,6 +15,10 @@
 //! the cloud service and the origin connectors are. Any member's device that may read the vault
 //! signs in with the same entry. Where the workspace's rules ask its person first, nothing is
 //! released: no password leaves the vault on a question, on this device or another.
+//!
+//! An app that syncs one of the workspace's accounts reports how that went on the same
+//! connection; the daemon writes it into the workspace's accounts as this device's report,
+//! signed with this device's key, for every member's devices to read.
 
 use accounts::email::password_item;
 use accounts::person::AccountList;
@@ -50,10 +54,10 @@ pub(crate) async fn answer(
     by: Asker,
     command: Command,
 ) -> Result<Reply, String> {
-    let asked = if matches!(command, Command::StoreAccountSecret { .. }) {
-        "keep"
-    } else {
-        "release"
+    let asked = match command {
+        Command::StoreAccountSecret { .. } => "keep",
+        Command::ReportAccountSync { .. } => "report sync",
+        _ => "release",
     };
     tracing::info!(target: LOG, app, asked, "an app asked for an account's password to be kept or released");
     let answered = answering(daemon, workspace, app, by, command).await;
@@ -127,6 +131,27 @@ async fn answering(
                 item,
                 secret: zeroize::Zeroizing::new(secret),
             })
+        }
+        Command::ReportAccountSync {
+            account,
+            health,
+            signed_in,
+            message,
+        } => {
+            let account = vault(
+                daemon,
+                VaultCall::ReportSync {
+                    workspace: workspace.to_owned(),
+                    person: by.person,
+                    device: by.device,
+                    account,
+                    health,
+                    signed_in,
+                    message,
+                },
+            )
+            .await?;
+            Ok(Reply::AccountSyncReported { account })
         }
         _ => Err(REFUSED.into()),
     }

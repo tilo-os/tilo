@@ -243,18 +243,18 @@ mod tests {
             }
             {
                 let root = temp_root();
+                // Another account of the workspace, naming the entry of the workspace's vault
+                // its sign-in is in.
                 let other_id = AccountId::from("unrelated-service");
+                let mut other = StoredAccount::new(other_id.clone(), "unrelated");
+                other.config = serde_json::json!({
+                    crate::email::PASSWORD_ITEM_KEY: "vault.item:unrelated-sign-in",
+                });
                 let mut record = crate::person::staged_in(&root).unwrap();
                 record
-                    .apply_confirmed(AccountList::saving(&StoredAccount::new(
-                        other_id.clone(),
-                        "unrelated",
-                    )))
+                    .apply_confirmed(AccountList::saving(&other))
                     .unwrap();
                 crate::person::keep_staged_in(&root, &mut record).unwrap();
-                let mut vault = crate::SecretVault::open_in(&root);
-                vault.put(&other_id, &crate::Secret::password("unrelated-secret"));
-                vault.save();
 
                 let mut store = sample();
                 keep(&root, &store);
@@ -272,8 +272,12 @@ mod tests {
                 );
                 let staged = crate::person::staged_in(&root).unwrap();
                 let kept = staged.state().unwrap();
-                assert!(kept.account(other_id.as_str()).is_some());
-                assert!(crate::SecretVault::open_in(&root).get(&other_id).is_some());
+                let other = kept.account(other_id.as_str()).expect("still kept");
+                assert_eq!(
+                    crate::email::password_item(&other.config),
+                    Some("vault.item:unrelated-sign-in"),
+                    "saving the calendar's accounts keeps another account's sign-in named"
+                );
                 std::fs::remove_dir_all(&root).ok();
             }
             {

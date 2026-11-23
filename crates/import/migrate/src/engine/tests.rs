@@ -612,3 +612,59 @@ fn the_terminal_counts_one_thing_in_the_singular() {
         "{review}"
     );
 }
+
+/// `tilo migrate connect mail`: the address and the password the person typed go to the server
+/// that keeps their workspace as their own request, which keeps the account and its password;
+/// nothing of it is kept on this computer. A server that refuses connects nothing, in its words,
+/// and what is no mail address reaches no server.
+#[test]
+fn a_mail_account_connects_straight_to_the_workspace() {
+    use crate::service::{ServiceAddress, ServiceKind};
+    let address = |login: &str| ServiceAddress {
+        kind: ServiceKind::Mail,
+        server: String::new(),
+        login: login.into(),
+        secret: zeroize::Zeroizing::new("typed-at-the-terminal".into()),
+    };
+    let mut workspace = Recorded::default();
+    let said = super::services::connect_mail(&mut workspace, &address("Ada@Fastmail.com")).unwrap();
+    assert_eq!(said["account"], "ada@fastmail.com");
+    assert!(
+        said["said"].as_str().unwrap().contains("is connected"),
+        "{said}"
+    );
+    let [added] = workspace.added.as_slice() else {
+        panic!("one account is added: {:#?}", workspace.added);
+    };
+    assert_eq!(added["address"], "ada@fastmail.com");
+    assert_eq!(added["password"], "typed-at-the-terminal");
+    assert!(
+        !added["incomingHost"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+            && !added["outgoingHost"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+        "the address names its provider's servers: {added}"
+    );
+    assert!(!said.to_string().contains("typed-at-the-terminal"));
+
+    let mut refusing = Recorded {
+        refuses: Some("the mail server did not take the password".into()),
+        ..Recorded::default()
+    };
+    let error =
+        super::services::connect_mail(&mut refusing, &address("ada@fastmail.com")).unwrap_err();
+    let said = format!("{error:#}");
+    assert!(
+        said.contains("was not connected") && said.contains("did not take the password"),
+        "{said}"
+    );
+    assert!(refusing.kept.is_empty());
+
+    let mut untouched = Recorded::default();
+    assert!(super::services::connect_mail(&mut untouched, &address("not-an-address")).is_err());
+    assert!(untouched.added.is_empty(), "{:#?}", untouched.added);
+}

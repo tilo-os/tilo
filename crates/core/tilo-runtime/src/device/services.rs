@@ -1811,11 +1811,11 @@ fn account_sign_ins(
         );
         return None;
     };
-    super::account_sign_ins::serve(
-        &path,
-        workspaces.copies().clone(),
-        person,
-    )
+    let Some(models) = accounts::sign_ins::models_socket() else {
+        tracing::warn!("no runtime directory, so the model manager reaches no account's sign-in");
+        return None;
+    };
+    super::account_sign_ins::serve(&path, &models, workspaces.copies().clone(), person)
     .inspect_err(|error| {
         tracing::warn!(%error, path = %path.display(), "the account sign-ins socket is not served");
     })

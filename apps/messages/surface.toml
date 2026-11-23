@@ -128,7 +128,7 @@ fields = [
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
-version = 3
+version = 4
 fields = [
   { path = "accounts", type = { collection = { named = "ListedAccount" } }, stored = "collection" },
   { path = "accounts.*.type_id", type = "text" },
@@ -136,6 +136,13 @@ fields = [
   { path = "accounts.*.config", type = "any" },
   { path = "accounts.*.enabled", type = "bool" },
   { path = "accounts.*.tint", type = "int" },
+  { path = "accounts.*.sync", type = { option = { named = "AccountSync" } }, stored = "record" },
+  { path = "accounts.*.sync.device", type = "text" },
+  { path = "accounts.*.sync.health", type = { named = "SyncHealth" } },
+  { path = "accounts.*.sync.attempted_ms", type = "int" },
+  { path = "accounts.*.sync.succeeded_ms", type = { option = "int" } },
+  { path = "accounts.*.sync.signed_in_ms", type = { option = "int" } },
+  { path = "accounts.*.sync.message", type = "text" },
 ]
 
 [[resources.verbs]]
@@ -160,10 +167,33 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "report-sync"
+kind = "undoable"
+params = [
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "health", type = { named = "SyncHealth" }, required = true, schema = { oneOf = [{ type = "string", const = "never" }, { type = "string", const = "syncing" }, { type = "string", const = "healthy" }, { type = "string", const = "offline" }, { type = "string", const = "needs_sign_in" }, { type = "string", const = "error" }] } },
+  { name = "at_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "signed_in", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "remove-account"
 kind = "undoable"
 params = [
   { name = "account", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "AccountSync"
+fields = [
+  { name = "device", type = "text" },
+  { name = "health", type = { named = "SyncHealth" } },
+  { name = "attempted_ms", type = "int" },
+  { name = "succeeded_ms", type = { option = "int" } },
+  { name = "signed_in_ms", type = { option = "int" } },
+  { name = "message", type = "text" },
 ]
 
 [[resources.types]]
@@ -174,6 +204,18 @@ fields = [
   { name = "config", type = "any" },
   { name = "enabled", type = "bool" },
   { name = "tint", type = "int" },
+  { name = "sync", type = { option = { named = "AccountSync" } } },
+]
+
+[[resources.types]]
+name = "SyncHealth"
+cases = [
+  { name = "never" },
+  { name = "syncing" },
+  { name = "healthy" },
+  { name = "offline" },
+  { name = "needs_sign_in" },
+  { name = "error" },
 ]
 
 [[resources]]

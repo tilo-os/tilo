@@ -69,26 +69,79 @@ pub mod secrets;
 pub mod sign_ins;
 pub mod typed_for;
 pub use secrets::{
-    AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
-    CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
-    SecretItem, SecretItemKind, SecretStore, is_entry_id,
-};
-pub mod service_credentials;
-#[cfg(test)]
-mod service_credentials_tests;
-pub use service_credentials::{
-    AccountCredentials, CredentialRef, MODEL_SERVICE, ServiceAuthorization, ServiceCredentials,
-    provider_api_key,
+    BrokerError, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind, SecretStore,
+    is_entry_id,
 };
 #[cfg(feature = "person")]
 pub mod calendar;
 #[cfg(feature = "person")]
 pub mod person;
-pub mod status;
 pub mod vault_items;
-pub use status::{
-    AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
-};
+
+/// Where an account's sync stands, as the device that synced it last saw it
+/// ([`person::AccountSync`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "person",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncHealth {
+    /// Not synced yet.
+    #[default]
+    Never,
+    Syncing,
+    Healthy,
+    /// Waiting for a connection.
+    Offline,
+    /// Its person has to sign in again.
+    NeedsSignIn,
+    Error,
+}
+
+impl SyncHealth {
+    /// The summary a report of this health carries: the same words from every device that
+    /// syncs, never a server's own, which can carry a credential.
+    #[must_use]
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Never => "",
+            Self::Syncing => "Syncing",
+            Self::Healthy => "Up to date",
+            Self::Offline => "Waiting for a connection",
+            Self::NeedsSignIn => "Sign-in required",
+            Self::Error => "Sync failed",
+        }
+    }
+
+    /// The word an app's report to its session names it by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Syncing => "syncing",
+            Self::Healthy => "healthy",
+            Self::Offline => "offline",
+            Self::NeedsSignIn => "needs_sign_in",
+            Self::Error => "error",
+        }
+    }
+
+    /// The health `word` names ([`Self::word`]).
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        [
+            Self::Never,
+            Self::Syncing,
+            Self::Healthy,
+            Self::Offline,
+            Self::NeedsSignIn,
+            Self::Error,
+        ]
+        .into_iter()
+        .find(|health| health.word() == word)
+    }
+}
 
 /// The kind of an account — `"email"`, `"caldav"`, … Owned by the type that contributes it;
 /// the store treats it as an opaque tag it can group by.

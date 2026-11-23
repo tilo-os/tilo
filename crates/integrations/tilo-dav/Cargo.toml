@@ -21,7 +21,8 @@ zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["client"]
-# Credential ownership and origin-bound calendar access; refresh is blocking.
+# Origin-bound calendar access with a sign-in the session released, and the
+# installer's calendar sign-ins before their account exists.
 oauth = ["client", "net", "dep:accounts", "dep:account-credentials", "dep:serde_json"]
 # Explicit trusted loopback fixture, never an implicit production override.
 test-support = ["oauth"]

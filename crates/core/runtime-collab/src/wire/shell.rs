@@ -208,9 +208,26 @@ pub enum VaultCall {
         app: String,
         item: String,
     },
-    /// Forget the account `account` from the workspace's accounts. Answered `true` when the
-    /// workspace had it.
-    Forget { workspace: String, account: String },
+    /// Write how this device's sync of the account `account` went (`health`, a word of
+    /// `accounts::SyncHealth`, whether it is signed in, and what it said) into the workspace's
+    /// accounts as this device's report, as `person` asks from `device`. Answered with the
+    /// account.
+    ReportSync {
+        workspace: String,
+        person: [u8; 32],
+        device: [u8; 32],
+        account: String,
+        health: String,
+        signed_in: bool,
+        message: String,
+    },
+    /// Browser's ask `command` for one of the website sessions the person `person` selected,
+    /// decided where the vault is. Answered with Browser's reply, as JSON.
+    WebsiteSession {
+        workspace: String,
+        person: [u8; 32],
+        command: crate::BrowserServiceSessionCommand,
+    },
 }
 
 impl std::fmt::Debug for VaultCall {
@@ -232,16 +249,24 @@ impl std::fmt::Debug for VaultCall {
                 formatter,
                 "Release {{ workspace: {workspace}, app: {app}, item: {item} }}"
             ),
-            Self::Forget { workspace, account } => write!(
+            Self::ReportSync {
+                workspace,
+                account,
+                health,
+                ..
+            } => write!(
                 formatter,
-                "Forget {{ workspace: {workspace}, account: {account} }}"
+                "ReportSync {{ workspace: {workspace}, account: {account}, health: {health} }}"
             ),
+            Self::WebsiteSession { workspace, .. } => {
+                write!(formatter, "WebsiteSession {{ workspace: {workspace} }}")
+            }
         }
     }
 }
 
-/// What a [`VaultCall`] is answered with: an entry's reference, a released secret, or whether an
-/// account was forgotten. Never shown in a log.
+/// What a [`VaultCall`] is answered with: an entry's reference, a released secret, the account
+/// reported, or Browser's reply about a website session. Never shown in a log.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultAnswer(pub String);
 

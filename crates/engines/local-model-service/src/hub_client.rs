@@ -1,29 +1,26 @@
-//! The model manager's Hugging Face client and the person's access token.
+//! The model manager's Hugging Face client and the workspace's Hugging Face sign-in.
+//!
+//! The sign-in is the workspace's: a Hugging Face account in its accounts names the entry of its
+//! vault that keeps a pasted token or the grant a sign-in left, and Settings keeps both. The
+//! manager asks the session for it on the socket the session serves the model manager
+//! ([`accounts::sign_ins::models_socket`]): it is told the Hugging Face accounts, and is released
+//! the token, or the grant's access token renewed where it was due, never the refresh token.
+//!
+//! On a device without a browser the person signs in here, in a terminal, by device code
+//! ([`sign_in_with_code`]); the session keeps that grant as Settings keeps one. Signing out
+//! ([`sign_out`]) has the session forget the account with its sign-in.
 
 use std::fs::File;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::time::Duration;
 
-use account_credentials::hugging_face::{self, HubCredential, HubSignIn};
-use accounts::{CredentialRef, ServiceAuthorization, ServiceCredentials};
-use agent_provider_config::local::hub::{
-    HUB_ORIGIN, HubAccount, HubTokenState, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE,
-};
+use account_credentials::hugging_face::{self, HubSignIn};
+use accounts::sign_ins::{self, Answer, Ask, Client, Held};
+use agent_provider_config::local::hub::{HUB_ORIGIN, HubAccount, HubTokenState};
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
-use tilo_oauth::OAuthError;
-use tilo_oauth::client::OAuthClient;
 use zeroize::Zeroizing;
-
-/// Where the token or sign-in Settings stored lives in the device vault.
-fn token_binding() -> Result<(CredentialRef, ServiceAuthorization), String> {
-    let authorization = ServiceAuthorization::new(TOKEN_SERVICE, TOKEN_PURPOSE, HUB_ORIGIN)
-        .map_err(|error| error.to_string())?;
-    let reference = authorization
-        .credential_ref(TOKEN_ID)
-        .map_err(|error| error.to_string())?;
-    Ok((reference, authorization))
-}
 
 /// The token requests carry, and what Settings is told of it.
 pub(crate) struct HubCredentialRead {
@@ -31,100 +28,141 @@ pub(crate) struct HubCredentialRead {
     pub(crate) state: HubTokenState,
 }
 
-/// The person's Hugging Face credential on this device: a pasted token, or
-/// a sign-in's access token, renewed and stored back when it is due.
-///
-/// # Errors
-/// An unreadable vault (never mistaken for "no token"), or a renewal that
-/// could not reach Hugging Face.
-pub(crate) fn stored_credential() -> Result<HubCredentialRead, String> {
-    let (reference, authorization) = token_binding()?;
-    let vault = ServiceCredentials::open();
-    let Some(stored) = vault
-        .resolve(&reference, &authorization)
-        .map_err(|error| format!("the Hugging Face token cannot be read: {error}"))?
-    else {
-        return Ok(HubCredentialRead {
-            token: None,
-            state: HubTokenState::None,
-        });
+impl HubCredentialRead {
+    const NONE: Self = Self {
+        token: None,
+        state: HubTokenState::None,
     };
-    match HubCredential::parse(&stored) {
-        HubCredential::Token(token) => Ok(HubCredentialRead {
-            token: Some(token),
-            state: HubTokenState::Pasted,
-        }),
-        HubCredential::SignedIn(sign_in) => settle(
-            sign_in,
-            |sign_in| {
-                let config = hugging_face::config().ok_or_else(|| {
-                    OAuthError::Protocol("this build has no Hugging Face sign-in".into())
-                })?;
-                sign_in.renewed(&OAuthClient::new()?, &config)
-            },
-            |renewed| {
-                vault
-                    .store(&reference, &authorization, &HubCredential::encode(renewed))
-                    .map_err(|error| {
-                        format!("the renewed Hugging Face sign-in cannot be stored: {error}")
-                    })
-            },
-        ),
-    }
 }
 
-/// A sign-in's access token: as stored while it lasts, else renewed and
-/// saved. One that cannot be renewed is ended, and requests go without it.
-fn settle(
-    sign_in: HubSignIn,
-    renew: impl FnOnce(&HubSignIn) -> Result<HubSignIn, OAuthError>,
-    save: impl FnOnce(&HubSignIn) -> Result<(), String>,
-) -> Result<HubCredentialRead, String> {
-    let account = HubAccount {
-        username: sign_in.username.clone(),
-        name: sign_in.name.clone(),
-    };
-    let sign_in = if sign_in.due() {
-        match renew(&sign_in) {
-            Ok(renewed) => {
-                save(&renewed)?;
-                renewed
-            }
-            Err(OAuthError::InvalidGrant) => {
-                return Ok(HubCredentialRead {
-                    token: None,
-                    state: HubTokenState::Ended { account },
-                });
-            }
-            Err(error) => {
-                return Err(format!(
-                    "the Hugging Face sign-in cannot be renewed: {error}"
-                ));
-            }
-        }
-    } else {
-        sign_in
-    };
-    Ok(HubCredentialRead {
-        token: Some(Zeroizing::new(sign_in.tokens.access_token)),
-        state: HubTokenState::SignedIn { account },
+/// The workspace's Hugging Face credential, as the session releases it to this login.
+///
+/// # Errors
+/// The session does not answer, or refused the sign-in in its own words.
+pub(crate) fn stored_credential() -> Result<HubCredentialRead, String> {
+    sign_ins::models_socket().map_or(Ok(HubCredentialRead::NONE), |socket| {
+        stored_credential_at(&socket)
     })
 }
 
-/// What `hub-account` answers: the stored credential's state, as JSON.
+/// [`stored_credential`], asked on the session's socket at `socket`.
+fn stored_credential_at(socket: &Path) -> Result<HubCredentialRead, String> {
+    let mut session = match Client::connect(socket) {
+        Ok(session) => session,
+        // No session runs for this login, so no workspace's account is known here.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Ok(HubCredentialRead::NONE);
+        }
+        Err(error) => {
+            return Err(format!(
+                "the session cannot be asked for the Hugging Face sign-in: {error}"
+            ));
+        }
+    };
+    let asked = |answer: std::io::Result<Answer>| {
+        answer.map_err(|error| format!("the session did not answer: {error}"))
+    };
+    let held = match asked(session.ask(&Ask::Accounts { after: None }))? {
+        Answer::Accounts { accounts, .. } => accounts.into_iter().find(|held| held.account.enabled),
+        Answer::Refused { error } => return Err(error),
+        Answer::SignIn { .. } | Answer::Reported => return Err(sign_ins::NOT_ANSWERED.into()),
+    };
+    let Some(Held {
+        workspace, account, ..
+    }) = held
+    else {
+        return Ok(HubCredentialRead::NONE);
+    };
+    let Some(item) = accounts::email::password_item(&account.config) else {
+        return Ok(HubCredentialRead::NONE);
+    };
+    let signed_in = signed_in_as(&account.config);
+    let ask = Ask::SignIn {
+        workspace,
+        item: item.to_owned(),
+    };
+    match (asked(session.ask(&ask))?, signed_in) {
+        (Answer::SignIn { secret }, None) => Ok(HubCredentialRead {
+            token: Some(secret),
+            state: HubTokenState::Pasted,
+        }),
+        (Answer::SignIn { secret }, Some(account)) => Ok(HubCredentialRead {
+            token: Some(secret),
+            state: HubTokenState::SignedIn { account },
+        }),
+        // A sign-in Hugging Face will not renew any more has ended, and requests go without it.
+        (Answer::Refused { error }, Some(account)) if error == sign_ins::SIGN_IN_AGAIN => {
+            Ok(HubCredentialRead {
+                token: None,
+                state: HubTokenState::Ended { account },
+            })
+        }
+        (Answer::Refused { error }, _) => Err(error),
+        (Answer::Accounts { .. } | Answer::Reported, _) => Err(sign_ins::NOT_ANSWERED.into()),
+    }
+}
+
+/// Who signed in, from the Hugging Face account's settings: `None` for a pasted token.
+fn signed_in_as(config: &serde_json::Value) -> Option<HubAccount> {
+    let text = |key: &str| {
+        config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    Some(HubAccount {
+        username: text("username")?,
+        name: text("name"),
+    })
+}
+
+/// What `hub-account` answers: the workspace's Hugging Face credential's state, as JSON.
 pub(crate) fn account_state() -> Result<String, String> {
     serde_json::to_string(&stored_credential()?.state).map_err(|error| error.to_string())
 }
 
-/// Sign in with Hugging Face by device code, for a device without a
-/// browser: the code and its page go to standard error, and the sign-in is
-/// stored where Settings stores one.
+/// What a sign-in or sign-out without a session to keep it is told.
+const NO_SESSION: &str = "Sign in to Tilo first: the workspace keeps the Hugging Face sign-in";
+
+/// The session's model manager socket, answering now.
+fn session_at(socket: Option<std::path::PathBuf>) -> Result<Client, String> {
+    let socket = socket.ok_or(NO_SESSION)?;
+    Client::connect(&socket).map_err(|error| format!("{NO_SESSION} ({error})"))
+}
+
+/// The answer to `ask`, when the session did what it asks.
+fn done(session: &mut Client, ask: &Ask) -> Result<(), String> {
+    match session.ask(ask) {
+        Ok(Answer::Reported) => Ok(()),
+        Ok(Answer::Refused { error }) => Err(error),
+        Ok(Answer::Accounts { .. } | Answer::SignIn { .. }) => Err(sign_ins::NOT_ANSWERED.into()),
+        Err(error) => Err(format!("the session did not answer: {error}")),
+    }
+}
+
+/// The workspace's Hugging Face accounts, as the session tells them.
+fn told(session: &mut Client) -> Result<Vec<Held>, String> {
+    match session.ask(&Ask::Accounts { after: None }) {
+        Ok(Answer::Accounts { accounts, .. }) => Ok(accounts),
+        Ok(Answer::Refused { error }) => Err(error),
+        Ok(Answer::SignIn { .. } | Answer::Reported) => Err(sign_ins::NOT_ANSWERED.into()),
+        Err(error) => Err(format!("the session did not answer: {error}")),
+    }
+}
+
+/// Sign in with Hugging Face by device code, for a device without a browser: the code and its
+/// page go to standard error, and the session keeps the grant as the workspace's Hugging Face
+/// account's sign-in.
 pub(crate) fn sign_in_with_code() -> Result<Option<String>, String> {
-    let (provider, client) =
-        hugging_face::config().ok_or("this build has no Hugging Face sign-in")?;
-    let http = OAuthClient::new().map_err(|error| error.to_string())?;
-    let device = tilo_oauth::device::DeviceAuthorization::begin(&http, &provider, &client)
-        .map_err(|error| error.to_string())?;
+    // Asked first, so nobody enters a code that nothing will keep.
+    drop(session_at(sign_ins::models_socket())?);
+    let device = hugging_face::begin_device().map_err(|error| error.to_string())?;
     eprintln!(
         "To sign in with Hugging Face, open {} and enter {}",
         device.verification_uri(),
@@ -132,14 +170,47 @@ pub(crate) fn sign_in_with_code() -> Result<Option<String>, String> {
     );
     let sign_in = hugging_face::finish_device(device, hugging_face::USERINFO_ENDPOINT)
         .map_err(|error| error.to_string())?;
-    let (reference, authorization) = token_binding()?;
-    ServiceCredentials::open()
-        .store(&reference, &authorization, &HubCredential::encode(&sign_in))
-        .map_err(|error| error.to_string())?;
+    keep(&mut session_at(sign_ins::models_socket())?, &sign_in)?;
     Ok(Some(format!(
         "Signed in to Hugging Face as {}",
         sign_in.username
     )))
+}
+
+/// Have the session keep `sign_in`'s grant: in the workspace whose Hugging Face account it
+/// replaces, or, with none, the session's choice.
+fn keep(session: &mut Client, sign_in: &HubSignIn) -> Result<(), String> {
+    let workspace = told(session)?.into_iter().next().map(|held| held.workspace);
+    done(
+        session,
+        &Ask::Keep {
+            workspace,
+            secret: sign_ins::Withheld(Zeroizing::new(account_credentials::oauth_grant(
+                &sign_in.tokens,
+            ))),
+            username: sign_in.username.clone(),
+            name: sign_in.name.clone(),
+        },
+    )
+}
+
+/// What `hub-sign-out` does: the session forgets the workspace's Hugging Face accounts and
+/// their sign-ins, so downloads go without them.
+pub(crate) fn sign_out() -> Result<Option<String>, String> {
+    forget_all(&mut session_at(sign_ins::models_socket())?).map(|()| None)
+}
+
+fn forget_all(session: &mut Client) -> Result<(), String> {
+    for held in told(session)? {
+        done(
+            session,
+            &Ask::Forget {
+                workspace: held.workspace,
+                account: held.account.id.as_str().to_owned(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// HTTPS to the Hub, with the person's token when one is stored, so their
@@ -313,96 +384,123 @@ pub(crate) fn copy_range(
 
 #[cfg(test)]
 mod tests {
-    use tilo_oauth::TokenSet;
+    use accounts::sign_ins::fixture::{Fixture, item_for};
 
     use super::*;
 
-    fn sign_in(expires_in: u64, obtained_at: u64) -> HubSignIn {
-        HubSignIn {
-            tokens: TokenSet {
-                access_token: "hf_oauth_old".into(),
-                refresh_token: "refresh".into(),
-                expires_in,
-                obtained_at,
-                scope: None,
-            },
-            username: "ada".into(),
-            name: None,
-        }
-    }
-
-    fn signed_in_as_ada() -> HubTokenState {
-        HubTokenState::SignedIn {
-            account: HubAccount {
-                username: "ada".into(),
-                name: None,
-            },
-        }
+    fn hub_account(config: serde_json::Value) -> accounts::Account {
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from("hugging-face"),
+            sign_ins::MODEL_HUB_TYPE,
+        );
+        account.config = config;
+        accounts::email::set_password_item(&mut account.config, Some(&item_for("hugging-face")));
+        account
     }
 
     tilo_test_env::scenario! {
-        /// The hub sign-in a request carries: current, due for renewal, or past renewing.
-        fn a_stored_sign_in_is_used_renewed_or_ended;
+        /// The credential the manager downloads with is the workspace's Hugging Face account's,
+        /// released by the session: none without one, a pasted token, a sign-in's access token
+        /// with who signed in, and a refusal in the session's words.
+        fn the_workspaces_hugging_face_sign_in_is_what_requests_carry;
 
-        phase a_current_sign_in_is_used_as_stored;
+        phase no_session_and_no_account_mean_no_token;
         {
-            let read = settle(
-                sign_in(3600, tilo_clock::unix_now()),
-                |_| panic!("nothing to renew"),
-                |_| panic!("nothing to save"),
-            )
-            .unwrap();
-            assert_eq!(
-                read.token.as_deref().map(String::as_str),
-                Some("hf_oauth_old")
-            );
-            assert_eq!(read.state, signed_in_as_ada());
-        }
-
-        phase a_due_sign_in_is_renewed_and_saved;
-        {
-            let mut saved = None;
-            let read = settle(
-                sign_in(60, 1),
-                |old| {
-                    let mut renewed = old.clone();
-                    renewed.tokens.access_token = "hf_oauth_new".into();
-                    Ok(renewed)
-                },
-                |renewed| {
-                    saved = Some(renewed.tokens.access_token.clone());
-                    Ok(())
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                read.token.as_deref().map(String::as_str),
-                Some("hf_oauth_new")
-            );
-            assert_eq!(saved.as_deref(), Some("hf_oauth_new"));
-            assert_eq!(read.state, signed_in_as_ada());
-        }
-
-        phase a_sign_in_that_cannot_be_renewed_has_ended;
-        {
-            let read = settle(
-                sign_in(60, 1),
-                |_| Err(OAuthError::InvalidGrant),
-                |_| panic!("nothing to save"),
-            )
-            .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let read = stored_credential_at(&dir.path().join("absent")).unwrap();
             assert!(read.token.is_none());
-            assert!(
-                matches!(read.state, HubTokenState::Ended { ref account } if account.username == "ada")
+            assert_eq!(read.state, HubTokenState::None);
+            let session = Fixture::serve_models(dir.path());
+            let read = stored_credential_at(&session.socket()).unwrap();
+            assert_eq!(read.state, HubTokenState::None);
+        }
+
+        phase a_pasted_token_is_carried;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let session = Fixture::serve_models(dir.path());
+            session.keep_account(hub_account(serde_json::json!({"server_url": HUB_ORIGIN})));
+            session.keep("hugging-face", "hf_pasted");
+            let read = stored_credential_at(&session.socket()).unwrap();
+            assert_eq!(read.token.as_deref().map(String::as_str), Some("hf_pasted"));
+            assert_eq!(read.state, HubTokenState::Pasted);
+            assert_eq!(session.released(), [item_for("hugging-face")]);
+        }
+
+        phase a_sign_in_is_carried_as_who_signed_in;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let session = Fixture::serve_models(dir.path());
+            session.keep_account(hub_account(serde_json::json!({
+                "server_url": HUB_ORIGIN, "username": "ada", "name": "Ada Lovelace",
+            })));
+            session.keep("hugging-face", "hf_oauth_access");
+            let read = stored_credential_at(&session.socket()).unwrap();
+            assert_eq!(read.token.as_deref().map(String::as_str), Some("hf_oauth_access"));
+            assert_eq!(
+                read.state,
+                HubTokenState::SignedIn {
+                    account: HubAccount {
+                        username: "ada".into(),
+                        name: Some("Ada Lovelace".into()),
+                    }
+                }
             );
-            assert!(
-                settle(
-                    sign_in(60, 1),
-                    |_| Err(OAuthError::Network("offline".into())),
-                    |_| panic!("nothing to save"),
-                )
-                .is_err()
+        }
+
+        phase a_sign_in_in_a_terminal_is_kept_and_signing_out_forgets_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let session = Fixture::serve_models(dir.path());
+            let sign_in = HubSignIn {
+                tokens: account_credentials::TokenSet {
+                    access_token: "hf_oauth_access".into(),
+                    refresh_token: "hf_refresh".into(),
+                    ..account_credentials::TokenSet::default()
+                },
+                username: "ada".into(),
+                name: None,
+            };
+            keep(&mut Client::connect(&session.socket()).unwrap(), &sign_in).unwrap();
+            // The session keeps the grant itself, which it renews, and the account names it.
+            let read = stored_credential_at(&session.socket()).unwrap();
+            assert_eq!(
+                read.state,
+                HubTokenState::SignedIn {
+                    account: HubAccount {
+                        username: "ada".into(),
+                        name: None,
+                    }
+                }
             );
+            let grant = read.token.unwrap();
+            let kept: serde_json::Value = serde_json::from_str(&grant).unwrap();
+            assert_eq!(kept["kind"], "oauth2");
+            assert_eq!(kept["tokens"]["refresh_token"], "hf_refresh");
+
+            forget_all(&mut Client::connect(&session.socket()).unwrap()).unwrap();
+            assert_eq!(
+                stored_credential_at(&session.socket()).unwrap().state,
+                HubTokenState::None
+            );
+            let mut asked = Client::connect(&session.socket()).unwrap();
+            let entry = Ask::SignIn {
+                workspace: accounts::sign_ins::fixture::WORKSPACE.into(),
+                item: item_for(sign_ins::MODEL_HUB_ACCOUNT),
+            };
+            assert!(
+                matches!(asked.ask(&entry), Ok(Answer::Refused { .. })),
+                "the sign-in went with the account"
+            );
+        }
+
+        phase a_refused_sign_in_is_said_in_the_sessions_words;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let session = Fixture::serve_models(dir.path());
+            session.keep_account(hub_account(serde_json::json!({"server_url": HUB_ORIGIN})));
+            let refused = stored_credential_at(&session.socket()).err().unwrap();
+            assert_eq!(refused, "This workspace's vault keeps no such entry");
         }
     }
 }

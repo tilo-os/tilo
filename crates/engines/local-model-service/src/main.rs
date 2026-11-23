@@ -132,11 +132,14 @@ enum Action {
         #[arg(long)]
         name: String,
     },
-    /// The Hugging Face token or sign-in stored here, as JSON, renewing a
-    /// sign-in that is due.
+    /// The Hugging Face account this workspace keeps, as JSON.
     HubAccount,
-    /// Sign in with Hugging Face by entering a code on another device.
+    /// Sign in with Hugging Face by entering a code on another device; the
+    /// workspace keeps the sign-in.
     HubSignIn,
+    /// Sign out of Hugging Face: the workspace forgets the account and its
+    /// sign-in.
+    HubSignOut,
     #[command(hide = true)]
     Worker {
         #[arg(long)]
@@ -208,6 +211,7 @@ enum RpcAction {
         name: String,
     },
     HubAccount,
+    HubSignOut,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -795,6 +799,7 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
         }),
         Action::ImportFile { name } => Ok(RpcAction::ImportFile { name: name.clone() }),
         Action::HubAccount => Ok(RpcAction::HubAccount),
+        Action::HubSignOut => Ok(RpcAction::HubSignOut),
         Action::RecoverOrphan { .. }
         | Action::HubSignIn
         | Action::Worker { .. }
@@ -929,6 +934,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         },
         RpcAction::ImportFile { name } => Action::ImportFile { name },
         RpcAction::HubAccount => Action::HubAccount,
+        RpcAction::HubSignOut => Action::HubSignOut,
     };
     Cli {
         root: None,
@@ -1243,6 +1249,7 @@ fn run_without_store(command: &Action, root: &Path) -> Option<Result<Option<Stri
         }
         Action::HubSearch { query, format } => hub_search(query, format).map(Some),
         Action::HubAccount => hub_client::account_state().map(Some),
+        Action::HubSignOut => hub_client::sign_out(),
         _ => return None,
     })
 }
@@ -1363,6 +1370,7 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
         | Action::HubModel { .. }
         | Action::HubAccount
         | Action::HubSignIn
+        | Action::HubSignOut
         | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }

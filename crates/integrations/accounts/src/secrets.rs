@@ -1,4 +1,6 @@
-//! General-purpose encrypted secrets and the credential broker.
+//! The secret items Passwords keeps (a login, a key, a note), which are the entries of a
+//! workspace's vault, and the store a device kept them in before: Passwords converts what
+//! it holds into the workspace's vault and takes it out of the store.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -17,27 +19,11 @@ use zeroize::Zeroizing;
 use crate::{AccountId, Saved, Secret, SecretVault, VaultBackend};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
-const GRANT_PREFIX: &str = "tilo-secret-grant:";
-const MAX_PURPOSE_BYTES: usize = 160;
 const MAX_ORIGIN_BYTES: usize = 2_048;
-
-#[path = "credential_owner.rs"]
-mod owner;
-pub use owner::CredentialOwner;
-
-#[path = "credential_pending.rs"]
-mod pending;
-pub use pending::CredentialProposal;
-
-#[cfg(test)]
-#[path = "credential_owner_tests.rs"]
-mod owner_tests;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretId(pub String);
-
-const MESSAGING_PROFILE_SCOPE: &str = "tilo.messaging.profile.scope";
 
 impl SecretId {
     /// A new entry's id: random, and spelled as a reference to a vault item names it
@@ -116,12 +102,6 @@ impl std::fmt::Debug for SecretItem {
 }
 
 impl SecretItem {
-    /// Device authentication material is excluded from shared workspace vaults.
-    #[must_use]
-    pub fn may_share_with_workspace(&self) -> bool {
-        !self.fields.contains_key(MESSAGING_PROFILE_SCOPE)
-    }
-
     /// A list of items from its JSON form (a backup's), read by code the
     /// runtime holds once rather than every app that reads such a list.
     #[inline(never)]
@@ -175,16 +155,8 @@ impl SecretStore {
         }
     }
 
-    /// The store of a vault in browser page storage; see
-    /// [`SecretVault::open_page`].
-    pub fn open_page(page: tilo_files::Dir) -> Self {
-        Self {
-            vault: SecretVault::open_page(page),
-        }
-    }
-
     /// Finish writing the edits [`Self::put`] and [`Self::remove`] left in
-    /// flight: [`Saved::Pending`] while the browser is still writing them.
+    /// flight: [`Saved::Pending`] while they are still being written.
     ///
     /// # Errors
     ///
@@ -229,10 +201,6 @@ impl SecretStore {
             .token
             .and_then(|json| serde_json::from_str(&json).ok())
     }
-    fn contains(&self, id: &SecretId) -> bool {
-        self.vault
-            .contains(&AccountId::new(format!("{ITEM_PREFIX}{}", id.0)))
-    }
 
     pub fn put(&mut self, item: &mut SecretItem) -> Result<(), BrokerError> {
         let previous_updated = item.updated_unix;
@@ -267,101 +235,12 @@ impl SecretStore {
         let Some(previous) = self.vault.get(&key) else {
             return Ok(false);
         };
-        let grants = self
-            .grants()
-            .into_iter()
-            .filter(|grant| grant.item_id == *id)
-            .filter_map(|grant| {
-                let key = AccountId::new(grant.storage_key());
-                self.vault.get(&key).map(|secret| (key, secret))
-            })
-            .collect::<Vec<_>>();
         self.vault.remove(&key);
-        self.remove_grants_matching(|grant| grant.item_id == *id);
         if let Err(error) = self.vault.commit() {
             self.vault.put(&key, &previous);
-            for (key, secret) in grants {
-                self.vault.put(&key, &secret);
-            }
             return Err(BrokerError::Storage(error));
         }
         Ok(true)
-    }
-
-    /// Durable application access, sorted for a stable management UI.
-    pub fn grants(&self) -> Vec<CredentialGrant> {
-        let mut grants = self
-            .vault
-            .entries_with_prefix(GRANT_PREFIX)
-            .into_iter()
-            .filter_map(|(_, entry)| entry.token)
-            .filter_map(|json| serde_json::from_str(&json).ok())
-            .collect::<Vec<CredentialGrant>>();
-        grants.sort_by(|a, b| {
-            a.app_id
-                .cmp(&b.app_id)
-                .then_with(|| a.item_id.cmp(&b.item_id))
-                .then_with(|| a.origin.cmp(&b.origin))
-        });
-        grants
-    }
-
-    /// See what other processes saved since this store read the vault
-    /// ([`SecretVault::refresh`]).
-    pub fn refresh(&mut self) {
-        self.vault.refresh();
-    }
-
-    fn has_persistent_grant(&self, key: &GrantKey) -> bool {
-        self.grants().iter().any(|grant| grant.key() == *key)
-    }
-
-    fn persist_grant(&mut self, grant: &CredentialGrant) -> Result<(), BrokerError> {
-        let payload =
-            Zeroizing::new(serde_json::to_string(grant).map_err(|_| BrokerError::CorruptItem)?);
-        let key = AccountId::new(grant.storage_key());
-        self.vault.put(
-            &key,
-            &Secret {
-                password: String::new(),
-                token: Some(payload.to_string()),
-            },
-        );
-        if let Err(error) = self.vault.try_save() {
-            // A failed durable decision must not become an in-memory grant for
-            // the remainder of this broker process.
-            self.vault.remove(&key);
-            return Err(BrokerError::Storage(error));
-        }
-        Ok(())
-    }
-
-    fn remove_grants_matching(&mut self, predicate: impl Fn(&CredentialGrant) -> bool) -> usize {
-        let matches = self
-            .grants()
-            .into_iter()
-            .filter(predicate)
-            .collect::<Vec<_>>();
-        for grant in &matches {
-            self.vault.remove(&AccountId::new(grant.storage_key()));
-        }
-        matches.len()
-    }
-
-    pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
-        let removed = self.remove_grants_matching(|candidate| candidate == grant) > 0;
-        if removed {
-            self.vault.try_save().map_err(BrokerError::Storage)?;
-        }
-        Ok(removed)
-    }
-
-    pub fn revoke_app_grants(&mut self, app_id: &str) -> Result<usize, BrokerError> {
-        let removed = self.remove_grants_matching(|grant| grant.app_id == app_id);
-        if removed > 0 {
-            self.vault.try_save().map_err(BrokerError::Storage)?;
-        }
-        Ok(removed)
     }
 
     /// Fetch secret material for a user-initiated reveal/copy operation. The
@@ -374,118 +253,10 @@ impl SecretStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccessRequest {
-    pub app_id: String,
-    pub item_id: SecretId,
-    pub purpose: String,
-    pub origin: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccessDecision {
-    Deny,
-    AllowOnce,
-    AllowForSession,
-    AllowAlways,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct GrantKey {
-    app_id: String,
-    item_id: SecretId,
-    origin: Option<String>,
-    scope: Option<CredentialScope>,
-}
-
-/// Frozen native resource identity. Metadata alone never admits its caller;
-/// the authenticated host validates ownership before requesting this grant.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialScope {
-    pub actor: String,
-    pub device: String,
-    pub service: String,
-    pub account: String,
-    pub generation: u64,
-}
-impl CredentialScope {
-    fn valid(&self) -> bool {
-        self.generation > 0
-            && [&self.actor, &self.device, &self.service, &self.account]
-                .iter()
-                .all(|value| {
-                    !value.is_empty()
-                        && value.len() <= 512
-                        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
-                })
-    }
-}
-
-/// The permission's lifetime. Session permissions never enter the vault file.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GrantLifetime {
-    #[default]
-    Persistent,
-    Session,
-}
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    *value == T::default()
-}
-
-/// A credential permission. Durable relationships are encrypted; session
-/// relationships stay in their original broker's memory.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialGrant {
-    id: String,
-    pub app_id: String,
-    pub item_id: SecretId,
-    pub origin: Option<String>,
-    pub created_unix: u64,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub lifetime: GrantLifetime,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<CredentialScope>,
-}
-
-impl CredentialGrant {
-    fn new(key: GrantKey) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            app_id: key.app_id,
-            item_id: key.item_id,
-            origin: key.origin,
-            created_unix: unix_now(),
-            lifetime: GrantLifetime::Persistent,
-            scope: key.scope,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn key(&self) -> GrantKey {
-        GrantKey {
-            app_id: self.app_id.clone(),
-            item_id: self.item_id.clone(),
-            origin: self.origin.clone(),
-            scope: self.scope.clone(),
-        }
-    }
-
-    fn storage_key(&self) -> String {
-        format!("{GRANT_PREFIX}{}", self.id)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BrokerError {
     Denied,
     NotFound,
-    OriginMismatch,
     InvalidOrigin,
-    InvalidAppId,
-    InvalidPurpose,
     CorruptItem,
     Storage(String),
     Randomness,
@@ -498,12 +269,7 @@ impl std::fmt::Display for BrokerError {
                 formatter.write_str("the credential belongs to another service or purpose")
             }
             Self::NotFound => formatter.write_str("no such credential is stored"),
-            Self::OriginMismatch => formatter.write_str("the credential belongs to another origin"),
             Self::InvalidOrigin => formatter.write_str("the credential's origin is not valid"),
-            Self::InvalidAppId => formatter.write_str("the credential's id is not valid"),
-            Self::InvalidPurpose => {
-                formatter.write_str("the credential or its purpose is not valid")
-            }
             Self::CorruptItem => formatter.write_str("the stored credential is damaged"),
             Self::Storage(reason) => {
                 write!(formatter, "the credential vault is unavailable: {reason}")
@@ -514,218 +280,6 @@ impl std::fmt::Display for BrokerError {
 }
 
 impl std::error::Error for BrokerError {}
-
-/// Session broker. The UI/portal supplies the decision callback; only a user
-/// gesture can create a grant. `AllowOnce` is consumed immediately.
-pub struct CredentialBroker {
-    store: SecretStore,
-    session_grants: BTreeMap<GrantKey, CredentialGrant>,
-    revision: u64,
-}
-
-impl CredentialBroker {
-    pub fn new(store: SecretStore) -> Self {
-        Self {
-            store,
-            session_grants: BTreeMap::new(),
-            revision: 0,
-        }
-    }
-
-    /// Read only under an existing exact item/application/origin grant.
-    /// Background account startup and native I/O must use this path: no
-    /// permission callback runs and a consumed one-shot grant cannot restart.
-    pub fn request_existing(
-        &mut self,
-        request: &AccessRequest,
-    ) -> Result<Zeroizing<String>, BrokerError> {
-        self.request(request, |_, _| AccessDecision::Deny)
-    }
-    /// Read under an existing exact resource grant; legacy unscoped grants do
-    /// not authorize this path. No permission callback or implicit grant runs.
-    pub fn request_existing_scoped(
-        &mut self,
-        request: &AccessRequest,
-        scope: &CredentialScope,
-    ) -> Result<Zeroizing<String>, BrokerError> {
-        self.request_scoped(request, scope, |_, _, _| AccessDecision::Deny)
-    }
-
-    /// Read a private messaging profile key through its existing exact grant.
-    /// Profile ownership requires the original system vault; local-file fallback
-    /// and ordinary password items never authorize this path. Private metadata
-    /// binds the item itself, independently of the permission grant.
-    pub fn request_existing_profile_key(
-        &mut self,
-        request: &AccessRequest,
-        scope: &CredentialScope,
-    ) -> Result<Zeroizing<String>, BrokerError> {
-        self.store.refresh();
-        if self.store.backend() != VaultBackend::System
-            || self.store.recovery_error().is_some()
-            || request.app_id != "so.tilo.messages"
-            || !scope.valid()
-        {
-            return Err(BrokerError::Denied);
-        }
-        let mut item = self
-            .store
-            .get(&request.item_id)
-            .ok_or(BrokerError::NotFound)?;
-        // This metadata lookup does not return or retain another plaintext copy.
-        zeroize::Zeroize::zeroize(&mut item.password);
-        let bound = item.kind == SecretItemKind::Other
-            && item.fields.get(MESSAGING_PROFILE_SCOPE)
-                == Some(&serde_json::to_string(scope).map_err(|_| BrokerError::CorruptItem)?);
-        if !bound {
-            return Err(BrokerError::Denied);
-        }
-        self.request_existing_scoped(request, scope)
-    }
-
-    pub fn request<F>(
-        &mut self,
-        request: &AccessRequest,
-        decide: F,
-    ) -> Result<Zeroizing<String>, BrokerError>
-    where
-        F: FnOnce(&AccessRequest, &SecretItem) -> AccessDecision,
-    {
-        self.request_in_scope(request, None, decide)
-    }
-    pub fn request_scoped<F>(
-        &mut self,
-        request: &AccessRequest,
-        scope: &CredentialScope,
-        decide: F,
-    ) -> Result<Zeroizing<String>, BrokerError>
-    where
-        F: FnOnce(&AccessRequest, &SecretItem, &CredentialScope) -> AccessDecision,
-    {
-        if !scope.valid() {
-            return Err(BrokerError::Denied);
-        }
-        self.request_in_scope(request, Some(scope.clone()), |request, item| {
-            decide(request, item, scope)
-        })
-    }
-    fn request_in_scope<F>(
-        &mut self,
-        request: &AccessRequest,
-        scope: Option<CredentialScope>,
-        decide: F,
-    ) -> Result<Zeroizing<String>, BrokerError>
-    where
-        F: FnOnce(&AccessRequest, &SecretItem) -> AccessDecision,
-    {
-        validate_app_id(&request.app_id)?;
-        validate_purpose(&request.purpose)?;
-        self.store.refresh();
-        if let Some(error) = self.store.recovery_error() {
-            return Err(BrokerError::Storage(error.to_owned()));
-        }
-        let item = self
-            .store
-            .get(&request.item_id)
-            .ok_or(BrokerError::NotFound)?;
-        let origin = request
-            .origin
-            .as_deref()
-            .map(canonical_origin)
-            .transpose()?;
-        if let Some(origin) = &origin
-            && !item.origins.contains(origin.as_str())
-        {
-            return Err(BrokerError::OriginMismatch);
-        }
-        let grant = GrantKey {
-            app_id: request.app_id.clone(),
-            item_id: request.item_id.clone(),
-            origin,
-            scope,
-        };
-        if !self.session_grants.contains_key(&grant) && !self.store.has_persistent_grant(&grant) {
-            match decide(request, &item) {
-                AccessDecision::Deny => return Err(BrokerError::Denied),
-                AccessDecision::AllowOnce => {}
-                AccessDecision::AllowForSession => {
-                    let mut permission = CredentialGrant::new(grant.clone());
-                    permission.lifetime = GrantLifetime::Session;
-                    self.session_grants.insert(grant, permission);
-                }
-                AccessDecision::AllowAlways => {
-                    self.store.persist_grant(&CredentialGrant::new(grant))?;
-                }
-            }
-            self.revision = self.revision.saturating_add(1);
-        }
-        Ok(Zeroizing::new(item.password))
-    }
-
-    pub fn refresh(&mut self) {
-        self.store.refresh();
-    }
-
-    /// List durable permissions for the Passwords app's access-management UI.
-    /// Session and one-shot decisions intentionally disappear with the broker.
-    pub fn persistent_grants(&self) -> Vec<CredentialGrant> {
-        self.store.grants()
-    }
-
-    /// Current exact relationships, including permissions for this session.
-    /// The IDs stay stable and no credential values are returned.
-    pub fn current_grants(&self) -> Vec<CredentialGrant> {
-        let mut grants: BTreeMap<_, _> = self
-            .store
-            .grants()
-            .into_iter()
-            .map(|grant| (grant.key(), grant))
-            .collect();
-        for (key, permission) in &self.session_grants {
-            grants
-                .entry(key.clone())
-                .or_insert_with(|| permission.clone());
-        }
-        grants.into_values().collect()
-    }
-
-    pub fn revoke_app(&mut self, app_id: &str) -> Result<usize, BrokerError> {
-        let count = self
-            .current_grants()
-            .iter()
-            .filter(|grant| grant.app_id == app_id)
-            .count();
-        self.session_grants
-            .retain(|grant, _| grant.app_id != app_id);
-        self.revision = self.revision.saturating_add(1);
-        self.store.revoke_app_grants(app_id)?;
-        Ok(count)
-    }
-
-    /// Revoke one exact durable permission without affecting another account
-    /// or another origin used by the same application.
-    pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
-        let key = grant.key();
-        if self
-            .session_grants
-            .get(&key)
-            .is_none_or(|current| current.id != grant.id)
-            && !self.store.grants().iter().any(|current| current == grant)
-        {
-            return Ok(false);
-        }
-        let session = self.session_grants.remove(&key).is_some();
-        let durable = self
-            .store
-            .remove_grants_matching(|candidate| candidate.key() == key)
-            > 0;
-        self.revision = self.revision.saturating_add(1);
-        if durable {
-            self.store.vault.try_save().map_err(BrokerError::Storage)?;
-        }
-        Ok(session || durable)
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeneratedPasswordPolicy {
@@ -830,28 +384,6 @@ pub(crate) fn canonical_origin(input: &str) -> Result<String, BrokerError> {
     Ok(parsed.origin().ascii_serialization())
 }
 
-/// Validates an incoming application id against the shared segment grammar.
-/// Single-segment identifiers remain allowed because local services and stored
-/// credential grants may use dotless ids such as `"browser"`.
-fn validate_app_id(app_id: &str) -> Result<(), BrokerError> {
-    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.allow_single_segment();
-    if !GRAMMAR.matches(app_id) {
-        return Err(BrokerError::InvalidAppId);
-    }
-    Ok(())
-}
-
-fn validate_purpose(purpose: &str) -> Result<(), BrokerError> {
-    let purpose = purpose.trim();
-    if purpose.is_empty()
-        || purpose.len() > MAX_PURPOSE_BYTES
-        || purpose.chars().any(char::is_control)
-    {
-        return Err(BrokerError::InvalidPurpose);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_reports_ownership_failure_without_prompting_or_hiding_existing_data() {
+    fn a_damaged_store_says_so_and_keeps_what_it_holds() {
         let root = root();
         let mut store = SecretStore::open_in(&root);
         let mut item = SecretItem::login("private-title", "private-user", "private-password");
@@ -870,47 +402,21 @@ mod tests {
         let sealed = crate::vault_dir_in(&root).join("vault.enc");
         std::fs::write(&sealed, b"damaged existing ciphertext").unwrap();
         let before = std::fs::read(&sealed).unwrap();
-        let mut broker = CredentialBroker::new(SecretStore::open_in(&root));
-        let request = AccessRequest {
-            app_id: "org.tilo.Browser".into(),
-            item_id: item.id,
-            purpose: "Sign in".into(),
-            origin: None,
-        };
-        assert!(matches!(
-            broker.request_existing(&request),
-            Err(BrokerError::Storage(_))
-        ));
-        assert!(matches!(
-            broker.request(&request, |_, _| panic!("damaged ownership must not prompt")),
-            Err(BrokerError::Storage(_))
-        ));
+        let damaged = SecretStore::open_in(&root);
+        assert!(damaged.recovery_error().is_some());
+        assert!(damaged.get(&item.id).is_none());
+        drop(damaged);
         assert_eq!(std::fs::read(sealed).unwrap(), before);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn failed_item_writes_preserve_credentials_and_permissions() {
+    fn failed_item_writes_preserve_what_the_store_holds() {
         let root = root();
         let mut store = SecretStore::open_in(&root);
         let mut item = SecretItem::login("Mail", "ada", "original secret");
         store.put(&mut item).unwrap();
         let original = item.clone();
-        let mut broker = CredentialBroker::new(store);
-        broker
-            .request(
-                &AccessRequest {
-                    app_id: "org.example.Mail".into(),
-                    item_id: item.id.clone(),
-                    purpose: "Sign in".into(),
-                    origin: None,
-                },
-                |_, _| AccessDecision::AllowAlways,
-            )
-            .unwrap();
-        let mut store = broker.store;
-        let grants = store.grants();
-        assert_eq!(grants.len(), 1);
         let path = crate::vault_dir_in(&root).join("vault.enc");
         let saved = path.with_extension("saved");
         std::fs::rename(&path, &saved).unwrap();
@@ -932,7 +438,6 @@ mod tests {
             Err(BrokerError::Storage(_))
         ));
         assert_eq!(store.get(&item.id), Some(original.clone()));
-        assert_eq!(store.grants(), grants);
 
         std::fs::remove_dir(&path).unwrap();
         std::fs::rename(&saved, &path).unwrap();
@@ -941,7 +446,6 @@ mod tests {
         let reopened = SecretStore::open_in(&root);
         assert_eq!(reopened.get(&item.id), Some(original));
         assert!(reopened.get(&added.id).is_none());
-        assert_eq!(reopened.grants(), grants);
         assert_eq!(reopened.get(&other.id), Some(other));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -967,253 +471,22 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn broker_consent_is_scoped_to_the_exact_origin_and_revocable() {
-        {
-            let root = root();
-            let mut store = SecretStore::open_in(&root);
-            let mut item = SecretItem::login("Bank", "ada", "pw");
-            item.add_origin("https://bank.example").unwrap();
-            store.put(&mut item).unwrap();
-            let mut broker = CredentialBroker::new(store);
-            let bad = AccessRequest {
-                app_id: "browser".into(),
-                item_id: item.id.clone(),
-                purpose: "Sign in".into(),
-                origin: Some("https://bank.example.evil.test".into()),
-            };
-            assert_eq!(
-                broker.request(&bad, |_, _| AccessDecision::AllowForSession),
-                Err(BrokerError::OriginMismatch)
-            );
-            let good = AccessRequest {
-                origin: Some("https://bank.example".into()),
-                ..bad
-            };
-            let mut prompts = 0;
-            assert_eq!(
-                broker
-                    .request(&good, |_, _| {
-                        prompts += 1;
-                        AccessDecision::AllowForSession
-                    })
-                    .unwrap()
-                    .as_str(),
-                "pw"
-            );
-            assert_eq!(
-                broker
-                    .request(&good, |_, _| {
-                        prompts += 1;
-                        AccessDecision::Deny
-                    })
-                    .unwrap()
-                    .as_str(),
-                "pw"
-            );
-            assert_eq!(prompts, 1);
-            std::fs::remove_dir_all(root).ok();
-        }
-
-        {
-            let root = root();
-            let mut store = SecretStore::open_in(&root);
-            let mut item = SecretItem::login("Bank", "ada", "pw");
-            item.add_origin("https://bank.example").unwrap();
-            item.add_origin("https://accounts.bank.example").unwrap();
-            store.put(&mut item).unwrap();
-            let bank = AccessRequest {
-                app_id: "org.tilo.Browser".into(),
-                item_id: item.id.clone(),
-                purpose: "Sign in".into(),
-                origin: Some("https://bank.example/login".into()),
-            };
-
-            CredentialBroker::new(store)
-                .request(&bank, |_, _| AccessDecision::AllowAlways)
-                .unwrap();
-            let mut restarted = CredentialBroker::new(SecretStore::open_in(&root));
-            let mut prompts = 0;
-            assert_eq!(
-                restarted
-                    .request(&bank, |_, _| {
-                        prompts += 1;
-                        AccessDecision::Deny
-                    })
-                    .unwrap()
-                    .as_str(),
-                "pw"
-            );
-            let other_origin = AccessRequest {
-                origin: Some("https://accounts.bank.example".into()),
-                ..bank
-            };
-            assert_eq!(
-                restarted.request(&other_origin, |_, _| {
-                    prompts += 1;
-                    AccessDecision::Deny
-                }),
-                Err(BrokerError::Denied)
-            );
-            assert_eq!(prompts, 1, "only the differently scoped origin prompts");
-            assert_eq!(restarted.persistent_grants().len(), 1);
-            std::fs::remove_dir_all(root).ok();
-        }
-
-        {
-            let root = root();
-            let mut store = SecretStore::open_in(&root);
-            let mut item = SecretItem::login("Bank", "ada", "pw");
-            item.add_origin("https://bank.example").unwrap();
-            store.put(&mut item).unwrap();
-            let request = AccessRequest {
-                app_id: "org.tilo.Browser".into(),
-                item_id: item.id.clone(),
-                purpose: "Sign in".into(),
-                origin: Some("https://bank.example".into()),
-            };
-            let mut broker = CredentialBroker::new(store);
-            broker
-                .request(&request, |_, _| AccessDecision::AllowAlways)
-                .unwrap();
-            let grant = broker.persistent_grants().pop().unwrap();
-            assert_eq!(grant.app_id, "org.tilo.Browser");
-            assert_eq!(grant.origin.as_deref(), Some("https://bank.example"));
-            assert!(broker.revoke_grant(&grant).unwrap());
-
-            broker
-                .request(&request, |_, _| AccessDecision::AllowAlways)
-                .unwrap();
-            assert_eq!(broker.revoke_app("org.tilo.Browser").unwrap(), 1);
-            assert!(broker.persistent_grants().is_empty());
-
-            broker
-                .request(&request, |_, _| AccessDecision::AllowAlways)
-                .unwrap();
-            drop(broker);
-            let mut store = SecretStore::open_in(&root);
-            assert!(store.remove(&item.id).unwrap());
-            assert!(
-                CredentialBroker::new(SecretStore::open_in(&root))
-                    .persistent_grants()
-                    .is_empty(),
-                "deleting an item cannot leave an orphaned app permission"
-            );
-            std::fs::remove_dir_all(root).ok();
-        }
-    }
-
-    #[test]
-    fn broker_accepts_only_canonical_origins_and_trusted_prompt_metadata() {
-        {
-            assert_eq!(
-                canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
-                "https://xn--bcher-kva.example"
-            );
-            assert_eq!(
-                canonical_origin("http://example.com:8080/a").unwrap(),
-                "http://example.com:8080"
-            );
-            for invalid in [
-                "https://user:password@example.com",
-                "https://example.com\nspoofed",
-                "file:///etc/passwd",
-                "https://",
-            ] {
-                assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
-            }
-        }
-
-        {
-            let root = root();
-            let mut store = SecretStore::open_in(&root);
-            let mut item = SecretItem::login("Bank", "ada", "pw");
-            store.put(&mut item).unwrap();
-            let mut broker = CredentialBroker::new(store);
-            let mut prompted = false;
-            let invalid_app = AccessRequest {
-                app_id: "org.tilo.Browser\nFake".into(),
-                item_id: item.id.clone(),
-                purpose: "Sign in".into(),
-                origin: None,
-            };
-            assert_eq!(
-                broker.request(&invalid_app, |_, _| {
-                    prompted = true;
-                    AccessDecision::AllowAlways
-                }),
-                Err(BrokerError::InvalidAppId)
-            );
-            assert!(!prompted);
-
-            let invalid_purpose = AccessRequest {
-                app_id: "org.tilo.Browser".into(),
-                purpose: "Sign in\nApprove something else".into(),
-                ..invalid_app
-            };
-            assert_eq!(
-                broker.request(&invalid_purpose, |_, _| AccessDecision::AllowAlways),
-                Err(BrokerError::InvalidPurpose)
-            );
-            assert!(broker.persistent_grants().is_empty());
-            std::fs::remove_dir_all(root).ok();
-        }
-    }
-
-    #[test]
-    fn app_id_validation_matches_single_segment_grammar() {
-        const GRAMMAR: tilo_app_id::Grammar =
-            tilo_app_id::Grammar::CANONICAL.allow_single_segment();
-        let longest_single = "a".repeat(255);
-        let too_long_single = "a".repeat(256);
-        let longest_dotted = format!("a.{}", "b".repeat(253));
-        let too_long_dotted = format!("a.{}", "b".repeat(254));
-        for (label, app_id, expected) in [
-            ("empty", "", false),
-            ("single segment", "browser", true),
-            ("canonical dotted", "so.tilo.mail", true),
-            ("255 bytes single segment", longest_single.as_str(), true),
-            ("256 bytes single segment", too_long_single.as_str(), false),
-            ("255 bytes dotted", longest_dotted.as_str(), true),
-            ("256 bytes dotted", too_long_dotted.as_str(), false),
-            ("leading dot", ".org.tilo", false),
-            ("trailing dot", "org.tilo.", false),
-            ("only dot", ".", false),
-            ("doubled dot", "org..tilo", false),
-            ("only doubled dot", "..", false),
-            ("underscore", "org.example.my_app", true),
-            ("underscore single segment", "my_app", true),
-            ("leading hyphen", "-org.example.app", true),
-            ("leading hyphen single segment", "-browser", true),
-            ("upper case", "org.tilo.Browser", true),
-            ("upper case single segment", "Browser", true),
-            ("digits and hyphen", "org.example.app-2", true),
-            ("space", "org.tilo.my app", false),
-            ("leading space", " browser", false),
-            ("slash", "org.tilo/app", false),
-            ("non-ASCII", "so.tilo.n\u{f6}tes", false),
-            ("control newline", "org.tilo.Browser\nFake", false),
-            ("control nul", "org.tilo.Browser\0", false),
-            ("control tab", "org.tilo\tapp", false),
+    fn only_canonical_origins_are_kept() {
+        assert_eq!(
+            canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
+            "https://xn--bcher-kva.example"
+        );
+        assert_eq!(
+            canonical_origin("http://example.com:8080/a").unwrap(),
+            "http://example.com:8080"
+        );
+        for invalid in [
+            "https://user:password@example.com",
+            "https://example.com\nspoofed",
+            "file:///etc/passwd",
+            "https://",
         ] {
-            let result = validate_app_id(app_id);
-            let grammar_ok = GRAMMAR.matches(app_id);
-            assert_eq!(
-                result.is_ok(),
-                grammar_ok,
-                "{label}: validate_app_id and Grammar::CANONICAL.allow_single_segment() disagreed on {app_id:?}"
-            );
-            assert_eq!(result.is_ok(), expected, "{label}: {app_id:?}");
-            if !expected {
-                assert_eq!(
-                    result,
-                    Err(BrokerError::InvalidAppId),
-                    "{label}: {app_id:?}"
-                );
-            }
+            assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
         }
     }
 

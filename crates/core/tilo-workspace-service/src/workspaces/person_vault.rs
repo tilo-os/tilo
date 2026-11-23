@@ -166,12 +166,18 @@ impl Workspaces {
             person_vault::KEEP_ENTRY => {
                 let keeping: KeepEntry =
                     argument(request, "an entry to keep is an entry of Passwords")?;
-                said(self.keep_entry(&workspace, keeping).await)
+                said(
+                    self.keep_entry((&workspace, caller.acting()), keeping)
+                        .await,
+                )
             }
             person_vault::FORGET_ENTRY => {
                 let forgetting: ForgetEntry =
                     argument(request, "an entry to forget is named by its id")?;
-                said(self.forget_entry(&workspace, forgetting).await)
+                said(
+                    self.forget_entry((&workspace, caller.acting()), forgetting)
+                        .await,
+                )
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
@@ -264,7 +270,11 @@ impl Workspaces {
 
     /// Keep `keeping`'s entry, a new one or the edit of one kept, answering every entry then.
     /// What was handed is never echoed in a refusal.
-    async fn keep_entry(&self, workspace: &str, keeping: KeepEntry) -> Result<Entries, String> {
+    async fn keep_entry(
+        &self,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
+        keeping: KeepEntry,
+    ) -> Result<Entries, String> {
         let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
             .map_err(|_| "That is no entry of Passwords".to_owned())?;
         if !accounts::is_entry_id(&entry.id.0) {
@@ -272,7 +282,7 @@ impl Workspaces {
         }
         entry.updated_unix = tilo_clock::unix_now();
         let opened = self.open_vault(workspace).await?;
-        self.write_vault(&opened, vec![VaultChange::Keep(entry)], None)
+        self.write_vault(&opened, vec![VaultChange::Keep(entry)], Some(by))
             .await
             .map_err(|error| format!("The entry could not be kept: {error}"))?;
         self.vault_entries(workspace).await
@@ -282,7 +292,7 @@ impl Workspaces {
     /// refusal: another device may have forgotten it first.
     async fn forget_entry(
         &self,
-        workspace: &str,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
         forgetting: ForgetEntry,
     ) -> Result<Entries, String> {
         let opened = self.open_vault(workspace).await?;
@@ -290,7 +300,7 @@ impl Workspaces {
             self.write_vault(
                 &opened,
                 vec![VaultChange::Forget(accounts::SecretId(forgetting.id))],
-                None,
+                Some(by),
             )
             .await
             .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
@@ -411,7 +421,7 @@ impl Workspaces {
                     "a mail account to add names its address, its servers and the vault item that is its password",
                 )?;
                 let kept = self
-                    .mail_with_item((&workspace, &root), adding, &by, purpose)
+                    .mail_with_item((&workspace, &root), adding, (&by, &reach.acting), purpose)
                     .await;
                 if kept.is_ok() {
                     self.person_settings_changed();
@@ -424,8 +434,13 @@ impl Workspaces {
                     "a key to keep names its provider and the vault item that is the key",
                 )?;
                 said(
-                    self.key_from_item((&workspace, &root), &setting, &by, purpose)
-                        .await,
+                    self.key_from_item(
+                        (&workspace, &root),
+                        &setting,
+                        (&by, &reach.acting),
+                        purpose,
+                    )
+                    .await,
                 )
             }
             (person_vault::PROVIDER, person_vault::ASK) => {
@@ -667,12 +682,12 @@ impl Workspaces {
         workspace: &str,
         item: &ItemRef,
         (kind, places): (vault_items::ItemKind, &[Place]),
-        by: &str,
+        (by, asker): (&str, &tilo_action_policy::Acting),
         purpose: UsedFor<'_>,
     ) -> Result<vault_items::Released, String> {
         let id = vault_items::ItemId::parse(item.id())
             .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
-        self.changing_vault(workspace, None, |items| {
+        self.changing_vault(workspace, Some(asker), |items| {
             items.use_for(&id, kind, places, by, purpose)
         })
         .await
@@ -686,7 +701,7 @@ impl Workspaces {
         &self,
         (workspace, root): (&str, &Path),
         adding: AddMailWithItem,
-        by: &str,
+        (by, asker): (&str, &tilo_action_policy::Acting),
         purpose: UsedFor<'_>,
     ) -> Result<MailAccount, String> {
         let server = |scheme: &str, host: &str, port: u16| {
@@ -701,7 +716,7 @@ impl Workspaces {
                 workspace,
                 &adding.password,
                 (vault_items::ItemKind::Login, &places),
-                by,
+                (by, asker),
                 purpose,
             )
             .await?;
@@ -716,7 +731,7 @@ impl Workspaces {
         let kept = adding.password.clone();
         Box::pin(super::person_settings::add_mail_with(
             self.account_tester(),
-            (self.vault_at(workspace), root),
+            (self.vault_for(workspace, asker), root),
             AddMailAccount {
                 address: adding.address,
                 display_name: adding.display_name,
@@ -745,7 +760,7 @@ impl Workspaces {
         &self,
         (workspace, root): (&str, &Path),
         setting: &SetKeyFromItem,
-        by: &str,
+        (by, asker): (&str, &tilo_action_policy::Acting),
         purpose: UsedFor<'_>,
     ) -> Result<ProviderView, String> {
         let endpoint = {
@@ -762,7 +777,7 @@ impl Workspaces {
                 workspace,
                 &setting.key,
                 (vault_items::ItemKind::Key, std::slice::from_ref(&endpoint)),
-                by,
+                (by, asker),
                 purpose,
             )
             .await?;
@@ -770,7 +785,7 @@ impl Workspaces {
             provider: setting.provider.clone(),
             key: key.secret.to_string(),
         };
-        let keys = super::person_settings::ProviderKeys::of(self.vault_at(workspace), by);
+        let keys = super::person_settings::ProviderKeys::of(self.vault_for(workspace, asker), by);
         super::person_models::take_key(
             (keys, root),
             keeping,

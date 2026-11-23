@@ -483,7 +483,6 @@ pub struct AccountsArea {
 }
 
 pub(crate) struct AccountsRead {
-    statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
     credential_store: account_credentials::CredentialStore,
 }
@@ -491,7 +490,6 @@ pub(crate) struct AccountsRead {
 impl AccountsRead {
     fn of(root: &AccountRoot) -> Self {
         Self {
-            statuses: root.statuses(),
             vault: root.vault(),
             credential_store: root.credential_store(),
         }
@@ -743,7 +741,6 @@ type Settle = Box<dyn FnOnce(&mut AccountsPane, Result<(), String>) -> Step>;
 struct Removal {
     id: accounts::AccountId,
     original_store: accounts::person::AccountList,
-    original_statuses: accounts::AccountSyncStatusStore,
     credential_changed: bool,
     original_secret: Option<accounts::Secret>,
 }
@@ -792,10 +789,6 @@ pub struct AccountsPane {
     account_root: AccountRoot,
     seen_accounts: Option<u64>,
     dir: AccountDirectory,
-    sync_statuses: accounts::AccountSyncStatusStore,
-    /// The sync statuses' file, followed: what the cloud mounts, Mail and Calendar report
-    /// about an account shows on its row as they report it.
-    statuses_followed: Option<crate::watch::Watched>,
     vault: Option<accounts::SecretVault>,
     vault_opening: Option<crate::device_read::Landing>,
     mail_grants: MailGrants,
@@ -863,7 +856,6 @@ impl AccountsPane {
 
     fn from_read(account_root: AccountRoot, dir: AccountDirectory, read: AccountsRead) -> Self {
         Self {
-            sync_statuses: read.statuses,
             vault: Some(read.vault),
             cloud: CloudMounts::live(),
             ..Self::over(account_root, dir, false, read.credential_store)
@@ -877,7 +869,6 @@ impl AccountsPane {
         let dir = AccountDirectory::load_in(&account_root);
         let credential_store = credential_store.unwrap_or_else(|| account_root.credential_store());
         let mut pane = Self {
-            sync_statuses: account_root.statuses(),
             cloud: CloudMounts::live(),
             ..Self::over(account_root, dir, false, credential_store)
         };
@@ -893,8 +884,6 @@ impl AccountsPane {
     ) -> Self {
         Self {
             dir,
-            sync_statuses: accounts::AccountSyncStatusStore::default(),
-            statuses_followed: None,
             vault: None,
             vault_opening: None,
             mail_grants: MailGrants::default(),
@@ -1273,15 +1262,31 @@ impl AccountsPane {
     }
 
     fn publish_signed_in_id(&mut self, id: accounts::AccountId) {
-        let credential_store = self.credential_store.clone();
-        let _ = crate::device_read::thread(
-            "settings-accounts-worker",
-            Box::new(move || {
-                if let Err(error) = credential_store.signed_in(&id) {
-                    warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
+        // Every device reads that its person signed in to it, which proved its server takes the
+        // sign-in, until a sync says how that went.
+        if let Some(client) = &self.session_secrets {
+            let command = ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::ReportAccountSync {
+                account: id.as_str().to_owned(),
+                health: accounts::SyncHealth::Never.word().to_owned(),
+                signed_in: true,
+                message: String::new(),
+            };
+            match client.another().request(command, None) {
+                Ok(pending) => {
+                    let _ = crate::device_read::thread(
+                        "settings-accounts-worker",
+                        Box::new(move || {
+                            if let Err(error) = pending.wait() {
+                                warn!(target: "tilo::settings", %error, "could not say the account was signed in to");
+                            }
+                        }),
+                    );
                 }
-            }),
-        );
+                Err(error) => {
+                    warn!(target: "tilo::settings", %error, "could not say the account was signed in to");
+                }
+            }
+        }
         self.sign_in = None;
         self.queue_reload();
         self.changed = true;
@@ -1984,32 +1989,24 @@ impl AccountsPane {
 
     fn account_row(&self, cx: &ViewCx<Settings>, view: &AccountView) -> Item {
         let id = accounts::AccountId::from(view.id.clone());
-        let runtime = self.sync_statuses.get(&id);
+        let store = self.account_root.store();
+        let runtime = store.sync_of(&view.id);
         let mount = self.cloud.mount(&view.id);
         let pending = self.dir.of(AccountKind::Mail).any(|account| {
             account.id.as_str() == view.id
                 && (account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
                     || account.config.get("import_pending") == Some(&serde_json::Value::Bool(true)))
-        }) || self
-            .account_root
-            .store()
-            .account(id.as_str())
-            .is_some_and(|account| {
-                account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
-            });
-        let import_only = self
-            .account_root
-            .store()
-            .account(id.as_str())
-            .is_some_and(|account| {
-                accounts::cloud_types::files_mode(&account)
-                    == Some(accounts::cloud_types::FilesMode::Import)
-                    && view.kind != AccountKind::Mail
-            });
+        }) || store.account(id.as_str()).is_some_and(|account| {
+            account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
+        });
+        let import_only = store.account(id.as_str()).is_some_and(|account| {
+            accounts::cloud_types::files_mode(&account)
+                == Some(accounts::cloud_types::FilesMode::Import)
+                && view.kind != AccountKind::Mail
+        });
         // An OAuth grant is not a successful first sync. Only replace the
         // unknown state, never a recorded error, offline or sign-in requirement.
-        let not_synced =
-            runtime.is_none_or(|status| status.health == accounts::AccountSyncHealth::Never);
+        let not_synced = runtime.is_none_or(|sync| sync.health == accounts::SyncHealth::Never);
         let granted_mail =
             view.kind == AccountKind::Mail && self.mail_grants.granted.contains(&view.id);
         let (status, status_tone) =
@@ -2033,7 +2030,7 @@ impl AccountsPane {
 
         let mut details = vec![view.summary.clone()];
         if view.kind == AccountKind::Mail
-            && let Some(account) = self.account_root.store().account(id.as_str())
+            && let Some(account) = store.account(id.as_str())
         {
             let identities = accounts::email::sender_identities_of(&account.config);
             if !identities.is_empty() {
@@ -2362,12 +2359,11 @@ impl AccountsPane {
         });
     }
 
-    /// Reload the directory and the sync statuses here, and the vault on a
+    /// Reload the directory here, and the vault on a
     /// worker. Loading the directory recovers an interrupted mutation, so
     /// this runs only in the queue, never while a mutation is under way.
     fn reload(&mut self) {
         self.dir = AccountDirectory::load_in(&self.account_root);
-        self.sync_statuses = self.account_root.statuses();
         self.changed = true;
         self.reopen_vault();
     }
@@ -2777,7 +2773,7 @@ impl AccountsPane {
             );
         }
         let root = &self.account_root;
-        if let Err(error) = root.begin_mutation(&root.store(), &root.statuses()) {
+        if let Err(error) = root.begin_mutation(&root.store()) {
             return settle(self, Err(error));
         }
         let (stored, secrets): (Vec<_>, Vec<_>) = accounts
@@ -2952,8 +2948,7 @@ impl AccountsPane {
         if AccountKind::from_type_id(stored.type_id.as_str()).is_none() {
             return settle(self, Err("unsupported account type".into()));
         }
-        let original_statuses = root.statuses();
-        if let Err(error) = root.begin_mutation(&original_store, &original_statuses) {
+        if let Err(error) = root.begin_mutation(&original_store) {
             return settle(self, Err(error));
         }
         // Credential first prevents a metadata-only account from becoming
@@ -2975,7 +2970,6 @@ impl AccountsPane {
                     Removal {
                         id: account_id,
                         original_store,
-                        original_statuses,
                         credential_changed,
                         original_secret,
                     },
@@ -3020,15 +3014,6 @@ impl AccountsPane {
         if let Err(error) = root.save_store(&updated_store) {
             let failed = format!("could not remove account metadata: {error}");
             return self.roll_back_removal(removal, failed, Ok(()), settle);
-        }
-        let mut updated_statuses = removal.original_statuses.clone();
-        updated_statuses.remove(&removal.id);
-        if let Err(error) = root.save_statuses(&updated_statuses) {
-            let metadata_rollback = root
-                .save_store(&removal.original_store)
-                .map_err(|e| e.to_string());
-            let failed = format!("could not remove account sync status: {error}");
-            return self.roll_back_removal(removal, failed, metadata_rollback, settle);
         }
         if let Err(error) = finish_or_recover(root, "account removal") {
             return settle(self, Err(error));
@@ -3539,7 +3524,6 @@ impl AccountsPane {
             }
             self.seen_accounts = revision;
         }
-        self.follow_statuses();
         self.advance_queue(false);
         self.poll_vault_opening();
         self.poll_mail_grants();
@@ -3554,42 +3538,6 @@ impl AccountsPane {
 }
 
 impl AccountsPane {
-    /// Read the sync statuses again when their file changed. The file's folder appears with the
-    /// first account, so the follow starts once it is there.
-    fn follow_statuses(&mut self) {
-        if self.is_sample {
-            return;
-        }
-        if !self
-            .statuses_followed
-            .as_ref()
-            .is_some_and(crate::watch::Watched::is_complete)
-        {
-            let Some(file) = self
-                .account_root
-                .path()
-                .map(|root| accounts::status::path_in(&root))
-            else {
-                return;
-            };
-            if !file.parent().is_some_and(std::path::Path::is_dir) {
-                return;
-            }
-            self.statuses_followed = Some(crate::watch::Watched::files(&[file]));
-        }
-        if self
-            .statuses_followed
-            .as_ref()
-            .is_some_and(crate::watch::Watched::take)
-        {
-            let statuses = self.account_root.statuses();
-            if statuses != self.sync_statuses {
-                self.sync_statuses = statuses;
-                self.changed = true;
-            }
-        }
-    }
-
     pub fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()

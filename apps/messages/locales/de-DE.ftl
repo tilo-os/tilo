@@ -82,8 +82,7 @@ messages-setup-linked = Gerät verknüpft. Nachrichten laufen weiter, sobald Ver
 
 messages-first-signal = Ein Signal-Konto verknüpfen
 messages-first-self-review = Bestätige die gewählte Identität beim Dienst: { $identity }
-messages-first-confirm = Identität bestätigen und Zugriff anfragen
-messages-first-permission-review = Bestätige die Zugriffsanfrage dieses Kontos in Passwörter.
+messages-first-confirm = Identität bestätigen
 
 messages-first-sms = Eine SMS-SIM wählen
 messages-select-sim = Diese SIM verwenden

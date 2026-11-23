@@ -82,8 +82,7 @@ messages-setup-linked = Device linked. Messaging resumes after its connection an
 
 messages-first-signal = Link a Signal account
 messages-first-self-review = Verify the selected service identity: { $identity }
-messages-first-confirm = Confirm identity and request access
-messages-first-permission-review = Approve this account’s access request in Passwords.
+messages-first-confirm = Confirm identity
 
 messages-first-sms = Choose an SMS SIM
 messages-select-sim = Use this SIM

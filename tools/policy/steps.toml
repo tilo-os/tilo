@@ -323,8 +323,7 @@ tests = true
 # (tools/ci/local_affected.py, the policy stage). tools/tests/test_policy_steps.py checks this
 # list against the files that start `node`.
 node_tests = [
-  "tools/tests/test_accounts_web_storage.py", "tools/tests/test_chrome_process_cleanup.py",
-  "tools/tests/test_suites_run.py",
+  "tools/tests/test_chrome_process_cleanup.py", "tools/tests/test_suites_run.py",
 ]
 
 [[step]]

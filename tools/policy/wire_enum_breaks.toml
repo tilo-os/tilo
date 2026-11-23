@@ -764,3 +764,13 @@ reason = "the opener of a certification stream, which a device's ticket actions 
 file = "crates/core/tilo-server-protocol/src/certify.rs"
 enum = "CertifyReply"
 reason = "the host's answer on the same certification stream, gone with it: spoken only live between a page and its host of one build, never stored"
+
+[[break]]
+file = "crates/integrations/tilo-messaging/src/service/wire.rs"
+enum = "Call"
+reason = "Messages and the messaging service speak it as JSON over a local socket, never by position, and nothing keeps it: an end at another protocol number is refused, and the protocol went to 2 when the proposal and decision calls left with the per-app grants they asked for"
+
+[[break]]
+file = "crates/integrations/tilo-messaging/src/service/wire.rs"
+enum = "Reply"
+reason = "the service's half of the same socket: JSON never kept, between ends of one protocol number, so no bytes written before are read back"

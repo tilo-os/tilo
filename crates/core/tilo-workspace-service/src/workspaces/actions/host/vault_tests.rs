@@ -1242,7 +1242,7 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     vault.try_save().unwrap();
     workspaces
         .keep_workspace_account(
-            &workspace_id.to_string(),
+            (&workspace_id.to_string(), &workspaces.acting_or_own(None)),
             &mail_account("ada@example.test", "example.test"),
         )
         .await
@@ -1347,7 +1347,7 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     );
     for account in [&mail, &google] {
         workspaces
-            .keep_workspace_account(&workspace, account)
+            .keep_workspace_account((&workspace, &workspaces.acting_or_own(None)), account)
             .await
             .unwrap();
     }
@@ -1355,7 +1355,7 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
 
     // The store the host kept, as a host before kept it.
     let root = workspaces.workspace_root(&workspace);
-    let mut credentials = accounts::AccountCredentials::open_in(&root).unwrap();
+    let mut credentials = accounts::SecretVault::open_person(Some(&root));
     credentials.put_for(&mail, &accounts::Secret::password(PASSWORD));
     credentials.put_for(
         &google,
@@ -1367,7 +1367,6 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
             obtained_at: tilo_clock::unix_now(),
         }),
     );
-    credentials.try_save().unwrap();
     let mut profile = agent_provider_config::ProviderProfile::hosted(
         agent_provider_config::ProviderProtocol::OpenAiCompatible,
     );
@@ -1381,11 +1380,30 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
         },
     )
     .unwrap();
-    let (reference, authorization) =
-        accounts::provider_api_key(&provider, &profile.endpoint).unwrap();
-    accounts::ServiceCredentials::open_in(&root)
-        .store(&reference, &authorization, KEY)
-        .unwrap();
+    // A provider's key, as the model service sealed it: under the service, what it is for and
+    // the provider, beside the origin it was typed for.
+    let sealed_as = serde_json::to_vec(&("model-gateway", "provider-api-key", &provider)).unwrap();
+    credentials.put(
+        &accounts::AccountId::new(format!(
+            "tilo-service-credential:{}",
+            hex::encode(sealed_as)
+        )),
+        &accounts::Secret {
+            password: String::new(),
+            token: Some(
+                json!({
+                    "authorization": {
+                        "service": "model-gateway",
+                        "purpose": "provider-api-key",
+                        "origin": "https://models.example",
+                    },
+                    "value": KEY,
+                })
+                .to_string(),
+            ),
+        },
+    );
+    credentials.try_save().unwrap();
 
     // The host starts again over the same state and with the same key service, and carries them
     // over.

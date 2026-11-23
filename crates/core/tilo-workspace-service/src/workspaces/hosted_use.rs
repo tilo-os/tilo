@@ -482,6 +482,16 @@ pub struct AskedTurn {
     pub name: String,
 }
 
+impl AskedTurn {
+    /// The agent acting for its person: who asked for the writes made on this turn
+    /// ([`Workspaces::acting_or_own`] says whom each names).
+    #[must_use]
+    pub fn acting(&self) -> tilo_action_policy::Acting {
+        tilo_action_policy::Acting::agent(self.agent.as_str())
+            .acting_for(tilo_action_policy::Acting::person(hex::encode(self.person)))
+    }
+}
+
 /// One use by reference this server carries out.
 enum Use {
     /// A mail account added with the sign-in an item keeps.
@@ -596,7 +606,7 @@ impl Use {
         self,
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
-        by: &str,
+        by: (&str, &tilo_action_policy::Acting),
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
@@ -653,10 +663,10 @@ async fn page_text(
     workspace: &str,
     (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
-    by: &str,
+    (by, asker): (&str, &tilo_action_policy::Acting),
 ) -> Result<PageText, String> {
     workspaces
-        .changing_vault(workspace, None, |items| match kind {
+        .changing_vault(workspace, Some(asker), |items| match kind {
             vault_items::ItemKind::CodeGenerator => {
                 items.code_at(item, site, by).map(PageText::Code)
             }
@@ -1036,7 +1046,12 @@ impl Workspaces {
             allowed: Some(allowed),
         };
         wanted
-            .carry_out(self, (&using.workspace, &root), &using.name, purpose)
+            .carry_out(
+                self,
+                (&using.workspace, &root),
+                (&using.name, &using.acting()),
+                purpose,
+            )
             .await
             .map_err(ActionCallError::refused)
     }

@@ -102,6 +102,8 @@ pub struct Reach {
     pub person: [u8; 32],
     /// The agent's name, as its person knows it, when an agent asks.
     pub agent: Option<String>,
+    /// Who asks, as the caller was admitted: what a write made for them names as its invoker.
+    pub acting: tilo_action_policy::Acting,
     /// What the policy answered: [`Answer::Allow`], or [`Answer::Ask`] for an
     /// agent its person is asked about first.
     pub answer: Answer,
@@ -232,6 +234,7 @@ impl Workspaces {
             workspace,
             person: certificate.user_public_key,
             agent,
+            acting: acting.clone(),
             answer,
             acting: acting.clone(),
         })

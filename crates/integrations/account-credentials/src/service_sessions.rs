@@ -1,4 +1,6 @@
-//! Explicit owner-selected website sessions in canonical encrypted account credentials.
+//! Explicit owner-selected website sessions in canonical encrypted account credentials, as a
+//! prepared setup seals them for the system it installs. Browser opens a workspace's website
+//! sessions from entries of the workspace's vault instead.
 use crate::{CredentialError, CredentialStore};
 use accounts::{AccountId, Secret, SecretVault};
 use browser_continuity_core::sessions::SessionCookies;
@@ -119,145 +121,7 @@ pub fn verify_service_session_codec(session: &SessionCookies) -> Result<(), Cred
     Ok(())
 }
 
-/// Encrypted, credential-free receipt retained in the original vault. It binds
-/// retries to the person and selection even after account metadata is removed.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForgottenSelection {
-    kind: String,
-    account: accounts::Account,
-    id: String,
-    identity_public_key: [u8; 32],
-    setup_binding: String,
-}
-
-/// A fresh selection that passed secret and account checks.
-/// Retry receipts never enter this credential-replacement stage.
-struct AuthenticatedForget {
-    selection: ForgottenSelection,
-}
-
-impl AuthenticatedForget {
-    fn seal_receipt(self, root: &std::path::Path, id: &AccountId) -> Result<(), CredentialError> {
-        let mut vault = SecretVault::open_person(Some(root));
-        if vault.recovery_error().is_some() {
-            return Err(CredentialError::NeedsAuthentication);
-        }
-        let mut current = vault.get(id).ok_or(CredentialError::NeedsAuthentication)?;
-        let checked = service_session_from_secret(
-            &current,
-            id,
-            self.selection.identity_public_key,
-            &self.selection.setup_binding,
-        );
-        current.password.zeroize();
-        if let Some(token) = current.token.as_mut() {
-            token.zeroize();
-        }
-        checked?;
-        let encoded = Zeroizing::new(
-            serde_json::to_string(&self.selection)
-                .map_err(|_| CredentialError::NeedsAuthentication)?,
-        );
-        let mut receipt = Secret {
-            password: String::new(),
-            token: Some(encoded.to_string()),
-        };
-        vault.put(id, &receipt);
-        if let Some(token) = receipt.token.as_mut() {
-            token.zeroize();
-        }
-        vault.try_save().map_err(CredentialError::Storage)
-    }
-}
-
 impl CredentialStore {
-    /// Durably forget precisely one authenticated selection, never another account: `current`
-    /// is the workspace's account under `id` now, if it still has one. The vault replaces
-    /// credentials with a bound receipt first, so the caller removes the account from the
-    /// workspace's accounts only once this answered, and a removal that failed cannot make the
-    /// cookies usable again.
-    pub fn forget_service_session(
-        &self,
-        id: &AccountId,
-        current: Option<&accounts::Account>,
-        identity: [u8; 32],
-        binding: &str,
-    ) -> Result<(), CredentialError> {
-        use CredentialError::NeedsAuthentication as Refused;
-        static REMOVAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = REMOVAL.lock().map_err(|_| Refused)?;
-        let root = self
-            .config_root()
-            .map(std::path::Path::to_owned)
-            .or_else(accounts::config_root)
-            .ok_or(Refused)?;
-        let existing = SecretVault::open_person(Some(&root));
-        if existing.recovery_error().is_some() {
-            return Err(Refused);
-        }
-        let mut secret = existing.get(id).ok_or(Refused)?;
-        let receipt = secret
-            .token
-            .as_deref()
-            .and_then(|encoded| serde_json::from_str::<ForgottenSelection>(encoded).ok());
-        let retry = receipt.as_ref().is_some_and(|receipt| {
-            secret.password.is_empty()
-                && receipt.kind == "forgotten_service_session"
-                && receipt.id == id.as_str()
-                && receipt.identity_public_key == identity
-                && receipt.setup_binding == binding
-        });
-        let authenticated = if retry {
-            Ok(())
-        } else {
-            service_session_from_secret(&secret, id, identity, binding).and_then(|session| {
-                let account = current.ok_or(Refused)?;
-                if account
-                    .config
-                    .get("service")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(session.service.as_str())
-                {
-                    return Err(Refused);
-                }
-                Ok(())
-            })
-        };
-        secret.password.zeroize();
-        if let Some(token) = secret.token.as_mut() {
-            token.zeroize();
-        }
-        authenticated?;
-        if let Some(account) = current {
-            if retry
-                && receipt
-                    .as_ref()
-                    .is_none_or(|receipt| &receipt.account != account)
-            {
-                return Err(Refused);
-            }
-            if !is_bound_service_session(account, binding) {
-                return Err(Refused);
-            }
-        } else if !retry {
-            return Err(Refused);
-        }
-        if !retry {
-            AuthenticatedForget {
-                selection: ForgottenSelection {
-                    kind: "forgotten_service_session".into(),
-                    account: current.ok_or(Refused)?.clone(),
-                    id: id.as_str().into(),
-                    identity_public_key: identity,
-                    setup_binding: binding.into(),
-                },
-            }
-            .seal_receipt(&root, id)?;
-        }
-        Ok(())
-    }
-
     /// Resolve only the selected website session `account`, the workspace's account of it,
     /// from private current-person ownership. Cookie installation is not proof of provider
     /// authentication.
@@ -301,16 +165,6 @@ impl CredentialStore {
     }
 }
 
-/// Whether `account` is a service session set up under `binding`.
-fn is_bound_service_session(account: &accounts::Account, binding: &str) -> bool {
-    account.type_id.as_str() == SERVICE_SESSION_TYPE
-        && account
-            .config
-            .get("setup_binding")
-            .and_then(serde_json::Value::as_str)
-            == Some(binding)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,32 +198,6 @@ mod tests {
             accounts::Account::new(AccountId::from(selected().session_id), SERVICE_SESSION_TYPE);
         account.config = serde_json::json!({"service":"slack","setup_binding":"setup-operation"});
         account
-    }
-
-    /// A device that sealed the selected session and an unrelated account's password, with the
-    /// workspace's accounts of both.
-    fn ownership_fixture() -> (
-        tempfile::TempDir,
-        CredentialStore,
-        accounts::Account,
-        accounts::Account,
-    ) {
-        let root = tempfile::tempdir().unwrap();
-        let session = selected();
-        let account = selected_account();
-        let unrelated = accounts::Account::new("unrelated", "imap");
-        let mut vault = SecretVault::open_in(root.path());
-        vault.put(&account.id, &service_session_secret(&session).unwrap());
-        vault.put(
-            &unrelated.id,
-            &Secret {
-                password: "unrelated-password".into(),
-                token: None,
-            },
-        );
-        vault.try_save().unwrap();
-        let credential_store = CredentialStore::for_root(Some(root.path().to_owned()));
-        (root, credential_store, account, unrelated)
     }
 
     /// A selection sealed before the person's vault had one ownership: under
@@ -414,101 +242,6 @@ mod tests {
             vault.get(&account.id).is_some(),
             "the selection stayed in the vault"
         );
-    }
-
-    tilo_test_env::scenario! {
-        /// `forget`: what it removes, and what it refuses to touch.
-        fn forgetting_a_service_session_removes_only_what_was_selected;
-
-        phase forget_removes_only_selected_canonical_credentials_and_binds_retries;
-        {
-            let (root, credential_store, account, unrelated) = ownership_fixture();
-            let id = account.id.clone();
-            for (key, binding, target) in [
-                ([8; 32], "setup-operation", &account),
-                ([7; 32], "foreign-operation", &account),
-                ([7; 32], "setup-operation", &unrelated),
-            ] {
-                assert!(
-                    credential_store
-                        .forget_service_session(&target.id, Some(target), key, binding)
-                        .is_err()
-                );
-                assert_eq!(
-                    credential_store
-                        .service_session(&account, [7; 32], "setup-operation")
-                        .unwrap(),
-                    selected()
-                );
-            }
-            credential_store
-                .forget_service_session(&id, Some(&account), [7; 32], "setup-operation")
-                .unwrap();
-            assert!(
-                credential_store
-                    .service_session(&account, [7; 32], "setup-operation")
-                    .is_err()
-            );
-            let vault = SecretVault::open_read_only_in(root.path());
-            let mut receipt = vault.get(&id).unwrap();
-            assert!(
-                !receipt
-                    .token
-                    .as_deref()
-                    .unwrap()
-                    .contains("private-cookie-marker")
-            );
-            assert!(crate::password_credential(&receipt).is_empty());
-            receipt.token.as_mut().unwrap().zeroize();
-            assert_eq!(
-                vault.get(&unrelated.id).unwrap().password,
-                "unrelated-password"
-            );
-            // A retry while the workspace still has the account, its removal not yet made,
-            // and once it is gone, changes nothing more in the vault.
-            let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-            for current in [Some(&account), None] {
-                credential_store
-                    .forget_service_session(&id, current, [7; 32], "setup-operation")
-                    .unwrap();
-                assert_eq!(
-                    std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
-                    bytes
-                );
-            }
-            assert!(
-                credential_store
-                    .forget_service_session(&id, None, [8; 32], "setup-operation")
-                    .is_err()
-            );
-            assert!(
-                credential_store
-                    .forget_service_session(&id, None, [7; 32], "foreign-operation")
-                    .is_err()
-            );
-            // Reusing a removed id for another kind is never covered by the receipt.
-            let reused = accounts::Account::new(id.clone(), "imap");
-            assert!(
-                credential_store
-                    .forget_service_session(&id, Some(&reused), [7; 32], "setup-operation")
-                    .is_err()
-            );
-        }
-
-        phase forget_with_an_unreadable_vault_fails_without_adopting_ownership;
-        {
-            let (root, credential_store, account, _) = ownership_fixture();
-            std::fs::write(root.path().join("accounts/vault/vault.enc"), b"corrupt").unwrap();
-            assert!(
-                credential_store
-                    .forget_service_session(&account.id, Some(&account), [7; 32], "setup-operation")
-                    .is_err()
-            );
-            assert_eq!(
-                std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
-                b"corrupt"
-            );
-        }
     }
 
     tilo_test_env::scenario! {

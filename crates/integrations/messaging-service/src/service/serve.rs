@@ -4,7 +4,7 @@
 //! service's), and each connection first carries the handoff the launcher
 //! writes for the app it is handing it to, before the app holds it. Apps in
 //! their sandbox cannot reach the socket path; the launcher is what names
-//! them, as for the model gateway. Messages and Passwords are served.
+//! them, as for the model gateway. Only Messages is served.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
@@ -45,39 +45,39 @@ fn accept(listener: &UnixListener, service: &std::sync::Weak<Service>) {
         let _ = std::thread::Builder::new()
             .name("tilo-messaging-handoff".into())
             .spawn(move || {
-                if let Some(app) = admit(&stream)
+                if admit(&stream)
                     && let Some(service) = serving.upgrade()
                 {
-                    serve(&service, stream, app);
+                    serve(&service, stream);
                 }
             });
     }
 }
 
-/// The app a connection is for, when it is the person's own and names an
-/// app the service serves.
-fn admit(stream: &UnixStream) -> Option<String> {
-    let peer = rustix::net::sockopt::socket_peercred(stream).ok()?;
-    if peer.uid != rustix::process::geteuid() {
-        return None;
-    }
-    stream.set_read_timeout(Some(HANDOFF)).ok()?;
-    let mut reader = stream;
-    let body = HANDOFF_FRAMING.read(&mut reader).ok()??;
-    let handoff: Handoff = serde_json::from_slice(&body).ok()?;
-    stream.set_read_timeout(None).ok()?;
-    (handoff.protocol == PROTOCOL
-        && [crate::MESSAGES_APP, crate::PASSWORDS_APP].contains(&handoff.app_id.as_str()))
-    .then_some(handoff.app_id)
+/// Whether a connection is the person's own and names Messages, the one app
+/// that holds messaging accounts.
+fn admit(stream: &UnixStream) -> bool {
+    let admitted = || {
+        let peer = rustix::net::sockopt::socket_peercred(stream).ok()?;
+        if peer.uid != rustix::process::geteuid() {
+            return None;
+        }
+        stream.set_read_timeout(Some(HANDOFF)).ok()?;
+        let mut reader = stream;
+        let body = HANDOFF_FRAMING.read(&mut reader).ok()??;
+        let handoff: Handoff = serde_json::from_slice(&body).ok()?;
+        stream.set_read_timeout(None).ok()?;
+        Some(handoff.protocol == PROTOCOL && handoff.app_id == crate::MESSAGES_APP)
+    };
+    admitted() == Some(true)
 }
 
-fn serve(service: &Arc<Service>, stream: UnixStream, app: String) {
+fn serve(service: &Arc<Service>, stream: UnixStream) {
     let Ok(reading) = stream.try_clone() else {
         return;
     };
     let handler = Arc::new(AppHandler {
         service: Arc::downgrade(service),
-        app,
     });
     if let Ok(link) = AppLink::start("tilo-messaging-app", reading, stream, handler) {
         service.serve(link);
@@ -89,18 +89,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_connection_names_messages_or_passwords_or_is_closed() {
+    fn a_connection_names_messages_or_is_closed() {
         for (app, admitted) in [
             (crate::MESSAGES_APP, true),
-            (crate::PASSWORDS_APP, true),
+            ("so.tilo.passwords", false),
             ("so.tilo.notes", false),
         ] {
             let (mut app_end, service_end) = UnixStream::pair().unwrap();
             crate::client::write_handoff(&mut app_end, app).unwrap();
-            assert_eq!(admit(&service_end).is_some(), admitted, "{app}");
+            assert_eq!(admit(&service_end), admitted, "{app}");
         }
         let (app_end, service_end) = UnixStream::pair().unwrap();
         drop(app_end);
-        assert_eq!(admit(&service_end), None);
+        assert!(!admit(&service_end));
     }
 }

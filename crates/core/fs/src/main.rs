@@ -178,9 +178,6 @@ enum Command {
         /// Private per-account metadata, queues and content caches.
         #[arg(long)]
         state_root: PathBuf,
-        /// Settings' config root; defaults to `$XDG_CONFIG_HOME/tilo`.
-        #[arg(long)]
-        config_root: Option<PathBuf>,
         /// Filesystem executable used for supervised `mount-cloud` children.
         #[arg(long)]
         fs_binary: Option<PathBuf>,
@@ -322,7 +319,6 @@ async fn run_command(cli: Cli) -> Result<()> {
         Command::CloudService {
             mounts_root,
             state_root,
-            config_root,
             fs_binary,
             control_socket,
             file_socket,
@@ -343,7 +339,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                         accounts: std::sync::Arc::new(tilo_fs::cloud::SessionAccounts::new(
                             sign_ins,
                         )),
-                        config_root,
                         mounts_root,
                         state_root,
                         control_socket,

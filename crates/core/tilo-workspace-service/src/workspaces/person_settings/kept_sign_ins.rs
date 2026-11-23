@@ -301,7 +301,12 @@ impl HostSignIns {
         if !accounts::vault_dir_in(root).exists() {
             return Ok(None);
         }
-        let credentials = accounts::AccountCredentials::open_in(root)?;
+        let credentials = accounts::SecretVault::open_person(Some(root));
+        if let Some(error) = credentials.recovery_error() {
+            return Err(format!(
+                "vault recovery required; restore access and reopen: {error}"
+            ));
+        }
         let mut kept = Vec::new();
         let mut signed_in = Vec::new();
         for account in accounts {
@@ -350,25 +355,16 @@ impl HostSignIns {
                 secret: Zeroizing::new(secret),
             });
         }
-        let keys = accounts::ServiceCredentials::open_in(root);
         for profile in super::provider_config(root).profiles {
             if super::key_kept(&profile) {
                 continue;
             }
-            let Ok((reference, authorization)) =
-                accounts::provider_api_key(&profile.id, &profile.endpoint)
-            else {
-                continue;
-            };
-            let Ok(Some(key)) = keys.resolve(&reference, &authorization) else {
+            let Some(key) = sealed_key(&credentials, &profile) else {
                 continue;
             };
             let Ok(place) = super::key_place(&profile) else {
                 continue;
             };
-            if key.is_empty() {
-                continue;
-            }
             kept.push(SealedBefore {
                 owner: Owner::Provider(profile.id.clone()),
                 kind: ItemKind::Key,
@@ -438,8 +434,12 @@ impl HostSignIns {
                         &mut account.config,
                         Some(&reference.to_string()),
                     );
+                    // Nobody asked: the device carries what it kept before, for its person.
                     workspaces
-                        .keep_workspace_account(workspace, &account)
+                        .keep_workspace_account(
+                            (workspace, &workspaces.acting_or_own(None)),
+                            &account,
+                        )
                         .await?;
                 }
                 Owner::Provider(id) => {
@@ -462,4 +462,32 @@ impl HostSignIns {
     pub(in crate::workspaces) fn is_empty(&self) -> bool {
         self.kept.is_empty()
     }
+}
+
+#[cfg(feature = "device-keys")]
+/// The key the host sealed for `profile` in its own store: the entry named for the model service,
+/// a provider's key and the provider's id, holding the key and the origin it was typed for. A key
+/// typed for another origin than the one `profile`'s endpoint names now is not carried, so it is
+/// never sent where it was not typed for.
+fn sealed_key(
+    vault: &accounts::SecretVault,
+    profile: &agent_provider_config::ProviderProfile,
+) -> Option<Zeroizing<String>> {
+    #[derive(serde::Deserialize)]
+    struct Sealed {
+        authorization: Bound,
+        value: Zeroizing<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Bound {
+        origin: String,
+    }
+    let name = serde_json::to_vec(&("model-gateway", "provider-api-key", &profile.id)).ok()?;
+    let id = accounts::AccountId::new(format!("tilo-service-credential:{}", hex::encode(name)));
+    let sealed: Sealed = serde_json::from_str(vault.get(&id)?.token.as_deref()?).ok()?;
+    let origin = tilo_net::Url::parse(profile.endpoint.trim())
+        .ok()?
+        .origin()
+        .ascii_serialization();
+    (sealed.authorization.origin == origin && !sealed.value.is_empty()).then_some(sealed.value)
 }

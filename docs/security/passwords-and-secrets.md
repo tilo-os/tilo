@@ -4,14 +4,13 @@ Passwords is the user-facing inventory for Tilo's encrypted secret store. Titles
 usernames, service origins, notes, custom fields and passwords are all inside the
 authenticated vault ciphertext. The plaintext account store never contains them.
 
-Applications requesting user-managed passwords should use
-`accounts::CredentialBroker`, not open `SecretVault`.
-Every request names the calling app, item, purpose, and (for web sign-ins) exact
-origin. The broker validates the origin before prompting and supports one-time,
-session and durable consent. Session grants are memory-only and disappear at
-logout; durable grants are encrypted in the vault and can be inspected and
-revoked. Users can revoke an app immediately. The returned password uses `Zeroizing<String>` so its
-buffer is cleared when dropped.
+An app or a device process never opens a vault itself. Every user-managed secret
+is an entry of the workspace's vault: an account's password names its entry, and a
+messaging account's profile key is one too. The session releases an entry under the
+person's role on Passwords, at the servers the entry belongs to, writing the use
+into the entry first (`crates/session/session/src/account_passwords.rs`); whoever
+may read the vault may read every entry, with no second approval per app. The
+returned secret uses `Zeroizing<String>` so its buffer is cleared when dropped.
 
 The vault is XChaCha20-Poly1305 sealed with a fresh random nonce per write.
 `tilo-secret-vault` owns the envelope and migration format; `tilo-secrets` is its
@@ -34,14 +33,13 @@ The Passwords app has no network access and does not sync secrets through CRDT s
 
 ## Native, browser and hosted callers
 
-Provider and service credentials use `accounts::ServiceCredentials`, alongside
-password-manager items in the existing accounts vault. `ServiceAuthorization`
-binds the authenticated service, purpose and canonical endpoint origin;
-`CredentialRef` is the opaque, serializable reference stored in non-secret
-configuration. `status`, `store`, `remove` and `resolve` require that binding.
-Changing a profile's endpoint never authorizes its previous key at the new
-origin. Native writes return durable storage failures, not best-effort success.
-Resolution returns `Zeroizing<String>`; status never returns the key.
+Provider keys and service tokens are the workspace's, entries of its vault like an
+account's password; a device keeps none of its own. The workspace's Hugging Face
+account names the entry holding a pasted token or a sign-in's grant, and the
+model manager asks the session for it on a socket of its own
+(`accounts::sign_ins::models_socket`), which tells it only that account. There it
+may also keep a sign-in made in a terminal, and forget the account with its sign-in
+when the person signs out.
 
 The trusted service boundary constructs authorization from authenticated caller
 context and the approved configuration, not from untrusted RPC arguments.
@@ -57,9 +55,9 @@ a backend must authenticate the caller, authorize its app namespace and use
 protected storage; the storage trait itself is not an authorization protocol.
 There is no plaintext-file, localStorage or network fallback.
 
-Accounts' encrypted container and `CredentialBroker` remain the inventory and
-consent layer for user-managed passwords. App-scoped key names in `tilo-secrets`
-are namespacing, **not** a replacement for broker consent. A trusted frontend or
+The workspace's vault is the inventory for user-managed passwords, and the
+workspace's rules decide who reads it. App-scoped key names in `tilo-secrets`
+are namespacing, **not** authorization. A trusted frontend or
 backend must derive caller identity and origin from its authenticated execution
 context, not accept arbitrary app IDs from an untrusted request.
 
@@ -79,15 +77,8 @@ A failed write queue stays failed until reload/recovery; later flushes cannot
 silently turn data loss into success. Async writes update the mirror only after
 storage acknowledges persistence.
 
-Accounts page edits use an encrypted JSON inventory in the same durable secret
-backend. The entire reload/compare/merge/write holds the app's Web Lock, not just
-key creation. Existing encrypted page files seed migration only when that
-inventory is absent; unrelated entries survive. Each changed entry carries its
-original value, so stale conflicting edits fail without replacing ownership.
-The synchronous save reports pending until the transaction commits: retain the
-draft and retry the same save after browser storage completes. Only an
-acknowledged save may publish dependent metadata. Storage failures require
-recovery/reload, not treating a queued write as success.
+A browser page keeps no account secrets of its own: they are entries of the
+workspace's vault, and the page's accounts vault is empty and takes no write.
 
 API Tester follows the same acknowledgement rule for immutable authentication
 secrets: a pending write has no reference in the collaborative document. Browser
@@ -138,6 +129,14 @@ agent or host connection.
   for signing in and never writes it anywhere. No per-app list decides: an
   app acting for its person may read what that person may, so the person's
   role on Passwords is the boundary.
+- **Website sessions** (`List`, `Resolve`, `Forget`): only Browser. A website
+  session is one of the workspace's accounts whose `passwordItem` names an
+  entry of the workspace's vault holding the cookies the person selected for a
+  site (`tilo_workspace_service::workspaces::website_sessions`). The entry is no
+  item anything signs in or fills a field with. The session lists and opens
+  only the asking person's own selection, writes each opening into the entry's
+  uses first, and forgets one only for someone who administers the workspace:
+  the cookies leave the vault, then the account leaves the accounts record.
 
 File accounts are mounted by the person's cloud service (`fs cloud-service`),
 not by an app, so it asks on a socket of its own (`accounts::sign_ins`, below
@@ -163,20 +162,12 @@ directly.
 
 ## Remaining consumer migrations
 
-Mail, Calendar and system account credentials use `accounts::AccountCredentials`,
-the shared account-owner facade alongside `ServiceCredentials`. It adopts legacy
-account-ID password and OAuth entries in place, without copying or renaming them;
-Settings can still edit passwords, refresh grants and remove credentials at the
-canonical key. Ownership refresh tokens are system-owned grants, not interactive
+Ownership refresh tokens are system-owned grants, not interactive
 password-manager disclosures, and are not forced through Passwords consent.
-Only trusted account owners and refreshers may use this facade. Opening damaged
-or unavailable ownership returns an error; writes retain the sealed vault's atomic,
-locked, conflict-checked persistence. Secrets never enter account JSON, CRDT
-state, debug output or logs. The low-level `SecretVault` API stays public for
+Secrets never enter account JSON, CRDT state, debug output or logs. The low-level `SecretVault` API stays public for
 Settings, recovery and adapters not yet migrated. Runtime channel and identity stores already
-use `tilo-secrets` directly for their own app-owned material. Provider configuration
-and model gateways use the typed service-credential facade, never open the vault
-directly or invent a second plaintext credential file. A remote credential HTTP protocol and its
+use `tilo-secrets` directly for their own app-owned material. Nothing invents a
+second plaintext credential file. A remote credential HTTP protocol and its
 caller authentication are not supplied by `SecretBackend`.
 
 Password generation uses OS randomness, rejection sampling (no modulo bias), a

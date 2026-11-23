@@ -43,7 +43,7 @@ default = ["store"]
 hints = ["dep:tilo-seal", "dep:serde_json", "dep:url", "dep:zeroize", "dep:sha2"]
 # Signing in with Hugging Face for model downloads, and renewing that
 # sign-in: what the model manager needs, without the credential store.
-hugging-face = ["tilo-oauth/client", "dep:serde_json", "dep:zeroize"]
+hugging-face = ["tilo-oauth/client", "dep:serde_json"]
 store = [
     "hints",
     "hugging-face",

@@ -1,12 +1,11 @@
-//! The service: the person's ownership and vault, their running accounts, the
-//! one enrollment flow per service, and the apps it serves.
+//! The service: the person's ownership, their running accounts, the one
+//! enrollment flow per service, and the apps it serves.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
-use accounts::CredentialOwner;
 use launcher::owned_service::ServiceCancellation;
 use tilo_messaging::{
     EnrollmentReview, MessagingClient, MessagingRegistry, Pairing, SendError, ServiceAccount,
@@ -43,7 +42,6 @@ struct Flows {
 
 pub struct Service {
     ownership: Arc<Ownership>,
-    vault: CredentialOwner,
     session: SessionLink,
     registry: Arc<dyn MessagingRegistry>,
     messaging: MessagingClient,
@@ -53,8 +51,6 @@ pub struct Service {
     root: PathBuf,
     /// Owns every provider start: dropping the service stops them.
     lifetime: Arc<()>,
-    /// Bumped whenever the vault's requests or grants changed.
-    vault_changed: tokio::sync::watch::Sender<u64>,
     changed: Arc<tokio::sync::Notify>,
     clients: Mutex<Vec<AppLink>>,
     restored: AtomicBool,
@@ -76,14 +72,11 @@ impl Service {
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
         let ownership = Arc::new(Ownership::load(actor, device)?);
-        let vault = CredentialOwner::deferred(actor, device, accounts::SecretStore::open)
-            .map_err(|_| "the vault refuses this person or device".to_owned())?;
-        Self::assemble(ownership, vault, profile, session, runtime)
+        Self::assemble(ownership, profile, session, runtime)
     }
 
     fn assemble(
         ownership: Arc<Ownership>,
-        vault: CredentialOwner,
         profile: &std::path::Path,
         session: SessionLink,
         runtime: tokio::runtime::Handle,
@@ -95,7 +88,6 @@ impl Service {
         let messaging = registry.clone().client();
         let service = Arc::new_cyclic(|this: &Weak<Self>| Self {
             ownership,
-            vault,
             session,
             registry,
             messaging,
@@ -107,22 +99,12 @@ impl Service {
             running: Mutex::default(),
             root: profile.join("private-messages"),
             lifetime: Arc::new(()),
-            vault_changed: tokio::sync::watch::channel(0).0,
             changed: Arc::new(tokio::sync::Notify::new()),
             clients: Mutex::default(),
             restored: AtomicBool::new(false),
             runtime,
             history: OnceLock::new(),
         });
-        let woken = Arc::downgrade(&service);
-        service.vault.bind_request_wake(Arc::new(move || {
-            if let Some(service) = woken.upgrade() {
-                service
-                    .vault_changed
-                    .send_modify(|revision| *revision = revision.wrapping_add(1));
-                service.changed();
-            }
-        }));
         let observed = Arc::downgrade(&service);
         if let Some(guard) = service.messaging.history().observe(Arc::new(move || {
             if let Some(service) = observed.upgrade() {
@@ -214,11 +196,10 @@ impl Service {
             actor: self.ownership.actor().into(),
             accounts,
             enrollments,
-            proposals: *self.vault_changed.borrow(),
         }
     }
 
-    /// A new running account for `identity`, guarded by its grant and the
+    /// A new running account for `identity` under its key, guarded by the
     /// person's records, registered with the apps' client.
     pub(crate) fn account<A: Running + 'static>(
         &self,
@@ -228,8 +209,7 @@ impl Service {
         make: impl FnOnce(Arc<AccountGuard>, Arc<AccountSupervisor>) -> A,
     ) -> Result<Arc<A>, SendError> {
         let identity = identity.running();
-        let authority =
-            records::CurrentAuthority::new(&identity, &credential, scope, self.session.clone())?;
+        let authority = records::CurrentAuthority::new(&identity, scope, self.session.clone())?;
         let guard = AccountGuard::new(identity, credential, authority)?;
         let supervisor =
             AccountSupervisor::new_with_authority(&guard.identity.owner, Some(guard.clone()))?;
@@ -363,7 +343,7 @@ impl Service {
         }
     }
 
-    async fn review(&self, account: ServiceAccount, name: String) -> Result<String, SendError> {
+    async fn review(&self, account: ServiceAccount, name: String) -> Result<(), SendError> {
         match account.service.as_str() {
             "signal" => self.flows.signal.clone().review(account, name).await,
             "whatsapp" => self.flows.whatsapp.clone().review(account, name).await,
@@ -379,37 +359,6 @@ impl Service {
             "sms" => self.flows.sms.cancel(account),
             _ => {}
         }
-    }
-
-    /// The permission requests Messages waits on, as Passwords shows them.
-    fn proposals(&self) -> Vec<wire::Proposal> {
-        self.vault
-            .proposals()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|proposal| proposal.request.app_id == crate::MESSAGES_APP)
-            .map(|proposal| wire::Proposal {
-                id: proposal.id,
-                app_id: proposal.request.app_id,
-                item: proposal.request.item_id.0,
-                purpose: proposal.request.purpose,
-                origin: proposal.request.origin,
-                scope: proposal.scope,
-            })
-            .collect()
-    }
-
-    fn decide(&self, proposal: &str, decision: wire::Decision) -> bool {
-        let decision = match decision {
-            wire::Decision::Deny => accounts::AccessDecision::Deny,
-            wire::Decision::Session => accounts::AccessDecision::AllowForSession,
-            wire::Decision::Always => accounts::AccessDecision::AllowAlways,
-        };
-        let decided = self.vault.decide_proposal(proposal, decision).is_ok();
-        self.vault_changed
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
-        self.changed();
-        decided
     }
 }
 
@@ -476,10 +425,9 @@ impl Handler<session::Call, session::Reply, session::Event> for SessionHandler {
     }
 }
 
-/// What the service answers one app.
+/// What the service answers Messages, the one app it serves.
 struct AppHandler {
     service: Weak<Service>,
-    app: String,
 }
 
 impl Handler<wire::Call, wire::Reply, wire::Event> for AppHandler {
@@ -488,13 +436,6 @@ impl Handler<wire::Call, wire::Reply, wire::Event> for AppHandler {
             reply.send(wire::Reply::Refused);
             return;
         };
-        let passwords = matches!(call, wire::Call::Proposals | wire::Call::Decide { .. });
-        // Passwords answers the service's requests and nothing else; only
-        // Messages holds accounts.
-        if passwords != (self.app == crate::PASSWORDS_APP) {
-            reply.send(wire::Reply::Refused);
-            return;
-        }
         let runtime = service.runtime.clone();
         runtime.spawn(async move { reply.send(answer(&service, call).await) });
     }
@@ -509,7 +450,7 @@ async fn answer(service: &Arc<Service>, call: wire::Call) -> wire::Reply {
         Call::Prepare(kind) => Reply::Review(service.prepare(&kind)),
         Call::Begin(kind) => Reply::Pairing(service.begin(&kind).await),
         Call::Finish(account, attempt) => Reply::Review(service.finish(account, attempt).await),
-        Call::Review(account, name) => Reply::Proposal(service.review(account, name).await),
+        Call::Review(account, name) => Reply::Reviewed(service.review(account, name).await),
         Call::Cancel(account) => {
             service.cancel(&account);
             Reply::Done
@@ -557,14 +498,6 @@ async fn answer(service: &Arc<Service>, call: wire::Call) -> wire::Reply {
                 setup.cancel();
             }
             Reply::Done
-        }
-        Call::Proposals => Reply::Proposals(service.proposals()),
-        Call::Decide { proposal, decision } => {
-            if service.decide(&proposal, decision) {
-                Reply::Done
-            } else {
-                Reply::Refused
-            }
         }
     }
 }

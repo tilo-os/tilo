@@ -262,7 +262,13 @@ impl Workspaces {
         let workspace = workspace.to_owned();
         let task = tokio::spawn(async move {
             let outcome = workspaces
-                .signed_in(&workspace, &openai, &device, beginning.using, &reach)
+                .signed_in(
+                    (&workspace, person),
+                    &openai,
+                    &device,
+                    beginning.using,
+                    &reach,
+                )
                 .await;
             let state = match outcome {
                 Ok(provider) => {
@@ -353,7 +359,7 @@ impl Workspaces {
     /// keep the provider it answers on: what one sign-in does from its code on.
     async fn signed_in(
         &self,
-        workspace: &str,
+        (workspace, person): (&str, [u8; 32]),
         openai: &OpenAiSignIn,
         code: &UserCode,
         using: AccountUse,
@@ -361,7 +367,8 @@ impl Workspaces {
     ) -> Result<ProviderView, String> {
         let root = &self.workspace_root(workspace);
         // The person signs in themselves: the use of what is kept is theirs.
-        let keys = ProviderKeys::of(self.vault_at(workspace), "");
+        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        let keys = ProviderKeys::of(self.vault_for(workspace, &asker), "");
         let granted = tokio::time::timeout(SIGN_IN_LIFETIME, entered(openai, code, reach))
             .await
             .map_err(|_| "The code expired before it was entered. Begin again.".to_owned())??;

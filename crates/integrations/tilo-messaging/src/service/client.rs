@@ -3,7 +3,7 @@
 //!
 //! What the app reads without waiting (an account's state, an enrollment's phase)
 //! comes from the last snapshot; everything else is one call. The snapshot
-//! authorizes nothing, and every operation rechecks its grant in the service.
+//! authorizes nothing, and every operation is checked again in the service.
 
 use std::os::fd::FromRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -21,10 +21,9 @@ use crate::{
 use tilo_contact_directory::routing::Route;
 
 use super::link::{Handler, Responder};
-use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Proposal, Reply, Snapshot};
+use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Reply, Snapshot};
 
 const FIRST_STATE: Duration = Duration::from_secs(5);
-const PROPOSALS: Duration = Duration::from_secs(2);
 
 type Observer = Weak<dyn Fn() + Send + Sync>;
 
@@ -173,30 +172,6 @@ impl Connection {
         Box::new(observer)
     }
 
-    pub fn proposals(&self) -> Vec<Proposal> {
-        match self.link.call_blocking(Call::Proposals, PROPOSALS) {
-            Some(Reply::Proposals(proposals)) => proposals,
-            _ => Vec::new(),
-        }
-    }
-
-    pub fn proposals_revision(&self) -> u64 {
-        self.snapshot(|snapshot| snapshot.proposals)
-    }
-
-    pub fn decide(&self, proposal: &str, decision: super::wire::Decision) -> Result<(), SendError> {
-        match self.link.call_blocking(
-            Call::Decide {
-                proposal: proposal.into(),
-                decision,
-            },
-            PROPOSALS,
-        ) {
-            Some(Reply::Done) => Ok(()),
-            _ => Err(SendError::Revoked),
-        }
-    }
-
     fn ask(&self, call: Call) -> impl Future<Output = Option<Reply>> + Send + 'static {
         let answer = self.link.call(call);
         async move { answer.await.ok() }
@@ -263,7 +238,7 @@ impl EnrollmentHost for Enrollment {
         answer!(
             self.0,
             Call::Review(account, name),
-            Proposal,
+            Reviewed,
             SendError::Unavailable
         )
     }

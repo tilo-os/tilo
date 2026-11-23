@@ -2,23 +2,23 @@
 
 use std::sync::Arc;
 
-use account_credentials::hugging_face::{self, HUGGING_FACE_DOWNLOADS, HubCredential, HubSignIn};
-use accounts::{ServiceAuthorization, ServiceCredentials};
+use account_credentials::hugging_face::{self, HUGGING_FACE_DOWNLOADS, HubSignIn};
 use agent_provider_config::local::ModelArtifactFormat;
 use agent_provider_config::local::hub::{
     HUB_ORIGIN, HubAccount, HubFitReason, HubFormat, HubModelOffer, HubRef, HubSearchResult,
-    HubTokenState, HubVariantOffer, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE, model_page_url,
+    HubTokenState, HubVariantOffer, model_page_url,
 };
 use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
+use ui::collaboration::browser_service_sessions::{
+    BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, Client, Pending,
+};
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource;
 use ui::widget::{Button, ButtonRole, ProgressBar, Row, Segment, Text, TextInput, ToggleGroup};
+use zeroize::Zeroizing;
 
-use super::{
-    AgentModelsEffect, AgentModelsModel, LocalModelControl, area, byte_size, fit_label, fit_tone,
-    invoking,
-};
+use super::{AgentModelsEffect, AgentModelsModel, area, byte_size, fit_label, fit_tone, invoking};
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInWait, Waited};
@@ -62,7 +62,72 @@ pub(crate) struct HubBrowser {
     pub(crate) working: bool,
     /// What is stored here, or why that cannot be read.
     pub(crate) token_state: Result<HubTokenState, String>,
-    signing_in: Option<SignInWait<HubTokenState>>,
+    signing_in: Option<SignInWait<HubSignIn>>,
+    /// A sign-in's grant on its way to the workspace's vault, and who signed in.
+    keeping: Option<(Pending, HubAccount)>,
+    pub(crate) vault: HubVault,
+}
+
+/// Where the workspace's Hugging Face account is kept: in the workspace's accounts, naming the
+/// entry of its vault the session keeps its token or sign-in in. The model manager is told the
+/// account and released its token by the session; nothing on this device keeps it. Signing out
+/// is the model manager's ([`HubControl::forget_hub_token`]): it forgets the account it
+/// downloads with, in whichever workspace keeps it, together with its sign-in.
+#[derive(Clone, Default)]
+pub(crate) struct HubVault {
+    pub(crate) root: crate::accounts::AccountRoot,
+    pub(crate) session: Option<Client>,
+}
+
+impl HubVault {
+    /// Ask the session to keep `secret` as the Hugging Face account's sign-in, as `username`.
+    fn keep(&self, secret: Zeroizing<String>, username: &str) -> Result<Pending, String> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| t("agent-hub-unavailable"))?;
+        session.request(
+            Command::StoreAccountSecret {
+                account: accounts::sign_ins::MODEL_HUB_ACCOUNT.to_owned(),
+                password: secret,
+                username: username.to_owned(),
+                servers: vec![accounts::sign_ins::MODEL_HUB_ORIGIN.to_owned()],
+            },
+            None,
+        )
+    }
+
+    /// Make the workspace's Hugging Face account name the entry the session `kept` its
+    /// sign-in in: signed in as `account`, or a pasted token without one.
+    fn kept(
+        &self,
+        kept: Result<Reply, String>,
+        account: Option<HubAccount>,
+    ) -> Result<HubTokenState, String> {
+        let item = match kept? {
+            Reply::AccountSecretStored { account, item }
+                if account == accounts::sign_ins::MODEL_HUB_ACCOUNT =>
+            {
+                item
+            }
+            _ => return Err("The session answered something else".into()),
+        };
+        let hub = accounts::sign_ins::model_hub_account(
+            &item,
+            account.as_ref().map(|account| account.username.as_str()),
+            account.as_ref().and_then(|account| account.name.as_deref()),
+        );
+        let mut store = self.root.store();
+        store.keep(&hub).map_err(|error| error.to_string())?;
+        self.root
+            .save_store(&store)
+            .map_err(|error| error.to_string())?;
+        Ok(
+            account.map_or(HubTokenState::Pasted, |account| HubTokenState::SignedIn {
+                account,
+            }),
+        )
+    }
 }
 
 impl HubBrowser {
@@ -80,17 +145,20 @@ impl HubBrowser {
             working: false,
             token_state,
             signing_in: None,
+            keeping: None,
+            vault: HubVault::default(),
         }
     }
 
     pub(crate) fn signing_in(&self) -> bool {
-        self.signing_in.is_some()
+        self.signing_in.is_some() || self.keeping.is_some()
     }
 
     pub(crate) fn cancel_sign_in(&mut self) {
         if let Some(wait) = self.signing_in.take() {
             wait.cancel();
         }
+        self.keeping = None;
     }
 
     pub(crate) fn sign_in(
@@ -98,19 +166,9 @@ impl HubBrowser {
         by_code: bool,
         credential_store: &account_credentials::CredentialStore,
         opener: &Arc<dyn crate::panes::accounts::BrowserOpener>,
-        (userinfo, control): (&str, &Arc<dyn LocalModelControl>),
+        userinfo: &str,
     ) -> Result<(), String> {
         self.cancel_sign_in();
-        let control = Arc::clone(control);
-        let store = move |sign_in: HubSignIn| {
-            let account = HubAccount {
-                username: sign_in.username.clone(),
-                name: sign_in.name.clone(),
-            };
-            control
-                .save_hub_token(&HubCredential::encode(&sign_in))
-                .map(|()| HubTokenState::SignedIn { account })
-        };
         let failed = |error: &dyn std::fmt::Display| {
             t_args(
                 "agent-sign-in-failed",
@@ -131,9 +189,7 @@ impl HubBrowser {
                         .map_err(|error| failed(&error))
                 },
                 move |device| {
-                    hugging_face::finish_device(device, &userinfo)
-                        .map_err(|error| failed(&error))
-                        .and_then(store)
+                    hugging_face::finish_device(device, &userinfo).map_err(|error| failed(&error))
                 },
             )
         } else {
@@ -147,7 +203,6 @@ impl HubBrowser {
             SignInWait::browser(&url, cancel, opener, move || {
                 hugging_face::finish_browser(authorization, &userinfo)
                     .map_err(|error| failed(&error))
-                    .and_then(store)
             })
         };
         self.signing_in = Some(wait);
@@ -155,31 +210,73 @@ impl HubBrowser {
     }
 
     pub(crate) fn poll(&mut self) -> (bool, Option<String>) {
+        if let Some((pending, _)) = self.keeping.as_mut() {
+            let Some(kept) = pending.poll() else {
+                return (false, None);
+            };
+            let account = self.keeping.take().map(|(_, account)| account);
+            return (true, Some(self.stored(self.vault.kept(kept, account))));
+        }
         let Some(wait) = self.signing_in.as_mut() else {
             return (false, None);
         };
         match wait.poll() {
             Ok(Waited::Nothing) => (false, None),
             Ok(Waited::Changed) => (true, None),
-            Ok(Waited::Done(state)) => (true, Some(self.signed_in(Ok(state)))),
-            Err(error) => (true, Some(self.signed_in(Err(error)))),
+            Ok(Waited::Done(sign_in)) => (true, self.signed_in(Ok(sign_in))),
+            Err(error) => (true, self.signed_in(Err(error))),
         }
     }
 
-    /// Block until the sign-in under way ended; the notice it leaves.
+    /// Block until the sign-in under way ended; the notice it leaves once
+    /// what it left is kept.
     #[cfg(test)]
     pub(crate) fn finish_sign_in_for_test(&mut self) -> Option<String> {
         let outcome = self
             .signing_in
             .as_mut()?
             .finish_for_test(tilo_test_env::hang_bound());
-        Some(self.signed_in(outcome))
+        if let Some(error) = self.signed_in(outcome) {
+            return Some(error);
+        }
+        let deadline = ui::time::now() + tilo_test_env::hang_bound();
+        while ui::time::now() < deadline {
+            if let (_, Some(notice)) = self.poll() {
+                return Some(notice);
+            }
+            std::thread::yield_now();
+        }
+        panic!("the session was never heard to keep the sign-in");
     }
 
-    /// The sign-in ended with `outcome`: what it stored, or why it failed.
-    fn signed_in(&mut self, outcome: Result<HubTokenState, String>) -> String {
+    /// The sign-in ended with `outcome`: its grant goes to the workspace's vault, or why it
+    /// failed.
+    fn signed_in(&mut self, outcome: Result<HubSignIn, String>) -> Option<String> {
         self.signing_in = None;
-        match outcome {
+        let sign_in = match outcome {
+            Ok(sign_in) => sign_in,
+            Err(error) => return Some(error),
+        };
+        let grant = account_credentials::oauth_secret(&sign_in.tokens).token;
+        let asked = grant
+            .ok_or_else(|| "The sign-in could not be kept".to_owned())
+            .and_then(|grant| self.vault.keep(Zeroizing::new(grant), &sign_in.username));
+        match asked {
+            Ok(pending) => {
+                let account = HubAccount {
+                    username: sign_in.username,
+                    name: sign_in.name,
+                };
+                self.keeping = Some((pending, account));
+                None
+            }
+            Err(error) => Some(error),
+        }
+    }
+
+    /// What is stored now is `stored`: the notice it leaves.
+    fn stored(&mut self, stored: Result<HubTokenState, String>) -> String {
+        match stored {
             Ok(state) => {
                 let notice = match &state {
                     HubTokenState::SignedIn { account } => t_args(
@@ -655,23 +752,44 @@ pub(crate) fn answer(
             if token.is_empty() {
                 return Err(t("agent-hub-token-empty"));
             }
-            let control = Arc::clone(&model.control);
+            let pending = model.hub.vault.keep(Zeroizing::new(token), "")?;
             drop(model);
-            Ok(token_job(app, cx, control, move |control| {
-                control
-                    .save_hub_token(&token)
-                    .map(|()| t("agent-hub-token-saved"))
-            }))
+            Ok(app.job(
+                cx,
+                move || pending.wait(),
+                |app: &SettingsApp, kept: Result<Reply, String>, _| {
+                    let shared = area(app).ok_or_else(crate::area::missing)?.model();
+                    let mut model = shared.borrow_mut();
+                    let stored = model.hub.vault.kept(kept, None);
+                    let failed = stored.as_ref().err().cloned();
+                    model.notice = Some(model.hub.stored(stored));
+                    model.changed = true;
+                    failed.map_or_else(|| Ok(Effected::done()), Err)
+                },
+            ))
         }
         AgentModelsEffect::RemoveHubToken => {
             model.hub.cancel_sign_in();
             let control = Arc::clone(&model.control);
             drop(model);
-            Ok(token_job(app, cx, control, |control| {
-                control
-                    .forget_hub_token()
-                    .map(|()| t("agent-hub-token-removed"))
-            }))
+            Ok(app.job(
+                cx,
+                move || (control.forget_hub_token(), control.hub_token()),
+                |app: &SettingsApp,
+                 (outcome, stored): (Result<(), String>, Result<HubTokenState, String>),
+                 _| {
+                    let shared = area(app).ok_or_else(crate::area::missing)?.model();
+                    let mut model = shared.borrow_mut();
+                    model.hub.token_state = stored;
+                    model.notice = Some(
+                        outcome
+                            .clone()
+                            .map_or_else(|error| error, |()| t("agent-hub-token-removed")),
+                    );
+                    model.changed = true;
+                    outcome.map(|()| Effected::done())
+                },
+            ))
         }
         AgentModelsEffect::SignInWithHuggingFace | AgentModelsEffect::SignInWithHuggingFaceCode => {
             let model = &mut *model;
@@ -679,7 +797,7 @@ pub(crate) fn answer(
                 matches!(effect, AgentModelsEffect::SignInWithHuggingFaceCode),
                 &model.credential_store,
                 &model.opener,
-                (&model.hub_userinfo, &model.control),
+                &model.hub_userinfo,
             )?;
             Ok(Effected::done())
         }
@@ -731,33 +849,6 @@ fn search(
             results.map(Effected::value)
         },
     ))
-}
-
-fn token_job(
-    app: &SettingsApp,
-    cx: &mut EffectCx<Settings>,
-    control: Arc<dyn LocalModelControl>,
-    change: impl FnOnce(&dyn LocalModelControl) -> Result<String, String> + Send + 'static,
-) -> Effected {
-    app.job(
-        cx,
-        move || {
-            let outcome = change(control.as_ref());
-            (outcome, control.hub_token())
-        },
-        |app: &SettingsApp,
-         (outcome, stored): (Result<String, String>, Result<HubTokenState, String>),
-         _| {
-            let shared = area(app).ok_or_else(crate::area::missing)?.model();
-            let mut model = shared.borrow_mut();
-            model.hub.token_state = stored;
-            model.notice = Some(match &outcome {
-                Ok(message) | Err(message) => message.clone(),
-            });
-            model.changed = true;
-            outcome.map(|_| Effected::done())
-        },
-    )
 }
 
 fn push_confirm(
@@ -919,9 +1010,6 @@ pub trait HubControl {
     fn hub_token(&self) -> Result<HubTokenState, String> {
         Ok(HubTokenState::None)
     }
-    fn save_hub_token(&self, _token: &str) -> Result<(), String> {
-        Err(t("agent-hub-unavailable"))
-    }
     fn forget_hub_token(&self) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
@@ -952,12 +1040,8 @@ impl HubControl for super::ModelManagerCli {
         token_state()
     }
 
-    fn save_hub_token(&self, token: &str) -> Result<(), String> {
-        store_token(token)
-    }
-
     fn forget_hub_token(&self) -> Result<(), String> {
-        forget_token()
+        manager_request(&["hub-sign-out"])
     }
 }
 
@@ -1035,15 +1119,6 @@ pub(crate) fn manager_install(repo: &str, revision: &str, variant: &str) -> Resu
     ])
 }
 
-fn token_binding() -> Result<(accounts::CredentialRef, ServiceAuthorization), String> {
-    let authorization = ServiceAuthorization::new(TOKEN_SERVICE, TOKEN_PURPOSE, HUB_ORIGIN)
-        .map_err(|error| error.to_string())?;
-    let reference = authorization
-        .credential_ref(TOKEN_ID)
-        .map_err(|error| error.to_string())?;
-    Ok((reference, authorization))
-}
-
 pub(crate) fn token_state() -> Result<HubTokenState, String> {
     manager_answer(&["hub-account"])
 }
@@ -1053,23 +1128,6 @@ fn account_label(account: &HubAccount) -> String {
         Some(name) => format!("{name} ({})", account.username),
         None => account.username.clone(),
     }
-}
-
-pub(crate) fn store_token(token: &str) -> Result<(), String> {
-    crate::device_read::off_ui_thread();
-    let (reference, authorization) = token_binding()?;
-    ServiceCredentials::open()
-        .store(&reference, &authorization, token)
-        .map_err(|error| error.to_string())
-}
-
-pub(crate) fn forget_token() -> Result<(), String> {
-    crate::device_read::off_ui_thread();
-    let (reference, authorization) = token_binding()?;
-    ServiceCredentials::open()
-        .remove(&reference, &authorization)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

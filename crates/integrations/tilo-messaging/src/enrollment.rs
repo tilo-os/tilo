@@ -1,5 +1,5 @@
 //! Unpublished first-account setup: the loan grants no account editing,
-//! credential decision, message route or storage access to an application.
+//! message route or storage access to an application.
 use crate::{LinkedAccount, Pairing, PairingFuture, SendError, ServiceAccount};
 use std::{future::Future, pin::Pin, sync::Arc};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,7 +8,6 @@ pub enum EnrollmentPhase {
     Empty,
     Linking,
     Review,
-    AwaitingPermission,
     Ready,
     Interrupted,
 }
@@ -28,7 +27,7 @@ impl std::fmt::Debug for EnrollmentReview {
 pub type EnrollmentReviewFuture =
     Pin<Box<dyn Future<Output = Result<EnrollmentReview, SendError>> + Send + 'static>>;
 pub type EnrollmentApprovalFuture =
-    Pin<Box<dyn Future<Output = Result<String, SendError>> + Send + 'static>>;
+    Pin<Box<dyn Future<Output = Result<(), SendError>> + Send + 'static>>;
 /// Private chooser projection: selection is an opaque host token, never a bus
 /// path, phone number, ICCID, account editor right or modem permission.
 #[derive(Clone, PartialEq, Eq)]
@@ -50,8 +49,8 @@ pub trait EnrollmentHost: Send + Sync {
     }
     fn begin(&self, service: String) -> PairingFuture;
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
-    /// Propose only; the original protected Passwords owner decides permission
-    /// before publication, activation or any message write.
+    /// The person reviewed the account under `display_name`: keep its key in
+    /// their workspace vault and start it, publishing it once it is linked.
     fn review(&self, account: ServiceAccount, display_name: String) -> EnrollmentApprovalFuture;
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase;
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount>;
@@ -185,7 +184,7 @@ impl EnrollmentClient {
         &self,
         account: ServiceAccount,
         display_name: String,
-    ) -> Result<String, SendError> {
+    ) -> Result<(), SendError> {
         if display_name.trim().is_empty()
             || display_name.len() > 256
             || display_name.chars().any(char::is_control)

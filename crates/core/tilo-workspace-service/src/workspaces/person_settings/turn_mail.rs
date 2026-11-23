@@ -243,10 +243,11 @@ impl Workspaces {
         }
         let root = self.workspace_root(&workspace);
         if target.address.action != person_accounts::SEND {
+            let asker = using.acting();
             return self
                 .mail_read_or_draft(
                     Signing {
-                        vault: self.vault_at(&workspace),
+                        vault: self.vault_for(&workspace, &asker),
                         root: &root,
                         by: &using.agent,
                     },
@@ -369,8 +370,9 @@ impl Workspaces {
             return Err("What waited is not what you were shown, so nothing was sent.".into());
         }
         // Their allowing it is their sending it.
+        let asker = tilo_action_policy::Acting::person(hex::encode(person));
         let signing = Signing {
-            vault: self.vault_at(&asked.workspace),
+            vault: self.vault_for(&asked.workspace, &asker),
             root,
             by: "",
         };

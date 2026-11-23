@@ -1,6 +1,6 @@
 //! The workspace's accounts as this app keeps them: the record its External
-//! Accounts panel edits and Mail, Calendar and the file apps read, beside this
-//! device's vault of their secrets and its record of their sync health.
+//! Accounts panel edits and Mail, Calendar and the file apps read, with how
+//! each one syncs, beside this device's vault of their secrets.
 
 use std::path::PathBuf;
 
@@ -18,8 +18,6 @@ pub struct AccountMutationJournal {
     /// The workspace's accounts as they were, each without its secret.
     #[serde(rename = "previous_accounts")]
     accounts: Vec<accounts::Account>,
-    #[serde(rename = "previous_statuses")]
-    statuses: accounts::AccountSyncStatusStore,
     #[serde(rename = "previous_vault_ciphertext")]
     vault_ciphertext: Option<Vec<u8>>,
 }
@@ -217,11 +215,6 @@ impl AccountRoot {
         self.path().ok_or_else(|| "no config dir".to_string())
     }
 
-    fn require_io(&self) -> std::io::Result<PathBuf> {
-        self.path()
-            .ok_or_else(|| std::io::Error::other("no config dir"))
-    }
-
     /// The workspace's accounts, as its record holds them: none while the
     /// record has not reached this device.
     pub fn store(&self) -> accounts::person::AccountList {
@@ -331,18 +324,21 @@ impl AccountRoot {
         let Some(root) = &self.explicit else {
             return Err("This device's account credentials is unavailable".into());
         };
-        let mut credentials = accounts::AccountCredentials::open_in(root)?;
-        let token = credentials.get(id).and_then(|secret| secret.token);
+        let mut vault = accounts::SecretVault::open_person(Some(root));
+        if let Some(error) = vault.recovery_error() {
+            return Err(format!("the credential vault could not be read: {error}"));
+        }
+        let token = vault.get(id).and_then(|secret| secret.token);
         // Typed just now: bound to the servers its account names where it
         // is first joined.
-        credentials.put_anew(
+        vault.put_anew(
             id,
             &accounts::Secret {
                 password: password.to_owned(),
                 token,
             },
         );
-        credentials.try_save()
+        vault.try_save()
     }
 
     /// Make the workspace's accounts record hold `store`'s accounts: each
@@ -380,19 +376,6 @@ impl AccountRoot {
         Ok(())
     }
 
-    pub fn statuses(&self) -> accounts::AccountSyncStatusStore {
-        self.path()
-            .map(|root| accounts::AccountSyncStatusStore::load_in(&root))
-            .unwrap_or_default()
-    }
-
-    pub fn save_statuses(
-        &self,
-        statuses: &accounts::AccountSyncStatusStore,
-    ) -> std::io::Result<()> {
-        statuses.save_in(&self.require_io()?)
-    }
-
     /// The encrypted credential vault. Opening it asks the Secret Service
     /// for its key: never on the UI thread.
     pub fn vault(&self) -> accounts::SecretVault {
@@ -407,23 +390,15 @@ impl AccountRoot {
         }
     }
 
-    pub fn sync_reporter(&self, id: accounts::AccountId) -> accounts::AccountSyncReporter {
-        match &self.explicit {
-            Some(root) => accounts::AccountSyncReporter::in_root(id, root.clone()),
-            None => accounts::AccountSyncReporter::new(id),
-        }
-    }
-
     fn mutation_journal_path(&self) -> Result<PathBuf, String> {
         Ok(accounts::accounts_dir_in(&self.require()?).join("mutation-journal.json"))
     }
 
-    /// Journal the pre-mutation stores and vault ciphertext so an
-    /// interrupted metadata/vault/status mutation can be rolled back.
+    /// Journal the pre-mutation accounts and vault ciphertext so an
+    /// interrupted metadata/vault mutation can be rolled back.
     pub fn begin_mutation(
         &self,
         previous_accounts: &accounts::person::AccountList,
-        previous_statuses: &accounts::AccountSyncStatusStore,
     ) -> Result<(), String> {
         self.recover_mutation()?;
         let root = self.require()?;
@@ -431,7 +406,6 @@ impl AccountRoot {
             read_file(&accounts::vault_dir_in(&root).join("vault.enc")).unwrap_or_default();
         let journal = AccountMutationJournal {
             accounts: previous_accounts.all(),
-            statuses: previous_statuses.clone(),
             vault_ciphertext,
         };
         let bytes = serde_json::to_vec(&journal)
@@ -449,7 +423,7 @@ impl AccountRoot {
             .map_err(|error| format!("could not clear account transaction intent: {error}"))
     }
 
-    /// Roll back an interrupted metadata/vault/status mutation before
+    /// Roll back an interrupted metadata/vault mutation before
     /// presenting the account inventory. The journal contains ciphertext,
     /// never a plaintext password or token.
     ///
@@ -478,8 +452,6 @@ impl AccountRoot {
         }
         self.save_store(&previous)
             .map_err(|error| format!("could not recover account metadata: {error}"))?;
-        self.save_statuses(&journal.statuses)
-            .map_err(|error| format!("could not recover account sync status: {error}"))?;
         let vault_path = accounts::vault_dir_in(&self.require()?).join("vault.enc");
         match journal.vault_ciphertext {
             Some(ciphertext) => {
@@ -1084,7 +1056,7 @@ mod tests {
     #[cfg(feature = "tilo-os")]
     #[test]
     fn journal_recovers_each_interrupted_removal_phase() {
-        for phase in 1..=3 {
+        for phase in 1..=2 {
             let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
                 .expect("settings opens headlessly");
             let record = app
@@ -1105,12 +1077,7 @@ mod tests {
             let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("sealed-secret"));
             vault.try_save().expect("seed vault");
-            root.sync_reporter(id.clone())
-                .succeeded()
-                .expect("seed status");
-            let original_statuses = root.statuses();
-
-            root.begin_mutation(&original_store, &original_statuses)
+            root.begin_mutation(&original_store)
                 .expect("journal intent");
             let mut vault = root.vault();
             vault.remove(&id);
@@ -1119,11 +1086,6 @@ mod tests {
                 let mut store = root.store();
                 store.remove(&id);
                 root.save_store(&store).expect("phase two");
-            }
-            if phase >= 3 {
-                let mut statuses = root.statuses();
-                statuses.remove(&id);
-                root.save_statuses(&statuses).expect("phase three");
             }
 
             let recovered = AccountDirectory::load_in(&root);
@@ -1136,10 +1098,6 @@ mod tests {
                 root.vault().get(&id).map(|secret| secret.password),
                 Some("sealed-secret".into()),
                 "phase {phase} restores encrypted credential"
-            );
-            assert!(
-                root.statuses().get(&id).is_some(),
-                "phase {phase} restores sync status"
             );
             assert!(!root.mutation_journal_path().expect("journal path").exists());
         }

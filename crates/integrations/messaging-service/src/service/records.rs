@@ -12,7 +12,7 @@ use tilo_messaging_protocol::journal::Owner;
 use tilo_messaging_protocol::routing::{LinkState, LiveBinding};
 use tilo_messaging_protocol::signal_broker::{Authorization, SignalAuthority};
 
-use super::identity::{Credential, Identity, service_name};
+use super::identity::{Identity, service_name};
 use crate::session::{Call, Reply, SessionLink};
 
 const DEADLINE: Duration = Duration::from_secs(2);
@@ -23,27 +23,23 @@ enum Query {
     Incoming(String),
 }
 
-/// The current records for one account: its identity, grant and scope.
+/// The current records for one account: its identity and scope.
 pub(crate) struct CurrentAuthority {
     identity: Identity,
-    credential: Credential,
     scope: String,
     session: SessionLink,
 }
 
 impl CurrentAuthority {
     /// # Errors
-    /// Retired admission or grant, or a malformed scope.
+    /// Retired admission, or a malformed scope.
     pub(crate) fn new(
         identity: &Identity,
-        credential: &Credential,
         scope: &str,
         session: SessionLink,
     ) -> Result<Self, SendError> {
         identity.check()?;
-        credential.check()?;
-        if credential.owner != identity.owner
-            || identity.owner.linking_generation == 0
+        if identity.owner.linking_generation == 0
             || scope.is_empty()
             || scope.len() > 512
             || scope.chars().any(char::is_control)
@@ -52,7 +48,6 @@ impl CurrentAuthority {
         }
         Ok(Self {
             identity: identity.clone(),
-            credential: credential.clone(),
             scope: scope.into(),
             session,
         })
@@ -60,7 +55,6 @@ impl CurrentAuthority {
 
     fn query(&self, query: &Query) -> Result<Option<Authorization>, SendError> {
         self.identity.check()?;
-        self.credential.check()?;
         let Some(Reply::Person {
             accounts,
             directory,
@@ -84,7 +78,6 @@ impl CurrentAuthority {
             directory,
         );
         self.identity.check()?;
-        self.credential.check()?;
         result
     }
 }

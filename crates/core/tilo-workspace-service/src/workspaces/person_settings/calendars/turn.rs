@@ -126,8 +126,9 @@ impl Workspaces {
         if !turn.may_take(&using.workspace, target) {
             return Err(ActionError::NotPermitted);
         }
+        let asker = using.acting();
         let reach = Asking::of(
-            self.vault_at(&using.workspace),
+            self.vault_for(&using.workspace, &asker),
             &using.agent,
             self.inner.models.mail_reach(),
         );

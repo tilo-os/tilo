@@ -96,15 +96,6 @@ impl PendingGoogleCalendar {
         })
     }
 
-    pub fn resolve_storage(
-        &self,
-        ownership: &CredentialStore,
-    ) -> Result<serde_json::Value, String> {
-        ownership
-            .resolve_storage(account_credentials::OAuthCloud::GoogleDrive, &self.tokens)
-            .map_err(|error| error.to_string())
-    }
-
     /// Resolve the Gmail identity without exposing the combined consent grant.
     pub fn mail_identity(&self, ownership: &CredentialStore) -> Result<String, String> {
         ownership

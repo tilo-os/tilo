@@ -885,7 +885,7 @@ impl Workspaces {
         &self,
         (workspace, root): (&str, &Path),
         adding: AddWithItem,
-        by: &str,
+        (by, asker): (&str, &tilo_action_policy::Acting),
     ) -> Result<AccountView, String> {
         let place = sign_in_place(&adding)?;
         let sign_in = self
@@ -896,12 +896,16 @@ impl Workspaces {
                     accounts::vault_items::ItemKind::Login,
                     std::slice::from_ref(&place),
                 ),
-                by,
+                (by, asker),
                 accounts::vault_items::UsedFor::default(),
             )
             .await?;
         let root = root.to_path_buf();
-        let reach = Asking::of(self.vault_at(workspace), by, self.inner.models.mail_reach());
+        let reach = Asking::of(
+            self.vault_for(workspace, asker),
+            by,
+            self.inner.models.mail_reach(),
+        );
         off_thread(move || add_with_item(&root, &reach, adding, sign_in)).await
     }
 }
@@ -1778,8 +1782,9 @@ impl Workspaces {
         let asked = SpanAsked::between_ms(from_ms, to_ms)
             .ok_or_else(|| "a time no calendar reaches".to_owned())?;
         let workspace = workspace.to_string();
+        let asker = tilo_action_policy::Acting::person(hex::encode(person));
         let reach = Asking::of(
-            self.vault_at(&workspace),
+            self.vault_for(&workspace, &asker),
             "",
             self.inner.models.mail_reach(),
         );
@@ -1819,7 +1824,11 @@ impl Workspaces {
             "a calendar account names its server and the vault item that is its password",
         )?;
         let kept = self
-            .calendar_with_item((&reach.workspace.to_string(), &root), adding, &by)
+            .calendar_with_item(
+                (&reach.workspace.to_string(), &root),
+                adding,
+                (&by, &reach.acting),
+            )
             .await;
         if kept.is_ok() {
             self.person_settings_changed();
@@ -1867,7 +1876,7 @@ impl Workspaces {
                 .map_err(|reason| ActionError::Refused { reason })?,
         );
         let asking = Asking::of(
-            self.vault_at(&workspace),
+            self.vault_for(&workspace, &reach.acting),
             &reach.by(),
             self.inner.models.mail_reach(),
         );
@@ -2140,7 +2149,8 @@ impl Workspaces {
             }],
             "collapsed": false,
         });
-        self.keep_workspace_account(workspace, &stored).await?;
+        self.keep_workspace_account((workspace, &self.acting_or_own(None)), &stored)
+            .await?;
         let mut kept = Kept {
             synced_at_ms: now_ms(),
             ..Kept::default()

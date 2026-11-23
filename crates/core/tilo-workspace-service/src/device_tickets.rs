@@ -524,6 +524,7 @@ async fn keep(
     };
     let workspace = person_workspace::workspace_id(workspaces);
     let opened = workspaces.open_vault(&workspace).await?;
+    // The person's own Servers workspace, kept by their device for them.
     workspaces
         .write_vault(&opened, vec![VaultChange::Keep(entry)], None)
         .await

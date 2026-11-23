@@ -163,8 +163,8 @@ pub struct CloudMount {
     /// Background sync and uploads are paused.
     pub paused: bool,
     pub capabilities: CloudCapabilities,
-    /// The person signed in to the account and nothing has synced since, as the account status
-    /// store every app reads says: a sign-in proves the account works before its first sync.
+    /// The person signed in to the account and nothing has synced since, as the workspace's
+    /// accounts say: a sign-in proves the account works before its first sync.
     #[serde(default)]
     pub signed_in: bool,
 }

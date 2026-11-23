@@ -1,18 +1,16 @@
 //! Account enrollment, once for every service.
 //!
 //! Every enrollment admits a new account owner, has the person review the
-//! account, asks them (through Passwords) to give Messages a fresh key for
-//! it, publishes it into their accounts and starts it. Services differ only
-//! in the order of those steps and in how they link: Signal links a device
-//! before the person reviews it, `WhatsApp` is granted first and links on the
-//! running SDK, SMS starts from a SIM the person chooses, and a Tilo account
-//! needs no link. A [`Provider`] says which ([`Order`]) and supplies those
+//! account, keeps a fresh key for it in their workspace vault, publishes it
+//! into their accounts and starts it. Services differ only in the order of
+//! those steps and in how they link: Signal links a device before the person
+//! reviews it, `WhatsApp` starts first and links on the running SDK, and SMS
+//! starts from a SIM the person chooses. A [`Provider`] says which ([`Order`]) and supplies those
 //! steps; this module runs them, one enrollment per service at a time,
 //! with the same checks, phases, cancellation and restart for all.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::Duration;
 
 use launcher::owned_service::ServiceCancellation;
 use tilo_messaging::{
@@ -22,24 +20,21 @@ use tilo_messaging_protocol::journal::Owner;
 
 use super::Service;
 use super::guard::Running;
-use super::identity::{Credential, Grant, Identity, Permission, credential_scope, service_name};
+use super::identity::{Credential, Identity, service_name};
 use crate::wire::EnrollmentView;
 
 /// The order a service's enrollment takes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Order {
-    /// Link a device, review the verified account, grant, publish, start.
-    LinkThenGrant,
-    /// Review, grant, start, link on the running account, review the
+    /// Link a device, review the verified account, keep its key, publish,
+    /// start.
+    LinkThenStart,
+    /// Review, keep its key, start, link on the running account, review the
     /// verified identity again, publish.
-    GrantThenLink,
-    /// Choose a SIM, review, grant, publish, start.
-    ChooseThenGrant,
+    StartThenLink,
+    /// Choose a SIM, review, keep its key, publish, start.
+    ChooseThenStart,
 }
-
-/// How long the person has to answer a permission request: Passwords drops
-/// it after two minutes.
-const PERMISSION: Duration = Duration::from_secs(150);
 /// How many enrollments one service remembers.
 const MAX_ATTEMPTS: usize = 32;
 
@@ -60,12 +55,13 @@ pub(crate) trait Provider: Send + Sync + 'static {
     type Account: Running + 'static;
 
     const SERVICE: tilo_messaging_protocol::Service;
-    /// The origin the account's key is kept under.
+    /// The site the account's key is kept for in the vault.
     const ORIGIN: &'static str;
     const ORDER: Order;
 
-    /// What Passwords tells the person Messages wants the key for.
-    fn purpose(name: &str) -> String;
+    /// The title of the vault entry that keeps the key of the account the
+    /// person named `name`.
+    fn key_title(name: &str) -> String;
 
     /// Whether a new enrollment may start now.
     fn admits(&self, _service: &Service) -> Result<(), SendError> {
@@ -77,8 +73,8 @@ pub(crate) trait Provider: Send + Sync + 'static {
         None
     }
 
-    /// Begin linking: before the grant for [`Order::LinkThenGrant`], on the
-    /// started `account` for [`Order::GrantThenLink`].
+    /// Begin linking: before the review for [`Order::LinkThenStart`], on the
+    /// started `account` for [`Order::StartThenLink`].
     fn begin(
         &self,
         _service: &Arc<Service>,
@@ -118,7 +114,7 @@ pub(crate) trait Provider: Send + Sync + 'static {
         held: Option<Self::Held>,
     ) -> Result<Approved<Self>, SendError>;
 
-    /// [`Order::GrantThenLink`] — publish the account the person reviewed
+    /// [`Order::StartThenLink`] — publish the account the person reviewed
     /// again after linking.
     fn confirm(
         &self,
@@ -186,9 +182,6 @@ struct Attempt<P: Provider> {
     held: Option<P::Held>,
     token: Option<String>,
     verified: bool,
-    permission: Option<Permission>,
-    proposal: Option<String>,
-    name: Option<String>,
     account: Option<Arc<P::Account>>,
     linked: Option<LinkedAccount>,
     cancellation: ServiceCancellation,
@@ -205,9 +198,6 @@ impl<P: Provider> Attempt<P> {
             held: None,
             token: None,
             verified: false,
-            permission: None,
-            proposal: None,
-            name: None,
             account: None,
             linked: None,
             cancellation: ServiceCancellation::default(),
@@ -234,8 +224,8 @@ impl<P: Provider> Attempt<P> {
         }
     }
 
-    /// End the attempt: stop what it started and withdraw its request.
-    fn retire(&mut self, service: &Service) {
+    /// End the attempt: stop what it started.
+    fn retire(&mut self) {
         self.end = End::Cancelled;
         self.cancellation.cancel();
         if let Some(held) = &self.held {
@@ -243,9 +233,6 @@ impl<P: Provider> Attempt<P> {
         }
         if let Some(account) = &self.account {
             account.retire();
-        }
-        if let Some(permission) = self.permission.take() {
-            permission.withdraw(&service.vault);
         }
         self.phase = EnrollmentPhase::Interrupted;
     }
@@ -355,7 +342,7 @@ impl<P: Provider> Flow<P> {
     }
 
     pub(crate) fn prepare(&self) -> Result<EnrollmentReview, SendError> {
-        if P::ORDER != Order::GrantThenLink {
+        if P::ORDER != Order::StartThenLink {
             return Err(SendError::Unavailable);
         }
         let service = self.service()?;
@@ -372,7 +359,7 @@ impl<P: Provider> Flow<P> {
     pub(crate) async fn begin(self: Arc<Self>) -> Result<Pairing, SendError> {
         let service = self.service()?;
         let (account, identity, mut held, started) = match P::ORDER {
-            Order::LinkThenGrant => {
+            Order::LinkThenStart => {
                 let (account, identity) = self.admit(&service)?;
                 let review = Self::review_of(&identity, None);
                 let mut attempt = Attempt::new(identity.clone(), review, EnrollmentPhase::Linking);
@@ -381,7 +368,7 @@ impl<P: Provider> Flow<P> {
                 self.changed();
                 (account, identity, None, None)
             }
-            Order::GrantThenLink => {
+            Order::StartThenLink => {
                 let mut state = self.lock();
                 let (account, attempt) = state
                     .attempts
@@ -401,7 +388,7 @@ impl<P: Provider> Flow<P> {
                 drop(state);
                 taken
             }
-            Order::ChooseThenGrant => return Err(SendError::Unavailable),
+            Order::ChooseThenStart => return Err(SendError::Unavailable),
         };
         let provider = self.provider.clone();
         let worker = service.clone();
@@ -427,7 +414,7 @@ impl<P: Provider> Flow<P> {
             Err(error) => Err(error),
         };
         if outcome.is_err() {
-            attempt.retire(&service);
+            attempt.retire();
         }
         drop(state);
         self.changed();
@@ -439,7 +426,7 @@ impl<P: Provider> Flow<P> {
         account: ServiceAccount,
         token: String,
     ) -> Result<EnrollmentReview, SendError> {
-        let service = self.service()?;
+        self.service()?;
         let mut held = {
             let mut state = self.lock();
             let attempt = state
@@ -480,7 +467,7 @@ impl<P: Provider> Flow<P> {
             Err(error) => Err(error),
         };
         if outcome.is_err() {
-            attempt.retire(&service);
+            attempt.retire();
         }
         drop(state);
         self.changed();
@@ -488,7 +475,7 @@ impl<P: Provider> Flow<P> {
     }
 
     pub(crate) async fn choices(self: Arc<Self>) -> Result<Vec<SimChoice>, SendError> {
-        if P::ORDER != Order::ChooseThenGrant {
+        if P::ORDER != Order::ChooseThenStart {
             return Err(SendError::Unavailable);
         }
         let service = self.service()?;
@@ -567,7 +554,7 @@ impl<P: Provider> Flow<P> {
         self: Arc<Self>,
         account: ServiceAccount,
         name: String,
-    ) -> Result<String, SendError> {
+    ) -> Result<(), SendError> {
         if !name_valid(&name) {
             return Err(SendError::InvalidRequest);
         }
@@ -580,13 +567,13 @@ impl<P: Provider> Flow<P> {
                 .filter(|attempt| attempt.open() && !attempt.busy)
                 .ok_or(SendError::Revoked)?;
             attempt.identity.check()?;
-            let confirm = P::ORDER == Order::GrantThenLink && attempt.verified;
+            let confirm = P::ORDER == Order::StartThenLink && attempt.verified;
             if !confirm {
-                if attempt.permission.is_some() || attempt.account.is_some() {
+                if attempt.account.is_some() {
                     return Err(SendError::AlreadyReserved);
                 }
-                if P::ORDER == Order::LinkThenGrant && !attempt.verified
-                    || P::ORDER == Order::ChooseThenGrant && attempt.held.is_none()
+                if P::ORDER == Order::LinkThenStart && !attempt.verified
+                    || P::ORDER == Order::ChooseThenStart && attempt.held.is_none()
                 {
                     return Err(SendError::Revoked);
                 }
@@ -597,27 +584,17 @@ impl<P: Provider> Flow<P> {
             (identity, confirm)
         };
         let result = if confirm {
-            self.clone()
-                .confirm(&service, &account, identity, name)
-                .await
+            self.confirm(&service, &account, identity, name).await
         } else {
-            let asking = identity.clone();
-            let vault = service.vault.clone();
-            let purpose = P::purpose(&name);
-            match blocking(move || Permission::ask(&vault, &asking, P::ORIGIN, purpose)).await {
-                Ok(permission) => {
-                    let mut state = self.lock();
-                    if let Some(attempt) = state.attempts.get_mut(&account).filter(|a| a.open()) {
-                        let proposal = permission.proposal.clone();
-                        attempt.permission = Some(permission);
-                        attempt.proposal = Some(proposal.clone());
-                        attempt.name = Some(name);
-                        attempt.phase = EnrollmentPhase::AwaitingPermission;
-                        Ok(proposal)
-                    } else {
-                        permission.withdraw(&service.vault);
-                        Err(SendError::Revoked)
-                    }
+            let worker = service.clone();
+            let keeping = identity.clone();
+            let title = P::key_title(&name);
+            match blocking(move || Credential::keep(&worker.session, &keeping, P::ORIGIN, title))
+                .await
+            {
+                Ok(credential) => {
+                    self.start(&service, &account, credential, identity, name)
+                        .await
                 }
                 Err(error) => Err(error),
             }
@@ -627,34 +604,30 @@ impl<P: Provider> Flow<P> {
             if let Some(attempt) = state.attempts.get_mut(&account) {
                 attempt.busy = false;
                 if result.is_err() {
-                    attempt.retire(&service);
+                    attempt.retire();
                 }
             }
-        }
-        if result.is_ok() && !confirm {
-            tokio::spawn(self.clone().await_permission(account));
         }
         self.changed();
         result
     }
 
-    /// [`Order::GrantThenLink`] — the person reviewed the linked identity;
+    /// [`Order::StartThenLink`] — the person reviewed the linked identity;
     /// publish it.
     async fn confirm(
-        self: Arc<Self>,
+        &self,
         service: &Arc<Service>,
         account: &ServiceAccount,
         identity: Identity,
         name: String,
-    ) -> Result<String, SendError> {
-        let (held, started, proposal) = {
+    ) -> Result<(), SendError> {
+        let (held, started) = {
             let mut state = self.lock();
             let attempt = state.attempts.get_mut(account).ok_or(SendError::Revoked)?;
             let started = attempt.account.clone().ok_or(SendError::Revoked)?;
-            let proposal = attempt.proposal.clone().ok_or(SendError::Revoked)?;
             let held = attempt.held.take().ok_or(SendError::Revoked)?;
             drop(state);
-            (held, started, proposal)
+            (held, started)
         };
         let provider = self.provider.clone();
         let worker = service.clone();
@@ -675,112 +648,57 @@ impl<P: Provider> Flow<P> {
             scope: attempt.review.scope.clone(),
         });
         drop(state);
-        Ok(proposal)
+        Ok(())
     }
 
-    /// Wait for the person's answer in Passwords, then start the account.
-    async fn await_permission(self: Arc<Self>, account: ServiceAccount) {
-        let Ok(service) = self.service() else {
-            return;
-        };
-        let Some(deadline) = tokio::time::Instant::now().checked_add(PERMISSION) else {
-            return;
-        };
-        let mut answered = service.vault_changed.subscribe();
-        loop {
-            let credential = {
-                let mut state = self.lock();
-                let Some(attempt) = state.attempts.get_mut(&account).filter(|a| a.open()) else {
-                    return;
-                };
-                if attempt.identity.check().is_err() || tokio::time::Instant::now() >= deadline {
-                    attempt.retire(&service);
-                    drop(state);
-                    self.changed();
-                    return;
-                }
-                let Some(permission) = &attempt.permission else {
-                    return;
-                };
-                match permission.grant(&service.vault, &attempt.identity) {
-                    Grant::Pending => None,
-                    Grant::Refused => {
-                        attempt.retire(&service);
-                        drop(state);
-                        self.changed();
-                        return;
-                    }
-                    Grant::Approved(credential) => {
-                        // The grant is the permission's now; nothing withdraws it.
-                        attempt.permission = None;
-                        attempt.busy = true;
-                        Some((
-                            credential,
-                            attempt.identity.clone(),
-                            attempt.name.clone().unwrap_or_default(),
-                            attempt.held.take(),
-                        ))
-                    }
-                }
-            };
-            if let Some((credential, identity, name, held)) = credential {
-                self.start(&service, account, credential, identity, name, held)
-                    .await;
-                return;
-            }
-            // Passwords' answer wakes this; the second bounds the wait for
-            // a request that expires unanswered.
-            let _ = tokio::time::timeout(Duration::from_secs(1), answered.changed()).await;
-        }
-    }
-
+    /// Start the account the person reviewed, under the key kept for it.
     async fn start(
         &self,
         service: &Arc<Service>,
-        account: ServiceAccount,
+        account: &ServiceAccount,
         credential: Credential,
         identity: Identity,
         name: String,
-        held: Option<P::Held>,
-    ) {
+    ) -> Result<(), SendError> {
+        let held = self
+            .lock()
+            .attempts
+            .get_mut(account)
+            .filter(|attempt| attempt.open())
+            .ok_or(SendError::Revoked)?
+            .held
+            .take();
         let provider = self.provider.clone();
         let worker = service.clone();
         let starting = identity.clone();
-        let result =
-            blocking(move || provider.approved(&worker, &starting, credential, &name, held)).await;
+        let (started, scope, held) =
+            blocking(move || provider.approved(&worker, &starting, credential, &name, held))
+                .await?;
         let mut state = self.lock();
-        if let Some(attempt) = state.attempts.get_mut(&account) {
-            attempt.busy = false;
-            match result {
-                Ok((started, scope, held)) => {
-                    attempt.held = held;
-                    attempt.account = Some(started);
-                    attempt.phase = EnrollmentPhase::Linking;
-                    attempt.linked = Some(LinkedAccount {
-                        account: attempt.review.account.clone(),
-                        generation: identity.owner.linking_generation,
-                        scope,
-                    });
-                    if attempt.end == End::Cancelled {
-                        attempt.retire(service);
-                    } else if P::ORDER != Order::GrantThenLink {
-                        attempt.end = End::Published;
-                    }
-                }
-                Err(_) => attempt.retire(service),
-            }
+        let attempt = state.attempts.get_mut(account).ok_or(SendError::Revoked)?;
+        attempt.held = held;
+        attempt.account = Some(started);
+        attempt.phase = EnrollmentPhase::Linking;
+        attempt.linked = Some(LinkedAccount {
+            account: attempt.review.account.clone(),
+            generation: identity.owner.linking_generation,
+            scope,
+        });
+        let cancelled = attempt.end == End::Cancelled;
+        if !cancelled && P::ORDER != Order::StartThenLink {
+            attempt.end = End::Published;
         }
         drop(state);
-        self.changed();
+        if cancelled {
+            return Err(SendError::Revoked);
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel(&self, account: &ServiceAccount) {
-        let Ok(service) = self.service() else {
-            return;
-        };
         let mut state = self.lock();
         if let Some(attempt) = state.attempts.get_mut(account) {
-            attempt.retire(&service);
+            attempt.retire();
         }
         drop(state);
         self.changed();
@@ -788,9 +706,6 @@ impl<P: Provider> Flow<P> {
 
     /// Retire every enrollment whose admission ended.
     pub(crate) fn check(&self) {
-        let Ok(service) = self.service() else {
-            return;
-        };
         let mut retired = false;
         let mut state = self.lock();
         for attempt in state.attempts.values_mut() {
@@ -798,7 +713,7 @@ impl<P: Provider> Flow<P> {
                 && (attempt.identity.check().is_err()
                     || attempt.held.as_ref().is_some_and(|held| !P::alive(held)))
             {
-                attempt.retire(&service);
+                attempt.retire();
                 retired = true;
             }
         }
@@ -827,12 +742,10 @@ impl<P: Provider> Flow<P> {
             .collect()
     }
 
-    /// Start the accounts the person published and granted earlier.
+    /// Start the accounts the person published earlier, each under the key
+    /// the vault entry it names keeps.
     pub(crate) async fn restore(self: Arc<Self>, store: accounts::person::AccountList) {
         let Ok(service) = self.service() else {
-            return;
-        };
-        let Ok(grants) = service.vault.grants() else {
             return;
         };
         let rows: Vec<accounts::Account> = store
@@ -861,6 +774,9 @@ impl<P: Provider> Flow<P> {
             let Some(scope) = P::restored_scope(&id, &row) else {
                 continue;
             };
+            let Some(item) = accounts::email::password_item(&row.config).map(str::to_owned) else {
+                continue;
+            };
             if uuid::Uuid::parse_str(&id)
                 .map(|parsed| parsed.to_string())
                 .ok()
@@ -875,25 +791,11 @@ impl<P: Provider> Flow<P> {
                 account: id,
                 linking_generation: generation,
             };
-            let Some(grant) = grants.iter().find(|grant| {
-                grant.app_id == crate::MESSAGES_APP
-                    && grant.scope.as_ref() == Some(&credential_scope(&owner))
-                    && grant.origin.as_deref() == Some(P::ORIGIN)
-            }) else {
-                continue;
-            };
-            let request = accounts::AccessRequest {
-                app_id: crate::MESSAGES_APP.into(),
-                item_id: grant.item_id.clone(),
-                purpose: P::purpose(&row.display_name),
-                origin: grant.origin.clone(),
-            };
             let provider = self.provider.clone();
             let worker = service.clone();
             let resumed = blocking(move || {
                 let identity = worker.ownership.admit(owner)?.running();
-                let credential = Credential::new(&worker.vault, &identity, request)?;
-                credential.check()?;
+                let credential = Credential::kept(&worker.session, &identity, item)?;
                 provider.resume(&worker, &identity, credential, scope, &row)
             })
             .await;
@@ -909,15 +811,12 @@ impl<P: Provider> Flow<P> {
 
     /// Stop every account and enrollment.
     pub(crate) fn retire_all(&self) {
-        let Ok(service) = self.service() else {
-            return;
-        };
         let mut state = self.lock();
         for account in state.running.drain(..) {
             account.retire();
         }
         for attempt in state.attempts.values_mut() {
-            attempt.retire(&service);
+            attempt.retire();
         }
     }
 }

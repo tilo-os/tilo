@@ -755,10 +755,39 @@ async fn vault(
                 .await?;
             Ok(String::clone(&released.secret))
         }
-        VaultCall::Forget { workspace, account } => workspaces
-            .remove_workspace_account(&workspace, &account)
-            .await
-            .map(|forgot| forgot.to_string()),
+        VaultCall::ReportSync {
+            workspace,
+            person,
+            device,
+            account,
+            health,
+            signed_in,
+            message,
+        } => {
+            let health = accounts::SyncHealth::from_word(&health)
+                .ok_or_else(|| format!("{health} is no account's sync health"))?;
+            let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
+            workspaces
+                .report_account_sync(
+                    (&workspace, by.acting()),
+                    &account,
+                    health,
+                    signed_in,
+                    &message,
+                )
+                .await?;
+            Ok(account)
+        }
+        VaultCall::WebsiteSession {
+            workspace,
+            person,
+            command,
+        } => {
+            let reply = workspaces
+                .website_session_ask(&workspace, person, command)
+                .await?;
+            serde_json::to_string(&reply).map_err(|error| error.to_string())
+        }
     }
 }
 

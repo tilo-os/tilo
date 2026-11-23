@@ -921,6 +921,7 @@ pub struct AgentModelsArea {
     pub(crate) read: crate::device_read::DeviceRead<AgentModelsRead>,
     shown: LocalState<u64>,
     showing: std::cell::RefCell<std::rc::Weak<()>>,
+    hub_vault: hub::HubVault,
 }
 
 pub(crate) struct AgentModelsRead {
@@ -948,6 +949,10 @@ impl AgentModelsArea {
             read: crate::device_read::DeviceRead::default(),
             shown: LocalState::new(0),
             showing: std::cell::RefCell::new(std::rc::Weak::new()),
+            hub_vault: hub::HubVault {
+                root: cx.account_root.clone(),
+                session: cx.session.clone(),
+            },
         }
     }
 
@@ -996,12 +1001,13 @@ impl AgentModelsArea {
         self.model.get_or_init(|| {
             let control = self.control();
             let (sections, admin) = (self.sections.clone(), self.provider_admin.clone());
-            let model = match self.read.take() {
+            let mut model = match self.read.take() {
                 Some(read) => {
                     AgentModelsModel::from_read(&self.storage, sections, admin, control, read)
                 }
                 None => AgentModelsModel::new(&self.storage, sections, admin, control),
             };
+            model.hub.vault = self.hub_vault.clone();
             Rc::new(std::cell::RefCell::new(model))
         })
     }

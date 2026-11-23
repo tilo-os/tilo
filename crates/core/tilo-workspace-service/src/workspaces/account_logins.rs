@@ -263,7 +263,7 @@ impl Workspaces {
         // A grant a provider's page left is handed out as the access token it holds now, never
         // with the refresh token that renews it.
         super::person_settings::oauth_grant::signs_in_with(
-            self.vault_at(workspace),
+            self.vault_for(workspace, by.acting()),
             &self.workspace_root(workspace),
             &account,
             released,
@@ -292,7 +292,10 @@ impl Workspaces {
             .map_err(|error| error.to_string())
     }
 
-    async fn accounts_document(&self, workspace: &str) -> Result<Option<Vec<u8>>, String> {
+    pub(super) async fn accounts_document(
+        &self,
+        workspace: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
         let document = accounts_document();
         if !self.holds_resource(workspace, accounts::person::ACCOUNTS_OWNER, &document) {
             return Ok(None);
@@ -319,12 +322,16 @@ impl Workspaces {
     }
 
     /// The accounts of every workspace this device holds that `keep` keeps, each with its
-    /// workspace, in the order the workspaces and their records list them. A workspace whose
-    /// accounts do not read here yet lists none.
+    /// workspace and how its sync went, in the order the workspaces and their records list them.
+    /// A workspace whose accounts do not read here yet lists none.
     pub async fn held_accounts(
         &self,
         keep: impl Fn(&accounts::Account) -> bool,
-    ) -> Vec<(String, accounts::Account)> {
+    ) -> Vec<(
+        String,
+        accounts::Account,
+        Option<accounts::person::AccountSync>,
+    )> {
         let mut held = Vec::new();
         let mut workspaces = self.held_workspaces();
         workspaces.sort();
@@ -337,7 +344,10 @@ impl Workspaces {
                     .all()
                     .into_iter()
                     .filter(|account| keep(account))
-                    .map(|account| (workspace.clone(), account)),
+                    .map(|account| {
+                        let sync = accounts.sync_of(account.id.as_str()).cloned();
+                        (workspace.clone(), account, sync)
+                    }),
             );
         }
         held
@@ -357,7 +367,7 @@ impl Workspaces {
         account: &str,
         item: &ItemRef,
     ) -> Result<(), String> {
-        self.change_workspace_accounts(workspace, |held| {
+        self.change_workspace_accounts((workspace, &self.acting_or_own(None)), |held| {
             let mut kept = held
                 .account(account)
                 .ok_or("the workspace's accounts hold no such account")?;
@@ -374,16 +384,17 @@ impl Workspaces {
         .await
     }
 
-    /// Keep `account` in `workspace`'s accounts: added, or in place of the one with its id.
+    /// Keep `account` in `workspace`'s accounts for `by`, who asked: added, or in place of the
+    /// one with its id.
     ///
     /// # Errors
     /// The record does not take the write on this device.
     pub async fn keep_workspace_account(
         &self,
-        workspace: &str,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
         account: &accounts::Account,
     ) -> Result<(), String> {
-        self.change_workspace_accounts(workspace, |held| {
+        self.change_workspace_accounts((workspace, by), |held| {
             let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
                 .then(|| AccountList::saving(account));
             Ok((edit.into_iter().collect(), ()))
@@ -392,18 +403,18 @@ impl Workspaces {
     }
 
     /// Keep `keep` in `workspace`'s accounts (each added, or in place of the one with its
-    /// id) and remove `remove`, all in one change: what one action makes of several accounts
-    /// together, as one sign-in lights up a mail account and its calendars.
+    /// id) and remove `remove`, all in one change for `by`, who asked: what one action makes of
+    /// several accounts together, as one sign-in lights up a mail account and its calendars.
     ///
     /// # Errors
     /// The record does not take the write on this device.
     pub async fn keep_workspace_accounts(
         &self,
-        workspace: &str,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
         keep: &[accounts::Account],
         remove: &[&str],
     ) -> Result<(), String> {
-        self.change_workspace_accounts(workspace, |held| {
+        self.change_workspace_accounts((workspace, by), |held| {
             let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
             for id in remove {
                 if held.account(id).is_some() {
@@ -423,16 +434,48 @@ impl Workspaces {
         .await
     }
 
-    /// Remove the account `id` from `workspace`'s accounts. Whether it was there.
+    /// Report how the sync of `workspace`'s account `id` went on this device, for `by`, who
+    /// asked, as every member reads it in the workspace's accounts ([`AccountList::report_sync`]).
+    /// A report saying what the account already says writes nothing.
+    ///
+    /// # Errors
+    /// The workspace has no such account, or the record does not take the write on this device.
+    pub async fn report_account_sync(
+        &self,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
+        id: &str,
+        health: accounts::SyncHealth,
+        signed_in: bool,
+        message: &str,
+    ) -> Result<(), String> {
+        let device = hex::encode(self.signing_device().device());
+        self.change_workspace_accounts((workspace, by), |held| {
+            let edit = held
+                .reporting(
+                    id,
+                    &device,
+                    health,
+                    tilo_clock::unix_now_ms(),
+                    signed_in,
+                    message,
+                )
+                .map_err(|refusal| refusal.to_string())?;
+            Ok((edit.into_iter().collect(), ()))
+        })
+        .await
+    }
+
+    /// Remove the account `id` from `workspace`'s accounts for `by`, who asked. Whether it was
+    /// there.
     ///
     /// # Errors
     /// The record does not take the write on this device.
     pub async fn remove_workspace_account(
         &self,
-        workspace: &str,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
         id: &str,
     ) -> Result<bool, String> {
-        self.change_workspace_accounts(workspace, |held| {
+        self.change_workspace_accounts((workspace, by), |held| {
             let kept = held.account(id).is_some();
             let edit = kept.then(|| {
                 AccountList::REMOVE_ACCOUNT.with(tilo_resource::Id::from_raw(id.to_owned()))
@@ -442,17 +485,54 @@ impl Workspaces {
         .await
     }
 
+    /// Remove the account `id` from `workspace`'s accounts, for `by`, and forget the entry of
+    /// the vault it names as its sign-in, unless another of the workspace's accounts names that
+    /// entry too: signing out takes the sign-in with it. Whether the account was there.
+    ///
+    /// # Errors
+    /// `by` may not use the vault, or the record or the vault does not take the write on this
+    /// device.
+    pub async fn forget_workspace_account(
+        &self,
+        workspace: &str,
+        by: &Caller,
+        id: &str,
+    ) -> Result<bool, String> {
+        self.using_vault(workspace, by, None, true).await?;
+        let held = self.workspace_accounts(workspace).await?;
+        let Some(account) = held.account(id) else {
+            return Ok(false);
+        };
+        let sign_in = kept_sign_ins::sign_in_of(&account.config).filter(|sign_in| {
+            !held.all().iter().any(|other| {
+                other.id != account.id
+                    && kept_sign_ins::sign_in_of(&other.config).as_ref() == Some(sign_in)
+            })
+        });
+        let removed = self
+            .remove_workspace_account((workspace, by.acting()), id)
+            .await?;
+        if let Some(sign_in) = &sign_in {
+            let entry = kept_sign_ins::id_of(sign_in)?;
+            self.changing_vault(workspace, Some(by.acting()), |items| {
+                Ok(items.remove(&entry))
+            })
+            .await?;
+        }
+        Ok(removed)
+    }
+
     /// Read `workspace`'s accounts, let `change` say the edits it makes of them and what it
-    /// answers, and write those edits as this device's own write of the record, made where
-    /// nobody made it yet. Each edit claims Settings' verb, which every member decides against
-    /// Settings' surface.
+    /// answers, and write those edits as this device's write of the record for `by`, who asked
+    /// ([`Workspaces::acting_or_own`]), made where nobody made it yet. Each edit claims Settings'
+    /// verb, which every member decides against Settings' surface.
     ///
     /// # Errors
     /// `change` refused, the record does not read, or it does not take the write on this
     /// device.
     pub(crate) async fn change_workspace_accounts<T>(
         &self,
-        workspace: &str,
+        (workspace, by): (&str, &tilo_action_policy::Acting),
         change: impl FnOnce(
             &AccountList,
         ) -> Result<(Vec<tilo_resource::Invoke<AccountList>>, T), String>,
@@ -467,9 +547,7 @@ impl Workspaces {
                 None => Replica::from_doc(founding_accounts(workspace)?),
             }
             .in_app(accounts::person::ACCOUNTS_OWNER, "Settings")
-            // Every change names the person this device signs in as: a change signed by
-            // the device that names nobody is refused, and a keeper's write is theirs.
-            .as_invoker(&hex::encode(self.inner.host.cert.user_public_key));
+            .as_invoker_acting(self.acting_or_own(Some(by)));
             let state = replica.state().map_err(|error| error.to_string())?;
             let (edits, answer) = change(&state)?;
             if edits.is_empty() {

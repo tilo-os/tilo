@@ -18,7 +18,7 @@ pub struct Handoff {
     pub app_id: String,
 }
 
-pub const PROTOCOL: u16 = 2;
+pub const PROTOCOL: u16 = 3;
 
 pub const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4 * 1024);
 
@@ -51,43 +51,6 @@ pub enum Call {
     SetupBegin(ServiceAccount),
     SetupFinish(ServiceAccount, String),
     SetupCancel(ServiceAccount),
-    Proposals,
-    Decide {
-        proposal: String,
-        decision: Decision,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Decision {
-    Deny,
-    Session,
-    Always,
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Proposal {
-    pub id: String,
-    pub app_id: String,
-    pub item: String,
-    pub purpose: String,
-    pub origin: Option<String>,
-    pub scope: accounts::CredentialScope,
-}
-
-impl Proposal {
-    pub fn credential(&self) -> accounts::CredentialProposal {
-        accounts::CredentialProposal {
-            id: self.id.clone(),
-            request: accounts::AccessRequest {
-                app_id: self.app_id.clone(),
-                item_id: accounts::SecretId(self.item.clone()),
-                purpose: self.purpose.clone(),
-                origin: self.origin.clone(),
-            },
-            scope: self.scope.clone(),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -95,7 +58,7 @@ pub enum Reply {
     Done,
     Review(Result<EnrollmentReview, SendError>),
     Pairing(Result<Pairing, SendError>),
-    Proposal(Result<String, SendError>),
+    Reviewed(Result<(), SendError>),
     Choices(Result<Vec<SimChoice>, SendError>),
     Sent(Result<SendReceipt, SendError>),
     History(Result<HistoryPage, HistoryError>),
@@ -104,7 +67,6 @@ pub enum Reply {
     GroupReceipt(Result<GroupReceipt, SendError>),
     GroupHistory(Result<GroupHistory, SendError>),
     Linked(Result<LinkedAccount, SendError>),
-    Proposals(Vec<Proposal>),
     Refused,
 }
 
@@ -137,7 +99,6 @@ pub struct Snapshot {
     pub actor: String,
     pub accounts: Vec<AccountView>,
     pub enrollments: Vec<EnrollmentView>,
-    pub proposals: u64,
 }
 
 #[derive(Serialize, Deserialize)]

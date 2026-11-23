@@ -111,6 +111,7 @@ async fn keep_recovery_key(
         .open_vault(&workspace)
         .await
         .map_err(ActionCallError::refused)?;
+    // The person's own device keeps its own disk's key, in their own Servers workspace.
     workspaces
         .write_vault(&opened, vec![VaultChange::Keep(entry)], None)
         .await

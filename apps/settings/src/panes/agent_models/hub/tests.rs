@@ -1,10 +1,15 @@
 use std::sync::{Arc, Mutex};
 
-use account_credentials::hugging_face::{HUGGING_FACE_DOWNLOADS, HubCredential};
+use account_credentials::hugging_face::HUGGING_FACE_DOWNLOADS;
 use agent_provider_config::local::HardwareSnapshot;
-use agent_provider_config::local::hub::{ApiModelInfo, HubAccount, HubModelOffer, HubTokenState};
+use agent_provider_config::local::hub::{
+    ApiModelInfo, HUB_ORIGIN, HubAccount, HubModelOffer, HubTokenState,
+};
 use test_http::{Reply, Responder};
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
+use ui::collaboration::browser_service_sessions::{
+    BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as SessionReply, Client,
+};
 
 use agent_provider_config::local::hub::{HubFormat, HubSearchResult};
 use ui::widget::{InPlace, SearchDriver};
@@ -127,16 +132,59 @@ impl crate::panes::accounts::BrowserOpener for Browser {
     }
 }
 
+/// The entry of the workspace's vault the session says it kept a secret in.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+/// What Settings asked the session to keep: the account, the secret, as whom and where.
+type Asked = Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>;
+
+/// A session keeping what Settings asks it to, as the workspace's vault would.
+fn keeping_session() -> (Client, Asked) {
+    let asked = Asked::default();
+    let kept = Arc::clone(&asked);
+    let session = Client::answering(move |command| match command {
+        Command::StoreAccountSecret {
+            account,
+            password,
+            username,
+            servers,
+        } => {
+            kept.lock()
+                .unwrap()
+                .push((account.clone(), password.to_string(), username, servers));
+            Ok(SessionReply::AccountSecretStored {
+                account,
+                item: ITEM.into(),
+            })
+        }
+        _ => Err("not asked here".into()),
+    });
+    (session, asked)
+}
+
+/// The workspace's Hugging Face account, as its accounts hold it.
+fn hub_account(root: &crate::accounts::AccountRoot) -> Option<accounts::Account> {
+    root.store()
+        .all()
+        .into_iter()
+        .find(accounts::sign_ins::is_model_hub_account)
+}
+
 #[test]
-fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
+fn a_hugging_face_sign_in_is_the_workspaces_and_shows_who() {
     let server = FakeAuthorizationServer::start();
     let people = Responder::start(vec![
         Reply::status(200)
             .header("Content-Type", "application/json")
             .body(r#"{"sub":"1","preferred_username":"ada","name":"Ada Lovelace"}"#),
     ]);
-    let control = mock(snapshot(None));
-    let mut pane = model_over(control.clone());
+    let mut pane = model_over(mock(snapshot(None)));
+    let dir = tempfile::tempdir().unwrap();
+    let (session, asked) = keeping_session();
+    pane.hub.vault = super::HubVault {
+        root: crate::accounts::AccountRoot::scratch_at(dir.path().join("tilo")),
+        session: Some(session),
+    };
     let browser = Arc::new(Browser(Mutex::new(Vec::new())));
     pane.credential_store = account_credentials::CredentialStore::for_root(None).with_use(
         HUGGING_FACE_DOWNLOADS,
@@ -153,14 +201,13 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     assert!(!names.iter().any(|name| name == "Sign out"), "{names:?}");
 
     let model = &mut pane;
-    let control_dyn: Arc<dyn super::super::LocalModelControl> = control.clone();
     model
         .hub
         .sign_in(
             false,
             &model.credential_store,
             &model.opener,
-            (&model.hub_userinfo, &control_dyn),
+            &model.hub_userinfo,
         )
         .unwrap();
     assert!(pane.hub.signing_in());
@@ -168,16 +215,26 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     assert!(notice.contains("Ada Lovelace (ada)"), "{notice}");
     assert!(browser.0.lock().unwrap()[0].starts_with(&format!("{}/authorize?", server.url())));
 
-    let calls = control.calls.lock().unwrap().clone();
-    let [stored] = calls.as_slice() else {
-        panic!("one store: {calls:?}");
+    // The grant goes to the workspace's vault, for huggingface.co alone, and the workspace's
+    // Hugging Face account names its entry and who signed in: the model manager is told it.
+    let asked = asked.lock().unwrap().clone();
+    let [(account, grant, username, servers)] = asked.as_slice() else {
+        panic!("one secret kept: {asked:?}");
     };
-    let stored = stored.strip_prefix("hub-token:").unwrap();
-    let HubCredential::SignedIn(sign_in) = HubCredential::parse(stored) else {
-        panic!("a sign-in was stored");
-    };
-    assert_eq!(sign_in.username, "ada");
-    assert!(sign_in.tokens.refresh_token.starts_with("refresh-"));
+    assert_eq!(
+        (username.as_str(), servers.as_slice()),
+        ("ada", [HUB_ORIGIN.to_owned()].as_slice())
+    );
+    let tokens = account_credentials::oauth_tokens(&accounts::Secret {
+        password: String::new(),
+        token: Some(grant.clone()),
+    })
+    .expect("the sign-in's grant is kept, for the session to renew");
+    assert!(tokens.refresh_token.starts_with("refresh-"));
+    let hub = hub_account(&pane.hub.vault.root).expect("the workspace keeps the account");
+    assert_eq!(hub.id.as_str(), account);
+    assert_eq!(hub.config["username"], "ada");
+    assert_eq!(accounts::email::password_item(&hub.config), Some(ITEM));
     assert_eq!(
         pane.hub.token_state,
         Ok(HubTokenState::SignedIn {
@@ -191,6 +248,79 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     for shown in ["Sign out", "Save token", "Sign in with a code"] {
         assert!(names.iter().any(|name| name == shown), "{shown}: {names:?}");
     }
+}
+
+/// Signing out asks the model manager, which has the session forget the account it downloads
+/// with together with its sign-in (`hub_client`'s and the workspace service's tests).
+#[test]
+fn a_pasted_token_is_the_workspaces_until_signed_out() {
+    use crate::effects::SettingsEffect;
+    use ui::framework::testing::TestApp;
+
+    let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
+    let (session, asked) = keeping_session();
+    let manager = mock(snapshot(None));
+    let control = Arc::clone(&manager);
+    app.with_widget::<crate::window::Inspected, _>(move |settings| {
+        let model = super::super::area(settings).unwrap().model();
+        let mut model = model.borrow_mut();
+        model.hub.vault.session = Some(session);
+        model.control = control as Arc<dyn super::super::LocalModelControl>;
+    })
+    .expect("the Settings window is mounted");
+    let hub = |app: &mut TestApp<crate::resource::SettingsShell>| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
+            let model = super::super::area(settings).unwrap().model().borrow();
+            (
+                model.hub.token_state.clone(),
+                hub_account(&model.hub.vault.root),
+            )
+        })
+        .unwrap()
+    };
+
+    app.start_effect(&SettingsEffect::from(AgentModelsEffect::SaveHubToken {
+        token: Some(" hf_pasted ".into()),
+    }))
+    .expect("the token goes to the session");
+    let deadline = tilo_test_env::hang_deadline();
+    while hub(&mut app).0 != Ok(HubTokenState::Pasted) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the kept token is shown"
+        );
+        app.settle();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [(
+            accounts::sign_ins::MODEL_HUB_ACCOUNT.to_owned(),
+            "hf_pasted".to_owned(),
+            String::new(),
+            vec![HUB_ORIGIN.to_owned()]
+        )]
+    );
+    let kept = hub(&mut app).1.expect("the workspace keeps the account");
+    assert_eq!(accounts::email::password_item(&kept.config), Some(ITEM));
+    assert!(
+        kept.config.get("username").is_none(),
+        "a pasted token names no one"
+    );
+
+    app.start_effect(&SettingsEffect::from(AgentModelsEffect::RemoveHubToken))
+        .expect("signing out asks the model manager");
+    let deadline = tilo_test_env::hang_deadline();
+    while hub(&mut app).0 != Ok(HubTokenState::None) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the sign-out is shown"
+        );
+        app.settle();
+        std::thread::yield_now();
+    }
+    assert_eq!(manager.calls.lock().unwrap().as_slice(), ["hub-sign-out"]);
 }
 
 #[test]

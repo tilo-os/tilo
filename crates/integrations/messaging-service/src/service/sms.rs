@@ -1,4 +1,4 @@
-//! SMS through a SIM the person chose, under the account's own key and grant.
+//! SMS through a SIM the person chose, under the account's own key.
 //! The service never unlocks a SIM or changes the default modem.
 
 use std::collections::BTreeMap;
@@ -216,7 +216,7 @@ impl Account {
                 .save(
                     &root.join("sim.enc"),
                     owner,
-                    &self.guard.credential.profile_key()?,
+                    &self.guard.credential.profile_key(),
                 )
                 .map_err(|_| SendError::Unavailable)?;
             self.guard.check()?;
@@ -224,14 +224,14 @@ impl Account {
         let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
             &root.join("journal"),
             owner,
-            self.guard.credential.profile_key()?,
+            self.guard.credential.profile_key(),
         )
         .map_err(|_| SendError::Unavailable)?;
         self.guard.check()?;
         let history = tilo_messaging_protocol::signal_broker::History::open(
             &root.join("history"),
             owner,
-            self.guard.credential.profile_key()?,
+            self.guard.credential.profile_key(),
         )?;
         self.guard.check()?;
         let runtime = SmsRuntime::new(owner.clone(), transport, journal)
@@ -253,7 +253,7 @@ impl Account {
         let binding = SimBinding::load(
             &root.join("sim.enc"),
             &self.guard.identity.owner,
-            &self.guard.credential.profile_key()?,
+            &self.guard.credential.profile_key(),
             &connection,
         )
         .await
@@ -271,10 +271,10 @@ impl super::flow::Provider for Sms {
     type Account = Account;
     const SERVICE: tilo_messaging_protocol::Service = tilo_messaging_protocol::Service::Sms;
     const ORIGIN: &'static str = "https://modemmanager.org";
-    const ORDER: super::flow::Order = super::flow::Order::ChooseThenGrant;
+    const ORDER: super::flow::Order = super::flow::Order::ChooseThenStart;
 
-    fn purpose(_name: &str) -> String {
-        "Private SMS messaging using the selected SIM".into()
+    fn key_title(_name: &str) -> String {
+        "SMS account key".into()
     }
 
     fn choices(
@@ -298,7 +298,6 @@ impl super::flow::Provider for Sms {
         held: Option<Selected>,
     ) -> Result<(Arc<Account>, String, Option<Selected>), SendError> {
         let selected = held.ok_or(SendError::Revoked)?;
-        credential.check()?;
         let scope = format!("sms:{}", identity.owner.account);
         service.publish(
             identity,
@@ -306,6 +305,7 @@ impl super::flow::Provider for Sms {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
+                key: credential.item.clone(),
                 kind: crate::session::PublicationKind::Sms {
                     scope: scope.clone(),
                 },

@@ -858,8 +858,9 @@ pub(crate) mod testing {
             .account(address)
             .and_then(|kept| sign_in_of(&kept.config));
         // Added with its password: bound to the servers it names.
+        let asker = workspaces.acting_or_own(None);
         let reference = workspaces
-            .vault_at(workspace)
+            .vault_for(workspace, &asker)
             .keep_sign_in(
                 address,
                 (
@@ -874,7 +875,7 @@ pub(crate) mod testing {
             .unwrap();
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
         workspaces
-            .keep_workspace_account(workspace, &account)
+            .keep_workspace_account((workspace, &asker), &account)
             .await
             .unwrap();
     }
@@ -1125,7 +1126,10 @@ mod tests {
 
         assert!(
             workspaces
-                .remove_workspace_account(&ada, "ada@work.example.test")
+                .remove_workspace_account(
+                    (&ada, &workspaces.acting_or_own(None)),
+                    "ada@work.example.test"
+                )
                 .await
                 .unwrap()
         );

@@ -436,6 +436,87 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
     );
 }
 
+/// Who made the last change of the document `bytes`, as its stamp names them.
+fn last_invoker(bytes: &[u8]) -> tilo_action_policy::Acting {
+    let mut doc = automerge::AutoCommit::load(bytes).unwrap();
+    let changes = doc.get_changes(&[]);
+    let last = changes.last().expect("the document holds changes");
+    collab_types::claim::invoker_of(last).expect("every change names who made it")
+}
+
+/// What a member asks of the service another member's device runs is written for the member
+/// who asked: Bo keeps the account's password and signs it out through Ada's device, and each
+/// change that makes names Bo as its invoker, never Ada, whose device wrote it. What Ada's
+/// device writes for Ada names Ada.
+#[tokio::test]
+async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked() {
+    let server = Arc::new(
+        tokio::task::spawn_blocking(MailServer::start)
+            .await
+            .unwrap(),
+    );
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    let ada = hex::encode(members.owner_cert.user_public_key);
+    let bo = hex::encode(members.member_cert.user_public_key);
+    members.keep_account(&server.account()).await;
+    let vault_invoker = || async {
+        let opened = members.owner.open_vault(&workspace).await.unwrap();
+        last_invoker(opened.document().expect("the vault is made"))
+    };
+    let accounts_invoker = || async {
+        let bytes = members.owner.accounts_document(&workspace).await.unwrap();
+        last_invoker(&bytes.expect("the accounts are made"))
+    };
+
+    let item = members
+        .owner
+        .keep_account_password(
+            &workspace,
+            &members.member_caller(),
+            None,
+            server.login(),
+            Zeroizing::new(PASSWORD.into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        vault_invoker().await.person_id(),
+        Some(bo.as_str()),
+        "the password Bo typed is kept for Bo"
+    );
+
+    members
+        .owner
+        .name_account_password(&workspace, ADDRESS, &item)
+        .await
+        .unwrap();
+    assert_eq!(
+        accounts_invoker().await.person_id(),
+        Some(ada.as_str()),
+        "what Ada's device writes on its own is Ada's"
+    );
+
+    assert!(
+        members
+            .owner
+            .forget_workspace_account(&workspace, &members.member_caller(), ADDRESS)
+            .await
+            .unwrap(),
+        "the account was there to sign out of"
+    );
+    assert_eq!(
+        accounts_invoker().await.person_id(),
+        Some(bo.as_str()),
+        "Bo signed the account out"
+    );
+    assert_eq!(
+        vault_invoker().await.person_id(),
+        Some(bo.as_str()),
+        "Bo's signing out took the password with it"
+    );
+}
+
 /// A calendar account added in Settings keeps its password in the workspace's one vault, and the
 /// Calendar's sign-in is released it by the sign-ins route: decided for the device, at the
 /// account's server alone, and written down in the entry. No device vault keeps one.
@@ -762,8 +843,8 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
                 .held_accounts(is_files)
                 .await
                 .into_iter()
-                .find(|(held, kept)| *held == workspace && kept.id.as_str() == "files-1")
-                .and_then(|(_, kept)| {
+                .find(|(held, kept, _)| *held == workspace && kept.id.as_str() == "files-1")
+                .and_then(|(_, kept, _)| {
                     accounts::email::password_item(&kept.config).and_then(ItemRef::parse)
                 })
             {
@@ -1041,5 +1122,98 @@ async fn a_branch_opens_the_passwords_its_source_kept() {
     assert!(
         opened.entry(item.id()).is_some(),
         "the branch keeps the password its source kept: {opened:?}"
+    );
+}
+
+/// The workspace's Hugging Face account signs in with the grant Hugging Face's own page left,
+/// kept in its entry: whoever downloads with it is released the access token alone, renewed for
+/// downloads where it is due, never the refresh token; signing out forgets both.
+#[tokio::test]
+async fn the_hugging_face_account_is_released_its_access_token_alone() {
+    const HUB: &str = "hugging-face";
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from(HUB),
+        accounts::sign_ins::MODEL_HUB_TYPE,
+    );
+    account.config = json!({"server_url": "https://huggingface.co", "username": "ada"});
+    members.keep_account(&account).await;
+    let tokens = tilo_oauth::TokenSet {
+        access_token: "made-up hub access token".into(),
+        refresh_token: "made-up hub refresh token".into(),
+        expires_in: 3600,
+        ..Default::default()
+    }
+    .stamp_now();
+    let grant = account_credentials::oauth_secret(&tokens).token.unwrap();
+    let item = members
+        .owner
+        .keep_account_password(
+            &workspace,
+            &members.owner_caller(),
+            None,
+            AccountLogin {
+                title: HUB.into(),
+                username: "ada".into(),
+                places: vec![
+                    accounts::vault_items::Place::parse("https://huggingface.co").unwrap(),
+                ],
+            },
+            Zeroizing::new(grant),
+        )
+        .await
+        .unwrap();
+    members
+        .owner
+        .name_account_password(&workspace, HUB, &item)
+        .await
+        .unwrap();
+
+    let named = tilo_test_env::within("the member's copy of the accounts names the entry", async {
+        loop {
+            if let Ok(held) = members.member.workspace_accounts(&workspace).await
+                && let Some(named) = held
+                    .account(HUB)
+                    .and_then(|account| {
+                        accounts::email::password_item(&account.config).map(str::to_owned)
+                    })
+                    .and_then(|item| ItemRef::parse(&item))
+            {
+                return named;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let token = released(
+        &members.member,
+        &workspace,
+        &members.member_caller(),
+        tilo_app_id::apps::SETTINGS,
+        &named,
+    )
+    .await
+    .expect("a member who may use Passwords downloads with the workspace's sign-in");
+    assert_eq!(token.as_str(), "made-up hub access token");
+    assert!(
+        !token.contains("refresh"),
+        "nothing the device is released carries the refresh token: {}",
+        token.as_str()
+    );
+
+    // Signing out takes the sign-in with the account.
+    assert!(
+        members
+            .owner
+            .forget_workspace_account(&workspace, &members.owner_caller(), HUB)
+            .await
+            .unwrap()
+    );
+    let held = members.owner.workspace_accounts(&workspace).await.unwrap();
+    assert!(held.account(HUB).is_none(), "the account is gone");
+    assert!(
+        !members.owner.vault_keeps(&workspace, &item).await.unwrap(),
+        "its sign-in left the workspace's vault"
     );
 }

@@ -16,7 +16,8 @@ struct Projection {
     review: Option<EnrollmentReview>,
     account: Option<ServiceAccount>,
     pending: bool,
-    proposal: Option<String>,
+    /// The person reviewed the account, so its key is kept and it started.
+    reviewed: bool,
     sims: Option<Vec<tilo_messaging::SimChoice>>,
 }
 #[derive(Clone)]
@@ -59,12 +60,9 @@ impl EnrollmentView {
         self.state
             .with(|state| state.account.is_some())
             .then_some(())?;
-        matches!(
-            self.phase(),
-            EnrollmentPhase::Linking | EnrollmentPhase::AwaitingPermission
-        )
-        .then(|| ui::time::now().checked_add(ui::time::Duration::from_millis(250)))
-        .flatten()
+        (self.phase() == EnrollmentPhase::Linking)
+            .then(|| ui::time::now().checked_add(ui::time::Duration::from_millis(250)))
+            .flatten()
     }
     pub(crate) fn close(&self) {
         self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
@@ -318,7 +316,7 @@ impl EnrollmentView {
                     .review
                     .as_ref()
                     .is_some_and(|review| review.account == account)
-                && (state.proposal.is_none()
+                && (!state.reviewed
                     || (account.service == "whatsapp"
                         && state
                             .review
@@ -343,10 +341,10 @@ impl EnrollmentView {
                     return Err(CATALOG.t("messages-setup-interrupted"));
                 }
                 projection.update(|state| state.pending = false);
-                let proposal = result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
-                projection.update(|state| state.proposal = Some(proposal.clone()));
+                result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
+                projection.update(|state| state.reviewed = true);
                 Ok(Effected::value(
-                    serde_json::json!({"state":if reviewed.phase(&original) == EnrollmentPhase::Ready {"ready"} else {"awaiting_permission"},"proposal":proposal}),
+                    serde_json::json!({"state":if reviewed.phase(&original) == EnrollmentPhase::Ready {"ready"} else {"linking"}}),
                 ))
             },
         ))
@@ -459,18 +457,14 @@ impl EnrollmentView {
                 ),
             ));
         }
-        if state.proposal.is_some()
+        // A reviewed account started; only a linked WhatsApp account is
+        // reviewed again before it is published.
+        if state.reviewed
             && !(review.account.service == "whatsapp"
                 && review.number.is_some()
                 && phase == EnrollmentPhase::Review)
         {
-            return content.push(Box::new(Text::new(&CATALOG.t(
-                if phase == EnrollmentPhase::Interrupted {
-                    "messages-setup-interrupted"
-                } else {
-                    "messages-first-permission-review"
-                },
-            ))));
+            return content;
         }
         content.push(Box::new(
             actions.bind_effect_invocation(

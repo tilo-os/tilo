@@ -46,15 +46,8 @@ use super::{
 /// The Hub's origin. Every API call and download starts here.
 pub const HUB_ORIGIN: &str = "https://huggingface.co";
 
-/// Vault binding of the person's Hugging Face access token, which gated
-/// models need. Settings stores it and the model manager reads it; neither
-/// passes it on a command line or writes it to state or logs.
-pub const TOKEN_SERVICE: &str = "tilo-models";
-pub const TOKEN_PURPOSE: &str = "huggingface-access-token";
-pub const TOKEN_ID: &str = "huggingface";
-
-/// What the model manager reports of the Hugging Face credential stored
-/// here, without the credential itself.
+/// What the model manager reports of the workspace's Hugging Face sign-in,
+/// without the credential itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HubTokenState {

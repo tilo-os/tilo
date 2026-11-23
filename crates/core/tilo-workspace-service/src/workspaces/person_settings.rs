@@ -153,8 +153,9 @@ impl Workspaces {
             "smtp_host": "smtp.stand-in.test",
             "smtp_port": 465,
         });
+        let asker = self.acting_or_own(None);
         let reference = self
-            .vault_at(workspace)
+            .vault_for(workspace, &asker)
             .keep_sign_in(
                 address,
                 (accounts::vault_items::ItemKind::Login, places_of(&account)?),
@@ -164,7 +165,8 @@ impl Workspaces {
             )
             .await?;
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        self.keep_workspace_account(workspace, &account).await?;
+        self.keep_workspace_account((workspace, &asker), &account)
+            .await?;
         self.person_settings_changed();
         Ok(())
     }
@@ -577,8 +579,9 @@ pub(crate) async fn account_secret_for_test(
     id: &str,
 ) -> Result<accounts::Secret, String> {
     let root = workspaces.workspace_root(workspace);
+    let asker = workspaces.acting_or_own(None);
     let signing = Signing {
-        vault: workspaces.vault_at(workspace),
+        vault: workspaces.vault_for(workspace, &asker),
         root: &root,
         by: "",
     };

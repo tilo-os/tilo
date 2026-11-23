@@ -301,6 +301,7 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, Refused> {
         let using = self.asked_turn(turn).await?;
+        let asker = using.acting();
         let target = &request.target;
         if target.provider != person_connections::PROVIDER {
             return Err(Refused::UnknownAction);
@@ -361,7 +362,7 @@ impl Workspaces {
                 let by = Calling::Agent(&using.name);
                 done(
                     connections::refresh(
-                        (&root, self.vault_at(&using.workspace)),
+                        (&root, self.vault_for(&using.workspace, &asker)),
                         &reach,
                         &named.connection,
                         by,
@@ -404,9 +405,14 @@ impl Workspaces {
         if !found.asks {
             let by = Calling::Agent(&using.name);
             return done(
-                connections::call((root, self.vault_at(&using.workspace)), reach, by, call)
-                    .await
-                    .map_err(refused)?,
+                connections::call(
+                    (root, self.vault_for(&using.workspace, &asker)),
+                    reach,
+                    by,
+                    call,
+                )
+                .await
+                .map_err(refused)?,
             );
         }
         // What a grant lets stand is read at every call, so a grant taken back covers nothing

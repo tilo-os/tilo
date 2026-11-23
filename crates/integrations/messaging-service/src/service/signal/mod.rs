@@ -2,7 +2,7 @@
 //! sandbox on a RAM working copy of the account's sealed profile.
 //!
 //! Enrollment links a new device in a private RAM directory before any
-//! account, key or grant exists; only a provider that exited cleanly yields
+//! account or key exists; only a provider that exited cleanly yields
 //! a profile, which is sealed under the account's key once the person
 //! approved it. A running account starts the provider on that profile and
 //! talks to it over two separately authenticated streams.
@@ -276,7 +276,7 @@ impl Running for Account {
     }
 }
 
-/// Creates or opens a sealed profile under a key and grant.
+/// Creates or opens a sealed profile under the account's key.
 type UnsealProfile = fn(
     &Path,
     Owner,
@@ -313,7 +313,7 @@ impl Account {
         if !root.is_absolute() {
             return Err(SendError::Unavailable);
         }
-        let key = self.guard.credential.profile_key()?;
+        let key = self.guard.credential.profile_key();
         let profile = unseal(
             root,
             self.guard.identity.owner.clone(),
@@ -403,8 +403,8 @@ impl Account {
         sender: std::os::unix::net::UnixStream,
         receiver: std::os::unix::net::UnixStream,
     ) -> Result<(SignalBroker, SignalReceiver), SendError> {
-        // Enrollment approved this account's key; nothing mints another.
-        let key = self.guard.credential.profile_key()?;
+        // Enrollment kept this account's key; nothing mints another.
+        let key = self.guard.credential.profile_key();
         self.guard.check()?;
         let owner = &self.guard.identity.owner;
         let history = tilo_messaging_protocol::signal_broker::History::open(
@@ -479,10 +479,10 @@ impl super::flow::Provider for Signal {
     type Account = Account;
     const SERVICE: tilo_messaging_protocol::Service = tilo_messaging_protocol::Service::Signal;
     const ORIGIN: &'static str = "https://signal.org";
-    const ORDER: super::flow::Order = super::flow::Order::LinkThenGrant;
+    const ORDER: super::flow::Order = super::flow::Order::LinkThenStart;
 
-    fn purpose(_name: &str) -> String {
-        "Private Signal messaging".into()
+    fn key_title(_name: &str) -> String {
+        "Signal account key".into()
     }
 
     fn begin(
@@ -536,6 +536,7 @@ impl super::flow::Provider for Signal {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
+                key: credential.item.clone(),
                 kind: crate::session::PublicationKind::Signal { aci: aci.clone() },
             },
         )?;

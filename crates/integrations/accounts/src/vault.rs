@@ -89,15 +89,9 @@ type PendingEdits = BTreeMap<String, (Option<Secret>, Option<Secret>)>;
 #[derive(Debug)]
 pub struct SecretVault {
     dir: PathBuf,
-    /// Set where there is no native config directory (a browser page): the
-    /// vault lives in the shared config location's storage instead, its key
-    /// in the platform's secret store.
-    page: Option<tilo_files::Dir>,
     entries: BTreeMap<String, Secret>,
     // Explicit edits merge into the latest inventory while the write lock is held.
     pending: std::sync::Mutex<PendingEdits>,
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    page_in_flight: std::sync::Mutex<Option<PendingEdits>>,
     /// A write on a thread of its own, for a caller that must not wait on
     /// the disk ([`Self::commit`] on the compositor's frame loop).
     native_in_flight: std::sync::Mutex<Option<NativeWrite>>,
@@ -156,21 +150,17 @@ impl SecretVault {
                 let dir = crate::vault_dir_in(&root);
                 Self::open_at(dir, VaultBackend::for_session())
             }
-            None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
-                Ok(page) => Self::open_page(page),
-                Err(error) => Self {
-                    dir: PathBuf::from("accounts/vault"),
-                    page: None,
-                    entries: BTreeMap::new(),
-                    pending: std::sync::Mutex::default(),
-                    native_in_flight: std::sync::Mutex::default(),
-                    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                    page_in_flight: std::sync::Mutex::default(),
-                    backend: explicit_root_backend(),
-                    stamp: None,
-                    read_only: false,
-                    load_error: Some(format!("user config directory unavailable: {error}")),
-                },
+            // A browser page has no config directory, and keeps no secrets of its own: they are
+            // entries of the workspace's vault. Its store holds nothing and takes no write.
+            None => Self {
+                dir: PathBuf::from("accounts/vault"),
+                entries: BTreeMap::new(),
+                pending: std::sync::Mutex::default(),
+                native_in_flight: std::sync::Mutex::default(),
+                backend: explicit_root_backend(),
+                stamp: None,
+                read_only: true,
+                load_error: None,
             },
         }
     }
@@ -211,43 +201,13 @@ impl SecretVault {
         };
         Self {
             dir,
-            page: None,
             entries,
             pending: std::sync::Mutex::default(),
             native_in_flight: std::sync::Mutex::default(),
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            page_in_flight: std::sync::Mutex::default(),
             backend,
             stamp,
             load_error,
             read_only: true,
-        }
-    }
-
-    /// Open the encrypted vault in a supplied profile-bound config directory.
-    /// Browser hosts must load that directory's file mirror and secret storage
-    /// before opening. The Dir capability, not an app-chosen user label, selects
-    /// the inventory; native key storage is unaffected.
-    pub fn open_page(page: tilo_files::Dir) -> Self {
-        let (entries, load_error) = match load_page_entries(&page) {
-            Ok(entries) => (entries, None),
-            Err(error) => {
-                tracing::warn!(%error, "accounts: vault unavailable; writes disabled until reopen");
-                (BTreeMap::new(), Some(error))
-            }
-        };
-        Self {
-            dir: PathBuf::from("accounts/vault"),
-            page: Some(page),
-            entries,
-            pending: std::sync::Mutex::default(),
-            native_in_flight: std::sync::Mutex::default(),
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            page_in_flight: std::sync::Mutex::default(),
-            backend: VaultBackend::System,
-            stamp: None,
-            load_error,
-            read_only: false,
         }
     }
 
@@ -262,12 +222,9 @@ impl SecretVault {
         };
         Self {
             dir,
-            page: None,
             entries,
             pending: std::sync::Mutex::default(),
             native_in_flight: std::sync::Mutex::default(),
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            page_in_flight: std::sync::Mutex::default(),
             backend,
             stamp,
             load_error,
@@ -282,7 +239,7 @@ impl SecretVault {
     /// into the file under its lock. A file that cannot be read now leaves
     /// the view as it was.
     pub fn refresh(&mut self) {
-        if self.page.is_some() || self.load_error.is_some() {
+        if self.load_error.is_some() {
             return;
         }
         let stamp = FileStamp::of(&self.dir);
@@ -397,28 +354,23 @@ impl SecretVault {
         match self.written(true)? {
             Written::Durable => Ok(()),
             Written::InFlight => Err(SAVE_PENDING.to_owned()),
-            Written::Remaining => Err("credential save pending; retry remaining edits".to_owned()),
         }
     }
 
     /// Save the edits as [`Self::try_save`] does, telling a write still in
-    /// flight apart from a failure: a browser page commits through its
-    /// storage asynchronously, so its first save of an edit is
-    /// [`Saved::Pending`] and the edit stays. Saving again reports how it
-    /// ended.
+    /// flight apart from a failure. On a thread that must not wait on storage
+    /// (the compositor's frame loop, [`durable_store::waiting`]) the vault is
+    /// written on a thread of its own, [`Saved::Pending`] until it is written,
+    /// and the edits stay until then. Saving again reports how it ended.
     ///
     /// # Errors
     ///
     /// As [`Self::try_save`], except a write in flight.
-    ///
-    /// On a thread that must not wait on storage (the compositor's frame
-    /// loop, [`durable_store::waiting`]) a native vault is written the same
-    /// way: on a thread of its own, [`Saved::Pending`] until it is written.
     pub fn commit(&self) -> Result<Saved, String> {
         let wait = !durable_store::waiting::forbidden();
         Ok(match self.written(wait)? {
             Written::Durable => Saved::Durable,
-            Written::InFlight | Written::Remaining => Saved::Pending,
+            Written::InFlight => Saved::Pending,
         })
     }
 
@@ -430,12 +382,6 @@ impl SecretVault {
             return Err(format!(
                 "vault recovery required; restore access and reopen: {error}"
             ));
-        }
-        if self.page.is_some() {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            return self.save_page();
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-            return Err("page credential storage is only available in a browser".into());
         }
         // One writer at a time: a caller that may wait writes under this.
         let mut in_flight = self
@@ -549,147 +495,19 @@ fn write_native(dir: &Path, backend: VaultBackend, edits: &PendingEdits) -> Resu
         .map_err(|error| format!("could not write credential vault: {error}"))
 }
 
-/// Why [`SecretVault::try_save`] refuses while a browser write is in flight.
-const SAVE_PENDING: &str = "credential save pending; retry after browser storage completes";
+/// Why [`SecretVault::try_save`] refuses while a write is in flight.
+const SAVE_PENDING: &str = "credential save pending; retry once the vault is written";
 
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only a browser page writes asynchronously")
-)]
 enum Written {
     Durable,
     InFlight,
-    Remaining,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Saved {
     Durable,
     Pending,
-}
-
-impl SecretVault {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn save_page(&self) -> Result<Written, String> {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pending.is_empty() {
-            return Ok(Written::Durable);
-        }
-        let mut in_flight = self
-            .page_in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let submitted = in_flight.get_or_insert_with(|| pending.clone()).clone();
-        // Identify the requested result, not the freshly loaded baseline. A
-        // synchronous facade may reopen its vault on each retry, after the
-        // committed file has already refreshed the mirror.
-        let replacements: BTreeMap<_, _> = submitted
-            .iter()
-            .map(|(id, (_, replacement))| (id, replacement))
-            .collect();
-        let operation = Zeroizing::new(
-            serde_json::to_string(&replacements)
-                .map_err(|_| "could not encode credential edits")?,
-        );
-        let edits = submitted.clone();
-        let page = self.page.as_ref().ok_or("page vault unavailable")?;
-        let committed = tilo_files::web::update_atomic_blocking(
-            page,
-            &page_vault(),
-            &operation,
-            move |blob| async move {
-                let key = FORMAT
-                    .load_or_create_page_key(blob.is_some())
-                    .await
-                    .map_err(tilo_files::FsError::Io)?;
-                let entries = decode_page_entries(blob.as_deref(), &key)
-                    .and_then(|entries| merge_edits(entries, &edits))
-                    .map_err(tilo_files::FsError::Io)?;
-                let plaintext = Zeroizing::new(
-                    serde_json::to_vec(&entries)
-                        .map_err(|error| tilo_files::FsError::Io(error.to_string()))?,
-                );
-                seal(&key, &plaintext).ok_or_else(|| {
-                    tilo_files::FsError::Io("credential vault encryption failed".into())
-                })
-            },
-        );
-        let committed = match committed {
-            Ok(committed) => committed,
-            Err(error) => {
-                // Keep the immutable snapshot for retry: an I/O failure may
-                // follow a visible replacement. Reestablish its durable result
-                // before rebasing any edits made while it was in flight.
-                return Err(format!("credential storage failed: {error}"));
-            }
-        };
-        if !committed {
-            return Ok(Written::InFlight);
-        }
-        *in_flight = None;
-        drop(in_flight);
-        for (id, (_, saved)) in submitted {
-            if let Some((original, replacement)) = pending.get_mut(&id) {
-                if replacement == &saved {
-                    pending.remove(&id);
-                } else {
-                    // The user edited again while this snapshot was committing.
-                    // Retain the newer edit, based on the acknowledged value.
-                    *original = saved;
-                }
-            }
-        }
-        if pending.is_empty() {
-            Ok(Written::Durable)
-        } else {
-            Ok(Written::Remaining)
-        }
-    }
-}
-
-fn page_vault() -> tilo_files::VPath {
-    tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
-}
-
-fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        // An unreleased browser implementation stored an origin-wide inventory.
-        // It has no profile provenance: never import it into the current user.
-        // Retain it for explicit recovery, without making it authoritative.
-        let store = tilo_secrets::SecretStore::for_app("tilo.accounts");
-        if matches!(store.get_blocking("vault.entries"), Ok(Some(_))) {
-            tracing::warn!(
-                "unassigned origin-wide account inventory retained in tilo-secrets tilo.accounts/vault.entries; recover explicitly into the verified owner's profile"
-            );
-        }
-    }
-    let blob = match tilo_files::blocking::read(page, &page_vault()) {
-        Ok(blob) => blob,
-        Err(tilo_files::FsError::NotFound) => return Ok(BTreeMap::new()),
-        Err(error) => return Err(format!("could not read credential vault: {error}")),
-    };
-    let key = FORMAT
-        .load_or_create_system_key(true)
-        .ok_or_else(|| "credential vault key unavailable".to_string())?;
-    decode_page_entries(Some(&blob), &key)
-}
-
-fn decode_page_entries(
-    blob: Option<&[u8]>,
-    key: &VaultKey,
-) -> Result<BTreeMap<String, Secret>, String> {
-    let Some(blob) = blob else {
-        return Ok(BTreeMap::new());
-    };
-    let plaintext =
-        open(key, blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
-    serde_json::from_slice(&plaintext)
-        .map_err(|_| "decrypted credential vault is invalid".to_string())
 }
 
 /// Bounded, owner-checked ciphertext reads preserve inherited ciphertext modes;
@@ -794,25 +612,6 @@ mod tests {
     use secret_vault::KEY_LEN;
     #[cfg(windows)]
     use std::time::Duration;
-
-    #[test]
-    fn page_inventory_writes_fail_closed_without_cross_page_transactions() {
-        let page = tilo_files::Dir::memory();
-        let mut first = SecretVault::open_page(page.clone());
-        let mut second = SecretVault::open_page(page.clone());
-        first.put(&AccountId::new("first"), &Secret::password("first-secret"));
-        second.put(
-            &AccountId::new("second"),
-            &Secret::password("second-secret"),
-        );
-        assert!(first.try_save().is_err());
-        assert!(second.try_save().is_err());
-        assert!(matches!(
-            tilo_files::blocking::read(&page, &page_vault()),
-            Err(tilo_files::FsError::NotFound)
-        ));
-        assert!(!first.pending.lock().unwrap().is_empty());
-    }
 
     fn local_file_key(dir: &Path) -> Option<VaultKey> {
         load_or_create_key(dir, VaultBackend::LocalFile)

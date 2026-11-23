@@ -2,10 +2,14 @@
 //! ([`crate::service`]): the same connection check, review, journal and resume.
 //!
 //! Their keys are typed by the person and kept in this computer's account vault; the review,
-//! the journal and every request to the service happen here. What comes over lands as the
-//! agent's invocation, through the destination app's own typed actions: an Outline document
-//! becomes a Notes page (`import_page`, under the id its source decides, then `move-note` under
-//! its parent), and an issue from Linear or Forgejo one in Tasks (`new_project`, `rename` and
+//! the journal and every request to the service happen here. A mail account is connected
+//! straight to the workspace instead: its password goes to the server that keeps the person's
+//! workspace, which signs in with it before it keeps the account and seals the password in the
+//! workspace's vault, and Mail syncs its mail from its server from then on.
+//!
+//! What comes over lands as the agent's invocation, through the destination app's own typed
+//! actions: an Outline document becomes a Notes page (`import_page`, under the id its source
+//! decides, then `move-note` under its parent), and an issue from Linear or Forgejo one in Tasks (`new_project`, `rename` and
 //! `set_kind` for the project or area its project or team, milestone or repository there
 //! became; `add_origin` and `import_issue` for the issue; then `edit-text`, `file`, `move_to`,
 //! `set_status`, `label`, `estimate`, `schedule` and a priority verb for what it carries, and a
@@ -175,34 +179,21 @@ fn record(cx: &super::Cx<'_>) -> Result<AccountList> {
     super::writer::accounts(&mut *cx.open()?)
 }
 
-/// The account a connected `source` is reached with among the workspace's `record`: for mail,
-/// the account connected last.
-fn account(place: &Place, source: &str, record: &AccountList) -> Result<String> {
+/// The account a connected `source` is reached with among the workspace's `record`.
+fn account(source: &str, record: &AccountList) -> Result<String> {
     let kind = kind(source)?;
-    let connected = service::connected(record);
-    let last: Option<String> = if kind == ServiceKind::Mail {
-        place.field(source, ACCOUNT)?
-    } else {
-        None
-    };
-    connected
+    service::connected(record)
         .into_iter()
-        .filter(|(_, connected, _)| *connected == kind)
+        .find(|(_, connected, _)| *connected == kind)
         .map(|(id, _, _)| id.as_str().to_owned())
-        .find(|id| last.as_ref().is_none_or(|last| last == id))
         .ok_or_else(|| {
-            let how = if kind == ServiceKind::Mail {
-                "its password"
-            } else {
-                "its key"
-            };
-            anyhow!("{source} is not connected: `tilo migrate connect {source}`, which asks the person for {how}")
+            anyhow!("{source} is not connected: `tilo migrate connect {source}`, which asks the person for its key")
         })
 }
 
-/// `tilo migrate connect`: check the key or password the person types and keep it in the vault.
+/// `tilo migrate connect`: check the key the person types and keep it in this computer's vault,
+/// or connect the mail account whose password they type ([`connect_mail`]).
 pub fn connect(cx: &super::Cx<'_>, source: &str, how: super::Connecting<'_>) -> Result<Value> {
-    let place = cx.place;
     let super::Connecting {
         url,
         login,
@@ -232,32 +223,73 @@ pub fn connect(cx: &super::Cx<'_>, source: &str, how: super::Connecting<'_>) -> 
     if secret.is_empty() {
         bail!("nothing was typed");
     }
-    let mut workspace = cx.open()?;
-    let record = super::writer::accounts(&mut *workspace)?;
-    let (account, saving) = service::connect(
-        &config_root()?,
-        &record,
-        ServiceAddress {
-            kind,
-            server,
-            login,
-            secret,
-        },
-    )
-    .map_err(|error| anyhow!("{source}: {error}"))?;
-    super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
-    if kind == ServiceKind::Mail {
-        place.keep_field(source, ACCOUNT, &account.as_str())?;
-    }
-    let kept = if kind == ServiceKind::Mail {
-        "its password"
-    } else {
-        "its key"
+    let address = ServiceAddress {
+        kind,
+        server,
+        login,
+        secret,
     };
+    let mut workspace = cx.open()?;
+    if kind == ServiceKind::Mail {
+        return connect_mail(&mut *workspace, &address);
+    }
+    let record = super::writer::accounts(&mut *workspace)?;
+    let (account, saving) = service::connect(&config_root()?, &record, address)
+        .map_err(|error| anyhow!("{source}: {error}"))?;
+    super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
     Ok(json!({
         "source": source,
-        "said": format!("{source} is connected ({kept} is in this computer's vault); next: tilo migrate review {source}"),
+        "said": format!("{source} is connected (its key is in this computer's vault); next: tilo migrate review {source}"),
         "account": account.as_str(),
+    }))
+}
+
+/// Connect the mail account `address` names: its settings and the password the person typed go
+/// to the server that keeps their workspace, as their own request (`workspace/mail-accounts#add`),
+/// which signs in with the password before it keeps the account and seals the password in the
+/// workspace's vault. Nothing of it is kept on this computer.
+///
+/// # Errors
+/// The address names no account Mail signs in to with a password, or the server refused, in its
+/// words.
+pub(super) fn connect_mail(
+    workspace: &mut dyn super::writer::Workspace,
+    address: &ServiceAddress,
+) -> Result<Value> {
+    let config = service::mail_settings(address).map_err(|error| anyhow!("{MAIL}: {error}"))?;
+    let mut adding = json!({
+        "address": config.email,
+        "displayName": config.label(),
+        "incomingHost": config.imap_host,
+        "incomingPort": config.imap_port,
+        "outgoingHost": config.smtp_host,
+        "outgoingPort": config.smtp_port,
+        "password": address.secret.as_str(),
+    });
+    if !config.username.is_empty()
+        && !config.username.eq_ignore_ascii_case(&config.email)
+        && let Some(fields) = adding.as_object_mut()
+    {
+        fields.insert("username".into(), json!(config.username));
+    }
+    let added = workspace
+        .person(super::thunderbird::MAIL_ACCOUNTS, "add", adding)
+        .map_err(|error| error.context(format!("{} was not connected", config.email)))?;
+    // What the server answers is the account it keeps: anything else is not one.
+    if !added
+        .get("address")
+        .and_then(Value::as_str)
+        .is_some_and(|kept| kept.eq_ignore_ascii_case(&config.email))
+    {
+        bail!(
+            "{} was not connected: the server answered no account for it",
+            config.email
+        );
+    }
+    Ok(json!({
+        "source": MAIL,
+        "said": format!("{} is connected: Mail syncs it from its server now", config.email),
+        "account": config.email,
     }))
 }
 
@@ -288,8 +320,6 @@ pub fn sources(cx: &super::Cx<'_>) -> Vec<Value> {
     found
 }
 
-/// The account a mail source was connected with last.
-const ACCOUNT: &str = "account";
 /// A service's own journal of what it brought.
 const SERVICE: &str = "service";
 /// The ids a service's items were made under in the workspace.
@@ -342,9 +372,14 @@ const NOTED: &str = "service:";
 
 /// Review the connected `source` now, keeping what was chosen and what already came over.
 pub fn review(cx: &super::Cx<'_>, source: &str) -> Result<Review> {
+    if source == MAIL {
+        bail!(
+            "a mail account comes over as it is connected: `tilo migrate connect mail --login you@example.com`, and Mail syncs it from its server"
+        );
+    }
     let place = cx.place;
     let record = record(cx)?;
-    let account = account(place, source, &record)?;
+    let account = account(source, &record)?;
     let mut fresh = service::review(&config_root()?, &record, &account)
         .map_err(|error| anyhow!("{source}: {error}"))?;
     let journal = match service_journal(place, source)? {
@@ -424,7 +459,6 @@ pub fn summary(review: &Review) -> String {
     let what = chosen.first().map_or("items", |item| item.counts.as_str());
     let source = match review.source.as_str() {
         OUTLINE => "Outline",
-        MAIL => "mail",
         FORGEJO => "Forgejo",
         _ => "Linear",
     };
@@ -433,10 +467,6 @@ pub fn summary(review: &Review) -> String {
         .map(|item| item.title.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    // A mail account is its own title: "1 account" after it says nothing more.
-    if review.source == MAIL {
-        return format!("From {source}: {titles}");
-    }
     format!("From {source}: {titles} ({})", counted(count, what))
 }
 
@@ -451,12 +481,9 @@ pub(super) fn counted(count: usize, plural: &str) -> String {
 
 /// Bring the chosen groups of `review` over.
 pub fn land(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
-    if review.source == MAIL {
-        return land_mail(review, lander);
-    }
     let root = config_root()?;
     let record = super::writer::accounts(lander.workspace)?;
-    // A mail account lands as `land_mail` lands it: nothing else publishes one.
+    // A mail account is connected, never landed: nothing publishes one.
     let mut publish = |account: &str| Err(format!("{account} is no source to publish"));
     land_with(&review.source, lander, |journal, landing, save, cancel| {
         service::run(&root, &record, journal, landing, &mut publish, save, cancel)
@@ -517,34 +544,6 @@ fn refused(report: &service::ServiceReport) -> Result<()> {
         report.landed,
         report.refused.len()
     )
-}
-
-/// The chosen mail account into the person's accounts: its settings and its password, which
-/// `connect` kept in this computer's account vault, go to the server that keeps the person's
-/// workspace, which signs in with it and keeps both. Mail syncs its mail from its server from
-/// then on.
-fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
-    if !review.chosen().iter().any(|item| item.key == review.handle) {
-        return Ok(());
-    }
-    let record = super::writer::accounts(lander.workspace)?;
-    let (config, password) = service::mail_account(&config_root()?, &record, &review.handle)
-        .map_err(|error| anyhow!("mail: {error}"))?;
-    let mut adding = json!({
-        "address": config.email,
-        "displayName": config.label(),
-        "incomingHost": config.imap_host,
-        "incomingPort": config.imap_port,
-        "outgoingHost": config.smtp_host,
-        "outgoingPort": config.smtp_port,
-    });
-    if let Some(fields) = adding.as_object_mut() {
-        if !config.username.is_empty() && !config.username.eq_ignore_ascii_case(&config.email) {
-            fields.insert("username".into(), json!(config.username));
-        }
-        fields.insert("password".into(), json!(password.as_str()));
-    }
-    super::thunderbird::connect_mail(adding, lander)
 }
 
 /// What a source's imports made in the workspace, kept beside its journal so a later import finds it:

@@ -3744,6 +3744,64 @@
         ],
         "description": ""
       },
+      "tilo.accounts.report-sync.Arguments": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "health": {
+            "oneOf": [
+              {
+                "const": "never",
+                "type": "string"
+              },
+              {
+                "const": "syncing",
+                "type": "string"
+              },
+              {
+                "const": "healthy",
+                "type": "string"
+              },
+              {
+                "const": "offline",
+                "type": "string"
+              },
+              {
+                "const": "needs_sign_in",
+                "type": "string"
+              },
+              {
+                "const": "error",
+                "type": "string"
+              }
+            ]
+          },
+          "at_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signed_in": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "device",
+          "health",
+          "at_ms",
+          "signed_in",
+          "message"
+        ],
+        "description": ""
+      },
       "tilo.accounts.remove-account.Arguments": {
         "type": "object",
         "properties": {
@@ -13512,18 +13570,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "passwords.vault.deny-access.Arguments": {
-        "type": "object",
-        "properties": {
-          "proposal": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "proposal"
-        ],
         "description": ""
       },
       "passwords.vault.add.Arguments": {
@@ -37401,6 +37447,12 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tilo.accounts",
+      "action": "report-sync",
+      "arguments": "#/components/schemas/tilo.accounts.report-sync.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tilo.accounts",
       "action": "remove-account",
       "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
     },
@@ -39381,6 +39433,12 @@
     {
       "app": "so.tilo.messages",
       "resource": "tilo.accounts",
+      "action": "report-sync",
+      "arguments": "#/components/schemas/tilo.accounts.report-sync.Arguments"
+    },
+    {
+      "app": "so.tilo.messages",
+      "resource": "tilo.accounts",
       "action": "remove-account",
       "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
     },
@@ -39533,12 +39591,6 @@
       "resource": "osk.learned",
       "action": "forget",
       "arguments": "#/components/schemas/osk.learned.forget.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "passwords.vault",
-      "action": "deny-access",
-      "arguments": "#/components/schemas/passwords.vault.deny-access.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -40451,6 +40503,12 @@
       "resource": "tilo.accounts",
       "action": "save-account",
       "arguments": "#/components/schemas/tilo.accounts.save-account.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tilo.accounts",
+      "action": "report-sync",
+      "arguments": "#/components/schemas/tilo.accounts.report-sync.Arguments"
     },
     {
       "app": "so.tilo.settings",

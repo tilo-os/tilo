@@ -1226,6 +1226,59 @@ fn the_mail_form_names_its_fields_to_assistive_technology() {
     );
 }
 
+/// A person adds a mail account by moving to each field and typing into it, then Save: the
+/// password they typed reaches the draft Save reads, as the name and address do, and Save never
+/// asks for a password they already typed. Each field is reached as a keyboard or screen reader
+/// reaches it, wherever the page has scrolled it, and every character is a key press.
+#[test]
+fn a_password_typed_into_the_mail_form_reaches_its_save() {
+    let mut pane = AccountsPane::from_dir(sample_directory(), true);
+    pane.command(AccountViewCommand::Add(AccountKind::Mail));
+    let mut app = window_showing(pane);
+    for (field, typed) in [
+        ("Display name", "Ada"),
+        ("Email address", "lab@story.tilo.test"),
+        ("Password or app password", "walks-stand-in"),
+    ] {
+        let id = app
+            .harness()
+            .a11y_node_named(field)
+            .unwrap_or_else(|| panic!("the form exports {field}"));
+        app.harness()
+            .perform_a11y_action(id, &ui::a11y::Action::Focus)
+            .unwrap_or_else(|error| panic!("{field} takes focus: {error}"));
+        app.harness().type_text(typed);
+        app.settle();
+    }
+    assert_eq!(
+        change(&mut app, |pane| (
+            pane.form_name.get(),
+            pane.form_email.get(),
+            pane.form_password.get()
+        )),
+        (
+            "Ada".to_owned(),
+            "lab@story.tilo.test".to_owned(),
+            "walks-stand-in".to_owned()
+        ),
+        "each typed field reaches the draft"
+    );
+    let save = app
+        .harness()
+        .a11y_node_named(&t("accounts-save"))
+        .expect("the form exports Save");
+    app.harness()
+        .perform_a11y_action(save, &ui::a11y::Action::Activate)
+        .expect("Save takes the press");
+    app.settle();
+    let refused = change(&mut app, |pane| pane.form_error.clone());
+    assert_ne!(
+        refused.as_deref(),
+        Some("enter a password or app password"),
+        "Save reads the password that was typed"
+    );
+}
+
 /// Where the exported node `id` stands, if it is drawn.
 fn control_rect(harness: &ui::headless::FrameHarness, id: &str) -> Option<ui::vello::kurbo::Rect> {
     let id = ui::accesskit::NodeId(id.parse().ok()?);

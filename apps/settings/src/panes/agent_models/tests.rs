@@ -285,11 +285,8 @@ impl super::hub::HubControl for MockControl {
         self.calls.lock().unwrap().push(format!("import:{name}"));
         Ok(())
     }
-    fn save_hub_token(&self, token: &str) -> Result<(), String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("hub-token:{token}"));
+    fn forget_hub_token(&self) -> Result<(), String> {
+        self.calls.lock().unwrap().push("hub-sign-out".into());
         Ok(())
     }
 }

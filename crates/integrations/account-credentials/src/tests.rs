@@ -6,9 +6,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use accounts::{
-    Account, AccountId, AccountSyncHealth, AccountSyncStatusStore, Secret, SecretVault,
-};
+use accounts::{Account, AccountId, Secret, SecretVault};
 use cloud_source::CredentialSource as _;
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 use zeroize::Zeroizing;
@@ -40,12 +38,6 @@ fn save(
         .unwrap();
     accounts::person::keep_staged_in(root, &mut record).unwrap();
     account
-}
-
-fn health(root: &Path, id: &AccountId) -> Option<AccountSyncHealth> {
-    AccountSyncStatusStore::load_in(root)
-        .get(id)
-        .map(|status| status.health)
 }
 
 fn sign_in(credential_store: &CredentialStore) -> tilo_oauth::TokenSet {
@@ -87,7 +79,6 @@ fn signed_in_drive(lifetime: u64) -> (Fixture, tilo_oauth::TokenSet) {
         &oauth_secret(&tokens),
         serde_json::json!({}),
     );
-    credential_store.signed_in(&id).unwrap();
     (
         Fixture {
             _dir: dir,
@@ -148,7 +139,7 @@ tilo_test_env::scenario! {
         );
         let sealed = accounts::vault_dir_in(&root).join("vault.enc");
         std::fs::write(&sealed, b"corrupt credentials").unwrap();
-        let credential_store = CredentialStore::for_root(Some(root.clone()));
+        let credential_store = CredentialStore::for_root(Some(root));
 
         assert!(matches!(
             credential_store.seal_oauth(&id, &tokens),
@@ -163,7 +154,6 @@ tilo_test_env::scenario! {
             Err(CredentialError::Storage(_))
         ));
         assert_eq!(std::fs::read(&sealed).unwrap(), b"corrupt credentials");
-        assert_eq!(health(&root, &id), None);
     }
 
     phase a_drive_is_handed_the_access_token_only;
@@ -221,10 +211,6 @@ tilo_test_env::scenario! {
                 fixture.credential_store.file_credential(&fixture.account, true),
                 Err(CredentialError::NeedsAuthentication)
             )
-        );
-        assert_eq!(
-            health(&fixture.root, &fixture.id),
-            Some(AccountSyncHealth::NeedsAuthentication)
         );
         let source = DriveSignIn::new(fixture.credential_store, fixture.account);
         assert!(matches!(
@@ -524,8 +510,7 @@ tilo_test_env::scenario! {
             Some("ada@icloud.com")
         );
 
-        credential_store.signed_in(&id).unwrap();
-        let headers = drive_headers(&credential_store, &saved);
+            let headers = drive_headers(&credential_store, &saved);
         assert_eq!(headers.len(), 1);
         assert!(
             !headers[0].1.contains("trust-for"),
@@ -538,10 +523,6 @@ tilo_test_env::scenario! {
                 credential_store.file_credential(&saved, true),
                 Err(CredentialError::NeedsAuthentication)
             )
-        );
-        assert_eq!(
-            health(&root, &id),
-            Some(AccountSyncHealth::NeedsAuthentication)
         );
     }
 
@@ -577,8 +558,7 @@ tilo_test_env::scenario! {
             serde_json::json!({ "identity": APPLE_ID }),
         );
         let credential_store = CredentialStore::for_root(Some(root)).with_icloud(Arc::new(auth));
-        credential_store.signed_in(&id).unwrap();
-        let headers = drive_headers(&credential_store, &saved);
+            let headers = drive_headers(&credential_store, &saved);
         assert!(
             headers
                 .iter()

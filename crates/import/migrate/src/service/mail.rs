@@ -12,16 +12,14 @@ use tilo_resource::Invoke;
 
 use super::{ReviewGroup, ReviewItem, ServiceAddress, ServiceError};
 
-/// Keep the account waiting for review, its password in the vault, and say the edit that keeps
-/// it in the workspace's record.
+/// The settings Mail signs in to the account `address` names with: its provider's servers, or
+/// its own `imap.` and `smtp.` names for a domain no provider is known by, or the incoming server
+/// the person named.
 ///
 /// # Errors
-/// The address is invalid, the account is already there, or the vault could not be written.
-pub fn connect(
-    config_root: &Path,
-    record: &AccountList,
-    address: &ServiceAddress,
-) -> Result<(AccountId, Invoke<AccountList>), ServiceError> {
+/// The address is invalid, no password was typed, or the provider takes no password (Gmail and
+/// Outlook: their sign-in is Mail's own).
+pub fn settings(address: &ServiceAddress) -> Result<AccountConfig, ServiceError> {
     let email = address.login.trim().to_ascii_lowercase();
     let Some((_, domain)) = email.split_once('@') else {
         return Err(ServiceError::InvalidAddress);
@@ -31,11 +29,9 @@ pub fn connect(
     }
     let mut config = AccountConfig {
         email: email.clone(),
-        username: email.clone(),
+        username: email,
         ..AccountConfig::default()
     };
-    // The address alone names the provider's servers, or its own `imap.` and
-    // `smtp.` names for a domain no provider is known by.
     let known = config.autofill_from_email();
     let server = address.server.trim();
     if !server.is_empty() {
@@ -48,10 +44,24 @@ pub fn connect(
         }
     }
     if config.auth == AuthMethod::OAuth {
-        // Gmail and Outlook refuse a password; their sign-in is Mail's own.
         return Err(ServiceError::Refused);
     }
+    Ok(config)
+}
+
+/// Keep the account waiting for review, its password in the vault, and say the edit that keeps
+/// it in the workspace's record.
+///
+/// # Errors
+/// The address is invalid, the account is already there, or the vault could not be written.
+pub fn connect(
+    config_root: &Path,
+    record: &AccountList,
+    address: &ServiceAddress,
+) -> Result<(AccountId, Invoke<AccountList>), ServiceError> {
+    let mut config = settings(address)?;
     config.import_pending = true;
+    let email = config.email.clone();
     let id = AccountId::new(email.clone());
     if let Some(existing) = record.account(id.as_str())
         && existing.config.get("service_source").is_none()

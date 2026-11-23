@@ -59,6 +59,75 @@ pub fn socket() -> Option<PathBuf> {
     Some(socket_in(&tilo_paths::xdg::runtime_dir()?))
 }
 
+/// The name of the model manager's socket, beside the cloud service's.
+const MODELS_SOCKET_NAME: &str = "models";
+
+/// The account type of a workspace's Hugging Face account: the token or sign-in the model
+/// manager downloads models with, an entry of the workspace's vault its `passwordItem` names.
+pub const MODEL_HUB_TYPE: &str = "hugging-face";
+
+/// What an account whose grant its provider will not renew any more is refused with: its person
+/// signs in again, which is all that helps.
+pub const SIGN_IN_AGAIN: &str = "That account's sign-in needs renewing. Sign in again";
+
+/// The model manager's socket below the runtime directory `runtime_dir`: the session tells it the
+/// workspaces' Hugging Face accounts ([`is_model_hub_account`]) and releases their sign-ins, each
+/// use written as Settings' Agent Models signing in.
+#[must_use]
+pub fn models_socket_in(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join(RUNTIME_DIR_NAME).join(MODELS_SOCKET_NAME)
+}
+
+/// The model manager's socket below this login's runtime directory.
+#[must_use]
+pub fn models_socket() -> Option<PathBuf> {
+    Some(models_socket_in(&tilo_paths::xdg::runtime_dir()?))
+}
+
+/// Whether `account` is one the model manager downloads with: the accounts its socket lists.
+#[must_use]
+pub fn is_model_hub_account(account: &Account) -> bool {
+    account.type_id.as_str() == MODEL_HUB_TYPE
+}
+
+/// The id of a workspace's Hugging Face account, and the title of the vault entry it names.
+pub const MODEL_HUB_ACCOUNT: &str = "huggingface.co";
+
+/// Where a Hugging Face account's sign-in is sent, and nowhere else.
+pub const MODEL_HUB_ORIGIN: &str = "https://huggingface.co";
+
+/// The workspace's Hugging Face account naming the vault entry `item` as its sign-in: signed in
+/// as `username` (and `name`), or a pasted token with neither. One shape, whether Settings keeps
+/// it or the model manager's own sign-in in a terminal does.
+#[must_use]
+pub fn model_hub_account(item: &str, username: Option<&str>, name: Option<&str>) -> Account {
+    let mut fields = serde_json::Map::new();
+    fields.insert("server_url".into(), MODEL_HUB_ORIGIN.into());
+    if let Some(username) = username {
+        fields.insert("username".into(), username.into());
+    }
+    if let Some(name) = name {
+        fields.insert("name".into(), name.into());
+    }
+    let mut config = serde_json::Value::Object(fields);
+    crate::email::set_password_item(&mut config, Some(item));
+    let mut account = Account::new(MODEL_HUB_ACCOUNT, MODEL_HUB_TYPE);
+    "Hugging Face".clone_into(&mut account.display_name);
+    account.config = config;
+    account
+}
+
+/// A secret on its way to the session: it prints nothing, and wipes itself when dropped.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Withheld(pub Zeroizing<String>);
+
+impl std::fmt::Debug for Withheld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Withheld")
+    }
+}
+
 /// What the cloud service asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +139,31 @@ pub enum Ask {
     /// The sign-in kept in the vault entry `item` (`vault.item:<id>`), which an account of
     /// `workspace` names.
     SignIn { workspace: String, item: String },
+    /// How the sync of `account` of `workspace` went on this device: what every member reads
+    /// about it in the workspace's accounts.
+    ReportSync {
+        workspace: String,
+        account: String,
+        health: crate::SyncHealth,
+        /// Whether its person just signed in to it.
+        signed_in: bool,
+        /// A short summary a person reads, never a server's own words.
+        message: String,
+    },
+    /// Keep `secret`, a sign-in's grant, as the sign-in of the Hugging Face account of
+    /// `workspace`, signed in as `username` (and `name`): the model manager's own sign-in in a
+    /// terminal. Without a workspace, the one whose Hugging Face account it replaces, else the
+    /// person's own. Answered on the model manager's socket alone.
+    Keep {
+        workspace: Option<String>,
+        secret: Withheld,
+        username: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Forget the Hugging Face account `account` of `workspace` and the sign-in its vault entry
+    /// keeps: signing out. Answered on the model manager's socket alone.
+    Forget { workspace: String, account: String },
 }
 
 /// A file account and the workspace whose accounts record it is in.
@@ -77,6 +171,8 @@ pub enum Ask {
 pub struct Held {
     pub workspace: String,
     pub account: Account,
+    /// Its person signed in to it, and no device reported a sync since.
+    pub signed_in: bool,
 }
 
 /// What the session answers.
@@ -90,6 +186,9 @@ pub enum Answer {
     },
     /// The secret an entry keeps.
     SignIn { secret: Zeroizing<String> },
+    /// What was asked is what the workspace's accounts say now: the report, the sign-in kept,
+    /// or the account and its sign-in forgotten.
+    Reported,
     /// What the ask was refused with, in words a person reads.
     Refused { error: String },
 }
@@ -103,6 +202,7 @@ impl std::fmt::Debug for Answer {
                 .field("accounts", &accounts.len())
                 .finish(),
             Self::SignIn { .. } => f.debug_struct("SignIn").finish_non_exhaustive(),
+            Self::Reported => f.write_str("Reported"),
             Self::Refused { error } => f.debug_struct("Refused").field("error", error).finish(),
         }
     }
@@ -172,7 +272,8 @@ impl Client {
     /// # Errors
     /// The connection broke, or the answer was not one.
     pub fn ask(&mut self, ask: &Ask) -> std::io::Result<Answer> {
-        let mut line = serde_json::to_vec(ask).map_err(std::io::Error::other)?;
+        // An ask to keep a sign-in carries it.
+        let mut line = Zeroizing::new(serde_json::to_vec(ask).map_err(std::io::Error::other)?);
         line.push(b'\n');
         self.reader.get_mut().write_all(&line)?;
         read_line(&mut self.reader)?
@@ -254,6 +355,7 @@ pub mod fixture {
         accounts: BTreeMap<String, Account>,
         passwords: HashMap<String, String>,
         released: Vec<String>,
+        reported: Vec<(String, crate::SyncHealth)>,
     }
 
     /// The fixture, serving until it drops.
@@ -269,13 +371,24 @@ pub mod fixture {
         /// # Panics
         /// The socket cannot be bound.
         #[must_use]
+        pub fn serve(dir: &Path) -> Self {
+            Self::serve_listing(dir, super::is_file_account)
+        }
+
+        /// Serve the Hugging Face accounts kept with it on a socket in `dir`, as the session's
+        /// model manager socket does.
+        #[must_use]
+        pub fn serve_models(dir: &Path) -> Self {
+            Self::serve_listing(dir, super::is_model_hub_account)
+        }
+
         #[allow(
             clippy::disallowed_methods,
             clippy::panic,
             reason = "a test's stand-in session answers on threads of its own, and a test without \
                       one stops there"
         )]
-        pub fn serve(dir: &Path) -> Self {
+        fn serve_listing(dir: &Path, listing: fn(&Account) -> bool) -> Self {
             let socket = dir.join("sign-ins.sock");
             let listener = match tilo_files::native::socket::bind(&socket) {
                 Ok(listener) => listener,
@@ -291,7 +404,7 @@ pub mod fixture {
                     }
                     let Ok(stream) = stream else { continue };
                     let (kept, stopped) = (Arc::clone(&serving), Arc::clone(&stopped));
-                    std::thread::spawn(move || answer(stream, &kept, &stopped));
+                    std::thread::spawn(move || answer(stream, &kept, &stopped, listing));
                 }
             });
             Self { socket, kept, stop }
@@ -349,6 +462,18 @@ pub mod fixture {
         }
     }
 
+    impl Fixture {
+        /// The sync reports so far, each its account and health, in order.
+        #[must_use]
+        pub fn reported(&self) -> Vec<(String, crate::SyncHealth)> {
+            self.kept
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reported
+                .clone()
+        }
+    }
+
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
@@ -356,12 +481,12 @@ pub mod fixture {
         }
     }
 
-    fn listed(kept: &Mutex<Kept>) -> Vec<Held> {
+    fn listed(kept: &Mutex<Kept>, listing: fn(&Account) -> bool) -> Vec<Held> {
         kept.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .accounts
             .values()
-            .filter(|account| super::is_file_account(account))
+            .filter(|account| listing(account))
             .map(|account| {
                 let mut account = account.clone();
                 if super::signs_in_with_entry(&account)
@@ -373,12 +498,18 @@ pub mod fixture {
                 Held {
                     workspace: WORKSPACE.into(),
                     account,
+                    signed_in: false,
                 }
             })
             .collect()
     }
 
-    fn answer(stream: super::Stream, kept: &Mutex<Kept>, stop: &AtomicBool) {
+    fn answer(
+        stream: super::Stream,
+        kept: &Mutex<Kept>,
+        stop: &AtomicBool,
+        listing: fn(&Account) -> bool,
+    ) {
         let Ok(mut write) = stream.try_clone() else {
             return;
         };
@@ -391,7 +522,7 @@ pub mod fixture {
                 Ask::Accounts { after } => {
                     let mut waited = Duration::ZERO;
                     loop {
-                        let accounts = listed(kept);
+                        let accounts = listed(kept, listing);
                         let revision = super::revision_of(&accounts);
                         if after.as_deref() != Some(revision.as_str())
                             || waited >= Duration::from_secs(2)
@@ -420,6 +551,55 @@ pub mod fixture {
                             error: "This workspace's vault keeps no such entry".into(),
                         },
                     }
+                }
+                Ask::ReportSync {
+                    account, health, ..
+                } => {
+                    let known = {
+                        let mut kept = kept
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let known = kept.accounts.contains_key(&account);
+                        if known {
+                            kept.reported.push((account, health));
+                        }
+                        known
+                    };
+                    if known {
+                        Answer::Reported
+                    } else {
+                        Answer::Refused {
+                            error: "That account is not one of the workspace's".into(),
+                        }
+                    }
+                }
+                Ask::Keep {
+                    secret,
+                    username,
+                    name,
+                    ..
+                } => {
+                    let id = super::MODEL_HUB_ACCOUNT;
+                    let item = item_for(id);
+                    let account = super::model_hub_account(&item, Some(&username), name.as_deref());
+                    let mut kept = kept
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    kept.passwords.insert(item, secret.0.to_string());
+                    kept.accounts.insert(id.to_owned(), account);
+                    Answer::Reported
+                }
+                Ask::Forget { account, .. } => {
+                    let mut kept = kept
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let named = kept.accounts.remove(&account).and_then(|gone| {
+                        crate::email::password_item(&gone.config).map(str::to_owned)
+                    });
+                    if let Some(item) = named {
+                        kept.passwords.remove(&item);
+                    }
+                    Answer::Reported
                 }
             };
             let Ok(line) = super::answer_line(&answer) else {

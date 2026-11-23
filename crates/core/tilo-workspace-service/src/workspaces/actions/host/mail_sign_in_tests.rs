@@ -257,7 +257,7 @@ async fn the_listing_answers_older_accounts_and_ones_that_feed_no_mail() {
     let keeping = setup.workspace.to_string();
     setup
         .workspaces
-        .keep_workspace_account(&keeping, &older)
+        .keep_workspace_account((&keeping, &setup.workspaces.acting_or_own(None)), &older)
         .await
         .unwrap();
     let mut nextcloud = accounts::Account::new("nextcloud:ada@cloud.example.test", "nextcloud");
@@ -270,7 +270,10 @@ async fn the_listing_answers_older_accounts_and_ones_that_feed_no_mail() {
     });
     setup
         .workspaces
-        .keep_workspace_account(&keeping, &nextcloud)
+        .keep_workspace_account(
+            (&keeping, &setup.workspaces.acting_or_own(None)),
+            &nextcloud,
+        )
         .await
         .unwrap();
 

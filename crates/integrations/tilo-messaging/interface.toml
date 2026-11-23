@@ -3,12 +3,11 @@
 # Everything above [schema] is authored; [schema] and `version` are written.
 
 # App ↔ messaging service: the `messaging` service the launcher hands
-# Messages (its accounts and enrollment) and Passwords (the permission
-# requests the service makes), and nothing else. Length-prefixed JSON calls,
-# replies and events (crates/integrations/tilo-messaging/src/service), apart from
-# the runtime interface every app speaks.
+# Messages (its accounts and enrollment), and nothing else. Length-prefixed
+# JSON calls, replies and events (crates/integrations/tilo-messaging/src/service),
+# apart from the runtime interface every app speaks.
 name = "messaging"
-version = 2
+version = 3
 version_const = "crates/integrations/tilo-messaging/src/service/wire.rs:PROTOCOL"
 encoding = "json"
 served_to_apps = true
@@ -50,9 +49,6 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Call::Begin" = "tuple(String)"
 "Call::Cancel" = "tuple(ServiceAccount)"
 "Call::CancelSimSelection" = "unit"
-"Call::Decide" = "struct"
-"Call::Decide.decision" = "Decision"
-"Call::Decide.proposal" = "String"
 "Call::Finish" = "tuple(ServiceAccount, String)"
 "Call::Group" = "tuple(ServiceAccount, GroupCall)"
 "Call::History" = "struct"
@@ -60,7 +56,6 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Call::History.limit" = "usize"
 "Call::History.route" = "Route"
 "Call::Prepare" = "tuple(String)"
-"Call::Proposals" = "unit"
 "Call::Review" = "tuple(ServiceAccount, String)"
 "Call::SelectSim" = "tuple(String)"
 "Call::Send" = "tuple(SendRequest)"
@@ -68,16 +63,6 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Call::SetupCancel" = "tuple(ServiceAccount)"
 "Call::SetupFinish" = "tuple(ServiceAccount, String)"
 "Call::SimChoices" = "unit"
-"CredentialScope" = "struct deny_unknown_fields"
-"CredentialScope.account" = "String"
-"CredentialScope.actor" = "String"
-"CredentialScope.device" = "String"
-"CredentialScope.generation" = "u64"
-"CredentialScope.service" = "String"
-"Decision" = "enum external"
-"Decision::Always" = "unit"
-"Decision::Deny" = "unit"
-"Decision::Session" = "unit"
 "Delivery" = "enum external"
 "Delivery::RecipientDelivered" = "unit"
 "Delivery::RecipientRead" = "unit"
@@ -88,7 +73,6 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Direction::Incoming" = "unit"
 "Direction::Outgoing" = "unit"
 "EnrollmentPhase" = "enum external"
-"EnrollmentPhase::AwaitingPermission" = "unit"
 "EnrollmentPhase::Empty" = "unit"
 "EnrollmentPhase::Interrupted" = "unit"
 "EnrollmentPhase::Linking" = "unit"
@@ -194,13 +178,6 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Pairing.attempt" = "String"
 "Pairing.generation" = "u64"
 "Pairing.payload" = "Zeroizing<Vec<u8>>"
-"Proposal" = "struct"
-"Proposal.app_id" = "String"
-"Proposal.id" = "String"
-"Proposal.item" = "String"
-"Proposal.origin" = "Option<String> optional"
-"Proposal.purpose" = "String"
-"Proposal.scope" = "CredentialScope"
 "Reply" = "enum external"
 "Reply::Choices" = "tuple(Result<Vec<SimChoice>, SendError>)"
 "Reply::Done" = "unit"
@@ -211,10 +188,9 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Reply::Linked" = "tuple(Result<LinkedAccount, SendError>)"
 "Reply::Membership" = "tuple(Result<GroupMembership, SendError>)"
 "Reply::Pairing" = "tuple(Result<Pairing, SendError>)"
-"Reply::Proposal" = "tuple(Result<String, SendError>)"
-"Reply::Proposals" = "tuple(Vec<Proposal>)"
 "Reply::Refused" = "unit"
 "Reply::Review" = "tuple(Result<EnrollmentReview, SendError>)"
+"Reply::Reviewed" = "tuple(Result<(), SendError>)"
 "Reply::Sent" = "tuple(Result<SendReceipt, SendError>)"
 "Route" = "struct"
 "Route.association" = "Id"
@@ -253,4 +229,3 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "Snapshot.accounts" = "Vec<AccountView>"
 "Snapshot.actor" = "String"
 "Snapshot.enrollments" = "Vec<EnrollmentView>"
-"Snapshot.proposals" = "u64"

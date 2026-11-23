@@ -121,6 +121,53 @@ fn nextcloud_connects_through_login_flow_v2_without_a_typed_password() {
     assert_eq!(pane.directory().views_of(AccountKind::Nextcloud).len(), 1);
 }
 
+/// A Nextcloud sign-in proves the account works: the session is told, and writes it into the
+/// workspace's accounts, where every device's row says so until a sync reports.
+#[test]
+fn a_nextcloud_sign_in_is_reported_to_the_session() {
+    use ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand as Command;
+    use ui::collaboration::browser_service_sessions::BrowserServiceSessionReply as Reply;
+    let (_dir, root) = scratch_root();
+    let server = fake_nextcloud();
+    let reported = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&reported);
+    let session =
+        ui::collaboration::browser_service_sessions::Client::answering(
+            move |command| match command {
+                Command::StoreAccountSecret { account, .. } => Ok(Reply::AccountSecretStored {
+                    account,
+                    item: "vault.item:0123456789abcdef0123456789abcdef".into(),
+                }),
+                Command::ReportAccountSync {
+                    account,
+                    health,
+                    signed_in,
+                    ..
+                } => {
+                    kept.lock()
+                        .unwrap()
+                        .push((account.clone(), health, signed_in));
+                    Ok(Reply::AccountSyncReported { account })
+                }
+                _ => Err("not asked here".into()),
+            },
+        );
+    let mut pane =
+        pane(&root, root.credential_store(), FakeBrowser::new()).with_session_secrets(session);
+    command(&mut pane, AccountViewCommand::Add(AccountKind::Nextcloud));
+    pane.set_sign_in_fields_for_test("Home cloud", &server.url());
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    let account = only_account(&root, crate::accounts::NEXTCLOUD_TYPE);
+    assert_eq!(
+        *reported.lock().unwrap(),
+        [(account.id.as_str().to_owned(), "never".to_owned(), true)]
+    );
+}
+
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     let dir = tempfile::tempdir().expect("scratch config root");
     let root = AccountRoot::scratch_at(dir.path().join("tilo"));

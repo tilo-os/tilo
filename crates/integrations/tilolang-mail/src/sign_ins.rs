@@ -60,8 +60,8 @@ fn following(mut client: Client, signed: &Mutex<Vec<MailAccount>>, changed: &dyn
                 tracing::warn!(error, "the session told the mail connector no accounts");
                 return;
             }
-            Ok(Answer::SignIn { .. }) => {
-                tracing::warn!("the session answered an ask for accounts with a sign-in");
+            Ok(Answer::SignIn { .. } | Answer::Reported) => {
+                tracing::warn!("the session answered an ask for accounts with something else");
                 return;
             }
             Err(error) => {
@@ -138,7 +138,9 @@ fn signed_in(
         match client.ask(&ask) {
             Ok(Answer::SignIn { secret }) => config.password = secret.to_string(),
             Ok(Answer::Refused { error }) => refused = Some(error),
-            Ok(Answer::Accounts { .. }) | Err(_) => refused = Some(NOT_ANSWERED.to_owned()),
+            Ok(Answer::Accounts { .. } | Answer::Reported) | Err(_) => {
+                refused = Some(NOT_ANSWERED.to_owned());
+            }
         }
     }
     Some(MailAccount { config, refused })
@@ -221,6 +223,7 @@ mod tests {
                     .map(|account| accounts::sign_ins::Held {
                         workspace: WORKSPACE.into(),
                         account,
+                        signed_in: false,
                     })
                     .collect(),
             };
@@ -264,6 +267,10 @@ mod tests {
                         *times = times.saturating_add(1);
                         answer
                     }
+                    In::Asked(Ask::ReportSync { .. }) => Answer::Reported,
+                    In::Asked(Ask::Keep { .. } | Ask::Forget { .. }) => Answer::Refused {
+                        error: "Mail keeps no sign-in of its own".into(),
+                    },
                 };
                 if !say(&answer) {
                     return;

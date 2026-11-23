@@ -1,4 +1,4 @@
-//! `WhatsApp` through its SDK, under the account's own key and grant.
+//! `WhatsApp` through its SDK, under the account's own key.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -110,7 +110,6 @@ impl Account {
         policy: &Policy,
     ) -> Result<(), SendError> {
         self.guard.check()?;
-        drop(self.guard.credential.profile_key()?);
         let consent = consent::request(self.guard.identity.clone(), policy)?;
         self.guard.check()?;
         let network = Network::native(Arc::new(Egress {
@@ -168,7 +167,7 @@ async fn assemble(
     let bootstrap = WhatsappBootstrap::open_profile(
         &root.join("sdk"),
         owner.clone(),
-        guard.credential.profile_key()?,
+        guard.credential.profile_key(),
         network,
         guard.clone(),
     )
@@ -177,14 +176,14 @@ async fn assemble(
     let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
         &root.join("journal"),
         owner,
-        guard.credential.profile_key()?,
+        guard.credential.profile_key(),
     )
     .map_err(|_| SendError::Unavailable)?;
     guard.check()?;
     let history = tilo_messaging_protocol::signal_broker::History::open(
         &root.join("history"),
         owner,
-        guard.credential.profile_key()?,
+        guard.credential.profile_key(),
     )?;
     guard.check()?;
     let runtime = tilo_messaging_protocol::whatsapp_runtime::WhatsappRuntime::new(
@@ -213,10 +212,10 @@ impl super::flow::Provider for Whatsapp {
     type Account = Account;
     const SERVICE: tilo_messaging_protocol::Service = tilo_messaging_protocol::Service::Whatsapp;
     const ORIGIN: &'static str = "https://web.whatsapp.com";
-    const ORDER: super::flow::Order = super::flow::Order::GrantThenLink;
+    const ORDER: super::flow::Order = super::flow::Order::StartThenLink;
 
-    fn purpose(name: &str) -> String {
-        format!("Private WhatsApp profile for {name}")
+    fn key_title(name: &str) -> String {
+        format!("WhatsApp account key for {name}")
     }
 
     fn begin(
@@ -270,7 +269,7 @@ impl super::flow::Provider for Whatsapp {
         held: &Held,
         account: &Arc<Account>,
     ) -> Result<(), SendError> {
-        account.guard().credential.check()?;
+        account.guard().check()?;
         let jid = held.jid.clone().ok_or(SendError::Revoked)?;
         if account.state() != tilo_messaging::AccountState::Ready {
             return Err(SendError::Revoked);
@@ -281,10 +280,11 @@ impl super::flow::Provider for Whatsapp {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
+                key: account.guard().credential.item.clone(),
                 kind: crate::session::PublicationKind::Whatsapp { jid },
             },
         )?;
-        account.guard().credential.check()
+        account.guard().check()
     }
 
     fn resume(

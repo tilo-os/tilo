@@ -72,6 +72,18 @@ pub enum BrowserServiceSessionCommand {
     ReleaseAccountSecret {
         item: String,
     },
+    /// How the sync of the workspace's account `account` went on this device: what every
+    /// member reads of it in the workspace's accounts, written as this device's report.
+    ReportAccountSync {
+        account: String,
+        /// Where its sync stands, in the word `accounts::SyncHealth` is spelled with
+        /// (`healthy`, `needs_sign_in`, ...).
+        health: String,
+        /// Whether its person just signed in to it.
+        signed_in: bool,
+        /// A short summary a person reads, never a server's own words.
+        message: String,
+    },
     /// The text an item of the person's vault keeps for the site Browser's page is at, for
     /// the one page action that fills a field from it by reference. It names nobody and no
     /// reason: whoever keeps the vault decides by the fill it handed out itself.
@@ -101,6 +113,13 @@ impl std::fmt::Debug for BrowserServiceSessionCommand {
                 .debug_struct("ReleaseAccountSecret")
                 .field("item", item)
                 .finish(),
+            Self::ReportAccountSync {
+                account, health, ..
+            } => f
+                .debug_struct("ReportAccountSync")
+                .field("account", account)
+                .field("health", health)
+                .finish_non_exhaustive(),
             Self::UseItem {
                 invocation,
                 item,
@@ -177,6 +196,10 @@ pub enum BrowserServiceSessionReply {
     AccountSecret {
         item: String,
         secret: Zeroizing<String>,
+    },
+    /// The account's sync is what the workspace's accounts say of it.
+    AccountSyncReported {
+        account: String,
     },
     /// The item's text for that page action and that site, and the kind of field it is for.
     ItemText {
@@ -303,6 +326,18 @@ impl BrowserServiceSessionCommand {
                     && servers.iter().all(|server| item_server(server))
             }
             Self::ReleaseAccountSecret { item } => item_reference(item),
+            Self::ReportAccountSync {
+                account: value,
+                health,
+                message,
+                ..
+            } => {
+                account(value)
+                    && !health.is_empty()
+                    && health.len() <= 32
+                    && health.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                    && message.len() <= MAX_ITEM_WORDS_BYTES
+            }
             Self::UseItem { item, origin, .. } => item_reference(item) && item_origin(origin),
         }
     }
@@ -319,13 +354,16 @@ impl BrowserServiceSessionCommand {
                 | Self::LendsItems {}
         )
     }
-    /// Whether this keeps or releases an account's password: answered once the workspace's
-    /// vault on the device was read or written, never on the connection's dispatch.
+    /// Whether this keeps or releases an account's password, or reports how its sync went:
+    /// answered once the workspace's vault or accounts on the device were read or written,
+    /// never on the connection's dispatch.
     #[must_use]
     pub const fn account_secret(&self) -> bool {
         matches!(
             self,
-            Self::StoreAccountSecret { .. } | Self::ReleaseAccountSecret { .. }
+            Self::StoreAccountSecret { .. }
+                | Self::ReleaseAccountSecret { .. }
+                | Self::ReportAccountSync { .. }
         )
     }
     /// Whether this lists, resolves or forgets one of the workspace's website sessions:
@@ -390,6 +428,7 @@ impl BrowserServiceSessionReply {
                 item,
             } => account(value) && item_reference(item),
             Self::AccountSecret { item, secret: kept } => item_reference(item) && secret(kept),
+            Self::AccountSyncReported { account: value } => account(value),
             Self::ItemText { text, .. } => item_text(text),
             Self::ItemAsked { words, .. } => item_words(words),
             Self::ItemRefused { reason, .. } => item_words(reason),
@@ -439,6 +478,10 @@ impl BrowserServiceSessionReply {
                 Self::AccountSecret { item: released, .. },
                 BrowserServiceSessionCommand::ReleaseAccountSecret { item },
             ) => self.valid() && released == item,
+            (
+                Self::AccountSyncReported { account: reported },
+                BrowserServiceSessionCommand::ReportAccountSync { account, .. },
+            ) => self.valid() && reported == account,
             // An item's answer is for the page action that asked, whichever of the three
             // it is.
             (

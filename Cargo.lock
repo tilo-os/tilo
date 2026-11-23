@@ -22096,6 +22096,7 @@ dependencies = [
  "app-cli",
  "app-fleet",
  "blake3",
+ "browser-continuity-core",
  "bytes",
  "collab-types",
  "collaboration",

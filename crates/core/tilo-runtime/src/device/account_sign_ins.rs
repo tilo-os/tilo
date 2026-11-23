@@ -12,6 +12,14 @@
 //! when the daemon starts it ([`AccountSignIns::hand`]): it is told its workspace's accounts, and
 //! the use names its app.
 //!
+//! The model manager reaches a socket of its own beside the cloud service's: it is told the
+//! workspaces' Hugging Face accounts, and the use names Settings, whose Agent Models downloads
+//! sign in with them. It alone may keep a Hugging Face sign-in made in a terminal, and forget the
+//! account with its sign-in, as Settings keeps them.
+//!
+//! Each of them reports how an account it is told synced, which the daemon writes into the
+//! workspace's accounts as this device's report.
+//!
 //! An ask for accounts that changed since a revision is held until a workspace's accounts record
 //! changes, as the daemon's own feed of record writes tells it, and let go once the asker goes
 //! away.
@@ -25,7 +33,7 @@ use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::account_logins::accounts_document;
+use tilo_workspace_service::workspaces::account_logins::{AccountLogin, accounts_document};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::unix::OwnedReadHalf;
 use tokio::net::{UnixListener, UnixStream};
@@ -37,6 +45,12 @@ pub const OTHER_WORKSPACE: &str = "That account is another workspace's";
 /// What an ask for a sign-in that names no vault entry is refused with.
 pub const NOT_AN_ENTRY: &str = "This account's secret is not available to this app";
 
+/// What a report of an account the connection is not told is refused with.
+pub const NOT_TOLD: &str = "That account is not one this connection is told";
+
+/// What an ask to keep or forget a sign-in is refused with on a connection that may not.
+pub const KEEPS_NONE: &str = "This connection keeps no account's sign-in";
+
 /// Whose accounts a connection is told, and whose sign-ins its asks are.
 struct Scope {
     /// The one workspace whose accounts it is told; every workspace this device holds, without.
@@ -45,6 +59,9 @@ struct Scope {
     keep: fn(&accounts::Account) -> bool,
     /// The app a sign-in's use says signed in.
     signs_in_for: String,
+    /// Whether it may keep the sign-in of the Hugging Face account, and forget the accounts it
+    /// is told with theirs: the model manager's alone.
+    keeps_sign_ins: bool,
 }
 
 impl Scope {
@@ -54,6 +71,18 @@ impl Scope {
             workspace: None,
             keep: sign_ins::is_file_account,
             signs_in_for: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
+            keeps_sign_ins: false,
+        }
+    }
+
+    /// This login's model manager: the Hugging Face accounts of every workspace, for the Agent
+    /// Models Settings shows, whose downloads they sign in to.
+    fn model_manager() -> Self {
+        Self {
+            workspace: None,
+            keep: sign_ins::is_model_hub_account,
+            signs_in_for: tilo_app_id::apps::SETTINGS.to_owned(),
+            keeps_sign_ins: true,
         }
     }
 
@@ -63,6 +92,7 @@ impl Scope {
             workspace: Some(workspace),
             keep: |_| true,
             signs_in_for: app,
+            keeps_sign_ins: false,
         }
     }
 }
@@ -80,6 +110,8 @@ struct Answering {
 pub struct AccountSignIns {
     path: PathBuf,
     serving: tokio::task::JoinHandle<()>,
+    /// The model manager's socket, served beside the cloud service's.
+    models: tokio::task::JoinHandle<()>,
     answering: Arc<Answering>,
     waiting: Arc<AtomicUsize>,
 }
@@ -159,32 +191,44 @@ fn hand(
 impl Drop for AccountSignIns {
     fn drop(&mut self) {
         self.serving.abort();
+        self.models.abort();
     }
 }
 
-/// Serve the account sign-ins at `path`, from the workspaces `workspaces` holds, answering as
-/// `by`, the daemon's person.
+/// Serve the account sign-ins at `path`, and the model manager's at `models`, from the
+/// workspaces `workspaces` holds, answering as `by`, the daemon's person.
 ///
 /// # Errors
-/// The socket's directory or the socket cannot be made.
-pub fn serve(path: &Path, workspaces: Workspaces, by: Caller) -> std::io::Result<AccountSignIns> {
+/// A socket's directory or a socket cannot be made.
+pub fn serve(
+    path: &Path,
+    models: &Path,
+    workspaces: Workspaces,
+    by: Caller,
+) -> std::io::Result<AccountSignIns> {
     let bound = bind(path)?;
+    let models_bound = bind(models)?;
     let waiting = Arc::new(AtomicUsize::new(0));
     let answering = Arc::new(Answering {
         workspaces,
         by,
         waiting: Arc::clone(&waiting),
     });
-    let at = path.to_owned();
-    let served = Arc::clone(&answering);
-    let serving = tilo_rt::app().spawn(async move {
-        if let Err(error) = serving(bound, served).await {
-            tracing::warn!(%error, path = %at.display(), "the account sign-ins socket stopped");
-        }
-    });
+    let served = |bound, at: &Path, scope: fn() -> Scope| {
+        let at = at.to_owned();
+        let served = Arc::clone(&answering);
+        tilo_rt::app().spawn(async move {
+            if let Err(error) = serving(bound, served, scope).await {
+                tracing::warn!(%error, path = %at.display(), "an account sign-ins socket stopped");
+            }
+        })
+    };
+    let serving = served(bound, path, Scope::cloud_service);
+    let models = served(models_bound, models, Scope::model_manager);
     Ok(AccountSignIns {
         path: path.to_owned(),
         serving,
+        models,
         answering,
         waiting,
     })
@@ -209,10 +253,12 @@ fn bind(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
     Ok(bound)
 }
 
-/// Answer every connection on `bound`; the connections answered end with it.
+/// Answer every connection on `bound` within the scope `scope` makes; the connections answered
+/// end with it.
 async fn serving(
     bound: std::os::unix::net::UnixListener,
     answering: Arc<Answering>,
+    scope: fn() -> Scope,
 ) -> std::io::Result<()> {
     let listener = UnixListener::from_std(bound)?;
     let mut connections = tokio::task::JoinSet::new();
@@ -227,7 +273,7 @@ async fn serving(
         }
         let answering = Arc::clone(&answering);
         connections.spawn(async move {
-            if let Err(error) = connection(stream, &answering).await {
+            if let Err(error) = connection(stream, &answering, &scope()).await {
                 tilo_failure::ignored!(
                     "a connection that ends is its asker's to end, and nothing here waits on it",
                     tracing::debug!(%error, "an account sign-ins connection ended")
@@ -244,16 +290,14 @@ fn own(stream: &UnixStream) -> bool {
         .is_ok_and(|peer| peer.uid() == rustix::process::getuid().as_raw())
 }
 
-/// A connection to the socket: the cloud service's.
-async fn connection(stream: UnixStream, answering: &Answering) -> std::io::Result<()> {
+/// A connection to a socket, answered within `scope`.
+async fn connection(
+    stream: UnixStream,
+    answering: &Answering,
+    scope: &Scope,
+) -> std::io::Result<()> {
     let (read, write) = stream.into_split();
-    answered(
-        BufReader::new(read),
-        write,
-        &Scope::cloud_service(),
-        answering,
-    )
-    .await
+    answered(BufReader::new(read), write, scope, answering).await
 }
 
 /// Answer every ask on `read` within `scope`, on `write`, until the asker goes away.
@@ -332,13 +376,17 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
                     .held_accounts(scope.keep)
                     .await
                     .into_iter()
-                    .filter(|(workspace, _)| {
+                    .filter(|(workspace, _, _)| {
                         scope
                             .workspace
                             .as_ref()
                             .is_none_or(|only| only == workspace)
                     })
-                    .map(|(workspace, account)| Held { workspace, account })
+                    .map(|(workspace, account, sync)| Held {
+                        workspace,
+                        account,
+                        signed_in: sync.is_some_and(|sync| sync.signed_in_ms.is_some()),
+                    })
                     .collect();
                 let revision = sign_ins::revision_of(&accounts);
                 if after.as_deref() != Some(revision.as_str()) {
@@ -378,7 +426,145 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
                 Err(error) => Answer::Refused { error },
             }
         }
+        Ask::ReportSync {
+            workspace,
+            account,
+            health,
+            signed_in,
+            message,
+        } => {
+            if let Err(error) = told(answering, scope, &workspace, &account).await {
+                return Answer::Refused { error };
+            }
+            let by = answering.by.clone().in_workspace(workspace.clone());
+            match answering
+                .workspaces
+                .report_account_sync(
+                    (&workspace, by.acting()),
+                    &account,
+                    health,
+                    signed_in,
+                    &message,
+                )
+                .await
+            {
+                Ok(()) => Answer::Reported,
+                Err(error) => Answer::Refused { error },
+            }
+        }
+        Ask::Keep {
+            workspace,
+            secret,
+            username,
+            name,
+        } if scope.keeps_sign_ins => {
+            keep_model_hub(answering, scope, workspace, secret, (username, name))
+                .await
+                .unwrap_or_else(|error| Answer::Refused { error })
+        }
+        Ask::Forget { workspace, account } if scope.keeps_sign_ins => {
+            if let Err(error) = told(answering, scope, &workspace, &account).await {
+                return Answer::Refused { error };
+            }
+            let by = answering.by.clone().in_workspace(workspace.clone());
+            match answering
+                .workspaces
+                .forget_workspace_account(&workspace, &by, &account)
+                .await
+            {
+                Ok(_) => Answer::Reported,
+                Err(error) => Answer::Refused { error },
+            }
+        }
+        Ask::Keep { .. } | Ask::Forget { .. } => Answer::Refused {
+            error: KEEPS_NONE.into(),
+        },
     }
+}
+
+/// Whether the connection within `scope` is told `workspace`'s account `account`: a connection
+/// reports and forgets only the accounts it is told.
+///
+/// # Errors
+/// It is not, said in words.
+async fn told(
+    answering: &Answering,
+    scope: &Scope,
+    workspace: &str,
+    account: &str,
+) -> Result<(), String> {
+    if scope
+        .workspace
+        .as_ref()
+        .is_some_and(|only| only != workspace)
+    {
+        return Err(OTHER_WORKSPACE.into());
+    }
+    let told = answering
+        .workspaces
+        .held_accounts(scope.keep)
+        .await
+        .into_iter()
+        .any(|(held, kept, _)| held == workspace && kept.id.as_str() == account);
+    if told { Ok(()) } else { Err(NOT_TOLD.into()) }
+}
+
+/// Keep `secret` as the sign-in of `workspace`'s Hugging Face account, signed in as `username`
+/// (and `name`), as Settings keeps it: the secret in the account's entry of the workspace's vault
+/// (a new one where it names none), bound to Hugging Face alone, and the account naming it.
+/// Without a workspace, the one whose Hugging Face account it replaces, else the person's own.
+async fn keep_model_hub(
+    answering: &Answering,
+    scope: &Scope,
+    workspace: Option<String>,
+    secret: sign_ins::Withheld,
+    (username, name): (String, Option<String>),
+) -> Result<Answer, String> {
+    let workspace = match workspace {
+        Some(workspace) => workspace,
+        None => {
+            let kept = answering.workspaces.held_accounts(scope.keep).await;
+            match kept.into_iter().next() {
+                Some((workspace, _, _)) => workspace,
+                None => answering
+                    .by
+                    .user_public_key()
+                    .map(tilo_server_protocol::servers::person_workspace_id)
+                    .ok_or_else(|| NOT_AN_ENTRY.to_owned())?,
+            }
+        }
+    };
+    let by = answering.by.clone().in_workspace(workspace.clone());
+    // A sign-in made anew replaces the one the account's entry keeps.
+    let item = answering
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await?
+        .account(sign_ins::MODEL_HUB_ACCOUNT)
+        .and_then(|kept| accounts::email::password_item(&kept.config).map(str::to_owned))
+        .and_then(|item| ItemRef::parse(&item));
+    let place = accounts::vault_items::Place::parse(sign_ins::MODEL_HUB_ORIGIN)
+        .map_err(|error| error.to_string())?;
+    let kept = answering
+        .workspaces
+        .keep_account_password(
+            &workspace,
+            &by,
+            item.as_ref(),
+            AccountLogin {
+                title: sign_ins::MODEL_HUB_ACCOUNT.to_owned(),
+                username: username.clone(),
+                places: vec![place],
+            },
+            secret.0,
+        )
+        .await?;
+    let account = sign_ins::model_hub_account(&kept.to_string(), Some(&username), name.as_deref());
+    answering
+        .workspaces
+        .keep_workspace_account((&workspace, by.acting()), &account)
+        .await?;
+    Ok(Answer::Reported)
 }
 
 /// The sign-in kept in the vault entry `item` names, for `app` in `workspace` as the daemon's

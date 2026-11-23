@@ -6,6 +6,9 @@
 //! account's secret is in a file on this device. An account that signs in by its provider's page
 //! (Google Drive, `OneDrive`, Dropbox, iCloud Drive) has no sign-in the workspace's vault hands
 //! out yet: it asks its person to sign in again.
+//!
+//! How each account's mount syncs goes back on the same socket ([`Ask::ReportSync`]): the
+//! session writes it into the workspace's accounts, where every member's devices read it.
 
 use std::io;
 use std::path::PathBuf;
@@ -14,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use accounts::sign_ins::{self, Answer, Ask, Held};
-use accounts::{Account, AccountId};
+use accounts::{Account, AccountId, SyncHealth};
 use cloud_source::{Credential, CredentialSource};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
@@ -27,6 +30,10 @@ pub trait AccountSource: Send + Sync {
     fn watch(&self, changed: Box<dyn Fn() + Send + Sync>) -> io::Result<AccountsWatch>;
     /// What `account` signs in with.
     fn credential(&self, account: &Account) -> Arc<dyn CredentialSource>;
+    /// Say how `account`'s sync stands on this device, as every member reads it.
+    fn report(&self, account: &AccountId, health: SyncHealth);
+    /// Whether its person signed in to `account` and no device reported a sync since.
+    fn signed_in(&self, account: &AccountId) -> bool;
 }
 
 /// Keeps an [`AccountSource::watch`] going; dropping it stops it.
@@ -88,7 +95,9 @@ impl Inner {
                 Ok(changed)
             }
             Answer::Refused { error } => Err(io::Error::other(error)),
-            Answer::SignIn { .. } => Err(io::Error::other(accounts::sign_ins::NOT_ANSWERED)),
+            Answer::SignIn { .. } | Answer::Reported => {
+                Err(io::Error::other(accounts::sign_ins::NOT_ANSWERED))
+            }
         }
     }
 
@@ -99,12 +108,17 @@ impl Inner {
             .map(|(revision, _)| revision.clone())
     }
 
-    fn workspace_of(&self, account: &AccountId) -> Option<String> {
+    /// What the session last told of `account`.
+    fn held<T>(&self, account: &AccountId, read: impl FnOnce(&Held) -> T) -> Option<T> {
         self.latest.lock_recover().as_ref().and_then(|(_, held)| {
             held.iter()
                 .find(|held| held.account.id == *account)
-                .map(|held| held.workspace.clone())
+                .map(read)
         })
+    }
+
+    fn workspace_of(&self, account: &AccountId) -> Option<String> {
+        self.held(account, |held| held.workspace.clone())
     }
 }
 
@@ -174,6 +188,33 @@ impl AccountSource for SessionAccounts {
         }
         Arc::new(NoCredential)
     }
+
+    fn report(&self, account: &AccountId, health: SyncHealth) {
+        let Some(workspace) = self.inner.workspace_of(account) else {
+            return;
+        };
+        let ask = Ask::ReportSync {
+            workspace,
+            account: account.as_str().to_owned(),
+            health,
+            signed_in: false,
+            message: health.summary().to_owned(),
+        };
+        match self.inner.ask(&ask) {
+            Ok(Answer::Reported) => {}
+            Ok(Answer::Refused { error }) => {
+                tracing::info!(%error, "the session took no sync report of a file account");
+            }
+            Ok(_) => tracing::info!("the session answered a sync report with something else"),
+            Err(error) => tracing::info!(%error, "the session does not take sync reports now"),
+        }
+    }
+
+    fn signed_in(&self, account: &AccountId) -> bool {
+        self.inner
+            .held(account, |held| held.signed_in)
+            .unwrap_or_default()
+    }
 }
 
 /// An account's password, released by the session from the vault entry the account names and
@@ -221,7 +262,9 @@ impl CredentialSource for EntrySignIn {
                 tracing::info!(%error, "the session released no sign-in for a file account");
                 Err(cloud_source::Error::Unauthorized)
             }
-            Ok(Answer::Accounts { .. }) => Err(cloud_source::Error::Unauthorized),
+            Ok(Answer::Accounts { .. } | Answer::Reported) => {
+                Err(cloud_source::Error::Unauthorized)
+            }
             // The session is not up yet, or restarting: tried again later.
             Err(_) => Err(cloud_source::Error::Offline),
         }

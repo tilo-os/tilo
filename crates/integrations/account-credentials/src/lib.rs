@@ -34,9 +34,9 @@
 //!   written to a file for another process.
 //!
 //! A grant the provider no longer accepts (a revoked refresh token, an
-//! `iCloud` session that needs the two-factor step again) moves the account
-//! to [`accounts::AccountSyncHealth::NeedsAuthentication`], which Settings
-//! shows as "Sign in again".
+//! `iCloud` session that needs the two-factor step again) is refused as
+//! needing authentication: whoever reads the drive asks its person to sign in
+//! again.
 
 mod clients;
 #[cfg(feature = "store")]
@@ -80,6 +80,15 @@ pub use tilo_oauth::client::Authorization;
 pub use tilo_oauth::device::{DeviceAuthorization, DeviceCancel};
 pub use tilo_oauth::loopback::LoopbackCancel;
 pub use tilo_oauth::{Registration, TokenSet};
+
+/// An `OAuth` grant as the vault keeps it, the shape [`oauth_tokens`] reads back: what a sign-in
+/// made without the credential store (the model manager's, in a terminal) hands the session to
+/// keep, and what [`oauth_secret`] seals.
+#[cfg(feature = "hugging-face")]
+#[must_use]
+pub fn oauth_grant(tokens: &TokenSet) -> String {
+    serde_json::json!({ "kind": "oauth2", "tokens": tokens }).to_string()
+}
 
 #[cfg(test)]
 #[cfg(feature = "store")]

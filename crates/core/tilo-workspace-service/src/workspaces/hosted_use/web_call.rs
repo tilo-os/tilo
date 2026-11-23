@@ -250,7 +250,7 @@ pub(super) async fn send(
     workspaces: &super::Workspaces,
     workspace: &str,
     call: WebCall,
-    by: &str,
+    (by, asker): (&str, &tilo_action_policy::Acting),
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let reach = workspaces.call_reach();
@@ -258,7 +258,7 @@ pub(super) async fn send(
     let mut items = opened.items();
     let ready = ready(reach, &mut items, call, by, purpose)?;
     workspaces
-        .write_vault(&opened, items.take_changes(), None)
+        .write_vault(&opened, items.take_changes(), Some(asker))
         .await?;
     deliver(reach, system_lookup(), ready).await
 }

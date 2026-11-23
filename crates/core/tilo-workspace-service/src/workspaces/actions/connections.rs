@@ -195,7 +195,7 @@ impl Workspaces {
         };
         let workspace = reach.workspace.to_string();
         let root = workspaces.workspace_root(&workspace);
-        let vault = workspaces.vault_at(&workspace);
+        let vault = workspaces.vault_for(&workspace, &reach.acting);
         let reach = workspaces.connections_reach();
         let by_address = "a service is named by its address";
         let by_id = "a connection is named by its id";

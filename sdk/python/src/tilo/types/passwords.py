@@ -53,11 +53,7 @@ KeepUsesArgs = TypedDict("KeepUsesArgs", {
 
 class Vault(Resource):
     """Password vault — `passwords.vault`."""
-    __surface__ = "so.tilo.passwords@ff5b4c5b16475455"
-    def deny_access(self, *, proposal: str) -> None:
-        """Runs the app's action."""
-        return self.action("deny-access", proposal=proposal)
-
+    __surface__ = "so.tilo.passwords@8ac1e6ef206532c5"
     def add(self) -> None:
         """Runs the app's action."""
         return self.action("add")
@@ -92,12 +88,12 @@ class Vault(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"deny_access", "add", "list_logins", "cancel", "copy", "copy_identity", "copy_origins", "reveal", "filter"})
+    __actions__ = frozenset({"add", "list_logins", "cancel", "copy", "copy_identity", "copy_origins", "reveal", "filter"})
 
 
 class WorkspaceVault(Resource):
     """Workspace vault — `passwords.workspace-vault`."""
-    __surface__ = "so.tilo.passwords@ff5b4c5b16475455"
+    __surface__ = "so.tilo.passwords@8ac1e6ef206532c5"
     @property
     def sealed(self) -> list[Entry[str]]:
         """Read only."""

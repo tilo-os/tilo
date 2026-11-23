@@ -33,7 +33,7 @@ fn local_prefs_and_accounts_persist_to_disk() {
         let record = window
             .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .expect("Settings keeps the workspace's accounts");
-        let account_root = AccountRoot::at(&config_root).with_person(record);
+        let account_root = AccountRoot::at(&config_root).with_person(record.clone());
 
         assert!(AccountDirectory::load_in(&account_root).is_empty());
 
@@ -80,10 +80,19 @@ fn local_prefs_and_accounts_persist_to_disk() {
             !store_json.contains("s3cret-pw"),
             "the password must not appear in the workspace's accounts"
         );
-        account_root
-            .sync_reporter(account_id.clone())
-            .succeeded()
-            .expect("seed sync health");
+        let synced = record
+            .get()
+            .reporting(
+                &id,
+                "this-device",
+                accounts::SyncHealth::Healthy,
+                1,
+                false,
+                "Up to date",
+            )
+            .expect("the account is the workspace's")
+            .expect("its first sync is news");
+        record.invoke(&synced).expect("seed sync health");
 
         pane.remove(&id).unwrap();
 
@@ -98,8 +107,8 @@ fn local_prefs_and_accounts_persist_to_disk() {
             "Remove also purged the account's vault secret"
         );
         assert!(
-            account_root.statuses().get(&account_id).is_none(),
-            "Remove also purged the account's local sync-health resource"
+            record.get().sync_of(&id).is_none(),
+            "Remove also dropped how the account synced"
         );
     }
 }

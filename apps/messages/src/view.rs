@@ -1265,6 +1265,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
                 config: serde_json::json!({"messaging_scope":format!("{id}-scope")}),
                 enabled: true,
                 tint: 0,
+                sync: None,
             },
         );
     }

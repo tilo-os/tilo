@@ -866,7 +866,6 @@ fn publish(root: &Path, id: &str, password: &str) {
 
 fn service_config(root: &Path, home: &Path) -> ServiceConfig {
     ServiceConfig {
-        config_root: Some(root.to_path_buf()),
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
         accounts: Arc::new(tilo_fs::cloud::SessionAccounts::new(session(root).socket())),
@@ -1338,13 +1337,10 @@ tilo_test_env::scenario! {
         volume.sync_once().unwrap();
         assert_eq!(read_all(&volume, "hello.txt"), b"from the server");
         service.pump();
-        let status = accounts::AccountSyncStatusStore::load_in(root);
         assert_eq!(
-            status
-                .get(&accounts::AccountId::from("files-1"))
-                .map(|s| s.health),
-            Some(accounts::AccountSyncHealth::Healthy),
-            "mount health reaches the status store Settings and Files read"
+            session(root).reported().last(),
+            Some(&("files-1".to_owned(), accounts::SyncHealth::Healthy)),
+            "mount health is reported to the session"
         );
 
         account_store(root, server.root_url().as_str(), false);

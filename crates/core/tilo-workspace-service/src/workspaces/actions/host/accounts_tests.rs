@@ -47,7 +47,7 @@ async fn keep(workspaces: &crate::workspaces::Workspaces, workspace: &str, addre
         "smtp_port": 465,
     });
     workspaces
-        .keep_workspace_account(workspace, &account)
+        .keep_workspace_account((workspace, &workspaces.acting_or_own(None)), &account)
         .await
         .expect("the account is kept");
 }

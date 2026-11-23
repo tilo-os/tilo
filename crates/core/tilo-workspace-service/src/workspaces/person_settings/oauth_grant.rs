@@ -10,7 +10,9 @@
 //! two readers of one grant never renew it at once.
 //!
 //! Renewal needs the registration the grant was given to: the client a device
-//! signs in with, from the committed client table ([`renewal`]).
+//! signs in with, from the committed client table ([`renewal`]). A mail or calendar
+//! account's grant is renewed for what its provider's sign-in opened, and the workspace's
+//! Hugging Face account's for the model manager's downloads.
 
 use std::path::Path;
 
@@ -21,9 +23,9 @@ use zeroize::Zeroizing;
 use super::super::vault::VaultAt;
 use super::kept_sign_ins::sign_in_of;
 
-/// What an account whose provider will not renew its grant is told: the
-/// person signs in again, which is all that helps.
-const SIGN_IN_AGAIN: &str = "That account's sign-in needs renewing. Sign in again";
+/// What an account whose provider will not renew its grant is told, in the words the model
+/// manager knows an ended Hugging Face sign-in by.
+const SIGN_IN_AGAIN: &str = accounts::sign_ins::SIGN_IN_AGAIN;
 
 /// The access token the grant `grant` that `account` names at `reference` holds, renewed
 /// through the one shared path when it expired, and kept renewed. Must be called holding
@@ -90,12 +92,7 @@ pub(crate) async fn signs_in_with(
         return Ok(released);
     }
     let reference = sign_in_of(&account.config).ok_or_else(|| SIGN_IN_AGAIN.to_owned())?;
-    let issuer = issuer_of(account)?;
-    let use_ = if account.type_id.as_str() == accounts::email::TYPE_ID {
-        OAuthUse::mail(issuer)
-    } else {
-        OAuthUse::calendar(issuer)
-    };
+    let use_ = use_of(account)?;
     let _renewing = RENEWING.lock().await;
     let token = renewed(vault, root, account, (&reference, released.secret), use_).await?;
     Ok(accounts::vault_items::Released {
@@ -123,6 +120,20 @@ static RENEWING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// each grant is renewed with the registration it was given to.
 fn renewal(root: &Path) -> CredentialStore {
     CredentialStore::for_root(Some(root.to_path_buf()))
+}
+
+/// What `account`'s grant is renewed for: Hugging Face's model downloads for the workspace's
+/// Hugging Face account, else the mail or calendar its provider's sign-in opened.
+fn use_of(account: &accounts::Account) -> Result<OAuthUse, String> {
+    if accounts::sign_ins::is_model_hub_account(account) {
+        return Ok(account_credentials::hugging_face::HUGGING_FACE_DOWNLOADS);
+    }
+    let issuer = issuer_of(account)?;
+    Ok(if account.type_id.as_str() == accounts::email::TYPE_ID {
+        OAuthUse::mail(issuer)
+    } else {
+        OAuthUse::calendar(issuer)
+    })
 }
 
 /// The issuer `account` signs in with, from its settings: `provider` for a mail account,

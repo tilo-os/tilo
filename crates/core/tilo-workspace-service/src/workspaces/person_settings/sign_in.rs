@@ -213,6 +213,7 @@ impl Workspaces {
         );
         let workspaces = self.clone();
         let workspace = workspace.to_owned();
+        let asker = tilo_action_policy::Acting::person(hex::encode(person));
         let kept_id = id.clone();
         let cancelled_at = now_ms().saturating_add(minutes_ms(NEXTCLOUD_MINUTES));
         tokio::spawn(async move {
@@ -227,7 +228,7 @@ impl Workspaces {
             .await;
             let waited = match waited {
                 Ok(Ok(login)) => Ok(Box::pin(keep_nextcloud(
-                    workspaces.vault_at(&workspace),
+                    workspaces.vault_for(&workspace, &asker),
                     &login,
                     services,
                     &account,

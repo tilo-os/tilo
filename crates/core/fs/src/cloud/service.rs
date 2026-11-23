@@ -6,8 +6,8 @@
 //! `~/Remote/<account label>`. An account that appears or is enabled gets a mount
 //! process with its one short-lived credential on stdin; one disabled, reconfigured or
 //! removed has its mount stopped, and removal also drops its cache and queued state.
-//! The service records each mount's health in the account status store Settings and
-//! Files read.
+//! The service reports each mount's health to the session, which keeps it in the
+//! workspace's accounts that every member's Settings reads.
 //!
 //! It serves its mounts' control (`runtime_fs::cloud`) on two sockets, each mode 0600
 //! in its own 0700 directory: the account socket lists mounts with their health and
@@ -30,7 +30,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use accounts::{Account, AccountId, AccountSyncReporter, AccountSyncStatusStore};
+use accounts::{Account, AccountId, SyncHealth};
 use cloud_source::{Credential, CredentialSource};
 use runtime_fs::cloud::{
     CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, CloudSocket,
@@ -75,8 +75,6 @@ pub trait Launcher: Send + Sync {
 }
 
 pub struct ServiceConfig {
-    /// Where the accounts' sync statuses are kept on this device.
-    pub config_root: Option<PathBuf>,
     pub mounts_root: PathBuf,
     pub state_root: PathBuf,
     /// The file accounts and what each signs in with: [`super::SessionAccounts`] in
@@ -183,23 +181,18 @@ impl CloudService {
             .find(|account| account.id.as_str() == id)
     }
 
-    fn reporter(&self, id: &str) -> AccountSyncReporter {
-        match &self.config.config_root {
-            Some(root) => AccountSyncReporter::in_root(AccountId::from(id), root.clone()),
-            None => AccountSyncReporter::new(AccountId::from(id)),
-        }
+    /// Say how `id`'s sync stands ([`super::AccountSource::report`]).
+    fn report(&self, id: &str, health: SyncHealth) {
+        self.config.accounts.report(&AccountId::from(id), health);
     }
 
     /// The account's credential, from where it signs in with
-    /// ([`super::AccountSource::credential`]); failures go to the account status store.
+    /// ([`super::AccountSource::credential`]); a failure is reported as the account's sync.
     fn credential(&mut self, account_id: &str, need: Need) -> Option<Credential> {
         let source = if let Some(source) = self.credentials.get(account_id) {
             Arc::clone(source)
         } else {
-            let Some(account) = self.account(account_id) else {
-                let _ = self.reporter(account_id).needs_authentication();
-                return None;
-            };
+            let account = self.account(account_id)?;
             let source = self.config.accounts.credential(&account);
             self.credentials
                 .insert(account_id.to_owned(), Arc::clone(&source));
@@ -211,13 +204,13 @@ impl CloudService {
         match source.credential() {
             Ok(credential) => Some(credential),
             Err(cloud_source::Error::Offline) => {
-                let _ = self.reporter(account_id).offline();
+                self.report(account_id, SyncHealth::Offline);
                 self.retry.insert(account_id.to_owned());
                 None
             }
             Err(error) => {
                 tracing::info!(%error, "no credential for a cloud account");
-                let _ = self.reporter(account_id).needs_authentication();
+                self.report(account_id, SyncHealth::NeedsSignIn);
                 None
             }
         }
@@ -291,7 +284,7 @@ impl CloudService {
                 .join(state_dir_name(&spec.account_id));
             if let Err(error) = prepare_dir(&mount_point).and_then(|()| prepare_dir(&state_dir)) {
                 tracing::warn!(%error, "cannot prepare a cloud mount directory");
-                let _ = self.reporter(&spec.account_id).failed();
+                self.report(&spec.account_id, SyncHealth::Error);
                 continue;
             }
             let signals = self.signals.clone();
@@ -299,7 +292,7 @@ impl CloudService {
             let events: Box<dyn Fn(MountEvent) + Send + Sync> = Box::new(move |event| {
                 let _ = signals.send(Signal::Event(id.clone(), event));
             });
-            let _ = self.reporter(&spec.account_id).started();
+            self.report(&spec.account_id, SyncHealth::Syncing);
             // A paused account's mount starts paused: its workers never run
             // a pass or an upload before the pause.
             let started = MountSpec {
@@ -324,7 +317,7 @@ impl CloudService {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "cloud mount failed to start");
-                    let _ = self.reporter(&spec.account_id).failed();
+                    self.report(&spec.account_id, SyncHealth::Error);
                     let _ = fs::remove_dir(&mount_point);
                     self.retry.insert(spec.account_id.clone());
                 }
@@ -344,7 +337,6 @@ impl CloudService {
         self.drop_pending(id);
         if removed {
             let _ = fs::remove_dir_all(self.config.state_root.join(state_dir_name(id)));
-            let _ = self.reporter(id).remove();
             if self.paused.remove(id) {
                 self.save_paused();
             }
@@ -368,14 +360,14 @@ impl CloudService {
                 if let Some(mounted) = self.mounts.get_mut(id) {
                     mounted.health = Some(health);
                 }
-                let reporter = self.reporter(id);
-                let _ = match health {
-                    MountHealth::Syncing => reporter.started(),
-                    MountHealth::Healthy => reporter.succeeded(),
-                    MountHealth::Offline => reporter.offline(),
-                    MountHealth::NeedsAuthentication => reporter.needs_authentication(),
-                    MountHealth::Error => reporter.failed(),
+                let health = match health {
+                    MountHealth::Syncing => SyncHealth::Syncing,
+                    MountHealth::Healthy => SyncHealth::Healthy,
+                    MountHealth::Offline => SyncHealth::Offline,
+                    MountHealth::NeedsAuthentication => SyncHealth::NeedsSignIn,
+                    MountHealth::Error => SyncHealth::Error,
                 };
+                self.report(id, health);
             }
             MountEvent::CredentialRejected | MountEvent::CredentialExpired => {
                 if !self.mounts.contains_key(id) {
@@ -413,12 +405,6 @@ impl CloudService {
     }
 
     fn mount_list(&self) -> Vec<CloudMount> {
-        // What the account status store says of each account: the one every app reads, where a
-        // sign-in is recorded until the account's first sync reports.
-        let statuses = match &self.config.config_root {
-            Some(root) => AccountSyncStatusStore::load_in(root),
-            None => AccountSyncStatusStore::load(),
-        };
         let mut mounts: Vec<CloudMount> = self
             .mounts
             .iter()
@@ -428,9 +414,10 @@ impl CloudService {
                 health: mounted.health,
                 paused: self.paused.contains(id),
                 capabilities: mounted.running.capabilities(),
-                signed_in: statuses
-                    .get(&AccountId::from(id.as_str()))
-                    .is_some_and(|status| status.signed_in_unix.is_some()),
+                signed_in: self
+                    .config
+                    .accounts
+                    .signed_in(&AccountId::from(id.as_str())),
             })
             .collect();
         mounts.sort_by(|a, b| a.account.cmp(&b.account));

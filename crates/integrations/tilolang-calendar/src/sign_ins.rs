@@ -62,7 +62,7 @@ fn following(mut client: Client, signed: &Mutex<Vec<CalendarAccount>>, changed: 
                 tracing::warn!(error, "the session told the calendar connector no accounts");
                 return;
             }
-            Ok(Answer::SignIn { .. }) => {
+            Ok(Answer::SignIn { .. } | Answer::Reported) => {
                 tracing::warn!("the session answered an ask for accounts with a sign-in");
                 return;
             }
@@ -163,7 +163,9 @@ fn signed_in(
         }) {
             Ok(Answer::SignIn { secret }) => signed.password = secret.to_string(),
             Ok(Answer::Refused { error }) => signed.refused = Some(error),
-            Ok(Answer::Accounts { .. }) | Err(_) => signed.refused = Some(NOT_ANSWERED.to_owned()),
+            Ok(Answer::Accounts { .. } | Answer::Reported) | Err(_) => {
+                signed.refused = Some(NOT_ANSWERED.to_owned());
+            }
         }
     }
     Some(signed)
