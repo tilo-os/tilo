@@ -95,16 +95,14 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, CliError> {
     if !meta.is_file() || meta.len() > limit {
         return Err(invalid("receipt is not a bounded regular file"));
     }
-    let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(CliError::io("open artifact receipt"))?
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(CliError::io("read artifact receipt"))?;
-    if bytes.len() as u64 > limit {
-        return Err(invalid("receipt changed beyond its bound"));
-    }
-    Ok(bytes)
+    let file = File::open(path).map_err(CliError::io("open artifact receipt"))?;
+    tilo_files::read_from(file, limit).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            invalid("receipt changed beyond its bound")
+        } else {
+            CliError::io("read artifact receipt")(error)
+        }
+    })
 }
 
 fn copy_verified(

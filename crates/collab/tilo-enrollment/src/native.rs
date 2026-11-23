@@ -184,10 +184,12 @@ pub fn public_identity_document(user: [u8; 32], display_name: &str) -> anyhow::R
 /// The bytes of `path`, when it exists and is within the size a registration
 /// file may have.
 pub fn read_bounded(path: &std::path::Path, description: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => Ok(Some(bytes)),
-        Ok(_) => bail!("{description} exceeds 1 MiB"),
+    match tilo_files::native::bounded::read(path, 1024 * 1024) {
+        Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            bail!("{description} exceeds 1 MiB")
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -335,4 +337,42 @@ pub fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && tilo_server_protocol::valid_device_label(&solicitation.label)
         && solicitation.hardware.len() <= 200
         && !solicitation.hardware.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "fixture creation and assertions in unit tests"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_bounded_handles_missing_exact_oversized_and_unbounded_sources() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            read_bounded(&dir.path().join("missing"), "registration").expect("missing"),
+            None
+        );
+
+        let exact = dir.path().join("exact");
+        let payload = vec![b'a'; 1024 * 1024];
+        std::fs::write(&exact, &payload).expect("exact");
+        assert_eq!(
+            read_bounded(&exact, "registration").expect("exact"),
+            Some(payload)
+        );
+
+        let over = dir.path().join("over");
+        std::fs::write(&over, vec![b'a'; 1024 * 1024 + 1]).expect("over");
+        let error = read_bounded(&over, "registration").expect_err("over limit");
+        assert!(error.to_string().contains("registration exceeds 1 MiB"));
+
+        #[cfg(unix)]
+        {
+            let zero = std::path::Path::new("/dev/zero");
+            let error = read_bounded(zero, "registration").expect_err("unbounded source");
+            assert!(error.to_string().contains("registration exceeds 1 MiB"));
+        }
+    }
 }

@@ -80,7 +80,7 @@ impl Source<'_> {
     fn read(&self) -> Option<Vec<u8>> {
         match self {
             Source::Bytes(b) => (b.len() <= MAX_SOURCE_BYTES).then(|| b.to_vec()),
-            Source::Path(p) => read_bounded(std::fs::File::open(p).ok()?, MAX_SOURCE_BYTES),
+            Source::Path(p) => tilo_files::native::bounded::read(p, MAX_SOURCE_BYTES).ok(),
         }
     }
 
@@ -111,10 +111,7 @@ const MAX_DECODE_ALLOC: u64 = MAX_DECODE_PIXELS * 4 + 64 * 1024 * 1024;
 /// Read at most `limit` bytes. `None` when the reader holds more (one sentinel
 /// byte tells an exact-limit input from an oversized one) or fails.
 pub fn read_bounded(reader: impl Read, limit: usize) -> Option<Vec<u8>> {
-    let cap = u64::try_from(limit).ok()?.saturating_add(1);
-    let mut bytes = Vec::new();
-    reader.take(cap).read_to_end(&mut bytes).ok()?;
-    (bytes.len() <= limit).then_some(bytes)
+    tilo_files::read_from(reader, limit).ok()
 }
 
 pub type PdfRasteriser = fn(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)>;
@@ -485,6 +482,7 @@ mod tests {
     fn read_bounded_refuses_one_byte_past_the_limit() {
         assert_eq!(read_bounded(&b"abcd"[..], 4).as_deref(), Some(&b"abcd"[..]));
         assert!(read_bounded(&b"abcde"[..], 4).is_none());
+        assert!(read_bounded(std::io::repeat(b'x'), 16).is_none());
     }
 
     #[test]
