@@ -25,8 +25,8 @@ use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use crate::service::{
-    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, SearchPage, Service, ServiceError,
-    TrendingPage, VideoItem,
+    ChannelItem, ChannelPage, Playback, PlaylistItem, PlaylistPage, SearchPage, Service,
+    ServiceError, TrendingPage, VideoItem,
 };
 
 /// What the origin reads of each youtube kind it keeps in step, from the package's metadata.
@@ -52,6 +52,7 @@ enum Pending {
     Subscriptions { keys: Vec<String> },
     Trending,
     Stream { key: String },
+    Captions { key: String, language: String },
 }
 
 /// What a request came back with.
@@ -62,7 +63,8 @@ enum Answered {
     Trending(TrendingPage),
     /// The newest videos of each channel asked for, in the order asked.
     Subscriptions(Vec<ChannelPage>),
-    Stream(String),
+    Stream(Playback),
+    Captions(String),
 }
 
 struct Waiting {
@@ -172,6 +174,10 @@ impl YouTubeOrigin {
             Pending::Subscriptions { keys } => Pending::Subscriptions { keys: keys.clone() },
             Pending::Trending => Pending::Trending,
             Pending::Stream { key } => Pending::Stream { key: key.clone() },
+            Pending::Captions { key, language } => Pending::Captions {
+                key: key.clone(),
+                language: language.clone(),
+            },
         }
     }
 
@@ -221,6 +227,9 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
         Pending::Playlist { key } => service.playlist(key).map(Answered::Playlist),
         Pending::Trending => service.trending().map(Answered::Trending),
         Pending::Stream { key } => service.stream(key).map(Answered::Stream),
+        Pending::Captions { key, language } => {
+            service.captions(key, language).map(Answered::Captions)
+        }
         Pending::Subscriptions { keys } => {
             let mut pages = Vec::new();
             for key in keys {
@@ -318,6 +327,7 @@ impl Origin for YouTubeOrigin {
                 | "youtube.subscriptions"
                 | "youtube.trending"
                 | "youtube.stream"
+                | "youtube.captions"
         )
     }
 
@@ -360,6 +370,20 @@ impl Origin for YouTubeOrigin {
             "youtube.stream" => Pending::Stream {
                 key: payload.as_str().unwrap_or_default().to_owned(),
             },
+            "youtube.captions" => {
+                // The video and the language asked for: what an effect carries as a pair.
+                let mut parts = payload
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part.as_str().map(str::to_owned));
+                let (Some(key), Some(language)) = (parts.next(), parts.next()) else {
+                    return Delivery::Rejected(
+                        "YouTube captions are asked for as a video and a language".to_owned(),
+                    );
+                };
+                Pending::Captions { key, language }
+            }
             "youtube.subscriptions" => Pending::Subscriptions {
                 // The channels the person followed when they asked for the feed: their keys, in
                 // the order the feed lists them.
@@ -500,8 +524,11 @@ impl YouTubeOrigin {
                 }
                 Self::state_writes(t, pending, "done", "", &mut writes);
             }
-            Ok(Answered::Stream(url)) => {
-                writes.extend(stream_writes(host, t, stream_key(pending), url));
+            Ok(Answered::Stream(playback)) => {
+                writes.extend(stream_writes(host, t, stream_key(pending), playback));
+            }
+            Ok(Answered::Captions(vtt)) => {
+                writes.extend(captions_writes(host, t, captions_key(pending), vtt));
             }
         }
         if writes.is_empty() {
@@ -528,7 +555,8 @@ impl YouTubeOrigin {
             Pending::Channel { .. }
             | Pending::Playlist { .. }
             | Pending::Trending
-            | Pending::Stream { .. } => return,
+            | Pending::Stream { .. }
+            | Pending::Captions { .. } => return,
         };
         let mut fields = Vec::new();
         put(&t.root_ty, &mut fields, what, Self::text(state));
@@ -716,22 +744,93 @@ fn trending_writes(host: &Host, t: &Types, page: &TrendingPage) -> Vec<OriginWri
     upsert_writes(host, &t.video, &t.root, &t.videos_field, "key", &trending)
 }
 
-fn stream_writes(host: &Host, t: &Types, key: &str, url: &str) -> Vec<OriginWrite> {
-    let Some(at) = items_in(host, &t.root, &t.videos_field)
-        .into_iter()
-        .find(|item| read_text(host, item, &t.video, "key") == key)
-    else {
+fn stream_writes(host: &Host, t: &Types, key: &str, playback: &Playback) -> Vec<OriginWrite> {
+    let Some(at) = video_at(host, t, key) else {
         // A video the app does not hold was not asked for its stream: there is nothing to write.
         return Vec::new();
     };
     let mut fields = Vec::new();
-    put(&t.video, &mut fields, "stream", YouTubeOrigin::text(url));
+    put(
+        &t.video,
+        &mut fields,
+        "stream",
+        YouTubeOrigin::text(&playback.url),
+    );
+    // A connector of an older build answers the address alone: what it says nothing about is
+    // left as it was, so the video still plays and the menus keep what they offered.
+    if !playback.qualities.is_empty() {
+        let labels: Vec<Value> = playback
+            .qualities
+            .iter()
+            .map(|quality| YouTubeOrigin::text(&quality.label))
+            .collect();
+        put(
+            &t.video,
+            &mut fields,
+            "stream_qualities",
+            Value::List(labels),
+        );
+        let urls: Vec<(Value, Value)> = playback
+            .qualities
+            .iter()
+            .map(|quality| {
+                (
+                    YouTubeOrigin::text(&quality.label),
+                    YouTubeOrigin::text(&quality.url),
+                )
+            })
+            .collect();
+        put(&t.video, &mut fields, "streams", Value::Map(urls));
+    }
+    if !playback.captions.is_empty() {
+        let tracks: Vec<(Value, Value)> = playback
+            .captions
+            .iter()
+            .map(|track| {
+                let label = if track.automatic {
+                    let named = &track.label;
+                    format!("{named} (auto)")
+                } else {
+                    track.label.clone()
+                };
+                (
+                    YouTubeOrigin::text(&track.language),
+                    YouTubeOrigin::text(&label),
+                )
+            })
+            .collect();
+        put(&t.video, &mut fields, "caption_tracks", Value::Map(tracks));
+    }
     vec![OriginWrite::Set { target: at, fields }]
+}
+
+/// The words a caption answer carries, written into the video they belong to.
+fn captions_writes(host: &Host, t: &Types, key: &str, vtt: &str) -> Vec<OriginWrite> {
+    let Some(at) = video_at(host, t, key) else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    put(&t.video, &mut fields, "captions", YouTubeOrigin::text(vtt));
+    vec![OriginWrite::Set { target: at, fields }]
+}
+
+/// The video of the app's collection whose key is `key`.
+fn video_at(host: &Host, t: &Types, key: &str) -> Option<ResourceRef> {
+    items_in(host, &t.root, &t.videos_field)
+        .into_iter()
+        .find(|item| read_text(host, item, &t.video, "key") == key)
 }
 
 fn stream_key(pending: &Pending) -> &str {
     match pending {
         Pending::Stream { key } => key,
+        _ => "",
+    }
+}
+
+fn captions_key(pending: &Pending) -> &str {
+    match pending {
+        Pending::Captions { key, .. } => key,
         _ => "",
     }
 }

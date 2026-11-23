@@ -104,10 +104,22 @@ fn asked(service: &dyn Service, ask: &Ask) -> Result<FromConnector, String> {
             })
         }
         Ask::Stream { request, key } => {
-            let url = service.stream(key).map_err(failed)?;
+            let playback = service.stream(key).map_err(failed)?;
             Ok(FromConnector::Stream {
                 request: *request,
-                url,
+                url: playback.url.clone(),
+                playback,
+            })
+        }
+        Ask::Captions {
+            request,
+            key,
+            language,
+        } => {
+            let vtt = service.captions(key, language).map_err(failed)?;
+            Ok(FromConnector::Captions {
+                request: *request,
+                vtt,
             })
         }
     }

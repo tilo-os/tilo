@@ -6115,6 +6115,44 @@
           "type": "bool"
         },
         {
+          "name": "qualities",
+          "doc": "The qualities it offers to pick from, best first; empty when it has no choice.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "playing_quality",
+          "doc": "The quality it plays at, as one of `qualities`; empty takes the first.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "caption_tracks",
+          "doc": "The caption tracks it offers, by the language code each is in: the label the menu shows.",
+          "type": {
+            "map": {
+              "key": "text",
+              "value": "text"
+            }
+          }
+        },
+        {
+          "name": "caption_language",
+          "doc": "The language code of the track whose words are shown; empty turns captions off.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "captions",
+          "doc": "The words of the chosen track, as the WebVTT document it is: drawn over the picture as the playhead reaches each cue.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "repeat",
           "doc": "Whether it begins again when it ends.",
           "type": "bool"
@@ -6146,14 +6184,24 @@
           "value": "float"
         },
         {
-          "name": "progress",
-          "doc": "Where playback got to while it played, as a share of its length (`0..=1`): reported on the first frame it plays, then every five seconds, and once more when it stops, so a view remembers the place a video was left at even when nobody moved the playhead.",
-          "value": "float"
-        },
-        {
           "name": "set_volume",
           "doc": "The volume was set: carries `0..=1`.",
           "value": "float"
+        },
+        {
+          "name": "set_rate",
+          "doc": "A speed was chosen: carries it, as `1.0` is normal.",
+          "value": "float"
+        },
+        {
+          "name": "select_quality",
+          "doc": "A quality was chosen: carries its label, one of `qualities`.",
+          "value": "text"
+        },
+        {
+          "name": "select_captions",
+          "doc": "A caption track was chosen: carries its language code, empty for off.",
+          "value": "text"
         },
         {
           "name": "fail",

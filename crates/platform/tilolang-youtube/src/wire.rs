@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-use crate::service::{ChannelPage, PlaylistPage, SearchPage, ServiceError, TrendingPage};
+use crate::service::{ChannelPage, Playback, PlaylistPage, SearchPage, ServiceError, TrendingPage};
 
 /// The largest frame either side accepts: a channel's page with its videos fits many times over.
 pub const MAX_FRAME: usize = 64 << 20;
@@ -17,11 +17,30 @@ const FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(MAX_FRAME);
 /// What the origin asks of the connector, under the id it knows it by.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ask {
-    Search { request: u64, query: String },
-    Channel { request: u64, key: String },
-    Trending { request: u64 },
-    Stream { request: u64, key: String },
-    Playlist { request: u64, key: String },
+    Search {
+        request: u64,
+        query: String,
+    },
+    Channel {
+        request: u64,
+        key: String,
+    },
+    Trending {
+        request: u64,
+    },
+    Stream {
+        request: u64,
+        key: String,
+    },
+    Playlist {
+        request: u64,
+        key: String,
+    },
+    Captions {
+        request: u64,
+        key: String,
+        language: String,
+    },
 }
 
 /// The id a question is asked under.
@@ -32,7 +51,8 @@ pub const fn request_of(ask: &Ask) -> u64 {
         | Ask::Channel { request, .. }
         | Ask::Playlist { request, .. }
         | Ask::Trending { request }
-        | Ask::Stream { request, .. } => *request,
+        | Ask::Stream { request, .. }
+        | Ask::Captions { request, .. } => *request,
     }
 }
 
@@ -54,6 +74,10 @@ pub enum FromConnector {
     Stream {
         request: u64,
         url: String,
+        /// The qualities and captions the stream offers. Defaulted so a connector of an older
+        /// build still answers: its stream then plays, without either.
+        #[serde(default)]
+        playback: Playback,
     },
     /// YouTube could not answer, or refused: why.
     Failed {
@@ -63,6 +87,10 @@ pub enum FromConnector {
     Playlist {
         request: u64,
         page: PlaylistPage,
+    },
+    Captions {
+        request: u64,
+        vtt: String,
     },
 }
 
@@ -75,6 +103,7 @@ pub const fn kind_of(answer: &FromConnector) -> &'static str {
         FromConnector::Playlist { .. } => "a playlist",
         FromConnector::Trending { .. } => "the trending list",
         FromConnector::Stream { .. } => "a stream",
+        FromConnector::Captions { .. } => "captions",
         FromConnector::Failed { .. } => "a failure",
     }
 }
@@ -89,6 +118,7 @@ impl FromConnector {
             | Self::Playlist { request, .. }
             | Self::Trending { request, .. }
             | Self::Stream { request, .. }
+            | Self::Captions { request, .. }
             | Self::Failed { request, .. } => *request,
         }
     }

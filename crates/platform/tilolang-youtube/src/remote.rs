@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::service::{ChannelPage, PlaylistPage, SearchPage, Service, ServiceError, TrendingPage};
+
+use crate::service::{ChannelPage, Playback, SearchPage, Service, ServiceError, TrendingPage};
 use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the YouTube connector process.
@@ -126,14 +128,35 @@ impl Service for RemoteService {
         )
     }
 
-    fn stream(&self, key: &str) -> Result<String, ServiceError> {
+    fn stream(&self, key: &str) -> Result<Playback, ServiceError> {
         self.answered(
             &Ask::Stream {
                 request: self.next.fetch_add(1, Ordering::Relaxed),
                 key: key.to_owned(),
             },
             |answer| match answer {
-                FromConnector::Stream { url, .. } => Some(url),
+                FromConnector::Stream { url, playback, .. } => {
+                    let mut playback = playback;
+                    // A connector of an older build answers the address alone.
+                    if playback.url.is_empty() {
+                        playback.url = url;
+                    }
+                    Some(playback)
+                }
+                _ => None,
+            },
+        )
+    }
+
+    fn captions(&self, key: &str, language: &str) -> Result<String, ServiceError> {
+        self.answered(
+            &Ask::Captions {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+                language: language.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Captions { vtt, .. } => Some(vtt),
                 _ => None,
             },
         )

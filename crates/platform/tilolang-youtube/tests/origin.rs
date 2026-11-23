@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilolang_tilo::origin::{Origin, OriginCx};
 use tilolang_youtube::{
-    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
-    ServiceError, TrendingPage, VideoItem, YouTubeOrigin,
+    CaptionTrack, ChannelItem, ChannelPage, Playback, PlaylistItem, PlaylistPage, Quality,
+    Scripted, SearchPage, Service, ServiceError, TrendingPage, VideoItem, YouTubeOrigin,
 };
 
 const TUBE: &str = "so.tilo.tube";
@@ -138,7 +138,28 @@ fn script() -> Scripted {
         },
         streams: std::collections::BTreeMap::from([(
             "v-phone".to_owned(),
-            "https://media.example/v-phone.mp4".to_owned(),
+            Playback {
+                url: "https://media.example/v-phone-1080.mp4".to_owned(),
+                qualities: vec![
+                    Quality {
+                        label: "1080p".to_owned(),
+                        url: "https://media.example/v-phone-1080.mp4".to_owned(),
+                    },
+                    Quality {
+                        label: "720p".to_owned(),
+                        url: "https://media.example/v-phone-720.mp4".to_owned(),
+                    },
+                ],
+                captions: vec![CaptionTrack {
+                    language: "en".to_owned(),
+                    label: "English".to_owned(),
+                    automatic: false,
+                }],
+            },
+        )]),
+        captions: std::collections::BTreeMap::from([(
+            ("v-phone".to_owned(), "en".to_owned()),
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello\n".to_owned(),
         )]),
     }
 }
@@ -394,6 +415,260 @@ fn a_second_answer_keeps_one_video_and_the_person_s_like() {
     assert_eq!(before.len(), 2, "the channel's two videos");
 }
 
+/// A video's field `name`, as the app reads it: what the service answered with.
+fn video_field(
+    host: &tilolang_tilo::host::Host,
+    key: &str,
+    name: &str,
+) -> tilolang_tilo::runtime::Value {
+    let packages = host.packages();
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == TUBE)
+        .expect("the client");
+    let (_, root_ty) = package.main().expect("the client's root");
+    let video = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Video")
+        .expect("the video kind");
+    let field_id = video
+        .fields
+        .iter()
+        .find(|f| f.name == name)
+        .expect("the video's field")
+        .id
+        .clone();
+    let key_id = video
+        .fields
+        .iter()
+        .find(|f| f.name == "key")
+        .expect("the video's key")
+        .id
+        .clone();
+    let videos_field = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == root_ty)
+        .and_then(|root| root.fields.iter().find(|f| f.name == "videos"))
+        .expect("the root's videos")
+        .id
+        .clone();
+    let root = host.root_of(TUBE).expect("the root");
+    let Ok(tilolang_tilo::runtime::Value::List(items)) = host.runtime().read(&root, &videos_field)
+    else {
+        return tilolang_tilo::runtime::Value::Unit;
+    };
+    for value in items {
+        let tilolang_tilo::runtime::Value::Ref(at) = value else {
+            continue;
+        };
+        if host.runtime().read(&at.target, &key_id).ok()
+            != Some(tilolang_tilo::runtime::Value::Text(key.to_owned()))
+        {
+            continue;
+        }
+        return host
+            .runtime()
+            .read(&at.target, &field_id)
+            .unwrap_or(tilolang_tilo::runtime::Value::Unit);
+    }
+    tilolang_tilo::runtime::Value::Unit
+}
+
+/// The stream answer writes where the video plays from, the qualities it offers and its caption
+/// tracks, and a caption answer writes the words of the track chosen.
+#[test]
+fn a_stream_answer_writes_its_qualities_and_captions_and_the_words_are_asked_for() {
+    let host = workspace();
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    origin
+        .borrow_mut()
+        .deliver("youtube.channel", &serde_json::json!("UCmkbhd"));
+    poll(&origin, &host);
+    origin
+        .borrow_mut()
+        .deliver("youtube.stream", &serde_json::json!("v-phone"));
+    poll(&origin, &host);
+    assert_eq!(
+        video_field(&host, "v-phone", "stream"),
+        tilolang_tilo::runtime::Value::text("https://media.example/v-phone-1080.mp4"),
+        "the video plays from its best whole-file stream"
+    );
+    assert_eq!(
+        video_field(&host, "v-phone", "stream_qualities"),
+        tilolang_tilo::runtime::Value::List(vec![
+            tilolang_tilo::runtime::Value::text("1080p"),
+            tilolang_tilo::runtime::Value::text("720p"),
+        ]),
+        "the quality menu lists the streams best first"
+    );
+    assert_eq!(
+        video_field(&host, "v-phone", "caption_tracks"),
+        tilolang_tilo::runtime::Value::List(vec![tilolang_tilo::runtime::Value::Tuple(vec![
+            tilolang_tilo::runtime::Value::text("en"),
+            tilolang_tilo::runtime::Value::text("English"),
+        ])]),
+        "the caption menu names the track and its language"
+    );
+    origin
+        .borrow_mut()
+        .deliver("youtube.captions", &serde_json::json!(["v-phone", "en"]));
+    poll(&origin, &host);
+    assert_eq!(
+        video_field(&host, "v-phone", "captions"),
+        tilolang_tilo::runtime::Value::text("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello\n"),
+        "the chosen track's words are the video's to draw"
+    );
+}
+
+/// The video of the app's collection whose key is `key`.
+fn video_ref(host: &tilolang_tilo::host::Host, key: &str) -> tilolang_tilo::runtime::ResourceRef {
+    use tilolang_tilo::runtime::Value;
+    let root = host.root_of(TUBE).expect("the root");
+    let Ok(Value::List(items)) = host.runtime().read(&root, "videos") else {
+        panic!("the client holds its videos as a list");
+    };
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::Ref(at) => Some((*at.target).clone()),
+            _ => None,
+        })
+        .find(|video| host.runtime().read(video, "key").ok() == Some(Value::text(key)))
+        .unwrap_or_else(|| panic!("the video {key}"))
+}
+
+/// What the client's action `action`, run by the person, answered.
+fn call(
+    host: &tilolang_tilo::host::Host,
+    action: &str,
+    args: Vec<tilolang_tilo::runtime::Value>,
+) -> tilolang_tilo::runtime::InvokeOutcome {
+    let id = host
+        .package(TUBE)
+        .expect("the client")
+        .meta
+        .actions
+        .iter()
+        .find(|held| held.name == action)
+        .unwrap_or_else(|| panic!("the action `{action}`"))
+        .id
+        .clone();
+    host.runtime()
+        .invoke_action(host.viewer(), (id.as_str(), args))
+        .expect("the action runs")
+}
+
+/// A person picks the speed, the quality and the caption track with the client's own actions: the
+/// speed is the client's, the quality picks the stream of that label, and a caption track is the
+/// service's to fetch; turning them off is the client's alone.
+#[test]
+fn the_speed_the_quality_and_the_caption_track_are_the_person_s_actions() {
+    use tilolang_tilo::runtime::{InvokeOutcome, Value};
+
+    let host = workspace();
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    origin
+        .borrow_mut()
+        .deliver("youtube.channel", &serde_json::json!("UCmkbhd"));
+    poll(&origin, &host);
+    origin
+        .borrow_mut()
+        .deliver("youtube.stream", &serde_json::json!("v-phone"));
+    poll(&origin, &host);
+    let root = host.root_of(TUBE).expect("the root");
+    let video = video_ref(&host, "v-phone");
+
+    assert!(matches!(
+        call(
+            &host,
+            "set_rate",
+            vec![Value::resource(&root), Value::Float(1.5)]
+        ),
+        InvokeOutcome::Done(_)
+    ));
+    assert_eq!(
+        host.runtime().read(&root, "rate").ok(),
+        Some(Value::Float(1.5)),
+        "the speed follows the person from video to video"
+    );
+
+    assert!(matches!(
+        call(
+            &host,
+            "play_at_quality",
+            vec![Value::resource(&video), Value::text("720p")]
+        ),
+        InvokeOutcome::Done(_)
+    ));
+    assert_eq!(
+        host.runtime().read(&video, "quality").ok(),
+        Some(Value::text("720p")),
+        "the chosen quality is the person's, and the menu shows it"
+    );
+    assert_eq!(
+        video_field(&host, "v-phone", "streams"),
+        Value::List(vec![
+            Value::Tuple(vec![
+                Value::text("1080p"),
+                Value::text("https://media.example/v-phone-1080.mp4"),
+            ]),
+            Value::Tuple(vec![
+                Value::text("720p"),
+                Value::text("https://media.example/v-phone-720.mp4"),
+            ]),
+        ]),
+        "and the view plays that quality's own address"
+    );
+
+    // A track's words are YouTube's to fetch, so the track is on at once and the fetch waits in
+    // the outbox for the device that carries outside effects out.
+    assert!(matches!(
+        call(
+            &host,
+            "show_captions",
+            vec![Value::resource(&video), Value::text("en")]
+        ),
+        InvokeOutcome::Done(_)
+    ));
+    assert_eq!(
+        host.runtime().read(&video, "caption_language").ok(),
+        Some(Value::text("en")),
+        "the person's choice of a track is the client's"
+    );
+    let asked = host.runtime().pending_outbox();
+    assert_eq!(
+        asked
+            .iter()
+            .map(|entry| (entry.capability.as_str(), entry.payload.clone()))
+            .collect::<Vec<_>>(),
+        [("youtube.captions", serde_json::json!(["v-phone", "en"]))],
+        "the device carrying outside effects is asked for that track of that video"
+    );
+
+    // Off needs nothing from YouTube: the track goes, and the view draws no words.
+    origin
+        .borrow_mut()
+        .deliver("youtube.captions", &serde_json::json!(["v-phone", "en"]));
+    poll(&origin, &host);
+    assert!(matches!(
+        call(
+            &host,
+            "show_captions",
+            vec![Value::resource(&video), Value::text("")]
+        ),
+        InvokeOutcome::Done(_)
+    ));
+    assert_eq!(
+        host.runtime().read(&video, "caption_language").ok(),
+        Some(Value::text("")),
+        "no track is on"
+    );
+}
+
 /// What the origin does with an answer it did not get: nothing, and no write.
 #[test]
 fn a_failed_answer_writes_nothing() {
@@ -411,7 +686,10 @@ fn a_failed_answer_writes_nothing() {
         fn trending(&self) -> Result<TrendingPage, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
-        fn stream(&self, _: &str) -> Result<String, ServiceError> {
+        fn stream(&self, _: &str) -> Result<Playback, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn captions(&self, _: &str, _: &str) -> Result<String, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
     }

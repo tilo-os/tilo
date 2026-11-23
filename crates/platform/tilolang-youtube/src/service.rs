@@ -81,6 +81,36 @@ pub struct TrendingPage {
 pub struct PlaylistPage {
     pub playlist: PlaylistItem,
     pub videos: Vec<VideoItem>,
+
+/// One whole-file stream a video offers, as the quality menu names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quality {
+    /// What the menu shows: "1080p60".
+    pub label: String,
+    /// The bytes of that quality.
+    pub url: String,
+}
+
+/// A caption track a video offers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptionTrack {
+    /// The language it is in, as a code: "en".
+    pub language: String,
+    /// What the menu shows: "English".
+    pub label: String,
+    /// Whether YouTube's speech recognition made it, rather than the creator.
+    pub automatic: bool,
+}
+
+/// Where a video plays from, and what it offers beside the picture.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Playback {
+    /// The address its bytes play from: the best whole-file stream.
+    pub url: String,
+    /// Its whole-file streams, best first.
+    pub qualities: Vec<Quality>,
+    /// The caption tracks it offers.
+    pub captions: Vec<CaptionTrack>,
 }
 
 /// Why a question could not be answered.
@@ -109,8 +139,11 @@ pub trait Service: Send + Sync {
     /// The videos YouTube lists as trending.
     fn trending(&self) -> Result<TrendingPage, ServiceError>;
 
-    /// The address a video's bytes play from.
-    fn stream(&self, key: &str) -> Result<String, ServiceError>;
+    /// Where a video plays from, with the qualities and captions it offers.
+    fn stream(&self, key: &str) -> Result<Playback, ServiceError>;
+
+    /// The words of the caption track `language` of `key`, as the WebVTT document it is.
+    fn captions(&self, key: &str, language: &str) -> Result<String, ServiceError>;
 }
 
 /// The service over YouTube's own client (`tilo-innertube`, which stands on rustypipe).
@@ -154,9 +187,14 @@ impl Service for Live {
         crate::live::trending(&client)
     }
 
-    fn stream(&self, key: &str) -> Result<String, ServiceError> {
+    fn stream(&self, key: &str) -> Result<Playback, ServiceError> {
         let client = crate::live::client()?;
-        crate::live::stream(&client, key)
+        crate::live::playback(&client, key)
+    }
+
+    fn captions(&self, key: &str, language: &str) -> Result<String, ServiceError> {
+        let client = crate::live::client()?;
+        crate::live::caption_words(&client, key, language)
     }
 }
 
@@ -171,8 +209,10 @@ pub struct Scripted {
     /// The playlists, by key.
     pub playlists: std::collections::BTreeMap<String, PlaylistPage>,
     pub trending: TrendingPage,
-    /// The streams, by video key.
-    pub streams: std::collections::BTreeMap<String, String>,
+    /// The playback, by video key.
+    pub streams: std::collections::BTreeMap<String, Playback>,
+    /// The caption words, by video key and language.
+    pub captions: std::collections::BTreeMap<(String, String), String>,
 }
 
 impl Service for Scripted {
@@ -201,11 +241,18 @@ impl Service for Scripted {
         Ok(self.trending.clone())
     }
 
-    fn stream(&self, key: &str) -> Result<String, ServiceError> {
+    fn stream(&self, key: &str) -> Result<Playback, ServiceError> {
         self.streams
             .get(key)
             .cloned()
             .ok_or_else(|| ServiceError(format!("no scripted stream for {key:?}")))
+    }
+
+    fn captions(&self, key: &str, language: &str) -> Result<String, ServiceError> {
+        self.captions
+            .get(&(key.to_owned(), language.to_owned()))
+            .cloned()
+            .ok_or_else(|| ServiceError(format!("no scripted captions of {key:?} in {language:?}")))
     }
 }
 

@@ -23,8 +23,8 @@ use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{ChannelItem, PlaylistItem, VideoItem, YouTubeItem};
 
 use crate::service::{
-    ChannelItem as SaidChannel, ChannelPage, PlaylistItem as SaidPlaylist, PlaylistPage,
-    SearchPage, ServiceError, TrendingPage, VideoItem as SaidVideo,
+    CaptionTrack, ChannelItem as SaidChannel, ChannelPage, Playback, PlaylistItem as SaidPlaylist,
+    PlaylistPage, Quality, SearchPage, ServiceError, TrendingPage, VideoItem as SaidVideo,
 };
 
 /// The one rustypipe client of the process, with the runtime its queries wait on.
@@ -347,20 +347,76 @@ pub fn trending(client: &LiveClient) -> Result<TrendingPage, ServiceError> {
     })
 }
 
-/// The address a video's bytes play from: the progressive stream carrying picture and sound,
-/// so a plain HTTP source can stream, seek and reach the end.
+/// Where a video plays from: the best whole-file stream carrying picture and sound, so a plain
+/// HTTP source can stream, seek and reach the end. It carries the qualities a person can pick and
+/// the caption tracks the video offers.
 ///
 /// A live broadcast has no whole-file stream — its bytes are segments appended as they air — so
 /// it plays from its adaptive manifest: the HLS playlist where the answer offers one, else the
 /// DASH one. The player reads either as a manifest and follows its live edge.
-pub fn stream(client: &LiveClient, key: &str) -> Result<String, ServiceError> {
+pub fn playback(client: &LiveClient, key: &str) -> Result<Playback, ServiceError> {
     let q = client.query();
     let player = client.block(tilo_innertube::player(&q, key))?;
-    tilo_innertube::whole_file_stream(&player.video_streams, None)
-        .map(|stream| stream.url.clone())
+    let mut qualities: Vec<Quality> = Vec::new();
+    for stream in tilo_innertube::playable_streams(&player.video_streams) {
+        let label = if stream.quality.is_empty() {
+            let height = stream.height;
+            format!("{height}p")
+        } else {
+            stream.quality.clone()
+        };
+        if qualities.iter().any(|known| known.label == label) {
+            continue;
+        }
+        qualities.push(Quality {
+            label,
+            url: stream.url.clone(),
+        });
+    }
+    let url = qualities
+        .first()
+        .map(|quality| quality.url.clone())
         .or_else(|| player.hls_manifest_url.clone())
         .or_else(|| player.dash_manifest_url.clone())
-        .ok_or_else(|| ServiceError(format!("YouTube serves no playable stream of {key}")))
+        .ok_or_else(|| ServiceError(format!("YouTube serves no playable stream of {key}")))?;
+    Ok(Playback {
+        url,
+        qualities,
+        captions: player
+            .subtitles
+            .iter()
+            .map(|subtitle| CaptionTrack {
+                language: subtitle.lang.clone(),
+                label: subtitle.lang_name.clone(),
+                automatic: subtitle.auto_generated,
+            })
+            .collect(),
+    })
+}
+
+/// The words of a video's caption track `language`, as the WebVTT document YouTube serves: the
+/// caption track's address asked for the format the player reads.
+pub fn caption_words(
+    client: &LiveClient,
+    key: &str,
+    language: &str,
+) -> Result<String, ServiceError> {
+    let q = client.query();
+    let player = client.block(tilo_innertube::player(&q, key))?;
+    let track = player
+        .subtitles
+        .iter()
+        .find(|subtitle| subtitle.lang == language)
+        .ok_or_else(|| ServiceError(format!("YouTube offers no {language} captions of {key}")))?;
+    let url = if track.url.contains("fmt=") {
+        track.url.clone()
+    } else {
+        format!("{}&fmt=vtt", track.url)
+    };
+    let bytes = (client.fetch)(&url)
+        .ok_or_else(|| ServiceError(format!("the captions of {key} could not be read")))?;
+    String::from_utf8(bytes)
+        .map_err(|_| ServiceError(format!("the captions of {key} are not text")))
 }
 
 fn said_video(v: VideoItem, client: &LiveClient) -> SaidVideo {

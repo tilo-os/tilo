@@ -107,7 +107,13 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     (
         "youtube.stream",
         "Asks YouTube where a video's bytes play from: (the video's key). The address is written \
-         into the video's `stream`, which the player opens.",
+         into the video's `stream`, which the player opens, and the qualities and caption tracks \
+         it offers beside it.",
+    ),
+    (
+        "youtube.captions",
+        "Asks YouTube for a caption track's words: (the video's key, the track's language). The \
+         words are written into the video's `captions`, which the player draws.",
     ),
 ];
 

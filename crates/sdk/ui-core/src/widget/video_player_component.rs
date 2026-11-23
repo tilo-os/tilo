@@ -1,11 +1,16 @@
 //! [`VideoPlayer`] as a described component: a video surface with playback controls.
 
+use std::collections::BTreeMap;
+
 use media::Source;
 
 use crate::component::{Component, Described, Event, Value};
 
 use super::{NowPlaying, PlaybackState, PlayerSetting, PlayerSettingEvent, VideoPlayer};
 use crate::widget::{DrawChild, PictureInPictureAsk, PictureInPictureProvider};
+
+/// The speeds the settings menu offers, from a quarter to three times.
+pub const PLAYBACK_RATES: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 
 /// A video with its playback controls over it: play/pause, the scrubber, the volume, mute and
 /// fullscreen. The app's player is the one truth; what the person does reaches the view as its
@@ -45,6 +50,17 @@ pub struct VideoPlayerProps {
     /// Whether the source airs as it plays (an HLS or DASH manifest): the player says where it
     /// stands is live and a jump goes to the live edge rather than to a place in a recording.
     pub live: bool,
+    /// The qualities it offers to pick from, best first; empty when it has no choice.
+    pub qualities: Vec<String>,
+    /// The quality it plays at, as one of `qualities`; empty takes the first.
+    pub playing_quality: Option<String>,
+    /// The caption tracks it offers, by the language code each is in: the label the menu shows.
+    pub caption_tracks: BTreeMap<String, String>,
+    /// The language code of the track whose words are shown; empty turns captions off.
+    pub caption_language: Option<String>,
+    /// The words of the chosen track, as the WebVTT document it is: drawn over the picture as
+    /// the playhead reaches each cue.
+    pub captions: Option<String>,
     /// Whether it begins again when it ends.
     pub repeat: bool,
     /// The audio track by its index in `audio_tracks`; absent leaves the engine's choice.
@@ -60,6 +76,15 @@ pub struct VideoPlayerProps {
     /// The volume was set: carries `0..=1`.
     #[component(event(value = f64))]
     pub set_volume: Event,
+    /// A speed was chosen: carries it, as `1.0` is normal.
+    #[component(event(value = f64))]
+    pub set_rate: Event,
+    /// A quality was chosen: carries its label, one of `qualities`.
+    #[component(event(value = String))]
+    pub select_quality: Event,
+    /// A caption track was chosen: carries its language code, empty for off.
+    #[component(event(value = String))]
+    pub select_captions: Event,
     /// The player could not show its video: carries what the engine said.
     #[component(event(value = String))]
     pub fail: Event,
@@ -96,6 +121,16 @@ pub struct DeclaredVideo {
     set_playing: Event,
     seek: Event,
     fail: Event,
+    set_rate: Event,
+    select_quality: Event,
+    select_captions: Event,
+    /// The quality labels its menu offers, by option: what `select_quality` carries.
+    quality_labels: Vec<String>,
+    /// The caption language codes its menu offers, by option; the first is off, an empty code.
+    caption_keys: Vec<String>,
+    /// The WebVTT document whose cues the player draws, so a sync that changes another prop does
+    /// not read it again.
+    captions_text: Option<String>,
     progress: Event,
     length: Event,
     audio_tracks: Event,
@@ -166,12 +201,20 @@ impl DeclaredVideo {
             muted,
             rate,
             live,
+            qualities,
+            playing_quality,
+            caption_tracks,
+            caption_language,
+            captions,
             repeat,
             audio_track,
             subtitle_track,
             set_playing,
             seek,
             set_volume,
+            set_rate,
+            select_quality,
+            select_captions,
             fail,
             progress,
             length,
@@ -183,6 +226,12 @@ impl DeclaredVideo {
         let _ = set_volume;
         let mut player = VideoPlayer::new();
         player.set_live(live);
+        if let Some(rate) = rate {
+            player.set_rate(crate::num::f32_of_f64(rate));
+        }
+        if let Some(vtt) = captions.as_deref() {
+            player.set_captions(Some(vtt));
+        }
         if let Some(engine) = engine {
             player.set_engine(engine);
         }
@@ -241,12 +290,18 @@ impl DeclaredVideo {
                 reporting.fire(Some(Value::Float(share)));
             });
         }
-        Self {
+        let mut video = Self {
             player,
             playing,
             set_playing,
             seek,
             fail,
+            set_rate,
+            select_quality,
+            select_captions,
+            quality_labels: Vec::new(),
+            caption_keys: Vec::new(),
+            captions_text: captions,
             progress,
             length,
             audio_tracks,
@@ -265,6 +320,83 @@ impl DeclaredVideo {
             source,
             pip: std::cell::Cell::new(false),
             audio: std::cell::RefCell::new(Vec::new()),
+        };
+        video.refresh_settings(
+            rate.unwrap_or(f64::from(video.player.rate())),
+            &qualities,
+            playing_quality.as_deref(),
+            &caption_tracks,
+            caption_language.as_deref(),
+        );
+        video
+    }
+
+    /// Offer the speed, quality and caption choices in the settings menu, with what is chosen
+    /// now, and keep by option what choosing one reports.
+    fn refresh_settings(
+        &mut self,
+        rate: f64,
+        qualities: &[String],
+        playing_quality: Option<&str>,
+        caption_tracks: &BTreeMap<String, String>,
+        caption_language: Option<&str>,
+    ) {
+        let selected_rate = PLAYBACK_RATES
+            .iter()
+            .position(|candidate| (*candidate - rate).abs() < f64::EPSILON)
+            .unwrap_or(3);
+        self.player.set_setting(PlayerSetting::choice(
+            "playback-rate",
+            crate::icons::Icon::Gauge,
+            crate::i18n::widget_format("media-playback-speed", &[]),
+            0,
+            PLAYBACK_RATES
+                .iter()
+                .map(|rate| format!("{rate}×"))
+                .collect(),
+            selected_rate,
+        ));
+
+        if qualities.is_empty() {
+            self.player.remove_setting("quality");
+            self.quality_labels.clear();
+        } else {
+            let selected = playing_quality
+                .and_then(|chosen| qualities.iter().position(|label| label == chosen))
+                .unwrap_or(0);
+            self.player.set_setting(PlayerSetting::choice(
+                "quality",
+                crate::icons::Icon::Monitor,
+                crate::i18n::widget_format("media-quality", &[]),
+                0,
+                qualities.to_vec(),
+                selected,
+            ));
+            self.quality_labels = qualities.to_vec();
+        }
+
+        if caption_tracks.is_empty() {
+            self.player.remove_setting("captions");
+            self.caption_keys.clear();
+        } else {
+            let mut options = vec![crate::i18n::widget_format("media-captions-off", &[])];
+            let mut keys = vec![String::new()];
+            for (language, label) in caption_tracks {
+                options.push(label.clone());
+                keys.push(language.clone());
+            }
+            let selected = caption_language
+                .and_then(|chosen| keys.iter().position(|key| key == chosen))
+                .unwrap_or(0);
+            self.player.set_setting(PlayerSetting::choice(
+                "captions",
+                crate::icons::Icon::Captions,
+                crate::i18n::widget_format("media-captions", &[]),
+                0,
+                options,
+                selected,
+            ));
+            self.caption_keys = keys;
         }
     }
 
@@ -282,8 +414,25 @@ impl DeclaredVideo {
         // A control the person pressed in the player's own gear menu: picture-in-picture is one
         // the host answers, so the player keeps it for the walk that takes it.
         for event in self.player.take_setting_events() {
-            if matches!(&event, PlayerSettingEvent::Activated { id } if id == PICTURE_IN_PICTURE) {
-                self.pip.set(true);
+            match event {
+                PlayerSettingEvent::Activated { id } if id == PICTURE_IN_PICTURE => {
+                    self.pip.set(true);
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => {
+                    if let Some(rate) = PLAYBACK_RATES.get(index) {
+                        self.set_rate.fire(Some(Value::Float(*rate)));
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "quality" => {
+                    if let Some(label) = self.quality_labels.get(index) {
+                        self.select_quality.fire(Some(Value::Text(label.clone())));
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "captions" => {
+                    let key = self.caption_keys.get(index).cloned().unwrap_or_default();
+                    self.select_captions.fire(Some(Value::Text(key)));
+                }
+                _ => {}
             }
         }
         // What the engine said, or the decoder or the limit it hit: a view shows it as the
@@ -624,12 +773,20 @@ impl Described for DeclaredVideo {
             source,
             volume,
             rate,
+            qualities,
+            playing_quality,
+            caption_tracks,
+            caption_language,
+            captions,
             repeat,
             audio_track,
             subtitle_track,
             muted: _,
             seek,
             fail,
+            set_rate,
+            select_quality,
+            select_captions,
             progress,
             length,
             audio_tracks,
@@ -639,6 +796,9 @@ impl Described for DeclaredVideo {
         } = props;
         self.fail = fail;
         self.seek = seek;
+        self.set_rate = set_rate;
+        self.select_quality = select_quality;
+        self.select_captions = select_captions;
         self.progress = progress;
         self.length = length;
         self.audio_tracks = audio_tracks;
@@ -661,18 +821,38 @@ impl Described for DeclaredVideo {
         if let Some(volume) = volume {
             self.player.set_volume(crate::num::f32_of_f64(volume));
         }
+        if let Some(rate) = rate {
+            self.player.set_rate(crate::num::f32_of_f64(rate));
+        }
+        if captions.as_deref() != self.captions_text.as_deref() {
+            self.player.set_captions(captions.as_deref());
+            self.captions_text = captions;
+        }
         if let Some(duration) = duration {
             self.player.set_duration_ms(seconds_to_ms(duration));
         }
-        // A view that answers with another address for the same video (asking the service again
-        // after a failure) plays what it now names.
-        if source != self.source
-            && let Some(address) = &source
-        {
-            self.player.open(Source::for_uri(address));
-        }
-        self.source = source;
-        if let Some(position) = position {
+        if source != self.source {
+            // Another quality of the same video opens where the playhead is; a first source opens
+            // at the place the view says the person left off. A view that answers with another
+            // address after a failure plays what it now names.
+            let at = self.source.is_some().then(|| self.player.position_ms());
+            if let Some(address) = source.as_deref() {
+                #[cfg(feature = "native")]
+                self.player.ensure_engine(|| {
+                    media::MediaEngine::with_config(media::EngineConfig::default().captured())
+                });
+                self.player.open(Source::for_uri(address));
+                if self.playing {
+                    self.player.play();
+                }
+                if let Some(at) = at {
+                    self.player.seek_to_ms(at);
+                } else if let Some(position) = position {
+                    self.player.seek_to_ms(seconds_to_ms(position));
+                }
+            }
+            self.source = source;
+        } else if let Some(position) = position {
             // A view that declares the place it was just told is not moved back to it.
             let at = seconds_to_ms(position);
             let standing = self.player.position_ms();
@@ -680,6 +860,13 @@ impl Described for DeclaredVideo {
                 self.player.seek_to_ms(at);
             }
         }
+        self.refresh_settings(
+            rate.unwrap_or(f64::from(self.player.rate())),
+            &qualities,
+            playing_quality.as_deref(),
+            &caption_tracks,
+            caption_language.as_deref(),
+        );
         true
     }
 }

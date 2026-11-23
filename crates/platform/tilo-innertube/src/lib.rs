@@ -161,28 +161,35 @@ pub fn next_comments<'a>(
     Box::pin(page.next(q))
 }
 
-/// The stream to play among a player answer's `video_streams`: one URL
-/// carrying picture and sound together, no taller than `max_height` when one
-/// is (`None` takes the tallest).
+/// The streams that play as one file, best first: picture and sound together, no DRM.
 ///
 /// Only progressive streams serve every byte range of the file without a
 /// `PoToken`; adaptive audio-only and video-only streams are refused past
 /// their first segment, so a player handed one stops after a few seconds.
+pub fn playable_streams(streams: &[VideoStream]) -> Vec<&VideoStream> {
+    let mut playable: Vec<&VideoStream> = streams
+        .iter()
+        .filter(|stream| stream.drm_systems.is_empty())
+        .collect();
+    playable.sort_by_key(|stream| std::cmp::Reverse((stream.height, stream.bitrate)));
+    playable
+}
+
+/// The stream to play among a player answer's `video_streams`: one URL
+/// carrying picture and sound together, no taller than `max_height` when one
+/// is (`None` takes the tallest).
+///
 /// Music plays the sound of the smallest one. DRM streams are never picked.
 #[must_use]
 pub fn whole_file_stream(streams: &[VideoStream], max_height: Option<u32>) -> Option<&VideoStream> {
-    let playable = || {
-        streams
-            .iter()
-            .filter(|stream| stream.drm_systems.is_empty())
-    };
-    let size = |stream: &&VideoStream| (stream.height, stream.bitrate);
+    let playable = playable_streams(streams);
     match max_height {
-        None => playable().max_by_key(size),
-        Some(cap) => playable()
-            .filter(|stream| stream.height <= cap)
-            .max_by_key(size)
-            .or_else(|| playable().min_by_key(size)),
+        None => playable.first().copied(),
+        Some(cap) => playable
+            .iter()
+            .find(|stream| stream.height <= cap)
+            .or_else(|| playable.last())
+            .copied(),
     }
 }
 

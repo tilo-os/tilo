@@ -62,6 +62,24 @@ d-l25oorez = Thumbnail
 d-pkbzjs7l = Stream
     .doc = The address its bytes play from, as the service answered: empty until it is asked.
 
+d-pg3b5q77 = Stream qualities
+    .doc = The whole-file qualities it offers, best first; empty for a live stream, which has one.
+
+d-cguf3iuj = Streams
+    .doc = Where each of its qualities plays from, by the label the menu shows.
+
+d-rqu22dm2 = Caption tracks
+    .doc = The caption tracks it offers, by language code: the label each shows.
+
+d-t2nrrkbl = Caption language
+    .doc = The language of the captions on, empty for off.
+
+d-z7fpspku = Captions
+    .doc = The words of the chosen caption track, as the service fetched them.
+
+d-b4x52fj3 = Quality
+    .doc = The quality it plays at, empty for the best.
+
 d-jfam7tjf = Live
     .doc = Whether it is a live stream rather than a recording.
 
@@ -221,7 +239,12 @@ d-r3ksw6bn = Trouble
 d-qv7t2mza = Online
     .doc = Whether YouTube answered the last time it was asked.
 
+d-kbi6kunb = Rate
+    .doc = The speed videos play at: 1.0 is normal.
+
 d-thwdswkk-filter-online = Online
+
+d-thwdswkk-filter-rate = Rate
 
 d-tmam46un = Subscribe
     .doc = Subscribes to the channel, or unsubscribes: the button says which it will do.
@@ -260,6 +283,21 @@ d-jxokfijg = Progress
     .doc = Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.
 
 d-jxokfijg-at = At
+
+d-kkuil6ek = Playback speed
+    .doc = Plays videos at `speed`: a slower read for a dense talk, a quicker one for a long report.
+
+d-kkuil6ek-speed = Speed
+
+d-iwdgdauq = Quality
+    .doc = Plays the video at another of its qualities, from the place it was at: the view plays the address that quality has.
+
+d-iwdgdauq-chosen = Chosen
+
+d-pie2tnpa = Captions
+    .doc = Shows the video's words in `language`, or turns them off when it is empty: the service fetches the track's words, which the player draws as the video reaches them.
+
+d-pie2tnpa-language = Language
 
 d-oqumfxkj = Delete from history
     .doc = Takes one video out of the person's own history.

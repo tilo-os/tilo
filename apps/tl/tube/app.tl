@@ -47,6 +47,18 @@ type Video (origin: youtube.video) {
     thumbnail: Text
     /// The address its bytes play from, as the service answered: empty until it is asked.
     stream: Text
+    /// The whole-file qualities it offers, best first; empty for a live stream, which has one.
+    stream_qualities: List<Text>
+    /// Where each of its qualities plays from, by the label the menu shows.
+    streams: Map<Text>
+    /// The caption tracks it offers, by language code: the label each shows.
+    caption_tracks: Map<Text>
+    /// The language of the captions on, empty for off.
+    caption_language: Text = ""
+    /// The words of the chosen caption track, as the service fetched them.
+    captions: Text
+    /// The quality it plays at, empty for the best.
+    quality: Text = ""
     /// Whether it is a live stream rather than a recording.
     live: Bool
     /// The person liked it.
@@ -62,6 +74,12 @@ type Video (origin: youtube.video) {
         sort published newest
         hide thumbnail
         hide stream
+        hide stream_qualities
+        hide streams
+        hide caption_tracks
+        hide caption_language
+        hide captions
+        hide quality
         hide channel_avatar
         hide found_for
     }
@@ -176,6 +194,8 @@ type YouTube {
     trouble: Text = ""
     /// Whether YouTube answered the last time it was asked.
     online: Bool = true
+    /// The speed videos play at: 1.0 is normal.
+    rate: Float = 1.0
 }
 
 root YouTube
@@ -404,6 +424,28 @@ action progress(v: Video, at: Float) uses time {
 }
 
 /// Takes one video out of the person's own history.
+///
+/// Plays videos at `speed`: a slower read for a dense talk, a quicker one for a long report.
+action set_rate(yt: YouTube, speed: Float) (label: "Playback speed") {
+    yt.rate = speed
+}
+
+/// Plays the video at another of its qualities, from the place it was at: the view plays the
+/// address that quality has.
+action play_at_quality(v: Video, chosen: Text) (label: "Quality") {
+    v.quality = chosen
+}
+
+/// Shows the video's words in `language`, or turns them off when it is empty: the service fetches
+/// the track's words, which the player draws as the video reaches them.
+action show_captions(v: Video, language: Text) (label: "Captions") {
+    v.caption_language = language
+    if language != "" {
+        outside("youtube.captions", [v.key, language])
+    }
+}
+
+/// Takes one video out of the history.
 destructive action forget(v: Video) (icon: .trash, label: "Delete from history") {
     let yt = root YouTube
     let mine = invoker
@@ -932,10 +974,18 @@ view video_page(v: Video) {
                 ui.VideoPlayer(
                     title: v.title,
                     poster: v.thumbnail,
-                    source: v.stream,
+                    source: if v.quality == "" {
+                        v.stream
+                    } else { v.streams.get(v.quality) ?? v.stream },
                     playing: playing,
                     position: left * v.duration.to_float(),
                     duration: v.duration.to_float(),
+                    rate: yt.rate,
+                    qualities: v.stream_qualities,
+                    playing_quality: v.quality,
+                    caption_tracks: v.caption_tracks,
+                    caption_language: v.caption_language,
+                    captions: if v.caption_language == "" { "" } else { v.captions },
                     fill,
                 ) {
                     on set_playing(now_playing: Bool): set(playing, now_playing)
@@ -945,6 +995,9 @@ view video_page(v: Video) {
                     // where it was left.
                     on progress(at: Float): progress(v, at)
                     on fail(reason: Text): set(failed, reason)
+                    on set_rate(speed: Float): set_rate(yt, speed)
+                    on select_quality(label: Text): play_at_quality(v, label)
+                    on select_captions(language: Text): show_captions(v, language)
                 }
             }
         }
