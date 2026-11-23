@@ -57,7 +57,14 @@
                     "args": {"name": {"literal": "Walk strip"}}
                   }
                 ],
-                "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+F12"}]
+                "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+F12"}],
+                "grant": [
+                  {
+                    "node": "workspace:*/app:so.tilo.session/kind:*/resource:desktop:chrome/**",
+                    "kinds": ["read", "undoable", "outside"],
+                    "answer": "allow"
+                  }
+                ]
               }
             }
           ]
