@@ -11,6 +11,7 @@ pub mod lease;
 pub mod mounts;
 pub mod registry;
 pub mod size_limit;
+pub mod state;
 
 #[cfg(feature = "store")]
 mod content;
@@ -24,8 +25,6 @@ pub mod installer;
 pub mod runtime_blobs;
 #[cfg(feature = "store")]
 pub mod shim;
-#[cfg(feature = "store")]
-pub mod state;
 #[cfg(feature = "store")]
 mod store;
 
