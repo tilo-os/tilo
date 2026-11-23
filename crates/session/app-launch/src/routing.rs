@@ -476,5 +476,25 @@ mod tests {
                 open: Some(Open::Uri("https://code.tilo.so".into())),
             })
         );
+
+        // A link of the scheme the YouTube app claims opens there, and with nothing claiming it
+        // there is no app to open it.
+        let tube = app("so.tilo.tube", &[], &[], &["tube"]);
+        assert_eq!(
+            link(
+                "tube:search?q=quiet",
+                std::slice::from_ref(&tube),
+                &choice.defaults()
+            ),
+            Some(Launch::Package {
+                app: "so.tilo.tube".into(),
+                open: Some(Open::Uri("tube:search?q=quiet".into())),
+            })
+        );
+        assert_eq!(
+            link("tube:watch?v=abc", &[], &choice.defaults()),
+            None,
+            "nothing here claims it"
+        );
     }
 }

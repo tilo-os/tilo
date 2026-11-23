@@ -140,6 +140,10 @@ pub struct Instance {
     /// The person's formats and language, as the session resolved them: what the instance writes
     /// its dates and clocks in, and the language its window reads every word in.
     pub locale: runtime_portal::process_link::Locale,
+    /// Where the workspace's resources open on the web, as JSON, when the session knows it: what
+    /// the instance's host mints a resource's `share-link` under
+    /// ([`runtime_portal::process_link::InstanceRequest::link_home`]).
+    pub link_home: Option<String>,
 }
 
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
@@ -328,6 +332,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
+            link_home: instance.link_home.clone(),
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

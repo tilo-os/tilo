@@ -57,6 +57,7 @@ mod resource_service;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod share;
 mod suggest;
 mod surface;
 mod task;

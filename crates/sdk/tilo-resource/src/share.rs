@@ -28,6 +28,13 @@ pub const SHARE_INVITE_LINK: &str = "share-invite-link";
 pub fn is_share_verb(action: &str) -> bool {
     action == SHARE_LINK || action == SHARE_INVITE_LINK
 }
+
+/// Whether `type_id` is one of the framework's share operations (`SHARE_TYPE` or
+/// `SHARE_INVITE_TYPE`): what a host answers for itself rather than through the app.
+#[must_use]
+pub fn handles(type_id: &str) -> bool {
+    type_id == SHARE_TYPE || type_id == SHARE_INVITE_TYPE
+}
 /// `share-link` on `resource`, which `provider` publishes: how one app asks
 /// another app's resource for its link without knowing its views.
 #[must_use]
@@ -83,16 +90,7 @@ pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
     if resource.views.is_empty() || resource.actions.iter().any(|spec| is_share_verb(&spec.id)) {
         return;
     }
-    let views: Vec<SharedView> = resource
-        .views
-        .iter()
-        .map(|view| SharedView {
-            id: view.id.clone(),
-            primary: view.primary,
-            range: view.range.is_some(),
-            desktop: view.desktop,
-        })
-        .collect();
+    let views = shared_views(resource);
     let target = Target::new(resource.id.as_str().to_owned());
     for invite in [false, true] {
         let ty = share_type(invite, &resource.kind, &views);
@@ -111,6 +109,46 @@ pub fn offer_resource(root: &mut tilo_actions::ResourceSpec) {
     let target = Target::new(root.id.as_str().to_owned());
     root.actions
         .push(share_type(false, &root.kind, &[]).bind(target));
+}
+
+/// Offer `share-link` alone on `resource`, when it declares a view and does not
+/// offer it already: for a resource whose host mints a link but cannot hand out
+/// an invitation, which is the shell's own act ([`SHARE_INVITE_LINK`]).
+pub fn offer_link(resource: &mut tilo_actions::ResourceSpec) {
+    if resource.views.is_empty() || resource.actions.iter().any(|spec| spec.id == SHARE_LINK) {
+        return;
+    }
+    let views = shared_views(resource);
+    let target = Target::new(resource.id.as_str().to_owned());
+    resource
+        .actions
+        .push(share_type(false, &resource.kind, &views).bind(target));
+}
+
+/// [`offer_link`] on `root`, a record's root resource, even when it declares no
+/// view: the link then names the record, which opens in its app.
+pub fn offer_resource_link(root: &mut tilo_actions::ResourceSpec) {
+    offer_link(root);
+    if root.actions.iter().any(|spec| spec.id == SHARE_LINK) {
+        return;
+    }
+    let target = Target::new(root.id.as_str().to_owned());
+    root.actions
+        .push(share_type(false, &root.kind, &[]).bind(target));
+}
+
+/// The views of `resource` as a link names them.
+fn shared_views(resource: &tilo_actions::ResourceSpec) -> Vec<SharedView> {
+    resource
+        .views
+        .iter()
+        .map(|view| SharedView {
+            id: view.id.clone(),
+            primary: view.primary,
+            range: view.range.is_some(),
+            desktop: view.desktop,
+        })
+        .collect()
 }
 
 /// Which link type: whether it invites, the kind of resource, its views.

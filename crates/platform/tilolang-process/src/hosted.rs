@@ -99,6 +99,10 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
+    /// Where the workspace's resources open on the web, as the session handed it
+    /// (`InstanceRequest::link_home`): what `share-link` mints under, and nothing where the
+    /// workspace's host serves no page.
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 impl Spec {
@@ -120,6 +124,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
+            link_home: None,
         }
     }
 
@@ -2163,6 +2168,10 @@ impl Hosted {
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
     /// now, and run it: building it runs it, as the invoker's step, and its writes go to the
     /// store; the host's own vocabulary is answered by the runtime, as the invoker's.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invocation's routing: the app's edits, its verbs, its host vocabulary and the system's link"
+    )]
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -2272,10 +2281,21 @@ impl Hosted {
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
             return self.open_from_action(&encoded.payload, by_person);
         }
+        if tilo_resource::share::handles(&encoded.type_id) {
+            return self.shared(encoded.payload.as_slice());
+        }
         Err(Refused::new(
             "action_unknown",
             format!("the tilolang host does not run `{}`", encoded.type_id),
         ))
+    }
+
+    /// The link to the resource the `share-link` frame `payload` names, minted under the
+    /// workspace's page as the session named it to this host: the frame is the app's own, so a
+    /// person copying a link, the palette and an agent asking for one all hear the same URL.
+    fn shared(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, Refused> {
+        tilolang_tilo::share::answer(payload, &self.bundle.meta.app, self.spec.link_home.as_ref())
+            .map_err(|why| Refused::new("action_failed", why))
     }
 
     fn open_from_action(
@@ -2438,6 +2458,10 @@ impl Hosted {
             EDIT_TYPE.to_owned(),
             tilo_resource::read::TYPE.to_owned(),
             tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
+            // The system's own verbs every resource with a view offers, which this host mints
+            // ([`tilolang_tilo::share`]) rather than the app.
+            tilo_resource::share::SHARE_TYPE.to_owned(),
+            tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
         ]);
         let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
         let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);

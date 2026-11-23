@@ -512,6 +512,14 @@ impl ActionTypes {
             }
             resource = resource.with_view(view.clone());
         }
+        // The link to it, as the system's own verbs bind it to every resource with a view: the
+        // palette, the context menu and an agent ask for "copy link" the same way they ask an
+        // app's own actions, and the host mints it ([`crate::share`]).
+        if root {
+            tilo_resource::share::offer_resource_link(&mut resource);
+        } else {
+            tilo_resource::share::offer_link(&mut resource);
+        }
         let target = Target::new(id.to_owned());
         for ty in of_type.edits.iter().chain(&of_type.actions) {
             resource = resource.with_action(ty.bind(target.clone()));

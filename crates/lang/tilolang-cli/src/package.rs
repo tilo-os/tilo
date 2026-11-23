@@ -256,6 +256,7 @@ type = "gui"
 [providers]
 mime = [{providers_mime}]
 ext = [{providers_ext}]
+schemes = [{providers_schemes}]
 "#,
         id = toml_string(&meta.app),
         name = toml_string(&meta.title),
@@ -284,7 +285,19 @@ ext = [{providers_ext}]
         origins = connector_origins(&origins),
         providers_mime = providers_mime.join(", "),
         providers_ext = providers_ext.join(", "),
+        providers_schemes = scheme_list(meta),
     )
+}
+
+/// The manifest's `[providers] schemes` list: the URI schemes the app opens (`schemes: ["tube"]`),
+/// claimed as a native app claims them, so a link of one of them opens in it.
+fn scheme_list(meta: &PackageMeta) -> String {
+    let schemes: Vec<String> = meta
+        .schemes
+        .iter()
+        .map(|scheme| toml_string(scheme))
+        .collect();
+    schemes.join(", ")
 }
 
 /// The `[package.names]` table of an app's manifest: the name its own declarations are called by,

@@ -107,6 +107,10 @@ pub struct Apps {
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
+    /// Where each workspace's resources open on the web, as JSON, once the session lent it
+    /// ([`Self::lend_link_home`]): what a tilolang window's host mints a resource's `share-link`
+    /// under ([`Self::link_home`]).
+    link_home: RefCell<Option<LinkHomeOf>>,
     /// What the person is asked about an app's network before it first starts ([`reach`]).
     reach: reach::Reach,
     /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
@@ -124,6 +128,10 @@ struct Awaited {
 
 /// Why the apps of a workspace, by its id, may not start yet: `None` once they may.
 pub(crate) type Admission = Rc<dyn Fn(&str) -> Option<String>>;
+
+/// The page a workspace's resources open under, by its id, as JSON: the home a tilolang host
+/// mints links under (`tilolang_tilo::share::LinkHome`), and nothing where its host serves none.
+pub(crate) type LinkHomeOf = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// What starting an app needs besides the launch itself.
 struct State {
@@ -348,6 +356,7 @@ impl Apps {
             desktop: RefCell::new(None),
             device_answers: RefCell::new(None),
             admission: RefCell::new(None),
+            link_home: RefCell::new(None),
             reach: reach::Reach::default(),
             awaited: Arc::default(),
             state: RefCell::new(State {
@@ -477,6 +486,19 @@ impl Apps {
     /// connection to the session's services is admitted for the launch that made it.
     /// Lend what says why a workspace's apps may not start yet: the reason, while this device
     /// waits for the workspace's host to admit it ([`crate::mcp_server::awaited_reason`]).
+    /// Lend where each workspace's resources open on the web: the home a tilolang window's host
+    /// mints its resources' links under, as the session reads it from the workspace's directory
+    /// entry.
+    pub(crate) fn lend_link_home(&self, home: LinkHomeOf) {
+        *self.link_home.borrow_mut() = Some(home);
+    }
+
+    /// Where `workspace`'s resources open on the web, as JSON, when this session knows.
+    fn link_home(&self, workspace: &str) -> Option<String> {
+        let home = self.link_home.borrow().clone()?;
+        home(workspace)
+    }
+
     pub(crate) fn lend_admission(&self, awaited: Admission) {
         *self.admission.borrow_mut() = Some(awaited);
     }
@@ -771,6 +793,7 @@ impl Apps {
                 return;
             }
         };
+        let link_home = self.link_home(&workspace);
         processes.hand_over(tilo_runtime::device::processes::Instance {
             access: resources.access,
             app,
@@ -794,6 +817,7 @@ impl Apps {
                     name: content.name,
                 }),
             locale: Self::person_locale(),
+            link_home,
         });
     }
 
@@ -2111,6 +2135,7 @@ impl Apps {
                 reveal: None,
                 open: None,
                 locale: Self::person_locale(),
+                link_home: self.link_home(&workspace.id),
             })
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(())

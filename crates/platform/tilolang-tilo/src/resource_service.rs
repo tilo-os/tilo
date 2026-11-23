@@ -102,6 +102,9 @@ pub struct ResourceService {
     /// Whether the service reads and writes the workspace's store
     /// ([`Service::keep_in_workspace`]).
     in_workspace: bool,
+    /// Where the app's resources open on the web, where this host mints their links
+    /// ([`crate::share`]): set by the session that knows the workspace's entry.
+    link_home: Option<crate::share::LinkHome>,
 }
 
 impl ResourceService {
@@ -133,6 +136,7 @@ impl ResourceService {
             session_document: false,
             seed: None,
             in_workspace: false,
+            link_home: None,
         };
         service.publications.update(&service.host, &service.planner);
         let _ = service.watch.take();
@@ -160,6 +164,13 @@ impl ResourceService {
             only: Some(app.into()),
             ..Self::new(host, person)
         }
+    }
+
+    /// Mint the links this service answers for its resources under `home`, where the workspace's
+    /// host announces a page ([`crate::share`]); without one `share-link` is refused, as an
+    /// app's root refuses it.
+    pub fn set_link_home(&mut self, home: Option<crate::share::LinkHome>) {
+        self.link_home = home;
     }
 
     /// Fill the app's resources with `seed` where they are kept in a workspace that holds none of
@@ -550,6 +561,16 @@ impl ResourceService {
                 open.beside = beside;
                 self.opens.push((invoker.clone(), open));
                 return Ok(Started::Done(ActionOutput::default()));
+            }
+            if tilo_resource::share::handles(&encoded.type_id) {
+                // A link is the workspace's to mint, under the page its host announces: this
+                // service answers for the resources it publishes, as an app's root does for its
+                // own.
+                let app = crate::publish::app_of(resource)
+                    .ok_or_else(|| ApiError::Unknown(address.clone()))?;
+                let output = crate::share::answer(&encoded.payload, app, self.link_home.as_ref())
+                    .map_err(ApiError::Failed)?;
+                return Ok(Started::Done(output));
             }
             if encoded.type_id == EDIT_TYPE {
                 let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)

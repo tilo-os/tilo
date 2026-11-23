@@ -59,6 +59,14 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();
             options.push(format!("web: [{}]", hosts.join(", ")));
         }
+        match app.schemes.as_slice() {
+            [] => {}
+            [one] => options.push(format!("schemes: {}", quote(one))),
+            many => {
+                let schemes: Vec<String> = many.iter().map(|scheme| quote(scheme)).collect();
+                options.push(format!("schemes: [{}]", schemes.join(", ")));
+            }
+        }
         let one = format!(
             "app {} {}{}",
             app.id,

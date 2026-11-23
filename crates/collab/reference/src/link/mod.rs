@@ -12,6 +12,7 @@ mod entry;
 mod error;
 mod json;
 mod parse;
+pub mod share;
 
 use std::fmt;
 

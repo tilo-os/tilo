@@ -549,3 +549,38 @@ fn a_valid_tilolang_package_has_verified_exact_archive_bytes() {
         dir_entries(&bad_out)
     );
 }
+
+/// An app that opens links of a URI scheme declares it, as a native app's manifest claims one:
+/// the video app claims `tube`, so the session opens a `tube:` link in it.
+#[test]
+fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["tube"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("tube"),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let tube = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.tube")
+        .expect("the package declares an app");
+    let text = std::fs::read_to_string(&tube.manifest).unwrap();
+    let manifest = Manifest::from_toml_str(&text).unwrap();
+    assert_eq!(
+        manifest.providers.schemes,
+        ["tube"],
+        "the scheme its `app` declaration claims"
+    );
+    // What the session reads to decide which app opens a link of a scheme.
+    let view = tilo_app_package::view::ManifestView::from_toml_str(&text).unwrap();
+    assert_eq!(view.opens_schemes, ["tube"]);
+}

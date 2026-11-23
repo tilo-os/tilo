@@ -3,6 +3,7 @@ app so.tilo.tube "YouTube" (
     category: .multimedia,
     tagline: "Browses and plays YouTube videos",
     keywords: ["youtube", "video", "videos", "streaming", "watch", "channel", "channels", "subscriptions", "creators", "trending", "filme", "videos ansehen", "kanäle", "kanaele", "kanal", "schauen", "mediathek", "anschauen", "abos", "videoportal"],
+    schemes: "tube",
 )
 
 /// A channel someone publishes videos on. The service writes what it says (its name, handle and

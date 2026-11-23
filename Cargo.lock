@@ -23850,6 +23850,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-doc",
  "tilo-failure",
+ "tilo-reference",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-resource-store",

@@ -201,6 +201,7 @@ struct AppOptions {
     tagline: Option<String>,
     keywords: Vec<String>,
     previously: Vec<String>,
+    schemes: Vec<String>,
     profile_resources: bool,
     web: Vec<String>,
 }
@@ -419,11 +420,12 @@ impl<'a> Parser<'a> {
     }
 
     /// The options after the app's title, each at most once. `previously:` takes an app id, or
-    /// several in brackets.
+    /// several in brackets; so does `schemes:`, each a URI scheme (`"tube"`).
     fn app_options(&mut self) -> PResult<AppOptions> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
         let mut seen_web = false;
+        let mut seen_schemes = false;
         let mut resources: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
@@ -434,7 +436,8 @@ impl<'a> Parser<'a> {
                 break;
             }
             let key = self.ident(
-                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources` or `web`",
+                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources`, `web` or \
+                 `schemes`",
             )?;
             self.expect(&Tok::Colon)?;
             if key.name == "tagline" {
@@ -492,6 +495,29 @@ impl<'a> Parser<'a> {
                     out.web
                         .push(self.plain_string("a host in quotes, such as \"example.com\"")?);
                 }
+            } else if key.name == "schemes" {
+                if std::mem::replace(&mut seen_schemes, true) {
+                    return self.fail(key.span, "`schemes:` is given twice".to_owned());
+                }
+                if self.eat(&Tok::LBracket) {
+                    loop {
+                        self.skip_nl();
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        out.schemes
+                            .push(self.plain_string("a URI scheme in quotes, such as \"tube\"")?);
+                        self.skip_nl();
+                        if !self.eat(&Tok::Comma) {
+                            self.skip_nl();
+                            self.expect(&Tok::RBracket)?;
+                            break;
+                        }
+                    }
+                } else {
+                    out.schemes
+                        .push(self.plain_string("a URI scheme in quotes, such as \"tube\"")?);
+                }
             } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());
@@ -519,7 +545,7 @@ impl<'a> Parser<'a> {
                         key.span,
                         format!(
                             "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                             `previously:`, `resources:` and `web:`, not `{}:`",
+                             `previously:`, `resources:`, `web:` and `schemes:`, not `{}:`",
                             key.name
                         ),
                     );
@@ -791,6 +817,7 @@ impl<'a> Parser<'a> {
                 previously: options.previously,
                 profile_resources: options.profile_resources,
                 web: options.web,
+                schemes: options.schemes,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -840,6 +867,7 @@ impl<'a> Parser<'a> {
                         previously: options.previously,
                         profile_resources: options.profile_resources,
                         web: options.web,
+                        schemes: options.schemes,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }

@@ -756,6 +756,21 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
+                link_home: request.link_home.as_deref().and_then(|home| {
+                    match serde_json::from_str(home) {
+                        Ok(home) => Some(home),
+                        Err(error) => {
+                            // The session made this JSON; one that does not read leaves the
+                            // window's links refused, which the session's log says why.
+                            tracing::warn!(
+                                %error,
+                                "a workspace's page the session named does not read: this \
+                                 window's resources have no link"
+                            );
+                            None
+                        }
+                    }
+                }),
                 ..Spec::new(
                     request.app,
                     request.workspace,

@@ -236,6 +236,13 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
+    /// Where the workspace's resources open on the web, as the session knows it
+    /// (`tilolang_tilo::share::LinkHome`, as JSON): what the instance's host mints a resource's
+    /// `share-link` under. `None` where the workspace's host serves no page, and then the link is
+    /// refused with the system's own words.
+    ///
+    /// Always written, as every field of a packet is.
+    pub link_home: Option<String>,
 }
 
 /// The descriptors one instance arrives with.
@@ -645,6 +652,7 @@ mod tests {
                 name: Some("plan.md".into()),
             }),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            link_home: None,
             access: Some(MemberAccess::person(
                 tilo_action_policy::WorkspacePolicy::new(
                     "7a110d00-0000-4000-8000-000000000001",

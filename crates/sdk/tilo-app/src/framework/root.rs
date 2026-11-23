@@ -1803,7 +1803,7 @@ impl ResourceRoot {
             return Ok(Some(completed(output)));
         }
         if let Some(request) = op.unscoped()
-            && super::share_link::handles(request.type_id)
+            && tilo_resource::share::handles(request.type_id)
         {
             return self
                 .start_share(request.invocation, request.payload)
