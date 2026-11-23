@@ -2773,8 +2773,8 @@ impl ActionProvider for RuntimeActionProvider {
             .action_cancel(&on_this_device(caller), id)
     }
 
-    /// The workspace's content, put through the broker, which decides who may, into the shelf
-    /// its records' content is kept on: for the run this runtime admitted, as that run.
+    /// The workspace's content, put into the shelf its records' content is kept on once the
+    /// workspace's grants allow the put: for the run this runtime admitted, as that run.
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         Some(Arc::new(AdmittedContent {
             session: Arc::clone(self.session.as_ref()?),
