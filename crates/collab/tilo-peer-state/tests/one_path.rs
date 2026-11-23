@@ -2,6 +2,7 @@
 //! a frame until a link carries it, and durable across a restart.
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use collab_types::signer::DeviceSigner;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
