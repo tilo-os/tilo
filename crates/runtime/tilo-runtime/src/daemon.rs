@@ -24,7 +24,7 @@ use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_
 use tilo_mcp::session_api::{Asking, bridge_stdio};
 
 use crate::daemon_args::invalid;
-pub use crate::daemon_args::{Args, Mode, default_profile, parse_args, validate_profile};
+pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile};
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 

@@ -7,7 +7,7 @@
 //! every host parses ([`crate::daemon_args`]).
 use std::{ffi::OsString, io, path::Path};
 
-pub use crate::daemon_args::{Args, Mode, default_profile, parse_args, validate_profile};
+pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile};
 
 const NOT_YET: &str = "the Tilo daemon does not run on Windows yet";
 
