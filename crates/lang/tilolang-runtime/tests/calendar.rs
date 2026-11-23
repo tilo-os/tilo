@@ -509,7 +509,10 @@ mod cases {
                 &[("e", Value::resource(&e)), ("g", Value::resource(&g))],
             );
             assert!(
-                matches!(out, InvokeOutcome::Suggested(_)),
+                matches!(
+                    out,
+                    InvokeOutcome::Asked(_) | InvokeOutcome::Waits { .. }
+                ),
                 "Mail says what to add: {out:?}"
             );
         }

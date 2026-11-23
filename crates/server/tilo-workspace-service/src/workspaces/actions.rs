@@ -3459,7 +3459,7 @@ mod surface_tests {
     use serde_json::{Value, json};
     use tilo_actions::ParamType;
     use tilo_actions::remote::{
-        WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBERS, WORKSPACE_PUBLISHED,
+        WORKSPACE_GOVERNANCE_PUBLISHED, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBERS,
         WORKSPACE_WAITING,
     };
 
@@ -3496,7 +3496,7 @@ mod surface_tests {
         let resources: Vec<Value> = RESOURCES
             .iter()
             .map(|(kind, label)| {
-                let verbs: Vec<Value> = WORKSPACE_PUBLISHED
+                let verbs: Vec<Value> = WORKSPACE_GOVERNANCE_PUBLISHED
                     .iter()
                     .filter(|(_, child, _)| resource_of(*child) == *kind)
                     .map(|(operation, _, action)| {

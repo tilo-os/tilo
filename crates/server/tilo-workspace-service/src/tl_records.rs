@@ -609,7 +609,9 @@ impl Opened {
         match outcome {
             InvokeOutcome::Done(value) => Ok(value),
             InvokeOutcome::Denied => Err(format!("{app}#{action} was refused")),
-            InvokeOutcome::Suggested(_) => Err(format!("{app}#{action} waits for an answer")),
+            InvokeOutcome::Asked(_) | InvokeOutcome::Waits { .. } => {
+                Err(format!("{app}#{action} waits for an answer"))
+            }
         }
     }
 
