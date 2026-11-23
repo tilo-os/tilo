@@ -316,5 +316,37 @@ mod tests {
                     .is_err()
             );
         }
+
+        phase an_agent_from_another_device_asks_unless_that_computer_let_its_steps_go;
+        // The person's role asks before an outside effect; the agent carries its own allow, so
+        // that step is put to the person on the computer that admitted the agent. The grant it
+        // kept there for such agents answers the ask instead when the person let them go unasked.
+        {
+            use tilo_actions::remote::Caller;
+            let person = hex::encode([1_u8; 32]);
+            let agent = "claude-code-1a2b3c";
+            let mut w = workspace();
+            w.admit(person, Role::Editor);
+            w.grant(Grant::new(
+                "scribe-outside",
+                Grantee::agent(agent),
+                w.node(),
+                KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                Grantee::person(OWNER),
+            ));
+            let mut save = action("save");
+            save.contract.kind = tilo_actions::ActionKind::Outside;
+            let s = surface("rec-1", vec![save.clone()]);
+            let asks = |unasked: bool| {
+                let caller = Caller::delegated_agent(agent, [1_u8; 32], [2_u8; 32]);
+                let caller = if unasked { caller.steps_unasked() } else { caller };
+                BrokerActor::for_caller(&caller)
+                    .admit_published_in(&w, 10, (&s, &save))
+                    .map(|(asks, _)| asks)
+            };
+            assert_eq!(asks(false), Ok(true), "the step is put to the person");
+            assert_eq!(asks(true), Ok(false), "the person let the step go unasked");
+        }
     }
 }

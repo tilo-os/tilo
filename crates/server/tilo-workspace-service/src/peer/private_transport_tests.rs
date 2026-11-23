@@ -2,6 +2,8 @@ use super::*;
 
 /// The live session's membership: who joined, who left, who was told.
 mod live_session_tests;
+/// An agent from another of the person's devices, and the grant that lets it in here.
+mod other_device_agents_tests;
 /// Remote actions: who may still act, and what acting costs.
 mod remote_action_tests;
 /// Invocations run as the key that signed them.

@@ -32,6 +32,7 @@ pub mod authorship;
 pub mod bot;
 mod decide;
 pub mod describe;
+pub mod device_agents;
 pub mod earlier;
 pub mod edits;
 pub mod entry;
