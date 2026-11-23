@@ -49,8 +49,6 @@ pub mod apple_push;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-#[cfg(feature = "agents")]
-pub mod chat_attachments;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]

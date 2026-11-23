@@ -61,8 +61,9 @@ fn answer(path: &str, offered: &[String]) -> Answer {
         LINK_CERTIFY_PATH if offered.iter().any(|protocol| protocol == LINK_CERTIFY_KEPT) => {
             Answer::AcceptAs(LINK_CERTIFY_KEPT.to_owned())
         }
-        LINK_CERTIFY_PATH | LINK_PAGE_PATH | LINK_RECORDS_PATH
-        | LINK_ACTIONS_PATH => Answer::Accept,
+        LINK_CERTIFY_PATH | LINK_PAGE_PATH | LINK_RECORDS_PATH | LINK_ACTIONS_PATH => {
+            Answer::Accept
+        }
         LINK_LIVE_SESSION_PATH
             if offered
                 .iter()
