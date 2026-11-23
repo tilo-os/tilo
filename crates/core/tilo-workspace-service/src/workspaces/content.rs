@@ -613,8 +613,9 @@ impl Workspaces {
             .direct
             .link(workspace_id)
             .ok_or("the workspace has no link here")?;
-        link.send(message)
-            .map_err(|error| format!("a workspace's link did not carry the host's request: {error}"))?;
+        link.send(message).map_err(|error| {
+            format!("a workspace's link did not carry the host's request: {error}")
+        })?;
         Ok(self
             .inner
             .link_remotes

@@ -284,9 +284,9 @@ pub fn read(
     })
 }
 
-/// `tilo invocations -w <workspace>`: the workspace's invocations in records
-/// the key may read, newest first, as `invocations#list` answers them: `limit`
-/// to a page, and the `cursor` a page ended with for the older ones.
+/// `tilo invocations -w <workspace>`: the workspace's invocations in records the key may read,
+/// newest first, read through the record API: `limit` to a page, and the `cursor` a page ended
+/// with for the older ones.
 pub fn invocations(
     reach: Reach<'_>,
     workspace: &str,
@@ -296,23 +296,38 @@ pub fn invocations(
     run(async {
         let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut arguments = serde_json::Map::new();
-        if let Some(limit) = limit {
-            arguments.insert("limit".into(), limit.into());
-        }
-        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
-            arguments.insert("cursor".into(), cursor.into());
-        }
-        let answered = client
-            .act(
-                Some(&workspace),
-                "invocations",
-                "list",
-                &Value::Object(arguments),
-                "invocations#list",
-            )
+        let read = client
+            .read(Some(&workspace), "record:tilo.invocations:", None)
             .await?;
-        let listed = answered.get("result").cloned().unwrap_or(Value::Null);
+        let fields = read.get("fields").cloned().unwrap_or(Value::Null);
+        // The record is read whole: the page is cut from it here, by where the cursor left off.
+        let offset = cursor
+            .map(str::trim)
+            .filter(|cursor| !cursor.is_empty())
+            .and_then(|cursor| cursor.parse::<usize>().ok())
+            .unwrap_or(0);
+        let page = usize::try_from(limit.unwrap_or(50))
+            .unwrap_or(50)
+            .clamp(1, 200);
+        let items = fields
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let shown: Vec<Value> = items.iter().skip(offset).take(page).cloned().collect();
+        let end = offset.saturating_add(shown.len());
+        let mut listed = fields.clone();
+        if let Some(fields) = listed.as_object_mut() {
+            fields.insert("items".to_owned(), Value::Array(shown));
+            match (end < items.len()).then(|| end.to_string()) {
+                Some(next) => {
+                    fields.insert("next_cursor".to_owned(), Value::String(next));
+                }
+                None => {
+                    fields.remove("next_cursor");
+                }
+            }
+        }
         Ok(show(reach.json, &listed, &invocations_text(&listed)))
     })
 }
@@ -361,6 +376,28 @@ fn invocations_text(listed: &Value) -> String {
         }
         if let Some(about) = field("summary").or_else(|| field("action")) {
             let _ = write!(said, "; {about}");
+        }
+        // What a model call it made cost, where one did.
+        if let Some(spend) = listed.get("spend") {
+            let tokens = |name: &str| spend.get(name).and_then(Value::as_u64).unwrap_or_default();
+            let _ = write!(
+                said,
+                "; {} in + {} out tokens",
+                tokens("input_tokens"),
+                tokens("output_tokens")
+            );
+            if let Some(model) = spend.get("model").and_then(Value::as_str) {
+                let _ = write!(said, " on {model}");
+            }
+            let micros = tokens("cost_micros");
+            if micros > 0 {
+                let _ = write!(
+                    said,
+                    ", costing {}.{:06}",
+                    micros / 1_000_000,
+                    micros % 1_000_000
+                );
+            }
         }
     }
     if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {

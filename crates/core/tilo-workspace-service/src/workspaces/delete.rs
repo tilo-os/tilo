@@ -30,7 +30,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
 #[cfg(feature = "agents")]

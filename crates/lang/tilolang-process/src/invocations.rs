@@ -3,8 +3,8 @@
 //!
 //! A view reads an invocation by its id (`invoked(id)`): an agent's turn a reply keeps, each step
 //! it made, a question it waits on. Nothing of it is stored in the app's record: the instance
-//! reads the invocation's record from the workspace's invocations (`tilo.invocations`, the
-//! listing narrowed to the one invocation), on its own connection, as the caller it runs for, and
+//! reads the invocation's record from the workspace's invocations (`tilo.invocations`) through
+//! the record API, on its own connection, as the caller it runs for, and
 //! reads it again while it runs or waits, so the view moves as the invocation does. What a
 //! person does to one (stop it, run it again, answer what it asks) is an action on its record
 //! (`host.cancel`, `host.retry`, `host.resolve`), sent through the dispatch like any call.
@@ -19,9 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use collaboration::{CollabEvent, CollabRequest};
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationsQuery};
+use tilo_actions::remote::workspace_invocations::{self, Invocation};
 use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
+    ResourceReadRequest,
 };
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
@@ -41,14 +42,18 @@ pub struct Invocations {
     workspace: String,
     /// Each invocation a view read, by the id it read it by.
     followed: BTreeMap<String, Followed>,
-    /// The reads and lines in flight, by the invocation they went out as.
+    /// The lines in flight, by the invocation they went out as.
     asked: BTreeMap<InvocationId, Asked>,
+    /// The reads in flight, by their correlation: the invocation a view reads that each asks for.
+    reads: BTreeMap<u64, String>,
+    /// The next correlation a read is asked under.
+    next_correlation: u64,
     /// The lines the person ran, by the place they ran them from, oldest first.
     lines: BTreeMap<String, Vec<LineRun>>,
     /// Places whose lines moved since the views were told.
     lines_moved: BTreeSet<String>,
     /// What waits to be sent.
-    queued: Vec<InvokeRequest>,
+    queued: Vec<RemoteActionMessage>,
 }
 
 /// One invocation a view reads.
@@ -66,10 +71,8 @@ struct Followed {
     told: bool,
 }
 
-/// What a request in flight was for.
+/// What a call in flight was for.
 enum Asked {
-    /// The record of the invocation a view read by this id.
-    Read(String),
     /// The line run from the place, the `at`th of its lines.
     Line { place: String, at: usize },
 }
@@ -82,6 +85,8 @@ impl Invocations {
             workspace: workspace.to_owned(),
             followed: BTreeMap::new(),
             asked: BTreeMap::new(),
+            reads: BTreeMap::new(),
+            next_correlation: 1,
             lines: BTreeMap::new(),
             lines_moved: BTreeSet::new(),
             queued: Vec::new(),
@@ -103,7 +108,11 @@ impl Invocations {
                     .is_none_or(|read| matches!(read.state.as_str(), "running" | "waiting"))
             })
             .filter_map(|followed| {
-                let after = if followed.waiting { READ_LOST } else { READ_AGAIN };
+                let after = if followed.waiting {
+                    READ_LOST
+                } else {
+                    READ_AGAIN
+                };
                 followed.asked_at?.checked_add(after)
             })
             .min()
@@ -128,7 +137,7 @@ impl Invocations {
         );
         self.asked
             .insert(request.invocation, Asked::Line { place, at });
-        self.queued.push(request);
+        self.queued.push(RemoteActionMessage::Invoke(request));
     }
 
     /// Follow every invocation `instance`'s views read now, and ask for the records that are due:
@@ -148,7 +157,9 @@ impl Invocations {
             let Some(id) = followed.id else {
                 continue;
             };
-            let since = followed.asked_at.map(|at| now.saturating_duration_since(at));
+            let since = followed
+                .asked_at
+                .map(|at| now.saturating_duration_since(at));
             let settled = followed
                 .read
                 .as_ref()
@@ -166,39 +177,45 @@ impl Invocations {
             }
         }
         for (read, id) in due {
-            let query = InvocationsQuery {
-                limit: 1,
-                invocation: Some(id.0.to_string()),
-                ..InvocationsQuery::default()
-            };
-            let request = request(
-                workspace_invocations::target(),
-                serde_json::to_value(query).unwrap_or_default(),
-            );
-            self.asked.insert(request.invocation, Asked::Read(read));
-            self.queued.push(request);
+            let correlation = self.next_correlation;
+            self.next_correlation = self.next_correlation.saturating_add(1);
+            self.reads.insert(correlation, read);
+            self.queued.push(RemoteActionMessage::ResourceRead {
+                correlation,
+                on_behalf_of: None,
+                read: ResourceReadRequest {
+                    workspace: self.workspace.clone(),
+                    app: workspace_invocations::PROVIDER.to_owned(),
+                    record: id.0.to_string(),
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
+                },
+            });
         }
     }
 
     /// Send what is queued with `send`. A request the connection does not take is asked again on
     /// a later frame: a read when it is due again, a line never (it says it did not run).
     pub fn say(&mut self, mut send: impl FnMut(CollabRequest) -> bool) {
-        for request in std::mem::take(&mut self.queued) {
-            let invocation = request.invocation;
-            let message = RemoteActionMessage::Invoke(request);
+        for message in std::mem::take(&mut self.queued) {
+            let (invocation, correlation) = match &message {
+                RemoteActionMessage::Invoke(request) => (Some(request.invocation), None),
+                RemoteActionMessage::ResourceRead { correlation, .. } => (None, Some(*correlation)),
+                _ => (None, None),
+            };
             if send(CollabRequest::RemoteAction { message }) {
                 continue;
             }
-            match self.asked.remove(&invocation) {
-                Some(Asked::Read(read)) => {
-                    if let Some(followed) = self.followed.get_mut(&read) {
-                        followed.waiting = false;
-                    }
-                }
-                Some(Asked::Line { place, at }) => {
+            if let Some(invocation) = invocation {
+                if let Some(Asked::Line { place, at }) = self.asked.remove(&invocation) {
                     self.said(&place, at, "The line could not be sent: try again.", true);
                 }
-                None => {}
+            } else if let Some(correlation) = correlation
+                && let Some(read) = self.reads.remove(&correlation)
+                && let Some(followed) = self.followed.get_mut(&read)
+            {
+                followed.waiting = false;
             }
         }
     }
@@ -208,6 +225,14 @@ impl Invocations {
         let CollabEvent::RemoteAction { message } = event else {
             return false;
         };
+        if let RemoteActionMessage::ResourceReading {
+            correlation,
+            result,
+        } = message
+        {
+            self.read(*correlation, result.as_ref().ok());
+            return true;
+        }
         let receipt = match message {
             RemoteActionMessage::Receipt(receipt) => receipt.clone(),
             RemoteActionMessage::Update {
@@ -228,7 +253,6 @@ impl Invocations {
             return true;
         }
         match self.asked.remove(&receipt.invocation) {
-            Some(Asked::Read(read)) => self.read(&read, &receipt),
             Some(Asked::Line { place, at }) => {
                 let (said, failed) = line_answer(&receipt);
                 self.said(&place, at, &said, failed);
@@ -254,35 +278,53 @@ impl Invocations {
         }
     }
 
-    /// Take `receipt`, the answer to the read of the invocation views read as `read`.
-    fn read(&mut self, read: &str, receipt: &InvocationReceipt) {
-        let workspace = self.workspace.clone();
-        let Some(followed) = self.followed.get_mut(read) else {
+    /// Take the reading `result` of the invocation views read as `correlation` asked for.
+    fn read(&mut self, correlation: u64, result: Option<&String>) {
+        let Some(read) = self.reads.remove(&correlation) else {
+            return;
+        };
+        let Some(followed) = self.followed.get_mut(&read) else {
             return;
         };
         followed.waiting = false;
-        let ReceiptStatus::Completed { output } = &receipt.status else {
+        let Some(text) = result else {
             // A read the dispatch refused says nothing of the invocation: it is read again when
             // it is due.
-            tracing::debug!(read, status = ?receipt.status, "an invocation's record was not read");
+            tracing::debug!(%read, "an invocation's record was not read");
             return;
         };
-        let page: workspace_invocations::Invocations = output
-            .value
-            .clone()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
+        let readings = match serde_json::from_str::<Value>(text) {
+            Ok(readings) => readings,
+            Err(why) => {
+                tracing::debug!(%read, %why, "an invocation's reading is not JSON");
+                return;
+            }
+        };
+        let Some(value) = readings.pointer("/records/0/value").cloned() else {
+            return;
+        };
+        let item = match serde_json::from_value::<Invocation>(value) {
+            Ok(item) => item,
+            Err(why) => {
+                tracing::debug!(%read, %why, "an invocation's reading is not one");
+                return;
+            }
+        };
         let id = followed.id.map(|id| id.0.to_string()).unwrap_or_default();
-        let now = page.items.first().map(|item| invoked(&workspace, &id, item));
-        if followed.read != now {
-            followed.read = now;
+        let now = invoked(&self.workspace, &id, &item);
+        if followed.read.as_ref() != Some(&now) {
+            followed.read = Some(now);
             followed.told = false;
         }
     }
 
     /// The `at`th line of `place` answered `said`.
     fn said(&mut self, place: &str, at: usize, said: &str, failed: bool) {
-        if let Some(line) = self.lines.get_mut(place).and_then(|lines| lines.get_mut(at)) {
+        if let Some(line) = self
+            .lines
+            .get_mut(place)
+            .and_then(|lines| lines.get_mut(at))
+        {
             line.running = false;
             line.said = said.to_owned();
             line.failed = failed;
@@ -311,7 +353,13 @@ fn request(target: tilo_actions::remote::RemoteActionTarget, argument: Value) ->
 /// is kept at (`<workspace>/<id>`, `tilo.invocations:<id>`, `…#answer:<id>`).
 fn invocation_in(read: &str) -> Option<InvocationId> {
     read.rsplit(['/', ':', '#'])
-        .find_map(|part| part.trim().parse::<InvocationId>().ok())
+        .find_map(|part| match part.trim().parse::<InvocationId>() {
+            Ok(id) => Some(id),
+            Err(why) => {
+                tracing::trace!(%why, part, "a word of a read names no invocation");
+                None
+            }
+        })
 }
 
 /// `item`, the record of the invocation `id`, as a view reads it.

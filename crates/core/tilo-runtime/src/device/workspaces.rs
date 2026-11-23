@@ -18,6 +18,7 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::remote::invocation_record::Invocations;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
@@ -381,6 +382,13 @@ impl ServiceWorkspaces {
     /// The service's workspaces, as this device holds them.
     pub(crate) fn copies(&self) -> &Workspaces {
         self.service.workspaces()
+    }
+
+    /// Share the device's record of the invocations it was asked for with the workspace
+    /// service, so what a model call costs is written into the record of the invocation that
+    /// made it ([`Invocations::note_spend`]).
+    pub(crate) fn serve_invocations(&self, records: Arc<Invocations>) {
+        self.service.workspaces().serve_invocations(records);
     }
 
     /// This device's endpoint, which the profile's other services share.

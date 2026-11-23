@@ -38,8 +38,10 @@ use tilo_peer_state::join_log::request_digest;
 use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
+use tilo_server_protocol::workspaces::{
+    IssueInvitationRequest, IssuedInvitation, WorkspaceListing,
+};
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
-use tilo_server_protocol::workspaces::{IssueInvitationRequest, IssuedInvitation, WorkspaceListing};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
@@ -863,8 +865,8 @@ pub(crate) mod entry_tests {
     use tilo_peer_state::join::Role;
     use tilo_server_protocol::WorkspaceId;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
-    use tilo_server_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{PUBLISH, ServiceWorkspaceActions, UNPUBLISH};

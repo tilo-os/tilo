@@ -12,12 +12,17 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::workspace_invocations::{CANCEL, GET, PROVIDER, RETRY};
+use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend};
 use super::{
-    ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeRequest,
-    Pending, ReceiptStatus, ResourceWake,
+    ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, ResourceWake,
 };
 use crate::InvocationId;
+
+/// Whether `caller` may write the resource an invocation was made from
+/// ([`Recorded::origin`]): what a provider's own grant check answers at the moment it is
+/// asked, so a person's access to that resource decides it then, never as it was.
+pub type OriginWrites<'a> = dyn Fn(&Caller, &Origin) -> bool + 'a;
 
 /// The most invocations a device keeps a record of; the oldest goes first.
 const KEPT: usize = 4096;
@@ -47,6 +52,15 @@ pub struct Recorded {
     /// It was answered as waiting for its person, and has not ended since: the call goes on and
     /// ends once they decide.
     pub waiting: bool,
+    /// The resource the call was made from, when it named one: the caller's `$from`, else the
+    /// conversation its turn belongs to. Whoever may write it may stop the invocation or run it
+    /// again.
+    pub origin: Option<Origin>,
+    /// The invocation this one runs again, when it is a retry: the same action, arguments and
+    /// caller, under a new id.
+    pub retries: Option<InvocationId>,
+    /// What a model call it made cost, as the model endpoint wrote it.
+    pub spend: Option<Spend>,
     route: Route,
 }
 
@@ -79,6 +93,20 @@ impl Invocations {
         workspace: Option<&str>,
         route: Route,
     ) {
+        self.recorded(caller, asked, request, workspace, route, None);
+    }
+
+    /// [`Self::record`] for an invocation that runs `retries` again: what a retry records beside
+    /// what it runs.
+    fn recorded(
+        &self,
+        caller: &Caller,
+        asked: &Caller,
+        request: &InvokeRequest,
+        workspace: Option<&str>,
+        route: Route,
+        retries: Option<InvocationId>,
+    ) {
         let id = request.invocation;
         let recorded = Recorded {
             caller: caller.clone(),
@@ -90,6 +118,9 @@ impl Invocations {
             state: None,
             changes: 0,
             waiting: false,
+            origin: origin_of(caller, request),
+            retries,
+            spend: None,
             route,
         };
         let mut kept = self.kept();
@@ -187,6 +218,14 @@ impl Invocations {
         ids.iter().filter_map(|id| self.refreshed(id)).collect()
     }
 
+    /// Note that the model call `id` made cost `spend`: what the model endpoint writes as it
+    /// answers, so the listing says what a run paid for.
+    pub fn note_spend(&self, id: &InvocationId, spend: Spend) {
+        if let Some(recorded) = self.kept().by_id.get_mut(id) {
+            recorded.spend = Some(spend);
+        }
+    }
+
     /// Note that `id` was answered as waiting for its person: the call goes on and ends once
     /// they decide.
     pub fn note_waiting(&self, id: &InvocationId) {
@@ -224,100 +263,106 @@ impl Invocations {
         provider.next_change(&runs_as, id)
     }
 
-    /// The answer to `request` when it asks one of [`PROVIDER`]'s invocations how it stands
-    /// ([`GET`]), to stop ([`CANCEL`]) or to run again ([`RETRY`]): the invocation is the
-    /// resource, by its id. `None` for any other request.
+    /// The answer to `request` when it asks one of [`PROVIDER`]'s invocations to stop
+    /// ([`CANCEL`]) or to run again ([`RETRY`]): the invocation is the resource, by its id. `None`
+    /// for any other request, a read included: a record is read through the record API, never as
+    /// an action.
+    ///
+    /// A call is stopped or run again by its caller, by the person its agent works for, or by
+    /// whoever `may_write_origin` says may write the resource it was made from. Anyone else is
+    /// refused in words a person reads.
     #[must_use]
     pub fn answer(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         request: &InvokeRequest,
+        may_write_origin: &OriginWrites<'_>,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let target = &request.target;
-        if target.provider != PROVIDER
-            || ![GET, CANCEL, RETRY].contains(&target.address.action.as_str())
+        if target.provider != PROVIDER || ![CANCEL, RETRY].contains(&target.address.action.as_str())
         {
             return None;
         }
-        let invocation = request.invocation;
-        let receipt = move |status| Ok(InvocationReceipt { invocation, status });
         let Some(id) = uuid::Uuid::parse_str(&target.address.resource)
             .ok()
             .map(InvocationId)
-            .filter(|id| self.get(caller, id).is_some())
         else {
             return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
         };
-        if target.address.action == CANCEL {
-            let stopping = self.cancel(caller, &id)?;
-            return Some(stopping.map(move |stopped| {
-                stopped.and_then(|()| {
-                    receipt(ReceiptStatus::Completed {
-                        output: crate::ActionOutput::default(),
-                    })
-                })
-            }));
+        let Some(recorded) = self.find(&id) else {
+            return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
+        };
+        if !self.may_manage(caller, &recorded, may_write_origin) {
+            let verb = if target.address.action == RETRY {
+                "run it again"
+            } else {
+                "stop it"
+            };
+            return Some(Pending::ready(Err(refused(verb, recorded.origin.as_ref()))));
         }
         if target.address.action == RETRY {
-            return Some(self.retry(caller, &id, invocation));
+            return Some(Self::retry(Arc::clone(self), &recorded, request.invocation));
         }
-        let state = self.observe(caller, &id);
-        let recorded = self.get(caller, &id)?;
-        let value = serde_json::json!({
-            "invocation": id.0.to_string(),
-            "target": recorded.request.target,
-            "workspace": recorded.workspace,
-            "started_ms": recorded.started_ms,
-            "ended_ms": recorded.ended_ms,
-            "changes": recorded.changes,
-            "state": state,
-        });
-        Some(Pending::ready(receipt(ReceiptStatus::Completed {
-            output: crate::ActionOutput {
-                value: Some(value),
-                ..crate::ActionOutput::default()
-            },
-        })))
+        let (provider, runs_as) = recorded.route;
+        let invocation = request.invocation;
+        Some(provider.cancel(&runs_as, &id).map(move |stopped| {
+            stopped.and_then(|()| {
+                Ok(InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Completed {
+                        output: crate::ActionOutput::default(),
+                    },
+                })
+            })
+        }))
     }
 
-    /// Run `id` again: its request, under a new id, as the caller that asked for it, at the
-    /// provider it ran at. The new invocation is recorded like the first, and the receipt (as
-    /// `asked`, the invocation that asked for the run) names it, so the one who retried follows
-    /// it. A request its caller signed on another device binds its first id, and is not signed
-    /// again here: the caller asks for it again from there.
+    /// Run `recorded`'s action again under a new invocation id, as the caller that made it and
+    /// with the same arguments and on-behalf-of, at the provider it ran at. The new record says
+    /// it retries the old one, and the answer to `asked` names the new record's address. A
+    /// request its caller signed on another device binds its first id and is not signed again
+    /// here: the caller asks for it again from there.
     fn retry(
-        &self,
-        caller: &Caller,
-        id: &InvocationId,
+        records: Arc<Self>,
+        recorded: &Recorded,
         asked: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(recorded) = self.get(caller, id) else {
-            return Pending::ready(Err(ActionCallError::UnknownInvocation));
-        };
         if recorded.request.signed.is_some() {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "it was asked for from another device: run it again from there".to_owned(),
             }));
         }
-        let (provider, runs_as) = recorded.route.clone();
-        let again = InvokeRequest {
-            invocation: InvocationId::new(),
-            ..recorded.request.clone()
-        };
-        let new = again.invocation;
-        self.record(
+        let original = recorded.request.invocation;
+        let mut request = recorded.request.clone();
+        request.invocation = InvocationId::new();
+        let fresh = request.invocation;
+        records.recorded(
             &recorded.caller,
-            caller,
-            &again,
+            &recorded.asked,
+            &request,
             recorded.workspace.as_deref(),
-            (Arc::clone(&provider), runs_as.clone()),
+            recorded.route.clone(),
+            Some(original),
         );
-        provider.invoke(&runs_as, again).map(move |admitted| {
-            admitted.map(|_| InvocationReceipt {
+        let (provider, runs_as) = recorded.route.clone();
+        let waiting = Arc::clone(&records);
+        provider.invoke(&runs_as, request).map(move |result| {
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(ActionCallError::awaits_person)
+            {
+                waiting.note_waiting(&fresh);
+            }
+            result.map(|_| InvocationReceipt {
                 invocation: asked,
                 status: ReceiptStatus::Completed {
                     output: crate::ActionOutput {
-                        value: Some(serde_json::json!({ "invocation": new.0.to_string() })),
+                        value: Some(serde_json::json!({
+                            "invocation": fresh.0.to_string(),
+                            "address": format!("{PROVIDER}/{}", fresh.0),
+                            "retries": original.0.to_string(),
+                        })),
                         ..crate::ActionOutput::default()
                     },
                 },
@@ -325,15 +370,92 @@ impl Invocations {
         })
     }
 
-    /// Stop `id` at the provider it runs at.
+    /// The record of `id`, whoever asked for it: what stopping or running it again reads before
+    /// it decides who may.
+    fn find(&self, id: &InvocationId) -> Option<Recorded> {
+        self.kept().by_id.get(id).cloned()
+    }
+
+    /// Whether `caller` may stop `recorded` or run it again: it is its caller
+    /// ([`Caller::continues`]), the person the agent that made it works for, or someone who may
+    /// write the resource it was made from, as `may_write_origin` reads it now.
+    fn may_manage(
+        &self,
+        caller: &Caller,
+        recorded: &Recorded,
+        may_write_origin: &OriginWrites<'_>,
+    ) -> bool {
+        caller.continues(&recorded.caller)
+            || agent_person_is(caller, &recorded.caller)
+            || recorded
+                .origin
+                .as_ref()
+                .is_some_and(|origin| may_write_origin(caller, origin))
+    }
+
+    /// Stop `id` at the provider it runs at, for a caller that may manage it. `None` when the
+    /// device was asked for no such invocation.
     #[must_use]
     pub fn cancel(
         &self,
         caller: &Caller,
         id: &InvocationId,
+        may_write_origin: &OriginWrites<'_>,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
-        let (provider, runs_as) = self.get(caller, id)?.route;
+        let recorded = self.find(id)?;
+        if !self.may_manage(caller, &recorded, may_write_origin) {
+            return Some(Pending::ready(Err(refused(
+                "stop it",
+                recorded.origin.as_ref(),
+            ))));
+        }
+        let (provider, runs_as) = recorded.route;
         Some(provider.cancel(&runs_as, id))
+    }
+}
+
+/// The resource `caller` made `request` from, when the call named one: its `$from`, else the
+/// conversation the caller's turn belongs to.
+fn origin_of(caller: &Caller, request: &InvokeRequest) -> Option<Origin> {
+    if let InvokeArgument::Json(arguments) = &request.argument
+        && let Some(from) = arguments
+            .get(crate::params::FROM_ARGUMENT)
+            .and_then(crate::params::MadeFrom::from_json)
+        && let Some(origin) = Origin::parse(&from.resource, Some(&from.kind))
+    {
+        return Some(origin);
+    }
+    caller
+        .turn()
+        .and_then(|turn| Origin::parse(&turn.conversation, None))
+}
+
+/// Whether `caller` is the person `owner` works for, when `owner` is an agent's caller.
+fn agent_person_is(caller: &Caller, owner: &Caller) -> bool {
+    let Some(person) = owner.acting_for_person() else {
+        return false;
+    };
+    let acting = caller.acting();
+    acting.person_id() == Some(person)
+        && !acting.is_agent()
+        && !acting.is_bot()
+        && acting.app().is_none()
+}
+
+/// Why `caller` may not `verb` an invocation: who may, and the resource that decides it.
+fn refused(verb: &str, origin: Option<&Origin>) -> ActionCallError {
+    let may = match origin {
+        Some(origin) => format!(
+            "the caller who made this invocation, the person its agent works for, or someone \
+             who may write {} may",
+            origin.address()
+        ),
+        None => {
+            "the caller who made this invocation, or the person its agent works for, may".to_owned()
+        }
+    };
+    ActionCallError::Refused {
+        reason: format!("only {may} {verb}"),
     }
 }
 
@@ -408,7 +530,8 @@ mod tests {
 
     #[test]
     fn an_invocation_is_followed_and_stopped_where_it_was_handed_on_to() {
-        let invocations = Invocations::default();
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
         let asked = Caller::local_person("ada").in_new_execution();
         let request = request();
         let id = request.invocation;
@@ -436,11 +559,17 @@ mod tests {
             asked.clone().in_new_execution(),
         ] {
             assert!(invocations.observe(&stranger, &id).is_none());
-            assert!(invocations.cancel(&stranger, &id).is_none());
+            assert!(matches!(
+                invocations
+                    .cancel(&stranger, &id, &never)
+                    .expect("the device knows it")
+                    .poll_ready(),
+                PendingPoll::Ready(Err(ActionCallError::Refused { .. }))
+            ));
         }
 
         let stopped = invocations
-            .cancel(&asked, &id)
+            .cancel(&asked, &id, &never)
             .expect("its caller stops it");
         let mut stopped = std::pin::pin!(stopped);
         let answered = std::future::Future::poll(
@@ -460,34 +589,33 @@ mod tests {
         assert!(recorded.ended_ms.is_some());
         assert_eq!(recorded.changes, 2);
 
-        // Asked as an action of the invocation, by its id: its caller reads it, nobody else.
+        // A record is read through the record API, never as one of its actions: what a model
+        // call it made cost is what the reading carries.
         let mut get = request.clone();
         get.invocation = InvocationId::new();
         get.target = RemoteActionTarget {
             provider: PROVIDER.into(),
-            address: crate::ActionAddress::new(id.0.to_string(), GET),
+            address: crate::ActionAddress::new(id.0.to_string(), "get"),
         };
         assert!(
-            invocations.answer(&asked, &request).is_none(),
+            invocations.answer(&asked, &request, &never).is_none(),
             "not one of its actions"
         );
-        let read = invocations.answer(&asked, &get).unwrap().poll_ready();
-        let PendingPoll::Ready(Ok(InvocationReceipt {
-            status: ReceiptStatus::Completed { output },
-            ..
-        })) = read
-        else {
-            panic!("its caller reads it");
-        };
-        let value = output.value.unwrap();
-        assert_eq!(value["workspace"], "w1", "{value}");
-        assert_eq!(value["state"]["update"]["state"], "succeeded", "{value}");
-        assert!(matches!(
-            invocations
-                .answer(&Caller::local_person("bob"), &get)
-                .unwrap()
-                .poll_ready(),
-            PendingPoll::Ready(Err(ActionCallError::UnknownInvocation))
-        ));
+        assert!(
+            invocations.answer(&asked, &get, &never).is_none(),
+            "a record is no action's to read"
+        );
+        invocations.note_spend(
+            &id,
+            Spend {
+                provider: Some("Models".into()),
+                model: Some("judge-small".into()),
+                input_tokens: 3,
+                output_tokens: 2,
+                cost_micros: 4321,
+            },
+        );
+        let spent = invocations.get(&asked, &id).unwrap().spend.unwrap();
+        assert_eq!(spent.cost_micros, 4321);
     }
 }

@@ -365,16 +365,16 @@ fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
     });
 }
 
-/// Where `invocations#list` is run, in `workspace`.
+/// Where the workspace's invocations are read, through the record API.
 fn listing(workspace: &str) -> String {
-    format!("/v1/workspaces/{workspace}/resources/invocations/actions/list")
+    format!("/v1/workspaces/{workspace}/resources/record:tilo.invocations:")
 }
 
-/// The page of the workspace's runs `asked` asks for, as `key` reads it.
-async fn invocations(key: &host::Key, workspace: &str, asked: &Value) -> Value {
-    let (status, answered) = key.post(&listing(workspace), asked).await;
+/// The workspace's runs as `key` reads them, whole.
+async fn invocations(key: &host::Key, workspace: &str) -> Value {
+    let (status, answered) = key.get(&listing(workspace)).await;
     assert_eq!(status, 200, "{answered}");
-    answered["result"].clone()
+    answered["fields"].clone()
 }
 
 /// The run titled `title` in `listed`.
@@ -407,7 +407,7 @@ fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
             .await;
         assert_eq!(status, 200, "{undone}");
         assert_eq!(undone["status"], "ok", "{undone}");
-        let listed = invocations(&person, &workspace, &json!({})).await;
+        let listed = invocations(&person, &workspace).await;
         let taken = titled(&listed, "Cover letter");
         assert_eq!(taken["status"], "undone", "{listed}");
         assert_eq!(taken["undone"], taken["changes"], "{taken}");
@@ -415,9 +415,9 @@ fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
     });
 }
 
-/// Keys reading a workspace list its runs newest first, each with who ran it and how it ended;
-/// a page carries `limit` runs and reads on from its cursor, and a key for another workspace is
-/// refused as on the routes beside it.
+/// Keys reading a workspace list its runs newest first, each with who ran it and how it ended,
+/// whole through the record API; a key for another workspace is refused as on the routes
+/// beside it.
 #[test]
 fn keys_reading_a_workspace_list_its_runs_newest_first() {
     host::run(|host| async move {
@@ -435,7 +435,7 @@ fn keys_reading_a_workspace_list_its_runs_newest_first() {
         }
 
         for reader in [&agent, &reviewer, &person] {
-            let listed = invocations(reader, &workspace, &json!({})).await;
+            let listed = invocations(reader, &workspace).await;
             let order: Vec<&str> = listed["items"]
                 .as_array()
                 .unwrap()
@@ -453,19 +453,10 @@ fn keys_reading_a_workspace_list_its_runs_newest_first() {
             }
         }
 
-        // A page carries `limit` runs, the totals the whole, and the next page reads on from its
-        // cursor.
-        let total = invocations(&agent, &workspace, &json!({})).await["total"].clone();
-        let first = invocations(&agent, &workspace, &json!({"limit": 2})).await;
-        assert_eq!(first["items"].as_array().unwrap().len(), 2, "{first}");
-        assert_eq!(first["total"], total, "{first}");
-        let cursor = first["next_cursor"].as_str().expect("a cursor");
-        let second = invocations(&agent, &workspace, &json!({"limit": 2, "cursor": cursor})).await;
-        assert_eq!(second["items"].as_array().unwrap().len(), 2, "{second}");
-        let (status, refused) = agent
-            .post(&listing(&workspace), &json!({"limit": "many"}))
-            .await;
-        assert_eq!(status, 400, "{refused}");
+        // The record is read whole: every run, and how many there are.
+        let whole = invocations(&agent, &workspace).await;
+        assert_eq!(whole["total"], 3, "the record is whole: {whole}");
+        assert_eq!(whole["items"].as_array().unwrap().len(), 3, "{whole}");
     });
 }
 

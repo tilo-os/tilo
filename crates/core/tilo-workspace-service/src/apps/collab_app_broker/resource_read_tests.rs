@@ -197,7 +197,9 @@ fn fixture_with(owner: Owner) -> Fixture {
     elsewhere.set_owner("someone else");
     let (shared_id, elsewhere_id) = (shared.id().to_string(), elsewhere.id().to_string());
     let mut tree = WorkspaceTree::default();
-    tree.desktop.workspaces.extend([workspace, shared, elsewhere]);
+    tree.desktop
+        .workspaces
+        .extend([workspace, shared, elsewhere]);
     let membership = tree.shared();
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
@@ -318,8 +320,7 @@ fn before_sign_in() -> BeforeSignIn {
         crate::apps::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
     let certificate = session.device();
     let device = person_id_for_root(certificate.user_public_key);
-    let mut founded =
-        crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(81), "Home");
+    let mut founded = crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(81), "Home");
     founded.set_owner(device.clone());
     let mut other =
         crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(82), "Elsewhere");

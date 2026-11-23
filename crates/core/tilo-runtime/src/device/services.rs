@@ -30,13 +30,13 @@ use std::{
     process::{Child, Command},
     sync::{Arc, Mutex},
 };
-use tilo_actions::ActionOutput;
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget, device_agent_id,
     workspace_invocations::InvocationsQuery as WorkspaceInvocationsQuery,
+    workspace_invocations::Origin,
 };
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::grant_key::GrantKey;
@@ -749,10 +749,12 @@ impl Daemon {
             fanout,
         )?;
         // The device's record of every invocation it was asked for is what the workspace's
-        // dispatch lists: get, cancel and the listing all read the one record.
+        // dispatch reads and follows; the workspace service writes what a model call cost into
+        // it as it answers.
         if let Some(broker) = broker.app_action_broker() {
             broker.state().serve_invocations(Arc::clone(&invocations));
         }
+        workspaces.serve_invocations(Arc::clone(&invocations));
         // An action an agent makes for the person, which asks for
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.
@@ -2063,46 +2065,6 @@ impl RuntimeActionProvider {
         })
     }
 
-    /// `request`, a listing of this workspace's invocations: one page at once, from the device's
-    /// record of each call it was asked for, running nothing.
-    fn invocation_listing(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionCallError> {
-        if let Some(session) = &self.session
-            && let Err(refusal) = session.check(caller, &self.workspaces)
-        {
-            return Err(refusal.into());
-        }
-        let invocation = request.invocation;
-        let query = match &request.argument {
-            InvokeArgument::None => Ok(WorkspaceInvocationsQuery::default()),
-            InvokeArgument::Json(arguments) => {
-                serde_json::from_value(serde_json::Value::Object(arguments.clone()))
-            }
-            InvokeArgument::Text(_) => serde_json::from_value(serde_json::Value::Null),
-        }
-        .map_err(|error| ActionCallError::InvalidRequest {
-            reason: format!(
-                "a listing of invocations takes {{limit, cursor, by, invocation, status}}: {error}"
-            ),
-        })?;
-        let listed = self
-            .broker
-            .state()
-            .invocation_listing(&self.workspace, caller, &query)?;
-        Ok(InvocationReceipt {
-            invocation,
-            status: ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value: serde_json::to_value(listed).ok(),
-                    resources: Vec::new(),
-                },
-            },
-        })
-    }
-
     fn session_factory(
         self,
         workspace: String,
@@ -2355,8 +2317,15 @@ impl tilo_actions::remote::ResourceReads for DispatchReads {
         if address.record.is_empty() {
             let items = self.listed(caller, None)?;
             let total = items.len();
+            let waiting = items
+                .iter()
+                .filter(|invocation| {
+                    invocation.status
+                        == tilo_actions::remote::workspace_invocations::InvocationStatus::Waiting
+                })
+                .count();
             return Ok(ResourceCopy::reading(
-                serde_json::json!({ "items": items, "total": total }),
+                serde_json::json!({ "items": items, "total": total, "waiting": waiting }),
                 None,
             ));
         }
@@ -2594,10 +2563,12 @@ impl ActionProvider for RuntimeActionProvider {
         {
             return tickets.invoke(&request);
         }
-        if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
-            return Pending::ready(self.invocation_listing(caller, &request));
-        }
-        if let Some(answered) = self.invocations.answer(caller, &request) {
+        let origin_writes = |caller: &Caller, origin: &Origin| {
+            self.broker
+                .state()
+                .may_write_origin(caller, &self.workspace, origin)
+        };
+        if let Some(answered) = self.invocations.answer(caller, &request, &origin_writes) {
             return answered;
         }
         if let Some(session) = &self.session {
@@ -2792,7 +2763,14 @@ impl ActionProvider for RuntimeActionProvider {
                 reason: "a device action ends by itself".into(),
             }));
         }
-        if let Some(stopping) = self.invocations.cancel(caller, id) {
+        if let Some(stopping) =
+            self.invocations
+                .cancel(caller, id, &|caller: &Caller, origin: &Origin| {
+                    self.broker
+                        .state()
+                        .may_write_origin(caller, &self.workspace, origin)
+                })
+        {
             return stopping;
         }
         if let Some(session) = &self.session {

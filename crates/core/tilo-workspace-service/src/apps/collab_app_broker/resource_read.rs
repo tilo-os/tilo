@@ -66,7 +66,11 @@ impl AppBrokerState {
     /// The workspace a caller's connection was admitted to decides nothing about another one it
     /// names: the read is decided there, for the caller's actor as it is in that workspace, and a
     /// caller the workspace grants nothing is refused as for any record it may not read.
-    fn reader(&self, caller: &Caller, workspace: &str) -> Result<(Caller, Reader), ActionCallError> {
+    fn reader(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<(Caller, Reader), ActionCallError> {
         if self.services.local_person.is_none() {
             return self.device_reader(caller, workspace);
         }
@@ -110,8 +114,8 @@ impl AppBrokerState {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             });
         };
-        let founded_here = uuid::Uuid::parse_str(workspace)
-            .is_ok_and(|founded| authority.governs(founded, None));
+        let founded_here =
+            uuid::Uuid::parse_str(workspace).is_ok_and(|founded| authority.governs(founded, None));
         if !founded_here {
             return Err(refused());
         }
@@ -150,7 +154,9 @@ impl AppBrokerState {
                 .services
                 .local_person
                 .as_ref()
-                .ok_or_else(|| unavailable(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into()))?
+                .ok_or_else(|| {
+                    unavailable(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into())
+                })?
                 .certificate(workspace, &person)
                 .map_err(unavailable),
         }
@@ -378,6 +384,11 @@ impl AppBrokerState {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
+        // The workspace's invocations are a resource this broker publishes itself, read as every
+        // record is.
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+            return self.read_invocations(caller, &address.workspace, &address.record);
+        }
         let (decided, reader) = self.reader(caller, &address.workspace)?;
         self.may_read_document(&decided, address)?;
         let checked = (Arc::downgrade(&self), decided, address.clone());
@@ -400,6 +411,12 @@ impl AppBrokerState {
         address: &ResourceAddress,
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+            return Err(ActionCallError::Unavailable {
+                reason: "a workspace's invocations are read whole or one by one, not from a store"
+                    .into(),
+            });
+        }
         let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
         let (decided, _) = self.reader(caller, &address.workspace)?;
         let command: tilo_resource_store::wire::Command = serde_json::from_value(read)
@@ -435,6 +452,9 @@ impl AppBrokerState {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+            return self.watch_invocations(caller, &address.workspace, wake);
+        }
         let (decided, _) = self.reader(caller, &address.workspace)?;
         self.may_read_document(&decided, address)?;
         self.follow_document_writes(

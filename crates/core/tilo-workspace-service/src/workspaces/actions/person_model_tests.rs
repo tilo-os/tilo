@@ -1300,3 +1300,113 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
     assert!(scripted.asked().is_empty(), "no provider was asked");
     server.shutdown().await;
 }
+
+/// A model call an invocation made writes what it cost into that invocation's record, where the
+/// record's reading shows it: the provider and model that answered, the tokens counted and the
+/// millionths of the currency spent.
+#[test]
+fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
+    use std::sync::Arc;
+
+    use tilo_actions::remote::invocation_record::Invocations;
+    use tilo_actions::remote::{
+        ActionProvider, CataloguePage, CatalogueQuery, InvocationId, InvocationReceipt,
+        InvocationState, Pending, settle_with,
+    };
+
+    /// A provider that answers nothing: the record of the ask is what the test reads.
+    struct Nothing;
+    impl ActionProvider for Nothing {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::default()))
+        }
+        fn invoke(
+            &self,
+            _: &Caller,
+            _: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+        fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+        fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions_here) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    workspaces.answer_models_with(ScriptedProvider::answering([
+        Reply::text("hello there").costing(4321)
+    ]));
+    let provider = link(
+        &actions_here,
+        workspace_id,
+        &ada,
+        ("Models", "https://models.example.com/v1", ADA_KEY),
+    )
+    .await;
+    workspaces
+        .offer_models_for(&workspace_id.to_string(), &provider, &["judge-small"])
+        .unwrap();
+    ask_own(
+        &actions_here,
+        workspace_id,
+        &ada,
+        person_models::SET_DEFAULT,
+        json!({"provider": provider, "model": "judge-small"}),
+    )
+    .await
+    .unwrap();
+
+    // The device keeps the record of the ask before it is made, as its dispatch does.
+    let records = Arc::new(Invocations::default());
+    workspaces.serve_invocations(Arc::clone(&records));
+    let her = super::tests::caller(&ada);
+    let mut request = super::tests::request(
+        "",
+        "",
+        serde_json::to_value(asking("what is this")).unwrap(),
+    );
+    request.target = person_models::target(person_models::ASK);
+    let invocation = request.invocation;
+    records.record(
+        &her,
+        &her,
+        &request,
+        Some(&workspace_id.to_string()),
+        (Arc::new(Nothing), her.clone()),
+    );
+
+    let actions = actions_here.in_workspace_as(workspace_id, &ada);
+    let receipt = super::tests::settled(actions.invoke(&her, request))
+        .await
+        .unwrap();
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "{receipt:?}"
+    );
+    let now = tilo_clock::now();
+    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap();
+    super::tests::settled(settle_with(&actions, &her, invocation, None, until))
+        .await
+        .expect("the ask is the caller's to follow");
+
+    let recorded = records.get(&her, &invocation).expect("the ask is recorded");
+    let spend = recorded.spend.expect("the model wrote what it cost");
+    assert_eq!(spend.provider.as_deref(), Some("Models"));
+    assert_eq!(spend.model.as_deref(), Some("judge-small"));
+    assert_eq!(spend.input_tokens, 3, "the prompt's three words");
+    assert_eq!(spend.output_tokens, 2, "the answer's two words");
+    assert_eq!(spend.cost_micros, 4321);
+    server.shutdown().await;
+}

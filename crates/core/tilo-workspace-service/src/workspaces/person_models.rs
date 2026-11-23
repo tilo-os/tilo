@@ -31,6 +31,7 @@ use tilo_actions::remote::person_models::{
     self, AddModel, AddPreset, BeginSignIn, ListedModels, ListingProblem, ModelProviders,
     ProviderView, SetAssignment, SetAssignments, SetDefault, SetKey, SetReasoning, WaitSignIn,
 };
+use tilo_actions::remote::workspace_invocations::Spend;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
     Destinations, Lookup, check_destination, guarded_client, system_lookup,
@@ -160,7 +161,12 @@ impl Workspaces {
         if action == person_models::ASK {
             let asked: ModelRequest = argument(request, "a model request")?;
             return self
-                .ask_workspace_model(reach.workspace, &asked, &mut |_| {})
+                .ask_workspace_model(
+                    reach.workspace,
+                    &asked,
+                    &mut |_| {},
+                    Some(&request.invocation),
+                )
                 .await;
         }
         let here = reach.workspace.to_string();
@@ -274,24 +280,42 @@ impl Workspaces {
             )
             .await?;
         let asked: ModelRequest = argument(request, "a model request")?;
-        self.ask_workspace_model(reach.workspace, &asked, events)
+        self.ask_workspace_model(reach.workspace, &asked, events, Some(&request.invocation))
             .await
     }
 
+    /// Answer one [`person_models::ASK`], recording what it cost on the invocation `invocation`
+    /// that made it: the provider and model that answered, the tokens it counted and the
+    /// millionths of the currency it spent.
     async fn ask_workspace_model(
         &self,
         workspace: collab_types::WorkspaceId,
         asked: &ModelRequest,
         events: super::person_model::Events<'_>,
+        invocation: Option<&tilo_actions::InvocationId>,
     ) -> Result<Value, ActionCallError> {
         let model = self.workspace_model(workspace, Interaction::Request);
         let now = tilo_clock::now();
         let deadline = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
-        let answered: Result<ModelResponse, ModelError> = model
+        let answered = model
             .answer(asked, deadline, events)
             .await
-            .map(|answer| answer.response)
             .map_err(|refusal| refusal.model_error());
+        if let (Ok(answer), Some(records), Some(invocation)) =
+            (&answered, self.inner.invocations.get(), invocation)
+        {
+            records.note_spend(
+                invocation,
+                Spend {
+                    provider: Some(answer.linked.provider.clone()),
+                    model: Some(answer.linked.model.id.clone()),
+                    input_tokens: answer.response.usage.input_tokens,
+                    output_tokens: answer.response.usage.output_tokens,
+                    cost_micros: answer.response.cost_micros,
+                },
+            );
+        }
+        let answered: Result<ModelResponse, ModelError> = answered.map(|answer| answer.response);
         serde_json::to_value(answered).map_err(|error| ActionCallError::Refused {
             reason: error.to_string(),
         })

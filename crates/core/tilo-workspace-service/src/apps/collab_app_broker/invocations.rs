@@ -21,6 +21,7 @@ use tilo_action_policy::{ActionKind, TreePath};
 use tilo_actions::remote::invocation_record::{Invocations, Recorded};
 use tilo_actions::remote::workspace_invocations::{
     Invocation, InvocationBy, InvocationStatus, Invocations as Listed, InvocationsQuery, MOST,
+    Origin,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueQuery, InvokeRequest, resource_parts,
@@ -82,6 +83,106 @@ impl AppBrokerState {
         let items = of_member(items, query.by.as_deref());
         let items = of_status(items, only);
         Ok(page(items, query))
+    }
+
+    /// The workspace's invocations as a record read, whole (an empty id) or one by its id, as
+    /// `caller` may read each call there. What a program, an agent and a view read through the
+    /// record API, never as an action.
+    pub(crate) fn read_invocations(
+        self: &Arc<Self>,
+        caller: &Caller,
+        workspace: &str,
+        record: &str,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        let one = (!record.is_empty()).then(|| record.to_owned());
+        let page = self.invocations_of(
+            workspace,
+            caller,
+            &InvocationsQuery {
+                limit: MOST,
+                invocation: one,
+                ..InvocationsQuery::default()
+            },
+            None,
+        )?;
+        if record.is_empty() {
+            let waiting = page
+                .items
+                .iter()
+                .filter(|invocation| invocation.status == InvocationStatus::Waiting)
+                .count();
+            return Ok(tilo_actions::remote::ResourceCopy::reading(
+                serde_json::json!({ "items": page.items, "total": page.total, "waiting": waiting }),
+                None,
+            ));
+        }
+        Ok(match page.items.into_iter().next() {
+            Some(invocation) => tilo_actions::remote::ResourceCopy::reading(
+                serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?,
+                None,
+            ),
+            None => tilo_actions::remote::ResourceCopy::Absent,
+        })
+    }
+
+    /// Wake `wake` once the workspace's invocations next change, decided as a read is: the
+    /// record of a call recorded there, or of one that has not ended, moving.
+    pub(crate) fn watch_invocations(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        if self.decide_for(caller, workspace, |_, _, _| ()).is_none() {
+            return Err(ActionCallError::NotPermitted);
+        }
+        let records = self
+            .invocations
+            .get()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "this workspace's dispatch keeps no record of its invocations".into(),
+            })?;
+        records.watch(workspace, wake);
+        Ok(())
+    }
+
+    /// Whether `caller` may write the resource `origin` names in `workspace` now: what stopping
+    /// or running again an invocation someone else made asks of the resource it was made from.
+    /// Decided at the resource's node with the caller's actor, as a record's read is
+    /// ([`Self::may_read`]).
+    #[must_use]
+    pub fn may_write_origin(&self, caller: &Caller, workspace: &str, origin: &Origin) -> bool {
+        if super::action_provider::check_execution(caller).is_err() {
+            return false;
+        }
+        let app = self.origin_app(&origin.kind);
+        self.decide_for(caller, workspace, |workspace, actor, now| {
+            let node =
+                tilo_actions::resource_node(&workspace.node(), &app, &origin.kind, &origin.id);
+            actor.may_in(workspace, &node, ActionKind::Undoable, now)
+        })
+        .unwrap_or(false)
+    }
+
+    /// The app that publishes `kind`, as a kind names its app (`chat.workspace.channels` is
+    /// Chat's): the surface an app published of that kind says it, else the name the kind
+    /// begins with, which is the app itself.
+    fn origin_app(&self, kind: &str) -> String {
+        let published = self.published_surfaces();
+        if let Some(surface) = published.iter().find(|surface| {
+            surface.actions.iter().any(|action| {
+                action.resource_kind == kind
+                    || action.resource_kind.starts_with(&format!("{kind}."))
+                    || kind.starts_with(&format!("{}.", action.resource_kind))
+            })
+        }) {
+            return surface.app_id.clone();
+        }
+        tilo_actions::tree::type_address(kind)
+            .unwrap_or(kind)
+            .to_owned()
     }
 
     /// The invocation `recorded` was asked for, as `caller` reads it: `None` when the caller's
@@ -164,6 +265,9 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
     Invocation {
         id: Some(recorded.request.invocation.0.to_string()),
         calls: vec![recorded.request.invocation.0.to_string()],
+        origin: recorded.origin.clone(),
+        retries: recorded.retries.map(|original| original.0.to_string()),
+        spend: recorded.spend.clone(),
         step: None,
         by: by(&recorded.asked),
         title: title(request),

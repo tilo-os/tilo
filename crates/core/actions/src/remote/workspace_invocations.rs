@@ -20,22 +20,18 @@
 //!   changed no record (one refused, one still waiting) is known from them
 //!   alone, and only until the host restarts or lets go of it.
 //!
-//! [`target`] asks for one page ([`InvocationsQuery`]); the host answers it at once,
-//! running nothing, with [`Invocations`].
+//! The workspace's invocations are a record, read through the record API
+//! ([`crate::remote::ResourceReads`]): whole, or one by its id, as the caller may read each
+//! call. [`InvocationsQuery`] is the page a host builds that record's reading from.
 
 use serde::{Deserialize, Serialize};
 
-use super::RemoteActionTarget;
 use crate::api::ActionAddress;
 
 /// The provider a host answers its workspace's invocations under.
 pub const PROVIDER: &str = "tilo.invocations";
-/// The resource the listing is an action of: the workspace.
+/// The resource the invocations are published as: the workspace's own record of them.
 pub const RESOURCE: &str = "workspace";
-/// List the workspace's invocations, newest first.
-pub const LIST: &str = "list";
-/// How one invocation stands: an action of the invocation, by its id.
-pub const GET: &str = "get";
 /// Stop one invocation.
 pub const CANCEL: &str = "cancel";
 /// Run one invocation again: the same request, by the same caller, under a new id.
@@ -46,25 +42,7 @@ pub const PAGE: usize = 50;
 /// The most invocations one page holds.
 pub const MOST: usize = 200;
 
-/// What [`LIST`] is invoked on.
-#[must_use]
-pub fn target() -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(RESOURCE, LIST),
-    }
-}
-
-/// Whether `target` asks for the listing.
-#[must_use]
-pub fn is_listing(target: &RemoteActionTarget) -> bool {
-    target.provider == PROVIDER
-        && target.address.resource == RESOURCE
-        && target.address.action == LIST
-}
-
-/// What the workspace root names the invocations by: `invocations` lists them, and
-/// `invocations#list` reads a page of them whole.
+/// What the workspace root names the invocations by: `invocations` reads them.
 pub const ROOT_CHILD: &str = "invocations";
 /// The resource type of one invocation in the published tree.
 pub const INVOCATION_TYPE: &str = "invocation";
@@ -83,9 +61,8 @@ pub fn publisher(workspace: &str) -> super::CatalogueProvider {
 }
 
 /// The published tree of a workspace's invocations, as one catalogue page lists it: the
-/// workspace's invocations ([`RESOURCE`], which [`LIST`] is the action of), holding one
-/// resource for each of `listed`, newest first. A listing pages through them as it pages any
-/// resource's children.
+/// workspace's invocations ([`RESOURCE`]), holding one resource for each of `listed`, newest
+/// first. A listing pages through them as it pages any resource's children.
 #[must_use]
 pub fn tree_rows(listed: &[Invocation]) -> Vec<super::CatalogueRow> {
     let row = |parent: &str, id: String, of_type: &str, label: String| super::CatalogueRow {
@@ -107,10 +84,7 @@ pub fn tree_rows(listed: &[Invocation]) -> Vec<super::CatalogueRow> {
         "Invocations".to_owned(),
     );
     root.has_children = !listed.is_empty();
-    let mut list = root.clone();
-    list.action = Some(list_action());
-    [root, list]
-        .into_iter()
+    std::iter::once(root)
         .chain(listed.iter().flat_map(|invocation| {
             let id = invocation
                 .id
@@ -174,43 +148,6 @@ fn resolve_action(invocation: &str) -> crate::ActionDescriptor {
                 "choice",
                 ParamType::Integer,
                 "For a question with choices: the one picked, by its place.",
-            ),
-        ],
-        view: None,
-    }
-}
-
-/// [`LIST`] as the tree publishes it: a read of one page, by `limit` and `cursor`.
-fn list_action() -> crate::ActionDescriptor {
-    use crate::{ActionContract, ActionKind, ActionParam, ParamType};
-    crate::ActionDescriptor {
-        did: None,
-        state: crate::ActionState::default(),
-        semantic_identity: None,
-        address: ActionAddress::new(RESOURCE, LIST),
-        resource_kind: "workspace.invocations".to_owned(),
-        resource_label: "Invocations".to_owned(),
-        action_label: "List invocations".to_owned(),
-        keywords: Vec::new(),
-        icon: None,
-        description: Some(
-            "The workspace's invocations in records you may read, newest first: who made each, \
-             how it stands, what it changed and whether it can still be taken back."
-                .to_owned(),
-        ),
-        locus: crate::ExecutionLocus::ServerPreferred,
-        kind: crate::OperationKind::Effect,
-        contract: ActionContract {
-            kind: ActionKind::Read,
-            ..ActionContract::default()
-        },
-        input: crate::InputSpec::None,
-        params: vec![
-            ActionParam::optional("limit", ParamType::Integer, "How many, at most 200."),
-            ActionParam::optional(
-                "cursor",
-                ParamType::Text,
-                "Where the page before ended: its `next_cursor`.",
             ),
         ],
         view: None,
@@ -303,6 +240,76 @@ pub struct InvocationChange {
     pub record: String,
 }
 
+/// The resource a call was made from: what an invocation runs for, so whoever may write it may
+/// too stop the invocation or run it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Origin {
+    /// Its kind, as the app that publishes it names it (`chat.workspace.channels`).
+    pub kind: String,
+    /// Its id in that kind (`c1`).
+    pub id: String,
+}
+
+impl Origin {
+    /// The resource `address` names, with `kind` when its caller says what the resource is:
+    /// its stable address (`chat.workspace.channels:c1`), or the item form an item's link
+    /// carries (`chat.workspace/channels/c1`). `None` for an address naming no resource.
+    #[must_use]
+    pub fn parse(address: &str, kind: Option<&str>) -> Option<Self> {
+        let address = address.trim();
+        if address.is_empty() {
+            return None;
+        }
+        if let Some(stable) = crate::stable_item_address(address) {
+            let (kind, id) = stable.split_once(':')?;
+            return Some(Self {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+            });
+        }
+        if let Some((kind, id)) = address.split_once(':')
+            && !kind.is_empty()
+            && !id.is_empty()
+        {
+            return Some(Self {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+            });
+        }
+        let kind = kind.map(str::trim).filter(|kind| !kind.is_empty())?;
+        Some(Self {
+            kind: kind.to_owned(),
+            id: address.to_owned(),
+        })
+    }
+
+    /// The resource's stable address (`chat.workspace.channels:c1`).
+    #[must_use]
+    pub fn address(&self) -> String {
+        format!("{}:{}", self.kind, self.id)
+    }
+}
+
+/// What a model call an invocation made cost: what the model endpoint writes as it answers, so
+/// a listing says what work a run paid for.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Spend {
+    /// The provider that answered, as its person named it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model's id, as its provider names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The prompt's tokens, as the provider counted them.
+    pub input_tokens: u64,
+    /// The answer's tokens, as the provider counted them.
+    pub output_tokens: u64,
+    /// What the call cost, in millionths of the currency.
+    pub cost_micros: u64,
+}
+
 /// One invocation of a workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -316,6 +323,15 @@ pub struct Invocation {
     /// Every call of it the host remembers, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
+    /// The resource the call was made from, when it named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    /// The invocation this one runs again, when it is a retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<String>,
+    /// What a model call it made cost, when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend: Option<Spend>,
     /// The undo step its changes are kept under in every record's history:
     /// what tells it apart there, and here across the host's restarts.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -429,7 +445,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_page_is_bounded_and_the_listing_named_by_its_target() {
+    fn a_page_is_bounded() {
         assert_eq!(InvocationsQuery::default().page(), PAGE);
         assert_eq!(
             InvocationsQuery {
@@ -447,10 +463,6 @@ mod tests {
             .page(),
             MOST
         );
-        assert!(is_listing(&target()));
-        let mut other = target();
-        other.address.action = "undo".into();
-        assert!(!is_listing(&other));
         let answer = serde_json::to_value(Invocation {
             status: InvocationStatus::Waiting,
             ..Invocation::default()

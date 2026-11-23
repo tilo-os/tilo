@@ -4,8 +4,7 @@
 //! them beside the steps of this task.
 use super::*;
 use tilo_actions::remote::workspace_invocations::{
-    Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations, InvocationsQuery,
-    is_listing,
+    Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations,
 };
 
 /// [`Notes`] with the runs a workspace host keeps of what happened in it.
@@ -14,8 +13,6 @@ pub(super) struct KeepingRuns {
     notes: Notes,
     /// The runs the workspace keeps, newest last.
     runs: Arc<Mutex<Vec<Invocation>>>,
-    /// The member each listing of runs asked for, oldest first.
-    asked: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl KeepingRuns {
@@ -24,13 +21,7 @@ impl KeepingRuns {
         Self {
             notes,
             runs: Arc::default(),
-            asked: Arc::default(),
         }
-    }
-
-    /// The member each listing of runs asked for, oldest first.
-    fn runs_asked(&self) -> Vec<Option<String>> {
-        self.asked.lock().unwrap().clone()
     }
 
     /// Keep the run a change of `request` makes, attributed to the member
@@ -71,43 +62,51 @@ impl KeepingRuns {
         drop(kept);
     }
 
-    /// The workspace's runs, newest first, as its host lists them: only the
-    /// member's the query asks for, and one page of them.
-    fn listing(&self, request: &InvokeRequest) -> InvocationReceipt {
-        let query = match &request.argument {
-            InvokeArgument::Json(fields) => serde_json::from_value::<InvocationsQuery>(
-                serde_json::Value::Object(fields.clone()),
-            )
-            .unwrap_or_default(),
-            _ => InvocationsQuery::default(),
-        };
-        self.asked.lock().unwrap().push(query.by.clone());
+    /// The workspace's runs, newest first, as its host reads them through the record API.
+    fn reading(&self) -> serde_json::Value {
         let mut runs = self.runs.lock().unwrap().clone();
-        if let Some(by) = &query.by {
-            runs.retain(|run| run.by.id.as_ref() == Some(by));
-        }
         runs.sort_by_key(|run| std::cmp::Reverse(run.started_ms));
-        let total = runs.len();
-        runs.truncate(query.page());
-        let listed = Invocations {
-            items: runs,
-            total,
-            waiting: 0,
-            pending: false,
-            next_cursor: None,
-        };
-        let value = serde_json::to_value(&listed).ok();
-        InvocationState::new(
-            request.invocation,
-            InvocationUpdate::Succeeded {
-                invocation: request.invocation,
-                output: tilo_actions::ActionOutput {
-                    value,
-                    ..tilo_actions::ActionOutput::default()
-                },
-            },
-        )
-        .receipt()
+        serde_json::json!({"items": runs, "total": runs.len(), "waiting": 0})
+    }
+}
+
+/// The record reader of [`KeepingRuns`]: the workspace's invocations, whole or one by its id.
+struct RunsRead {
+    runs: Arc<Mutex<Vec<Invocation>>>,
+}
+
+impl tilo_actions::remote::ResourceReads for RunsRead {
+    fn read(
+        &self,
+        _: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        let mut runs = self.runs.lock().unwrap().clone();
+        runs.sort_by_key(|run| std::cmp::Reverse(run.started_ms));
+        if address.record.is_empty() {
+            return Ok(tilo_actions::remote::ResourceCopy::reading(
+                serde_json::json!({"items": runs, "total": runs.len(), "waiting": 0}),
+                None,
+            ));
+        }
+        Ok(runs
+            .into_iter()
+            .find(|run| run.id.as_deref() == Some(address.record.as_str()))
+            .map_or(tilo_actions::remote::ResourceCopy::Absent, |one| {
+                tilo_actions::remote::ResourceCopy::reading(
+                    serde_json::to_value(one).unwrap_or_default(),
+                    None,
+                )
+            }))
+    }
+
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 }
 
@@ -128,14 +127,17 @@ impl ActionProvider for KeepingRuns {
         self.notes.resource_search()
     }
 
+    fn resource_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(std::sync::Arc::new(RunsRead {
+            runs: Arc::clone(&self.runs),
+        }))
+    }
+
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if is_listing(&request.target) {
-            return Pending::ready(Ok(self.listing(&request)));
-        }
         self.note(caller, &request);
         self.notes.invoke(caller, request)
     }
@@ -180,8 +182,8 @@ tilo_test_env::scenario! {
                 history.contains("1 change in notes: append-paragraph"),
                 "{history}"
             );
-            // The workspace is asked for this agent's runs alone.
-            assert_eq!(host.runs_asked(), vec![Some("claude-code".to_owned())]);
+            // The reading carries the workspace's runs; this agent's own are what it reads.
+            assert_eq!(host.reading()["total"], 1, "{:?}", host.reading());
         });
     }
 

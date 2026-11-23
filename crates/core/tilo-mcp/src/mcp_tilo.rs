@@ -43,7 +43,6 @@ use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::workspace_invocations::{
     self, Invocation, InvocationStatus, Invocations, InvocationsQuery,
 };
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
 use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_names};
@@ -1813,39 +1812,82 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         .await
     }
 
-    /// The page of the workspace's invocations `query` asks for, as its server lists them for this
-    /// session's caller.
+    /// The page of the workspace's invocations `query` asks for, read through the record API as
+    /// every record is: the whole record of them, its items narrowed and paged here.
     pub(super) async fn listed_invocations(
         &self,
         query: &InvocationsQuery,
     ) -> Result<Invocations, String> {
-        let argument = match serde_json::to_value(query) {
-            Ok(Value::Object(fields)) => InvokeArgument::Json(fields),
-            _ => InvokeArgument::None,
+        let Some(reads) = self.host.resource_reads() else {
+            return Err(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned());
         };
-        let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: workspace_invocations::target(),
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+        let caller = self.execution_caller();
+        let address = tilo_actions::remote::ResourceAddress {
+            workspace: caller.workspace().unwrap_or_default().to_owned(),
+            app: workspace_invocations::PROVIDER.to_owned(),
+            record: String::new(),
         };
-        let Some(answered) = self.host.invoke(&self.caller, request).await else {
-            return Err("the workspace did not answer".to_owned());
+        let read = {
+            let caller = caller.clone();
+            tokio::task::spawn_blocking(move || reads.read(&caller, &address))
+                .await
+                .map_err(|error| format!("the record read ended: {error}"))?
+                .map_err(|error| error.to_string())?
         };
-        match answered.map_err(|why| why.to_string())?.status {
-            ReceiptStatus::Completed { output } => output
-                .value
-                .and_then(|value| serde_json::from_value::<Invocations>(value).ok())
-                .ok_or_else(|| "the workspace answered no list of runs".to_owned()),
-            ReceiptStatus::Rejected { error } => Err(error.to_string()),
-            _ => Err("the workspace did not answer its runs".to_owned()),
-        }
+        let tilo_actions::remote::ResourceCopy::Reading { value, .. } = read else {
+            return Err("the workspace answered no list of runs".to_owned());
+        };
+        let items: Vec<Invocation> = serde_json::from_value(
+            value
+                .get("items")
+                .cloned()
+                .unwrap_or(Value::Array(Vec::new())),
+        )
+        .map_err(|error| format!("the runs do not read: {error}"))?;
+        Ok(page_of(items, query))
+    }
+}
+
+/// `items`, the workspace's runs newest first, narrowed by `query` and cut to its page: what a
+/// reader of the record reads without paging the record itself.
+fn page_of(items: Vec<Invocation>, query: &InvocationsQuery) -> Invocations {
+    let mut items: Vec<Invocation> = items
+        .into_iter()
+        .filter(|item| {
+            query
+                .by
+                .as_deref()
+                .is_none_or(|by| item.by.id.as_deref() == Some(by))
+        })
+        .filter(|item| {
+            query.invocation.as_deref().is_none_or(|named| {
+                item.id.as_deref() == Some(named)
+                    || item.step.as_deref() == Some(named)
+                    || item.calls.iter().any(|call| call == named)
+            })
+        })
+        .filter(|item| query.status.is_none_or(|status| item.status == status))
+        .collect();
+    let total = items.len();
+    let waiting = items
+        .iter()
+        .filter(|item| item.status == InvocationStatus::Waiting)
+        .count();
+    let offset = query
+        .cursor
+        .as_deref()
+        .and_then(|cursor| cursor.parse::<usize>().ok())
+        .unwrap_or(0);
+    let page = query.page();
+    let next_cursor =
+        (offset.saturating_add(page) < total).then(|| offset.saturating_add(page).to_string());
+    let items = items.drain(..).skip(offset).take(page).collect();
+    Invocations {
+        items,
+        total,
+        waiting,
+        pending: false,
+        next_cursor,
     }
 }
 

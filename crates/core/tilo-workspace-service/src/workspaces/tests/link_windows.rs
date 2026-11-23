@@ -604,8 +604,7 @@ async fn admitted_guest(
 ) -> (DeviceCert, SigningKey) {
     let (member_key, member) =
         crate::workspaces::fixtures::device_cert(root, label, DeviceCapabilities::member());
-    crate::workspaces::fixtures::admit_view_reader(workspaces, workspace, admin_key, &member)
-        .await;
+    crate::workspaces::fixtures::admit_view_reader(workspaces, workspace, admin_key, &member).await;
     // What a settled governance decision does: the workspace's members reach
     // the host's handshake by their roots as well as its policy's own.
     let state = workspaces.workspace(workspace).await.unwrap();
@@ -628,7 +627,9 @@ fn blocked_device(device: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces:
     crate::workspaces::blocked::Blocked::BLOCK_DEVICE.with(hex::encode(device))
 }
 
-fn unblocked_device(device: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
+fn unblocked_device(
+    device: &[u8; 32],
+) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
     crate::workspaces::blocked::Blocked::UNBLOCK_DEVICE.with(hex::encode(device))
 }
 
@@ -737,8 +738,14 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
 
     // The person's key refuses every device of theirs: the guest's own device
     // and a second one their root certified, admitted to the workspace.
-    let (second, second_key) =
-        admitted_guest(&workspaces, &created.workspace, &key, &guest_root, "guest-2").await;
+    let (second, second_key) = admitted_guest(
+        &workspaces,
+        &created.workspace,
+        &key,
+        &guest_root,
+        "guest-2",
+    )
+    .await;
     let (second_endpoint, second_link) = dialled_and_running(
         &server,
         &workspaces,

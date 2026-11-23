@@ -430,8 +430,8 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_server_protocol::directory::{EntryJoin, EntryRefusalCode, Listing};
     use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
-    use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use crate::handshake::Admit;

@@ -1205,6 +1205,10 @@ struct WorkspacesInner {
     /// aborted with the host: it holds the endpoint's address watcher, which keeps the
     /// endpoint's socket open until it goes.
     own_address: std::sync::OnceLock<tokio::task::AbortHandle>,
+    /// The device's record of every invocation it was asked for, when this host serves one:
+    /// what a model call it answers writes what it cost into
+    /// ([`Invocations::note_spend`](tilo_actions::remote::invocation_record::Invocations::note_spend)).
+    invocations: std::sync::OnceLock<Arc<tilo_actions::remote::invocation_record::Invocations>>,
 }
 
 impl Drop for WorkspacesInner {
@@ -1522,6 +1526,7 @@ impl Workspaces {
                 device_names: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
+                invocations: std::sync::OnceLock::new(),
             }),
         };
         if let Some(device) = this.inner.host.member.clone() {

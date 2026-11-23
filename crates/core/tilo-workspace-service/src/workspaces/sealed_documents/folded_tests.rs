@@ -217,21 +217,24 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
 
     // The host checks the checkpoint it holds the record's keys of, and keeps that it did.
     let host = governor.device_public_key;
-    tilo_test_env::within("the host checks the checkpoint it holds the keys of", async {
-        loop {
-            let state = workspaces.workspace(&workspace).await.unwrap();
-            let checked = state
-                .lock()
-                .await
-                .peer()
-                .publication()
-                .checkpoint_checked_by(&host, APP, RESOURCE);
-            if checked {
-                return;
+    tilo_test_env::within(
+        "the host checks the checkpoint it holds the keys of",
+        async {
+            loop {
+                let state = workspaces.workspace(&workspace).await.unwrap();
+                let checked = state
+                    .lock()
+                    .await
+                    .peer()
+                    .publication()
+                    .checkpoint_checked_by(&host, APP, RESOURCE);
+                if checked {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
+        },
+    )
     .await;
 
     let state = workspaces.workspace(&workspace).await.unwrap();

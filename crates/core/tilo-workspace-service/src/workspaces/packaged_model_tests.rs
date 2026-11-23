@@ -322,7 +322,14 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     let package = installed_package();
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, CLOCKS, COLLECTION, "", &package)
+            .prepare_packaged_application(
+                &created.workspace,
+                &cert,
+                CLOCKS,
+                COLLECTION,
+                "",
+                &package
+            )
             .await
             .unwrap(),
         "the server makes the app's resource from its package"

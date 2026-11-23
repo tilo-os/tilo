@@ -923,7 +923,7 @@ to let keys minted for that workspace alone run commands there without asking (a
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \
 `tilo_ls invocations` (with `workspace`, `limit` and `cursor`) lists a workspace's invocations in records this \
-key may read, newest first, whoever made them, and `invocations#list` answers a page of them whole: who made \
+key may read, newest first, whoever made them, read whole through the record API: who made \
 it, how it stands \
 (`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), what it changed and \
 whether it can still be taken back; its `id` is the invocation `tilo_status` reads, stops (`cancel`) \

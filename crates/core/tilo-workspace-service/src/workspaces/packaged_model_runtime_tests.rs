@@ -26,7 +26,7 @@ use tilo_resource::Resource as _;
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use super::packaged_model_tests::{
-    NOW_MS, CLOCKS, COLLECTION, add_clock, model_module, models_dir, package_on,
+    CLOCKS, COLLECTION, NOW_MS, add_clock, model_module, models_dir, package_on,
 };
 
 /// The release the registry's runtime bundle is built for.
@@ -393,7 +393,14 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     let package = package_on(CLOCKS, Some(&module), Some(&provides));
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, CLOCKS, COLLECTION, "", &package)
+            .prepare_packaged_application(
+                &created.workspace,
+                &cert,
+                CLOCKS,
+                COLLECTION,
+                "",
+                &package
+            )
             .await
             .unwrap(),
         "the server makes the app's resource with the runtime it fetched"
@@ -448,8 +455,7 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
         .await
         .unwrap()
         .expect("the document exists");
-    let clocks =
-        clocks_model::Clocks::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
+    let clocks = clocks_model::Clocks::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
     assert!(
         clocks
             .world_clocks

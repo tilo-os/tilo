@@ -621,6 +621,17 @@ impl Workspaces {
     pub fn answer_models_with(&self, provider: Arc<dyn ModelProvider>) {
         *self.inner.models.provider.write_recover() = provider;
     }
+
+    /// Share `records`, the device's record of the invocations it was asked for, with this
+    /// host: what a model call it answers writes what it cost into, on the record of the
+    /// invocation that made the call
+    /// ([`Invocations::note_spend`](tilo_actions::remote::invocation_record::Invocations::note_spend)).
+    pub fn serve_invocations(
+        &self,
+        records: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    ) {
+        let _ = self.inner.invocations.set(records);
+    }
 }
 
 /// One kind of one person's work, answered by the model they chose for it.

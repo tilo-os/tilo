@@ -26,14 +26,14 @@ use std::time::{Duration, Instant};
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::CopyRole;
+use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
-use tilo_peer_state::actions::RemoteDevice;
 use tilo_server_protocol::workspaces::{
     CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace,
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, StandingPage,
@@ -617,13 +617,14 @@ impl Workspaces {
             if lacked == 0 && content_missing == 0 {
                 return Ok(());
             }
-            let narrowed = before.as_ref().is_none_or(
-                |(lacked_before, missing_before, cursors_before)| {
-                    lacked < *lacked_before
-                        || content_missing < *missing_before
-                        || cursors != *cursors_before
-                },
-            );
+            let narrowed =
+                before
+                    .as_ref()
+                    .is_none_or(|(lacked_before, missing_before, cursors_before)| {
+                        lacked < *lacked_before
+                            || content_missing < *missing_before
+                            || cursors != *cursors_before
+                    });
             if (!narrowed && !caught_up.fetched) || answers >= CATCH_UP_ANSWERS {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
