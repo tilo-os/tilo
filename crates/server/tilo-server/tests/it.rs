@@ -20,8 +20,6 @@ mod common;
 #[path = "linux_browser.rs"]
 mod linux_browser;
 #[cfg(feature = "agents")]
-#[path = "linux_terminal.rs"]
-mod linux_terminal;
 #[cfg(feature = "agents")]
 #[path = "linux_turn.rs"]
 mod linux_turn;

@@ -671,19 +671,6 @@ impl Server {
             crate::certify::CERTIFY_ALPN.to_vec(),
             Box::new(certification) as Box<dyn DynProtocolHandler>,
         )];
-        // A person's device takes the terminal of a hosted workspace's session here, once
-        // the host's shells are told where they run.
-        #[cfg(feature = "agents")]
-        let terminal_shells = crate::agents::TerminalShells::default();
-        #[cfg(feature = "agents")]
-        let protocols = {
-            let mut protocols = protocols;
-            protocols.push((
-                ush::environment_terminals::ALPN.to_vec(),
-                Box::new(terminal_shells.route()),
-            ));
-            protocols
-        };
         #[cfg(feature = "web")]
         let protocols = {
             let mut protocols = protocols;
