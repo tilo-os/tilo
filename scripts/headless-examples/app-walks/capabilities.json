@@ -1,0 +1,249 @@
+{
+  "app": "capabilities",
+  "said": "Every capability the shell and the apps publish",
+  "live": "rust",
+  "apps": "code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar",
+  "packages": [
+    "notes",
+    "tasks",
+    "chat",
+    "mail",
+    "tube",
+    "agent",
+    "today",
+    "board"
+  ],
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: every capability the desktop and its installed apps publish before anything is open",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "catalogue": true
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-code-editor",
+      "said": "Open code-editor",
+      "ops": [
+        {
+          "open": "code-editor"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-word-processor",
+      "said": "Open word-processor",
+      "ops": [
+        {
+          "open": "word-processor"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-chat",
+      "said": "Open chat",
+      "ops": [
+        {
+          "open": "chat"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-settings",
+      "said": "Open settings",
+      "ops": [
+        {
+          "open": "settings"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-sheets",
+      "said": "Open sheets",
+      "ops": [
+        {
+          "open": "sheets"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-tasks",
+      "said": "Open tasks",
+      "ops": [
+        {
+          "open": "tasks"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-file-explorer",
+      "said": "Open file-explorer",
+      "ops": [
+        {
+          "open": "file-explorer"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-browser",
+      "said": "Open browser",
+      "ops": [
+        {
+          "open": "browser"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-terminal",
+      "said": "Open terminal",
+      "ops": [
+        {
+          "open": "terminal"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-pdf-viewer",
+      "said": "Open pdf-viewer",
+      "ops": [
+        {
+          "open": "pdf-viewer"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-activity",
+      "said": "Open activity",
+      "ops": [
+        {
+          "open": "activity"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-photos",
+      "said": "Open photos",
+      "ops": [
+        {
+          "open": "photos"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-calendar",
+      "said": "Open calendar",
+      "ops": [
+        {
+          "open": "calendar"
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-tl-notes",
+      "said": "Open the tilolang notes",
+      "ops": [
+        {
+          "open": "so.tilo.notes"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-tasks",
+      "said": "Open the tilolang tasks",
+      "ops": [
+        {
+          "open": "so.tilo.lang.tasks"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-chat",
+      "said": "Open the tilolang chat",
+      "ops": [
+        {
+          "open": "so.tilo.lang.chat"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-mail",
+      "said": "Open the tilolang mail",
+      "ops": [
+        {
+          "open": "so.tilo.mail"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-tube",
+      "said": "Open the tilolang tube",
+      "ops": [
+        {
+          "open": "so.tilo.tube"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-agent",
+      "said": "Open the tilolang agent",
+      "ops": [
+        {
+          "open": "so.tilo.agent"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-today",
+      "said": "Open the tilolang today",
+      "ops": [
+        {
+          "open": "so.tilo.lang.today"
+        }
+      ]
+    },
+    {
+      "id": "open-tl-board",
+      "said": "Open the tilolang board",
+      "ops": [
+        {
+          "open": "so.tilo.lang.board"
+        }
+      ]
+    },
+    {
+      "id": "everything-open",
+      "said": "With every app open: every capability the shell and the apps publish",
+      "ops": [
+        {
+          "catalogue": true
+        }
+      ]
+    }
+  ]
+}

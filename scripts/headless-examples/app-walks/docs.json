@@ -1,0 +1,34 @@
+{
+  "app": "docs",
+  "said": "Docs",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.word-processor",
+    "native": "word-processor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Docs",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

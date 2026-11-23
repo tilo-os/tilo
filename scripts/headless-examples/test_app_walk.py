@@ -55,7 +55,26 @@ class TheStepFiles(unittest.TestCase):
                 self.assertTrue(named, f"{path.stem} names no version")
                 self.assertEqual(spec["app"], path.stem)
                 for variant in named:
-                    self.assertTrue(spec[variant]["id"].startswith("so.tilo."))
+                    v = spec[variant]
+                    # An app's version names the app it opens; a shell's names
+                    # how its session starts, or nothing for the default one.
+                    if "id" in v:
+                        self.assertTrue(v["id"].startswith("so.tilo."))
+                    else:
+                        self.assertLessEqual(set(v), {"source", "session_args"})
+
+    def test_every_walk_is_a_check_t_runs(self):
+        """A walk t does not run guards nothing: each file is in the `app-walk/{app}`
+        matrix, and each baseline belongs to a walk."""
+        import re
+        toml = (HERE.parents[1] / "t.toml").read_text()
+        block = toml[toml.index('name = "app-walk/{app}"'):]
+        listed = set(re.findall(r'"([a-z0-9-]+)"',
+                                re.search(r"^app = \[(.*?)\]", block, re.M).group(1)))
+        files = {path.stem for path, _spec in steps()}
+        self.assertEqual(listed, files)
+        for baseline in (HERE / "app-walks" / "baseline").glob("*.json"):
+            self.assertIn(baseline.stem, files)
 
     def test_every_op_is_one_the_driver_has(self):
         driver = [name[len("op_"):] for name in dir(walk.Walk) if name.startswith("op_")]
@@ -130,6 +149,102 @@ class ThePageItWrites(unittest.TestCase):
         self.assertIn("shots/tl/01-open.png", page)
         self.assertIn("0 held", page)
         self.assertIn("no control for it", page.replace("stopped: no control for it", "no control for it"))
+
+
+def found(*steps, live="rust", variant="rust"):
+    """A summary as the walk writes one: `steps` are (id, walked, took_ms[, controls])."""
+    return {"walk": "switcher", "live": live, "commit": "c0ffee", "versions": {variant: {
+        "steps": {s[0]: {"walked": s[1], "took_ms": s[2],
+                         **({"controls": s[3]} if len(s) > 3 else {}),
+                         **({} if s[1] else {"failed": "not on screen"})}
+                  for s in steps}}}}
+
+
+class HoldingAWalkToItsBaseline(unittest.TestCase):
+    def test_the_same_walk_finds_nothing(self):
+        before = found(("open", True, 800), ("alt-tab", True, 300))
+        self.assertEqual(walk.compare(before, before)["regressions"], [])
+
+    def test_a_step_main_walked_and_this_tree_does_not_is_a_regression(self):
+        before = found(("open", True, 800), ("alt-tab", True, 300))
+        now = found(("open", True, 800), ("alt-tab", False, 300))
+        regressions = walk.compare(now, before)["regressions"]
+        self.assertEqual([r["step"] for r in regressions], ["alt-tab"])
+        self.assertIn("not on screen", regressions[0]["why"])
+
+    def test_a_step_main_could_not_walk_either_is_not_one(self):
+        before = found(("open", True, 800), ("people", False, 100))
+        now = found(("open", True, 800), ("people", False, 100))
+        self.assertEqual(walk.compare(now, before)["regressions"], [])
+
+    def test_a_step_noticeably_slower_is_a_regression_and_noise_is_not(self):
+        before = found(("open", True, 800), ("alt-tab", True, 300))
+        noisy = found(("open", True, 1500), ("alt-tab", True, 900))
+        self.assertEqual(walk.compare(noisy, before)["regressions"], [])
+        slow = found(("open", True, 4000), ("alt-tab", True, 300))
+        self.assertEqual([r["step"] for r in walk.compare(slow, before)["regressions"]],
+                         ["open"])
+
+    def test_the_replacement_is_held_to_what_a_person_got_on_main(self):
+        """The tilolang shell, after the Rust one is deleted, is held to the
+        Rust shell's baseline: the walk is of the switcher, not of a binary."""
+        before = found(("open", True, 800), ("alt-tab", True, 300), live="rust")
+        now = found(("open", True, 700), ("alt-tab", False, 300), live="tl", variant="tl")
+        comparison = walk.compare(now, before)
+        self.assertEqual(comparison["held_to"], {"tl": "rust"})
+        self.assertEqual([r["step"] for r in comparison["regressions"]], ["alt-tab"])
+
+    def test_controls_gone_are_listed_only_against_the_same_version(self):
+        before = found(("open", True, 800, ["Launcher", "Search"]))
+        now = found(("open", True, 800, ["Launcher"]))
+        self.assertEqual(walk.compare(now, before)["controls_gone"][0]["controls"], ["Search"])
+        other = found(("open", True, 800, ["Apps"]), variant="tl")
+        self.assertEqual(walk.compare(other, before)["controls_gone"], [])
+
+    def test_a_retired_version_is_not_walked_and_the_live_one_is_what_is_left(self):
+        spec = {"rust": {"native": "no-such-app-anywhere"}, "tl": {"package": "notes"},
+                "live": "rust"}
+        self.assertFalse(walk.present(spec, "rust"))
+        self.assertTrue(walk.present(spec, "tl"))
+        self.assertEqual(walk.live_of(spec, ["tl"]), "tl")
+
+
+class HoldingTheCapabilitiesToMain(unittest.TestCase):
+    """Every action main published is still published, or the change that took
+    it away names where it lives now (core.md, "The rule for every piece")."""
+
+    def catalogue(self, *keys, variant="rust"):
+        summary = found(("catalogue", True, 100), variant=variant)
+        summary["versions"][variant]["steps"]["catalogue"]["catalogue"] = {
+            key: {"label": key.rsplit("#", 1)[-1], "params": []} for key in keys}
+        return summary
+
+    def test_a_capability_that_went_with_no_place_named_is_a_regression(self):
+        before = self.catalogue("so.tilo.tasks tasks.task#check", "so.tilo.tasks tasks.task#due-today")
+        now = self.catalogue("so.tilo.tasks tasks.task#check")
+        original, walk.moved = walk.moved, lambda: {}
+        try:
+            regressions = walk.compare(now, before)["regressions"]
+        finally:
+            walk.moved = original
+        self.assertEqual(len(regressions), 1)
+        self.assertIn("so.tilo.tasks tasks.task#due-today", regressions[0]["why"])
+
+    def test_a_capability_moved_to_its_new_place_is_kept(self):
+        before = self.catalogue("so.tilo.tasks tasks.task#check")
+        now = self.catalogue("so.tilo.lang.tasks tl.so.tilo.lang.tasks.Task#check", variant="tl")
+        original = walk.moved
+        walk.moved = lambda: {"so.tilo.tasks tasks.task#check": {
+            "to": "so.tilo.lang.tasks tl.so.tilo.lang.tasks.Task#check", "test": "walk/tasks"}}
+        try:
+            self.assertEqual(walk.compare(now, before)["regressions"], [])
+        finally:
+            walk.moved = original
+
+    def test_new_capabilities_are_never_a_regression(self):
+        before = self.catalogue("so.tilo.tasks tasks.task#check")
+        now = self.catalogue("so.tilo.tasks tasks.task#check", "so.tilo.tasks tasks.task#snooze")
+        self.assertEqual(walk.compare(now, before)["regressions"], [])
 
 
 class NamingAControl(unittest.TestCase):

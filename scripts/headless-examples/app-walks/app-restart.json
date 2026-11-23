@@ -1,0 +1,35 @@
+{
+  "app": "app-restart",
+  "said": "Calendar",
+  "live": "rust",
+  "apps": "file-explorer",
+  "rust": {
+    "id": "so.tilo.calendar",
+    "native": "calendar"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Calendar",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

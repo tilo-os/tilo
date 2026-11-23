@@ -1,0 +1,34 @@
+{
+  "app": "photos",
+  "said": "Photos",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.photos",
+    "native": "photos"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Photos",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

@@ -150,6 +150,47 @@ def notes_held(read: dict) -> int | None:
     return found[0] if found else None
 
 
+# --- the versions a walk names -------------------------------------------------------------------
+
+def source_of(spec: dict, variant: str) -> str | None:
+    """The tree path whose presence means the version still exists: what the
+    version names as its `source`, else its tilolang package's directory, else
+    its native app's. A version whose source is gone was retired by the change
+    under test and is not walked; the walk compares what replaced it."""
+    v = spec[variant]
+    if v.get("source"):
+        return v["source"]
+    if v.get("package"):
+        return f"apps/tl/{v['package']}"
+    native = v.get("native") or (spec.get("native") if variant == "rust" else None)
+    if native:
+        return f"apps/{native.split()[0]}"
+    return None
+
+
+def present(spec: dict, variant: str) -> bool:
+    source = source_of(spec, variant)
+    return source is None or (REPO / source).exists()
+
+
+def apps_of(spec: dict, variant: str) -> str:
+    """The session build's apps this version's session installs: the ones every
+    version of the walk needs (`apps`, such as Files for a launcher walk), and
+    this version's own native app."""
+    v = spec[variant]
+    native = v.get("native") or (spec.get("native", "") if variant == "rust" else "")
+    return " ".join(name for name in f"{spec.get('apps', '')} {native}".split())
+
+
+def live_of(spec: dict, named: list[str]) -> str:
+    """The version a person gets today: the step file's `live`, where it is still
+    in the tree, else the one version left."""
+    live = spec.get("live")
+    if live in named:
+        return live
+    return "tl" if "tl" in named else named[0]
+
+
 # --- the walk ---------------------------------------------------------------------------------
 
 def pick(value, variant: str):
@@ -285,7 +326,7 @@ class Walk:
                  "operation": (address(a) or ("", ""))[1],
                  "application": a.get("app_id"), "resource": (address(a) or ("", ""))[0]}
                 for a in self.session.actions("")
-                if address(a) and (not only_app or a.get("app_id") == self.v["id"])]
+                if address(a) and (not only_app or a.get("app_id") == self.v.get("id"))]
 
     def shot(self, name: str) -> str:
         path = self.shots / f"{name}.png"
@@ -294,7 +335,9 @@ class Walk:
 
     def window_of(self) -> dict | None:
         """The window of the app this walk opens, as the shell holds it."""
-        ident = self.v["id"]
+        ident = self.v.get("id")
+        if ident is None:
+            return None
         found = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
         if found is not None:
             self.window = found
@@ -349,6 +392,11 @@ class Walk:
         looks at what they had."""
         before = (self.window_of() or {}).get("frames") or 0
         self.set_dark(dark)
+        if self.v.get("id") is None:
+            # A walk of the shell has no app window to count frames of: the
+            # shell restyles on its next frame, which a snapshot waits for.
+            time.sleep(0.3)
+            return self.shot(f"{name}-{'dark' if dark else 'light'}")
         # A new theme reaches a window on the next frame it draws: wait for the
         # app's own frame count to move, then shoot what it drew.
         try:
@@ -741,6 +789,219 @@ class Walk:
         """What is asking the person now: a file chooser, a sheet."""
         return {"questions": self.session.control({"op": "questions"})["answer"]["questions"]}
 
+    def op_must(self, value) -> dict:
+        """What a person must see now: every control the list names drawn on the
+        screen, each within the step's patience (`{"see": [...], "within": 10}`, or
+        the list alone). Each entry is a selector as `press` takes one, or a list
+        of selectors of which one is enough — the same thing, named differently
+        by the versions. One missing is the step's failure, named."""
+        wanted = value.get("see") if isinstance(value, dict) else value
+        deadline = float(value.get("within", 10)) if isinstance(value, dict) else 10.0
+        entries = [alternative(entry, self.variant) for entry in wanted]
+        entries = [entry for entry in entries if entry is not None]
+
+        def seen(entry) -> bool:
+            choices = entry if isinstance(entry, list) else [entry]
+            for selector in choices:
+                target = control(self.session, alternative(selector, self.variant) or "")
+                if target is not None and drawn(target):
+                    return True
+            return False
+
+        missing: list = []
+        end = time.monotonic() + deadline
+        while True:
+            missing = [entry for entry in entries if not seen(entry)]
+            if not missing or time.monotonic() > end:
+                break
+            time.sleep(0.05)
+        if missing:
+            raise Failed(f"not on screen: {json.dumps(missing, ensure_ascii=False)}")
+        return {"saw": entries}
+
+    def op_must_not(self, value) -> dict:
+        """What must be gone now: a sheet closed, a banner dismissed. Each
+        selector named must stop being drawn within the patience given."""
+        wanted = value.get("see") if isinstance(value, dict) else value
+        deadline = float(value.get("within", 10)) if isinstance(value, dict) else 10.0
+        entries = [e for e in (alternative(entry, self.variant) for entry in wanted) if e]
+
+        def still() -> list:
+            return [e for e in entries
+                    if (lambda t: t is not None and drawn(t))(control(self.session, e))]
+
+        end = time.monotonic() + deadline
+        while still() and time.monotonic() < end:
+            time.sleep(0.05)
+        left = still()
+        if left:
+            raise Failed(f"still on screen: {json.dumps(left, ensure_ascii=False)}")
+        return {"gone": entries}
+
+    def op_open(self, value) -> dict:
+        """Open another app of the session build by its directory name (`files`,
+        `chat`) as the workspace offers it, and wait for its window: a shell walk
+        needs windows to switch between."""
+        ident = value if "." in value else real_apps.app_id(value)
+        began = time.monotonic()
+        self.session.launch(ident, 120)
+        return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
+
+    def op_do(self, value) -> dict:
+        """Run an action by its address and fail the step when it is refused:
+        `[provider, resource, action, args?]`. For what the person does through
+        the shell's own verbs, which every version of the shell publishes."""
+        provider, resource, action = (pick(item, self.variant) for item in value[:3])
+        args = pick(value[3], self.variant) if len(value) > 3 else None
+        answer = self.session.invoke(provider, resource, action, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")
+        return {"did": f"{resource}#{action}"}
+
+    def op_windows(self, value) -> dict:
+        """How many windows the desktop holds must be `value` (or at least
+        `{"at_least": n}`), within ten seconds."""
+        def count() -> int:
+            return len(self.session.windows())
+        if isinstance(value, dict):
+            wanted = int(value["at_least"])
+            until_value(f"at least {wanted} windows", lambda: count() >= wanted, 10)
+        else:
+            until_value(f"{value} windows", lambda: count() == int(value), 10)
+        return {"windows": count()}
+
+    def op_focused(self, value) -> dict:
+        """The window of `value` (an app's directory name or id) has the
+        keyboard: what a person sees as the window in front."""
+        ident = value if "." in value else real_apps.app_id(value)
+
+        def front():
+            dump = self.session.state_dump()
+            text = json.dumps(dump.get("focus") or dump.get("focused") or {})
+            return ident in text
+        until_value(f"the window of {ident} to have the keyboard", front, 10)
+        return {"focused": ident}
+
+    def search_hit(self, text: str) -> tuple[int, dict] | None:
+        """The open search's row whose title holds `text`, once the search has
+        stopped filling in, with its place in the list the person sees. The
+        shell's own offers to search the web or ask the assistant name any words
+        and find nothing, so they never count."""
+        answer = self.session.search_rows()
+        if answer.get("searching"):
+            return None
+        for index, row in enumerate(answer.get("rows") or []):
+            title = row.get("title") or ""
+            if text.lower() in title.lower() and not title.startswith(
+                    ("Search the web for", "Send to Assistant")):
+                return index, row
+        return None
+
+    def op_result(self, value) -> dict:
+        """The open search lists a row of `value`'s words, within ten seconds."""
+        text = pick(value, self.variant)
+        index, row = until_value(f"a search row of {text!r}", lambda: self.search_hit(text), 10, 0.02)
+        return {"row": index, "title": row.get("title")}
+
+    def op_choose_result(self, value) -> dict:
+        """Choose the open search's row of `value`'s words, as Enter on it does."""
+        text = pick(value, self.variant)
+        index, row = until_value(f"a search row of {text!r}", lambda: self.search_hit(text), 10, 0.02)
+        self.session.invoke(SHELL, SHELL_RESOURCE, "choose-search-row", {"row": index})
+        return {"chose": row.get("title"), "row": index}
+
+    def op_window_of(self, value) -> dict:
+        """A window of the app `value` (directory name or id) is on the desktop."""
+        ident = value if "." in value else real_apps.app_id(value)
+        until_value(f"a window of {ident}",
+                    lambda: any(w.get("app_id") == ident for w in self.session.windows()), 15)
+        return {"window_of": ident}
+
+    def op_close_app(self, value) -> dict:
+        """Close the window of the app `value`, by the tab it holds."""
+        ident = value if "." in value else real_apps.app_id(value)
+        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        if window is None:
+            raise Failed(f"no window of {ident} to close")
+        self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
+        until_value(f"the window of {ident} to close",
+                    lambda: all(w.get("app_id") != ident for w in self.session.windows()), 10)
+        return {"closed": ident}
+
+    def op_catalogue(self, value) -> dict:
+        """Every capability the desktop publishes now, kept in the step: each
+        action of the shell and of every app, by the app, the kind of resource it
+        acts on and its operation (`so.tilo.file-explorer files.folder#add-bookmark`),
+        with the words it reads in and the chord that reaches it. Instance ids are
+        left out, so the same capability keys the same on every run and every
+        device. `{"apps": [...]}` keeps only those applications'. The comparison
+        holds this list to main's: one that went with no place named for it in
+        app-walks/moved.json is a regression."""
+        only = set(value.get("apps") or []) if isinstance(value, dict) else set()
+        self.catalogued = {}
+        for row in self.session.actions(""):
+            action = row.get("action") or {}
+            address_of = action.get("address") or {}
+            app = row.get("app_id") or ""
+            if not address_of.get("action") or (only and app not in only):
+                continue
+            kind = action.get("resource_kind") or (row.get("resource") or {}).get("kind") or ""
+            key = f"{app} {kind}#{address_of['action']}"
+            self.catalogued[key] = {
+                "label": action.get("action_label"),
+                **({"shortcut": action["shortcut"]} if action.get("shortcut") else {}),
+                "params": sorted(p.get("name") for p in action.get("params") or []),
+            }
+        return {"capabilities": len(self.catalogued)}
+
+    def op_state(self, value) -> dict:
+        """What the desktop says it shows, as the session's own state reads it:
+        `{"chrome.overlays.overview": true, "notifications#len": 1}` — each dotted
+        path into `state_dump` (`#len` for how many a list holds) must read the
+        value given within ten seconds (`"within"` sets another patience). Both
+        shells publish the same state, so it names the overview being open, the
+        session locked, a banner held, never a control of one shell."""
+        value = pick(value, self.variant)
+        if value is None:
+            return {}
+        wanted = {k: v for k, v in value.items() if k != "within"}
+        deadline = float(value.get("within", 10))
+
+        def read(dump: dict, path: str):
+            path, _, measure = path.partition("#")
+            at = dump
+            for key in path.split("."):
+                at = at.get(key) if isinstance(at, dict) else None
+            return len(at) if measure == "len" and isinstance(at, (list, dict)) else at
+
+        def differs() -> dict:
+            dump = self.session.state_dump()
+            return {k: read(dump, k) for k, v in wanted.items() if read(dump, k) != v}
+
+        end = time.monotonic() + deadline
+        left = differs()
+        while left and time.monotonic() < end:
+            time.sleep(0.05)
+            left = differs()
+        if left:
+            raise Failed(f"the desktop's state reads {json.dumps(left)}, "
+                         f"not {json.dumps({k: wanted[k] for k in left})}")
+        return {"state": wanted}
+
+    def op_restart(self, value) -> dict:
+        """End the session and sign in again on the same state, or (`"app"`) quit
+        only this walk's app and open it again: what a person meets after a
+        reboot or a crash. What they chose and made must still be there, which
+        the steps after it assert."""
+        began = time.monotonic()
+        if value == "app":
+            self.quit_app()
+            self.launch()
+        else:
+            self.appearance = None
+            self.session.restart()
+        return {"restarted": value, "took_ms": round((time.monotonic() - began) * 1000)}
+
     def op_theme(self, value) -> dict:
         self.set_dark(bool(value))
         return {"theme": "dark" if value else "light"}
@@ -853,23 +1114,35 @@ class Walk:
             # The same errand, reached differently: a menu here, a context menu
             # there. The step says what the person is doing; the version says how.
             ops = ops[self.variant]
+        self.catalogued = None
         try:
             for op in ops:
                 record["ops"].append({**op, "found": self.op(op)})
+            if self.catalogued is not None:
+                record["catalogue"] = self.catalogued
             if step.get("shot", True):
                 name = f"{index:02d}-{step['id']}"
                 record["shot"] = self.shot(name)
                 if dark:
                     record["shot_dark"] = self.theme_shot(name, True)
                     self.set_dark(False)
+            budget = step.get("budget_ms")
+            took = round((time.monotonic() - began) * 1000)
+            if budget is not None and took > budget:
+                # Speed is something a person notices: a step slower than its
+                # budget is not walked, whatever it ended up showing.
+                raise Failed(f"took {took} ms, over its budget of {budget} ms")
             if self.discover:
                 record["targets"] = [
                     {k: t[k] for k in ("name", "identity", "rect") if k in t}
                     for t in self.session.targets()]
             record["took_ms"] = round((time.monotonic() - began) * 1000)
+            record["controls"] = sorted({t["name"] for t in self.session.targets()
+                                         if t.get("name") and drawn(t)
+                                         and "/" not in t["name"] and "~" not in t["name"]})
         except Failed as error:
             record["failed"] = str(error)
-            record["took_ms"] = round((time.monotonic() - began) * 1000)
+            record["took_ms"] = record.get("took_ms") or round((time.monotonic() - began) * 1000)
             # What a failed step looks like is the finding: shoot it, and go on.
             # What the app offered instead is the finding too, so a step that
             # cannot be walked says what it was met with.
@@ -890,24 +1163,25 @@ class Walk:
     def walk(self) -> dict:
         spec = self.spec
         self.shots.mkdir(parents=True, exist_ok=True)
-        native = spec.get("native", "")
         tapps = self.tapps()
         began = time.monotonic()
-        self.session.start(apps=native if self.variant == "rust" else "",
+        self.session.start(apps=apps_of(spec, self.variant),
                            fresh=True, out=self.out / "logs", tag=self.variant,
-                           tapps=tapps)
+                           tapps=tapps, session_args=self.v.get("session_args"))
         started = round((time.monotonic() - began) * 1000)
         print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         try:
             for index, step in enumerate(spec["steps"], start=1):
                 self.step(index, step)
         finally:
-            found = {"variant": self.variant, "app": self.v["id"], "session_start_ms": started,
+            found = {"variant": self.variant, "app": self.v.get("id") or self.variant,
+                     "session_start_ms": started,
                      "steps": self.steps}
             try:
                 if self.discover:
                     found["actions"] = [a for a in self.session.actions("")
-                                        if a.get("app_id") == self.v["id"] and address(a)]
+                                        if address(a) and self.v.get("id") in (None, a.get("app_id"))]
+                    found["state"] = self.session.state_dump()
                     found["windows"] = self.session.windows()
             except Failed:
                 pass
@@ -916,9 +1190,10 @@ class Walk:
 
     def tapps(self) -> list[Path]:
         """The tilolang app's signed package, built against this state's runtime."""
-        if self.variant != "tl":
-            return []
-        return [build_tapp(self.spec["tl"]["package"], self.out / "build", self.state)]
+        packages = self.v.get("packages") or ([self.v["package"]] if self.v.get("package") else [])
+        packages += [p for p in self.spec.get("packages") or [] if p not in packages]
+        return [build_tapp(package, self.out / "build" / self.variant, self.state)
+                for package in packages]
 
 
 # --- building ---------------------------------------------------------------------------------
@@ -1037,6 +1312,173 @@ def load_walk(name: str | None, path: str | None = None) -> tuple[Path, dict]:
     return at, json.loads(at.read_text())
 
 
+# --- what a lane compares ---------------------------------------------------------------------
+
+BASELINES = WALKS / "baseline"
+# A step is slower in a way a person notices when it takes twice as long and a
+# second more: below that, a shared build node's load moves it as much.
+SLOWER_FACTOR = 2.0
+SLOWER_MARGIN_MS = 1000
+
+
+def summary(report: dict) -> dict:
+    """What a walk found, as the baseline keeps it: per version, per step,
+    whether it was walked, how long it took, and the controls drawn after it.
+    No snapshot and no absolute path: the shots stay in the run's outputs."""
+    return {
+        "walk": report["walk"],
+        "live": report.get("live"),
+        "commit": report.get("commit"),
+        "versions": {
+            variant: {
+                "session_start_ms": found.get("session_start_ms"),
+                "steps": {
+                    step["id"]: {
+                        "walked": "failed" not in step,
+                        "took_ms": step.get("took_ms"),
+                        **({"failed": step["failed"]} if "failed" in step else {}),
+                        **({"controls": step["controls"]} if "controls" in step else {}),
+                        **({"catalogue": step["catalogue"]} if "catalogue" in step else {}),
+                    }
+                    for step in found["steps"]
+                },
+            }
+            for variant, found in report["variants"].items()
+        },
+    }
+
+
+MOVED = WALKS / "moved.json"
+
+
+def moved() -> dict:
+    """Where each capability that left its place lives now: `{"<app> <kind>#<op>":
+    {"to": "<app> <kind>#<op>" | "<what does it now>", "test": "<walk/step or test>"}}`,
+    written by the change that moves or deletes it (core.md, "The rule for every
+    piece")."""
+    return json.loads(MOVED.read_text()) if MOVED.is_file() else {}
+
+
+def compare(now: dict, before: dict) -> dict:
+    """What a person would miss in `now` that `before` had, both summaries.
+
+    Each version walked now is held to the same version before; a version that
+    did not exist before (the tilolang shell, the port that replaced a Rust app)
+    is held to what a person got then — the baseline's live version. A step
+    walked before and not now is a regression, and so is one that became
+    noticeably slower. Controls drawn before and gone now are listed beside
+    them, for the person reading the shots; across two versions they are named
+    differently, so they are listed only between runs of the same version."""
+    regressions: list[dict] = []
+    gone: list[dict] = []
+    elsewhere = moved()
+    held: dict = {}
+    for variant, found in now["versions"].items():
+        against = variant if variant in before["versions"] else before.get("live")
+        if against not in before["versions"]:
+            continue
+        held[variant] = against
+        base = before["versions"][against]["steps"]
+        for step_id, was in base.items():
+            if not was.get("walked"):
+                continue
+            step = found["steps"].get(step_id)
+            where = {"version": variant, "against": against, "step": step_id}
+            if step is None:
+                regressions.append({**where, "why": "the walk no longer has this step"})
+                continue
+            if not step.get("walked"):
+                regressions.append({**where, "why": f"walked before, now: {step.get('failed')}"})
+                continue
+            took, took_before = step.get("took_ms") or 0, was.get("took_ms") or 0
+            if took > max(took_before * SLOWER_FACTOR, took_before + SLOWER_MARGIN_MS):
+                regressions.append({**where, "why": f"slower: {took} ms, was {took_before} ms"})
+            if "catalogue" in was:
+                have = set(step.get("catalogue") or {})
+                for key in sorted(set(was["catalogue"]) - have):
+                    place = elsewhere.get(key)
+                    if place is None or (place.get("to") in was["catalogue"] and place["to"] not in have):
+                        regressions.append({**where, "why": f"capability gone: {key} "
+                                            f"({was['catalogue'][key].get('label')}), and "
+                                            "app-walks/moved.json names no place for it"})
+            if against == variant:
+                missing = sorted(set(was.get("controls") or []) - set(step.get("controls") or []))
+                if missing:
+                    gone.append({**where, "controls": missing})
+    fixed = [{"version": v, "step": sid}
+             for v, against in held.items()
+             for sid, step in now["versions"][v]["steps"].items()
+             if step.get("walked")
+             and not before["versions"][against]["steps"].get(sid, {}).get("walked", False)]
+    return {"walk": now["walk"], "held_to": held, "baseline_commit": before.get("commit"),
+            "regressions": regressions, "controls_gone": gone, "now_walked": fixed}
+
+
+def write_comparison(comparison: dict, out: Path) -> Path:
+    lines = [f"# {comparison['walk']}: against the baseline of {comparison.get('baseline_commit')}",
+             ""]
+    for variant, against in comparison["held_to"].items():
+        lines.append(f"- **{variant}** held to the baseline's **{against}**")
+    lines += ["", f"## Regressions ({len(comparison['regressions'])})", ""]
+    lines += [f"- {r['version']} `{r['step']}`: {r['why']}" for r in comparison["regressions"]] \
+        or ["None."]
+    lines += ["", "## Controls drawn before and not now (same version; read the shots)", ""]
+    lines += [f"- {g['version']} `{g['step']}`: {', '.join(g['controls'])}"
+              for g in comparison["controls_gone"]] or ["None."]
+    lines += ["", "## Walked now and not before", ""]
+    lines += [f"- {f['version']} `{f['step']}`" for f in comparison["now_walked"]] or ["None."]
+    (out / "compare.md").write_text("\n".join(lines) + "\n")
+    return out / "compare.md"
+
+
+def write_side_by_side(now_dir: Path, base_dir: Path | None, out: Path) -> Path:
+    """One page for a lane: each step with the baseline's shots (the version a
+    person got on main) beside this tree's, per version, and the comparison the
+    check made. Shots are linked where the outputs were brought back to."""
+    now = json.loads((now_dir / "walk.json").read_text())
+    base = json.loads((base_dir / "walk.json").read_text()) if base_dir else None
+
+    def shots_of(report: dict, root: Path, variant: str) -> dict:
+        found = {}
+        for step in report["variants"].get(variant, {}).get("steps", []):
+            cells = []
+            for key in ("shot", "shot_dark"):
+                if step.get(key):
+                    # The run's own path names where it was written on its node:
+                    # the same file under the folder its outputs came back to.
+                    rel = Path(step[key]).parts
+                    at = rel[rel.index("shots"):] if "shots" in rel else rel[-1:]
+                    cells.append(f"![]({Path(os.path.relpath(root, out), *at)})")
+            mark = "" if "failed" not in step else f" **not walked:** {step['failed']}"
+            found[step["id"]] = " ".join(cells) + mark
+        return found
+
+    variants = list(now["variants"])
+    base_live = (base or {}).get("live")
+    columns = ([f"main ({base_live})"] if base else []) + [f"now ({v})" for v in variants]
+    lines = [f"# {now['walk']}: main beside this tree", ""]
+    compare_md = now_dir / "compare.md"
+    if compare_md.is_file():
+        lines += [compare_md.read_text().replace("# ", "## ", 1), ""]
+    lines += ["| Step | " + " | ".join(columns) + " |", "|---|" + "---|" * len(columns)]
+    base_cells = shots_of(base, base_dir, base_live) if base else {}
+    now_cells = {v: shots_of(now, now_dir, v) for v in variants}
+    for step in now["steps"]:
+        row = [base_cells.get(step["id"], "—")] if base else []
+        row += [now_cells[v].get(step["id"], "—") for v in variants]
+        lines.append(f"| **{step['id']}**: {step['said']} | " + " | ".join(row) + " |")
+    (out / "index.md").write_text("\n".join(lines) + "\n")
+    return out / "index.md"
+
+
+def commit_of_tree() -> str | None:
+    """The commit the walked tree is at, where it is a git checkout."""
+    try:
+        return run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).strip() or None
+    except Exception:
+        return None
+
+
 def walks() -> list[str]:
     return sorted(path.stem for path in WALKS.glob("*.json"))
 
@@ -1056,7 +1498,22 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="leave the session running")
     parser.add_argument("--discover", action="store_true",
                         help="keep every step's controls in walk.json, while writing a walk")
+    parser.add_argument("--compare", nargs="?", const="", metavar="BASELINE",
+                        help="hold the walk to a baseline (default: app-walks/baseline/WALK.json)"
+                             " and exit 1 on a regression")
+    parser.add_argument("--write-baseline", action="store_true",
+                        help="write this run's summary as app-walks/baseline/WALK.json")
+    parser.add_argument("--side-by-side", type=Path, metavar="NOW",
+                        help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
+    parser.add_argument("--baseline-dir", type=Path,
+                        help="with --side-by-side: the baseline run's outputs")
     options = parser.parse_args()
+    if options.side_by_side:
+        out = (options.out or Path.cwd()).resolve()
+        print(write_side_by_side(options.side_by_side.resolve(),
+                                 options.baseline_dir.resolve() if options.baseline_dir else None,
+                                 out))
+        return 0
     if options.list:
         print("\n".join(walks()))
         return 0
@@ -1068,17 +1525,19 @@ def main() -> int:
         app = options.app or path.stem
         out = (options.out or HERE.parents[1] / "target" / "app-walk" / app).resolve()
         out.mkdir(parents=True, exist_ok=True)
-        if options.build and spec.get("native"):
-            real_apps.build(apps=spec["native"])
+        if options.build:
+            real_apps.build(apps=" ".join(sorted({a for v in VARIANTS if v in spec
+                                                  for a in apps_of(spec, v).split()})))
         # The versions this walk's step file names: a native app that was deleted in the change
         # its tilolang version took over leaves only its `tl` entry, and is walked alone.
-        named = [variant for variant in VARIANTS if variant in spec]
+        named = [variant for variant in VARIANTS if variant in spec and present(spec, variant)]
         if not named:
-            raise Failed(f"the walk names no version: {path}")
+            raise Failed(f"the walk names no version still in the tree: {path}")
         if options.only is not None and options.only not in named:
             raise Failed(f"the walk names no {options.only} version: {path}")
         variants = [options.only] if options.only else named
         report = {"walk": app, "file": str(path), "variants": {},
+                  "live": live_of(spec, named), "commit": commit_of_tree(),
                   "steps": [{"id": s["id"], "said": s["said"]} for s in spec["steps"]]}
         for variant in variants:
             print(f"==> {app}: walking the {variant} version", file=sys.stderr)
@@ -1086,15 +1545,34 @@ def main() -> int:
             # its own, and the two versions must not meet in a search or a window.
             state = ((options.state or out) / f"state-{variant}").resolve()
             # The session's apps, and the runtime a tilolang package is built against.
-            prepare_state(state, spec.get("native", ""), build=False)
+            prepare_state(state, apps_of(spec, variant), build=False)
             walk = Walk(spec, variant, out, state, discover=options.discover)
             report["variants"][variant] = walk.walk()
         (out / "walk.json").write_text(json.dumps(report, indent=1))
-        report_path = write_report(report, out) if len(report["variants"]) > 1 else None
-        print(json.dumps({"walk": str(out / "walk.json"),
-                          "report": str(report_path) if report_path else None,
+        found = summary(report)
+        (out / "summary.json").write_text(json.dumps(found, indent=1) + "\n")
+        report_path = write_report(report, out)
+        if options.write_baseline:
+            BASELINES.mkdir(exist_ok=True)
+            (BASELINES / f"{app}.json").write_text(json.dumps(found, indent=1) + "\n")
+        verdict = 0
+        comparison_path = None
+        if options.compare is not None:
+            at = Path(options.compare) if options.compare else BASELINES / f"{app}.json"
+            if not at.is_file():
+                raise Failed(f"no baseline at {at}: a walk's first run on main writes it "
+                             "(--write-baseline)")
+            comparison = compare(found, json.loads(at.read_text()))
+            (out / "compare.json").write_text(json.dumps(comparison, indent=1) + "\n")
+            comparison_path = write_comparison(comparison, out)
+            for regression in comparison["regressions"]:
+                print(f"REGRESSION {regression['version']} {regression['step']}: "
+                      f"{regression['why']}", file=sys.stderr)
+            verdict = 1 if comparison["regressions"] else 0
+        print(json.dumps({"walk": str(out / "walk.json"), "report": str(report_path),
+                          "compare": str(comparison_path) if comparison_path else None,
                           "shots": str(out / "shots")}))
-        return 0
+        return verdict
     except Failed as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

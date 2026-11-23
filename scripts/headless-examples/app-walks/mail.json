@@ -1,0 +1,34 @@
+{
+  "app": "mail",
+  "said": "Mail",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.mail",
+    "package": "mail"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Mail",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

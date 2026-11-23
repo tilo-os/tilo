@@ -1,0 +1,38 @@
+{
+  "app": "chat",
+  "said": "Chat",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.chat",
+    "native": "chat"
+  },
+  "tl": {
+    "id": "so.tilo.lang.chat",
+    "package": "chat"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Chat",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

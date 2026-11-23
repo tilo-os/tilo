@@ -1,0 +1,38 @@
+{
+  "app": "tasks",
+  "said": "Tasks",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.tasks",
+    "native": "tasks"
+  },
+  "tl": {
+    "id": "so.tilo.lang.tasks",
+    "package": "tasks"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Tasks",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}

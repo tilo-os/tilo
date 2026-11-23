@@ -6392,14 +6392,18 @@ on = ["dispatch", "idle"]
 [check.matrix]
 proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
 
-# An app.s first hour, walked in each version its step file names: the Rust version (apps/) and
-# the tilolang one (apps/tl/) before the change that retires the Rust app, the tilolang one alone
-# after it, on the session the nested-session check built, one headless session each, every step
-# snapshotted in the light theme and the marked ones again in the dark
-# (scripts/headless-examples/app-walk.py; the steps are app-walks/APP.json). It is how a Rust app
-# is shown to be replaceable before it is deleted, and it judges nothing: the page the walk writes
-# (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the runs. snapshots side by side for
-# a person to read.
+# A person's first hour, one walk per thing they meet — the shell's launcher, switcher, search,
+# quick settings and the rest, and each app they open — walked in every version its step file names
+# that is still in the tree: the Rust shell and the tilolang one (`--shell screen`), a Rust app and
+# its tilolang port. One headless session per version on the session the nested-session check built,
+# every step snapshotted in the light theme and the marked ones in the dark, each step asserting what
+# a person must see and how long it may take (scripts/headless-examples/app-walk.py, the steps in
+# app-walks/WALK.json). The check holds what it found to the walk's baseline from main
+# (app-walks/baseline/WALK.json): a step walked there and not here, or walked twice as slowly, is
+# red, and a version the baseline did not have is held to the version a person got then, so a lane
+# that deletes the Rust shell or app proves the replacement lost nothing. `scripts/headless-examples/walk.sh WALK`
+# runs it and brings back the page (walk.md, compare.md) with the baseline's shots beside this
+# tree's; inputs: `only=rust|tl` walks one version, `discover=1` keeps every step's controls.
 [[check]]
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
@@ -6408,10 +6412,12 @@ env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/app-walk/{app}/**"]
+evidence = ["/target/app-walk/{app}/**"]
 timeout_secs = 2400
-on = ["dispatch"]
+on = ["dispatch", "idle"]
+dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["notes", "tube"]
+app = ["accounts", "app-restart", "browser", "calendar", "capabilities", "chat", "desktop", "device-settings", "docs", "launcher", "mail", "notes", "notifications", "overview", "people", "photos", "quick-settings", "search", "settings", "sheets", "sign-in", "strips", "switcher", "tasks", "terminal", "tube", "workspace-settings"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks

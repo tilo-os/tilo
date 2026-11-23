@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Walk one app's first hour twice — in its Rust version and in its tilolang one — on the
-# session build TILO_NESTED_SESSION_BUILD names, which this never builds
-# (dist/dev/nested-session-build.sh). One step file per app says what a person does
-# (scripts/headless-examples/app-walks/); the walk is scripts/headless-examples/app-walk.py.
+# Walk one part of a person's first hour in every version its step file names that is still in
+# the tree — the Rust shell and the tilolang one, a Rust app and its port — on the session build
+# TILO_NESTED_SESSION_BUILD names, which this never builds (dist/dev/nested-session-build.sh). One
+# step file per walk says what a person does (scripts/headless-examples/app-walks/); the walk is
+# scripts/headless-examples/app-walk.py. Where the walk has a baseline from main
+# (app-walks/baseline/WALK.json), what it found is held to it, and a regression fails.
 #
-#   tools/ci/app-walk.sh OUT APP [app-walk.py args...]
+#   tools/ci/app-walk.sh OUT WALK [app-walk.py args...]
 #
-# OUT gets the walk's page (walk.md), its verdict (walk.json), every snapshot and each
-# session's log — what the `app-walk/APP` check keeps. Each version's session state is
+# T_INPUT_ONLY (rust|tl) walks one version, T_INPUT_DISCOVER=1 keeps every step's controls.
+#
+# OUT gets the walk's page (walk.md), what it found (walk.json, summary.json), the comparison
+# (compare.md, compare.json), every snapshot and each session's log — what the `app-walk/WALK`
+# check keeps. Each version's session state is
 # temporary: it is the sessions' installed apps, not what a person reads the walk by.
 set -euo pipefail
 
@@ -50,4 +55,9 @@ keep() {
 }
 trap keep EXIT
 
-python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$run/states" "$@"
+args=()
+[[ -n ${T_INPUT_ONLY:-} ]] && args+=(--only "$T_INPUT_ONLY")
+[[ -n ${T_INPUT_DISCOVER:-} ]] && args+=(--discover)
+[[ -f scripts/headless-examples/app-walks/baseline/$app.json ]] && args+=(--compare)
+python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$run/states" \
+    ${args[@]+"${args[@]}"} "$@"

@@ -1,0 +1,35 @@
+{
+  "app": "accounts",
+  "said": "Settings",
+  "live": "rust",
+  "apps": "calendar",
+  "rust": {
+    "id": "so.tilo.settings",
+    "native": "settings"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Settings",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    }
+  ]
+}
