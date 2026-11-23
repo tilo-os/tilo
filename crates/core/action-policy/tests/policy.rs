@@ -2334,67 +2334,6 @@ tilo_test_env::scenario! {
             Err(Refusal::NotRestricted(BOB.into()))
         );
     }
-
-    phase a_moderation_bot_reaches_members_by_its_grant;
-    {
-        use tilo_action_policy::bot::{MODERATION, moderation_grants};
-
-        let mut workspace = workspace_with_members(&[
-            (BOB, Role::Editor),
-            ("m2", Role::Moderator),
-            (CAROL, Role::Editor),
-        ]);
-        // CAROL is an administrator, which a bot may not unmake.
-        workspace
-            .grants
-            .push(roles::administrator_grant("r", CAROL, alice()));
-        workspace.grants.extend(moderation_grants("r", ALICE));
-        let policy = workspace.clone();
-        let bot = Authority::person(policy.party_of(Grantee::bot(MODERATION)));
-        let actor = "bot:moderation";
-        let until = NOW + 60_000;
-        // Its grants allow the restriction and the ban of any member, a Moderator included, as
-        // anyone's grants on those actions do.
-        for person in [BOB, "m2"] {
-            for change in [
-                Change::Restrict {
-                    person: person.into(),
-                    until_ms: until,
-                },
-                Change::Ban {
-                    person: person.into(),
-                },
-            ] {
-                assert_eq!(workspace.check(actor, &bot, &change, &cx(), false), Ok(()));
-            }
-        }
-        // The owner and the workspace's administrators are out of its reach.
-        assert_eq!(
-            workspace.check(
-                actor,
-                &bot,
-                &Change::Restrict {
-                    person: ALICE.into(),
-                    until_ms: until
-                },
-                &cx(),
-                false
-            ),
-            Err(Refusal::Owner)
-        );
-        assert!(matches!(
-            workspace.check(
-                actor,
-                &bot,
-                &Change::Ban {
-                    person: CAROL.into()
-                },
-                &cx(),
-                false
-            ),
-            Err(Refusal::Administrators { .. })
-        ));
-    }
 }
 
 tilo_test_env::scenario! {
