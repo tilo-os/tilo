@@ -26,6 +26,29 @@ use super::{ActionAddress, RemoteActionTarget};
 mod store;
 pub use store::{ANSWERED, AskedStore, NOT_YOURS, NOTHING_ASKED};
 
+/// What a frame carrying an approve no resolve handed back is refused with
+/// ([`AskedStore::admits_approval`]).
+pub const FORGED: &str = "This call carries an approve its person did not give";
+
+/// Admit `request`, a caller's frame, as its approve stands: refused where it carries an
+/// approve `store` did not hand back ([`AskedStore::admits_approval`]), or any approve where no
+/// store keeps asked records here.
+///
+/// # Errors
+/// [`FORGED`], refused.
+pub fn admit_frame(
+    store: Option<&AskedStore>,
+    request: &super::InvokeRequest,
+) -> Result<(), super::ActionCallError> {
+    if request.approval().is_none() || store.is_some_and(|store| store.admits_approval(request)) {
+        Ok(())
+    } else {
+        Err(super::ActionCallError::Refused {
+            reason: FORGED.to_owned(),
+        })
+    }
+}
+
 /// The provider the questions that wait for a person are listed under.
 pub const PROVIDER: &str = "tilo.asking";
 /// The resource the questions that wait for the person are read from: its

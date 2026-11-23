@@ -4,8 +4,8 @@
 //! The record's store admits the answer ([`AskedStore::resolve`]): only from the person it
 //! asks, only while it is asked, and once. An approve comes back here
 //! ([`AskedDispatch::readmit`]), the only place a call carrying the person's approve is
-//! admitted: every caller's own request is admitted without one
-//! ([`InvokeRequest::strip_approval`]). It runs again under its id for the caller who asked,
+//! admitted: a caller's own request carrying one is refused
+//! ([`asked::admit_frame`]). It runs again under its id for the caller who asked,
 //! under that caller's grants as they stand now.
 
 use std::sync::{Arc, Weak};

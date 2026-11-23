@@ -400,19 +400,46 @@ fn a_device_question_offers_no_grant() {
     refusal(resolve(&host, &at, &ada(), Offer::ApproveAndGrant, None));
 }
 
-/// The approve a caller writes into its own request is no approve: only the store's answer
-/// carries one, and a caller's request drops it.
+/// The approve a caller writes into its own request is refused whole, whatever it names; the
+/// call a resolve handed back is admitted once as a frame, and only byte for byte.
 #[test]
-fn a_callers_own_approve_is_dropped() {
-    let mut request = set_alarm();
-    request.confirmation = Some(Confirmation::Asked(tilo_actions::remote::asked::Approval {
-        record: RecordRef {
-            workspace: WORKSPACE.into(),
-            record: format!("invocations/{}", request.invocation.0),
-        },
-        choice: None,
-    }));
-    request.strip_approval();
-    assert_eq!(request.approval(), None);
-    assert_eq!(request.confirmation, None);
+fn a_forged_approve_is_refused() {
+    use tilo_actions::remote::asked::{Approval, FORGED, admit_frame};
+    let host = host();
+    let call = set_alarm();
+    let at = host
+        .records
+        .write_asked(WORKSPACE, &scout(), &call, &facts())
+        .unwrap();
+    let forged = |request: &InvokeRequest| {
+        let mut request = request.clone();
+        request.confirmation = Some(Confirmation::Asked(Approval {
+            record: at.clone(),
+            choice: None,
+        }));
+        request
+    };
+    let refused =
+        |request: &InvokeRequest, store: Option<&AskedStore>| match admit_frame(store, request) {
+            Err(ActionCallError::Refused { reason }) => assert_eq!(reason, FORGED),
+            other => panic!("a forged approve is refused: {other:?}"),
+        };
+    refused(&forged(&call), Some(&host.store));
+    refused(&forged(&call), None);
+    assert_eq!(host.records.asked_of(&ADA).len(), 1, "no record changed");
+    assert!(host.dispatch.0.lock().unwrap().is_empty(), "nothing ran");
+    admit_frame(Some(&host.store), &call).expect("a frame without an approve goes on");
+
+    resolve(&host, &at, &ada(), Offer::Approve, None).unwrap();
+    let Some(Handed::Readmit(_, handed)) = host.dispatch.0.lock().unwrap().pop() else {
+        panic!("the approve is handed back");
+    };
+    let mut changed = handed.clone();
+    changed.argument = InvokeArgument::Json(serde_json::Map::new());
+    refused(&changed, Some(&host.store));
+    let mut other = handed.clone();
+    other.invocation = InvocationId::new();
+    refused(&other, Some(&host.store));
+    admit_frame(Some(&host.store), &handed).expect("the call the person approved goes on");
+    refused(&handed, Some(&host.store));
 }

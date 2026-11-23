@@ -43,6 +43,9 @@ struct Record {
     facts: AskedFacts,
     asked_at_ms: u64,
     status: Status,
+    /// Whether the approved call was admitted from a frame once already
+    /// ([`AskedStore::admits_approval`]).
+    relayed: bool,
     dispatch: Weak<dyn AskedDispatch>,
 }
 
@@ -156,10 +159,34 @@ impl AskedStore {
             facts: facts.clone(),
             asked_at_ms: tilo_clock::unix_now_ms(),
             status: Status::Asked,
+            relayed: false,
             dispatch,
         });
         kept.moved();
         Ok(at)
+    }
+
+    /// Whether `request`, arriving as a frame from outside a dispatch, may carry the person's
+    /// approve it carries: only the call a resolve of its record approved and handed back,
+    /// byte for byte the same, under the same id, and once. A frame that carries an approve
+    /// this does not admit is refused whole, never run without it: a caller cannot approve
+    /// its own call. A frame that carries none is admitted as it is.
+    pub fn admits_approval(&self, request: &InvokeRequest) -> bool {
+        let Some(approval) = request.approval() else {
+            return true;
+        };
+        let mut kept = self.kept.lock_recover();
+        let Some(record) = kept.find(&approval.record) else {
+            return false;
+        };
+        let admitted = record.status == Status::Running
+            && !record.relayed
+            && record.invocation == request.invocation
+            && super::same_call(&record.request, request);
+        if admitted {
+            record.relayed = true;
+        }
+        admitted
     }
 
     /// Answer the record `at` as `answering` says ([`Resolve`]): admitted only from the person

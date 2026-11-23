@@ -714,10 +714,18 @@ impl WorkspaceActions {
         // Answered at admission: a wait is ignored, as an older host
         // would, and is no part of the remembered request.
         request.wait_ms = None;
-        // A person's approve is set only where their answer admits the call again
-        // ([`resolve`]), never by the caller.
-        request.strip_approval();
         let invocation = request.invocation;
+        // A person's approve is set only where their answer admits the call again
+        // ([`resolve`]): a frame carrying one no resolve handed back is refused whole.
+        if let Err(error) = tilo_actions::remote::asked::admit_frame(
+            self.shared.asked_store.get().map(Arc::as_ref),
+            &request,
+        ) {
+            return Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected { error },
+            }));
+        }
         // A person's answer to an asked record.
         if tilo_actions::remote::asked::is_resolve(&request.target) {
             return self.resolve_request(workspace_id, caller, &request);
