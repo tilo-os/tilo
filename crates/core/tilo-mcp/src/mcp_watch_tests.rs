@@ -371,14 +371,22 @@ tilo_test_env::scenario! {
                 "the watch answered {} ms after it began, not on the refusal",
                 started.elapsed().as_millis()
             );
-            assert_eq!(
-                watched["events"],
-                json!([{
-                    "kind": "unwatched",
-                    "source": "records",
-                    "reason": "remote actions are unavailable: this session carries no records of the workspace",
-                }]),
-                "the refusal is told with why"
+            let unwatched = json!({
+                "kind": "unwatched",
+                "source": "records",
+                "reason": "remote actions are unavailable: this session carries no records of the workspace",
+            });
+            let told = watched["events"]
+                .as_array()
+                .unwrap_or_else(|| panic!("the watch answers with events: {watched}"));
+            assert!(
+                told.contains(&unwatched),
+                "the refusal is told with why: {watched}"
+            );
+            assert!(
+                told.iter()
+                    .all(|event| event == &unwatched || event["kind"] == "presence"),
+                "a watch with no cursor says who is here and the refusal, nothing else: {watched}"
             );
             let cursor = watched["cursor"].as_str().unwrap_or_default().to_owned();
             let started = std::time::Instant::now();

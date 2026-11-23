@@ -25,10 +25,15 @@ async fn here(agent: &host::Agent) -> Vec<Value> {
     listed(&watched)
 }
 
-/// Who is here, as a page of the person's reads it: a key of theirs calling the workspace's
-/// MCP tools while a window of theirs is open.
-async fn on_the_page(page: &host::Key) -> Vec<Value> {
-    let result = page.tool("tilo_watch", &json!({"wait_ms": 500})).await;
+/// Who is here, as a page of the person's reads it: one of their own devices calling their
+/// workspace's MCP tools while a window of theirs is open.
+async fn on_the_page(page: &host::Key, workspace: &str) -> Vec<Value> {
+    let result = page
+        .tool(
+            "tilo_watch",
+            &json!({"workspace": workspace, "wait_ms": 500}),
+        )
+        .await;
     let (watched, failed) = crate::agent_fixture::said(&result);
     assert!(!failed, "the page watches who is here: {watched}");
     listed(&watched)
@@ -89,17 +94,17 @@ fn an_agent_is_present_waiting_as_soon_as_it_connects() {
 #[test]
 fn an_agent_whose_session_closes_leaves_who_is_here() {
     host::run(|host| async move {
-        let watcher = host.key("A page");
+        let watcher = host.page_key("A page");
         let agent = host.agent();
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
         assert!(
-            !agents(&on_the_page(&watcher).await).is_empty(),
+            !agents(&on_the_page(&watcher, host.workspace()).await).is_empty(),
             "the connected agent is here"
         );
         let ended = Instant::now();
         drop(agent);
-        while !agents(&on_the_page(&watcher).await).is_empty() {
+        while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
             assert!(
                 ended.elapsed() < LEAVES_WITHIN,
                 "the agent is still here {:?} after its session ended",
@@ -115,12 +120,12 @@ fn an_agent_whose_session_closes_leaves_who_is_here() {
 fn a_stopped_agent_leaves_who_is_here() {
     host::run(|host| async move {
         use tilo_actions::remote::mcp_server;
-        let watcher = host.key("A page");
+        let watcher = host.page_key("A page");
         let agent = host.agent();
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
         assert!(
-            !agents(&on_the_page(&watcher).await).is_empty(),
+            !agents(&on_the_page(&watcher, host.workspace()).await).is_empty(),
             "the connected agent is here"
         );
         let request = tilo_actions::remote::InvokeRequest {
@@ -152,7 +157,7 @@ fn a_stopped_agent_leaves_who_is_here() {
             "{receipt:?}"
         );
         let ended = Instant::now();
-        while !agents(&on_the_page(&watcher).await).is_empty() {
+        while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
             assert!(
                 ended.elapsed() < LEAVES_WITHIN,
                 "the stopped agent is still here {:?} after its session ended",
@@ -162,7 +167,7 @@ fn a_stopped_agent_leaves_who_is_here() {
         // The stopped session stays closed: the agent is not said again.
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(
-            agents(&on_the_page(&watcher).await).is_empty(),
+            agents(&on_the_page(&watcher, host.workspace()).await).is_empty(),
             "a stopped agent came back on its own"
         );
     });
@@ -173,7 +178,7 @@ fn a_stopped_agent_leaves_who_is_here() {
 #[test]
 fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     host::run(|host| async move {
-        let watcher = host.key("A page");
+        let watcher = host.page_key("A page");
         let mut seen = std::collections::BTreeSet::new();
         for run in 0..4 {
             let agent = host.agent();
@@ -181,7 +186,7 @@ fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
             assert!(!failed, "run {run}: the agent lists the workspace");
             let opened = Instant::now();
             loop {
-                let here_now = on_the_page(&watcher).await;
+                let here_now = on_the_page(&watcher, host.workspace()).await;
                 let listed = agents(&here_now);
                 if let [only] = listed.as_slice()
                     && seen.insert(only["who"].as_str().unwrap_or_default().to_owned())
@@ -195,7 +200,7 @@ fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
             }
             let ended = Instant::now();
             drop(agent);
-            while !agents(&on_the_page(&watcher).await).is_empty() {
+            while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
                 assert!(
                     ended.elapsed() < LEAVES_WITHIN,
                     "run {run}: the agent is still here {:?} after its session ended",
@@ -211,13 +216,13 @@ fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
 #[test]
 fn the_run_after_one_that_ended_is_on_the_page_at_once() {
     host::run(|host| async move {
-        let watcher = host.key("A page");
+        let watcher = host.page_key("A page");
         for run in 0..3 {
             let agent = host.agent();
             let (_, failed) = ls(&agent, None).await;
             assert!(!failed, "run {run}: the agent lists the workspace");
             let opened = Instant::now();
-            while agents(&on_the_page(&watcher).await).is_empty() {
+            while agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
                 assert!(
                     opened.elapsed() < COMES_BACK_WITHIN,
                     "run {run}: the page never listed the agent {:?} after its session opened",
@@ -226,7 +231,7 @@ fn the_run_after_one_that_ended_is_on_the_page_at_once() {
             }
             drop(agent);
             let ended = Instant::now();
-            while !agents(&on_the_page(&watcher).await).is_empty() {
+            while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
                 assert!(
                     ended.elapsed() < LEAVES_WITHIN,
                     "run {run}: the agent is still here {:?} after its session ended",
@@ -245,18 +250,18 @@ fn the_run_after_one_that_ended_is_on_the_page_at_once() {
 #[test]
 fn a_quiet_agent_stays_while_its_session_lasts() {
     host::run(|host| async move {
-        let watcher = host.key("A page");
+        let watcher = host.page_key("A page");
         // One run of the computer's, killed: its session ends without a word, and it leaves.
         let killed = host.agent();
         let (_, failed) = ls(&killed, None).await;
         assert!(!failed, "the killed run lists the workspace");
         assert!(
-            !agents(&on_the_page(&watcher).await).is_empty(),
+            !agents(&on_the_page(&watcher, host.workspace()).await).is_empty(),
             "it is here"
         );
         drop(killed);
         let ended = Instant::now();
-        while !agents(&on_the_page(&watcher).await).is_empty() {
+        while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
             assert!(
                 ended.elapsed() < LEAVES_WITHIN,
                 "the killed agent is still here {:?} after its session ended",
@@ -269,7 +274,7 @@ fn a_quiet_agent_stays_while_its_session_lasts() {
         assert!(!failed, "the waiting run takes one action");
         let quiet = Instant::now();
         while quiet.elapsed() < QUIET {
-            let here_now = on_the_page(&watcher).await;
+            let here_now = on_the_page(&watcher, host.workspace()).await;
             let listed = agents(&here_now);
             assert_eq!(
                 listed.len(),
@@ -282,7 +287,7 @@ fn a_quiet_agent_stays_while_its_session_lasts() {
         }
         drop(waiting);
         let ended = Instant::now();
-        while !agents(&on_the_page(&watcher).await).is_empty() {
+        while !agents(&on_the_page(&watcher, host.workspace()).await).is_empty() {
             assert!(
                 ended.elapsed() < LEAVES_WITHIN,
                 "the agent is still here {:?} after its session ended",

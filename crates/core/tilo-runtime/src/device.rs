@@ -62,7 +62,6 @@ mod ticket_tests;
 pub(crate) mod unclaimed;
 #[cfg(test)]
 mod unclaimed_tests;
-mod who_is_here;
 pub mod workspaces;
 
 use std::sync::Arc;

@@ -18,7 +18,7 @@
 use super::commits::{RecordCreation, ServiceCommits};
 use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
-use super::{host_runs, take_work, who_is_here};
+use super::{host_runs, presence, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use collab_types::workspace_grant::WorkspaceGrant;
@@ -124,7 +124,7 @@ pub struct Daemon {
     invocations: Arc<Invocations>,
     /// The agent sessions this device's MCP server serves now: who is here, beside the
     /// workspace's own roster.
-    who_is_here: Arc<who_is_here::WhoIsHere>,
+    who_is_here: Arc<presence::WhoIsHere>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -837,7 +837,7 @@ impl Daemon {
             _kept: kept,
             tickets,
             invocations,
-            who_is_here: Arc::new(who_is_here::WhoIsHere::default()),
+            who_is_here: Arc::new(presence::WhoIsHere::default()),
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
@@ -1919,7 +1919,7 @@ pub struct RuntimeActionProvider {
     /// The agent sessions this device's MCP server serves, for a host that serves them: what
     /// who is here adds beside the workspace's roster, and what a stop action ends. `None` for a
     /// host that serves no connection of its own.
-    who_is_here: Option<Arc<who_is_here::WhoIsHere>>,
+    who_is_here: Option<Arc<presence::WhoIsHere>>,
 }
 
 struct AdmittedRuntimeSession {
@@ -2228,7 +2228,7 @@ fn whichever_first(
 /// this device serves it: `None` for a session it does not serve, whose stop is somebody
 /// else's to answer.
 fn stop_session(
-    who_is_here: &who_is_here::WhoIsHere,
+    who_is_here: &presence::WhoIsHere,
     workspace: &str,
     request: &InvokeRequest,
 ) -> Option<InvocationReceipt> {

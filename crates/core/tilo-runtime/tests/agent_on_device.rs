@@ -90,7 +90,7 @@ fn a_computers_agent_is_listed_once_where_it_acts() {
         assert!(!failed, "the computer's agent acts in the workspace");
 
         let id = claude_code(host.person());
-        let key = host.key("Visa backend");
+        let key = host.page_key("Visa backend");
         let (status, listed) = key
             .get(&format!("/v1/workspaces/{}/resources", host.workspace()))
             .await;

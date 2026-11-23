@@ -314,6 +314,22 @@ impl Host {
         Key { direct }
     }
 
+    /// One of the person's own devices, named `label`, as a key: what a page open on their
+    /// workspace calls this daemon with, entered in the workspace as their device rather than
+    /// as an agent of theirs.
+    #[must_use]
+    pub fn page_key(&self, label: &str) -> Key {
+        let (key, cert) = self.certify(label, DeviceCapabilities::member());
+        let direct = tilo_api::direct::Direct::here(
+            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            key,
+            cert,
+            label,
+        )
+        .unwrap();
+        Key { direct }
+    }
+
     /// An agent the person runs on this device (`tilo mcp`): the MCP session the daemon hands
     /// its client, in the founded workspace.
     #[must_use]
