@@ -10,6 +10,7 @@
 
 use std::ffi::OsString;
 use std::io::{self, BufRead as _};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -61,6 +62,7 @@ fn session_name_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
 ///
 /// # Errors
 /// Nothing answers at `server`, or the lines could not be carried.
+#[cfg(unix)]
 pub fn bridge(server: &Path, session_name: Option<String>) -> io::Result<()> {
     let stream = tilo_files::native::socket::connect(server)
         .map_err(|error| unreachable_server(server, &error))?;
@@ -789,6 +791,7 @@ impl Asking {
 
 /// Relay this process's stdin to `stream` and `stream` to its stdout; the
 /// client's `initialize` says what `asking` asks, when it asks anything.
+#[cfg(unix)]
 pub fn bridge_stdio(mut stream: UnixStream, asking: Asking) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new()
