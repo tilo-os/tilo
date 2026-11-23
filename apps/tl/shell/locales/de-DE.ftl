@@ -1324,3 +1324,25 @@ d-ce3pp2or-key = Schlüssel
 d-ce3pp2or-size = Größe
 
 d-vi5fveaq = Modellwahl
+
+# Added from the source: new words.
+d-pdda7z3y = Hängendes Fenster
+
+d-n6arlzpq = Fenster anderswo
+    .w-on = { $origin_app } auf { $device_name }
+    .w-on-another-device = { $origin_app } auf einem anderen Gerät
+    .w-this-window-runs-on-that-device = Dieses Fenster läuft auf diesem Gerät. Öffne es dort, um es zu sehen.
+
+d-6rjhuenw = Emoji-Karte
+
+d-wdiwq4yt = Über-Fenster
+
+d-tkt6f7u6 = Über-Fenster
+    .w-updates = Aktualisierungen
+    .w-close = Schließen
+    .w-all-details = Alle Details
+
+d-vv7k7lcl = Super-Tasten
+
+d-fhub73iw = Platzinhalt
+
