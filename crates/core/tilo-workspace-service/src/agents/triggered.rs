@@ -562,13 +562,14 @@ pub(super) fn collect_text(value: &Value, into: &mut Vec<String>) {
 
 pub use crate::work::Started;
 
-/// Why an agent's turn did not start, as its answer fails with it.
-fn not_started(message: String) -> tilo_actions::ActionFailure {
+/// Why an agent's turn did not start, as its answer fails with it: `retryable` for one that
+/// could go differently, which the shortcut's runner asks again with the same cause.
+fn not_started(message: String, retryable: bool) -> tilo_actions::ActionFailure {
     tilo_actions::ActionFailure {
         code: "agent-not-started".to_owned(),
         message,
         details: None,
-        retryable: false,
+        retryable,
     }
 }
 
@@ -741,7 +742,8 @@ impl Answers {
             .await
             {
                 going.lock_recover().remove(&invocation);
-                done.complete(Err(Box::new(not_started(why))));
+                // Nothing the agent can read, now or ever: another attempt changes nothing.
+                done.complete(Err(Box::new(not_started(why, false))));
                 return;
             }
             engine
@@ -770,9 +772,12 @@ impl Answers {
                             }),
                             resources: Vec::new(),
                         }),
-                        Some(Err(why)) => Err(Box::new(not_started(why))),
+                        // The turn failed: the shortcut's one retry asks the answer again
+                        // with the same cause, until its attempts run out.
+                        Some(Err(why)) => Err(Box::new(not_started(why, true))),
                         None => Err(Box::new(not_started(
                             "this device's agents stopped".to_owned(),
+                            true,
                         ))),
                     });
                 });

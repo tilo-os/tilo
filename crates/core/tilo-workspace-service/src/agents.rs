@@ -1309,11 +1309,17 @@ impl ServerAgents {
                 }
             }
         };
-        let (ended, used) = Box::pin(self.answer_going(workspace, &turn, &going, claim)).await;
+        let (ended, used, failed) =
+            Box::pin(self.answer_going(workspace, &turn, &going, claim)).await;
         if let Err(error) = &ended {
             tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent's turn did not finish");
         }
         drop(going);
+        // A turn that failed is not kept done: the shortcut's one retry asks the answer again
+        // with the same cause, and this turn runs for that attempt.
+        if failed {
+            return Err(ended.err().unwrap_or_else(|| "the turn failed".to_owned()));
+        }
         let done = json!({"answered": ended.is_ok()});
         if let Err(error) = crate::work::keep_done(&self.workspaces, workspace, &ask, done).await {
             tracing::warn!(%workspace, %error, "an agent's turn is not kept as done");
@@ -1450,10 +1456,11 @@ impl ServerAgents {
         turn: &Turn,
         going: &going::Going,
         claim: Arc<crate::work::Claim>,
-    ) -> (Result<(), String>, Value) {
+    ) -> (Result<(), String>, Value, bool) {
         let scope = match self.scope(workspace, turn).await {
             Ok(scope) => scope,
-            Err(error) => return (Err(error), Value::Null),
+            // A turn whose scope could not be made failed: the same cause may run again.
+            Err(error) => return (Err(error), Value::Null, true),
         };
         let mut turn = turn.clone();
         turn.history = scope.recall(&turn).await;
@@ -1475,7 +1482,7 @@ impl ServerAgents {
         workspace: &str,
         (scope, mut turn, mut reply): (TurnScope, Turn, Reply),
         going: &going::Going,
-    ) -> (Result<(), String>, Value) {
+    ) -> (Result<(), String>, Value, bool) {
         // A task is worked on over many agent sessions: the session is begun and its place
         // made before the model is asked, and one that may not begin ends here with its plain
         // line.
@@ -1483,7 +1490,7 @@ impl ServerAgents {
             Ok(task) => task,
             Err(words) => {
                 let ended = reply.finished(&Outcome::Stopped(words)).await;
-                return (ended, Value::Null);
+                return (ended, Value::Null, false);
             }
         };
         let clock = tilo_clock::now();
@@ -1550,9 +1557,10 @@ impl ServerAgents {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
         }
+        let failed = matches!(&outcome, Outcome::Failed(_));
         let ended = reply.finished(&outcome).await;
         self.sub_ended(&scope, &turn, &outcome).await;
-        (ended, usage.as_invocation_keeps(cost))
+        (ended, usage.as_invocation_keeps(cost), failed)
     }
 
     /// Begin an agent session on the task `turn` works on, as Tasks allows it: the session is
