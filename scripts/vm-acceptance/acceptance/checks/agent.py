@@ -187,19 +187,21 @@ def live_apps(ctx, res):
     expect(not started, f"--connect started a standalone runtime daemon (pids {started}) beside the desktop")
 
 
-@check("M03", AREA, "An agent creates a Notes note through new-note and the note is there when read back "
+@check("M03", AREA, "An agent creates a Notes note through new_note and the note is there when read back "
                     "independently")
 def new_note(ctx, res):
     t = _session(ctx)
     title = t["title"]
-    expect("#new-note" in text_of(t.get("notes_listing")),
-           f"Notes never listed its new-note action on the MCP server: {str(t.get('notes_listing'))[:300]}")
+    # The action a tilolang app publishes is named as its declaration is (`new_note`), where the
+    # native app it replaced published `new-note`.
+    expect("#new_note" in text_of(t.get("notes_listing")),
+           f"Notes never listed its new_note action on the MCP server: {str(t.get('notes_listing'))[:300]}")
     params = text_of(t.get("new_note_params"))
     expect(is_error(t.get("new_note_params")) is False and "title" in params,
-           f"Notes' new-note action names no title parameter: {str(t.get('new_note_params'))[:300]}")
+           f"Notes' new_note action names no title parameter: {str(t.get('new_note_params'))[:300]}")
     reply = t.get("new_note")
     expect(is_error(reply) is False and text_of(reply).startswith("ok"),
-           f"new-note was refused: {str(reply)[:300]}")
+           f"new_note was refused: {str(reply)[:300]}")
     res.metrics["new_note"] = text_of(reply)[:200]
     expect(title in text_of(t.get("found_note")),
            f"tilo_find does not find the note {title!r}: {str(t.get('found_note'))[:300]}")
