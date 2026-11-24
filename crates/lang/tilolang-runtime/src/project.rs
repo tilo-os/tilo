@@ -105,6 +105,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         | Value::Rec(_)
         | Value::Event
         | Value::EventPart(_)
+        | Value::EventPress
         | Value::State { .. }
         | Value::AtEvent { .. }
         | Value::Missing => {

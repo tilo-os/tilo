@@ -721,6 +721,16 @@ pub const MAX_CALL_PICTURES: usize = 64;
 /// (`runtime_collab::native_media::MAX_PICTURE_BYTES`).
 pub const MAX_CALL_PICTURE_BYTES: usize = 512 * 1024;
 
+
+/// The modifier keys held while the person pressed: what a tilolang press reads as
+/// `host.Press`. `command` is Ctrl, or ⌘ on a Mac.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    pub shift: bool,
+    pub command: bool,
+    pub alt: bool,
+}
+
 /// What the person did, as the window tells its app.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToApp {
@@ -831,6 +841,9 @@ pub enum ToApp {
     },
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
+    /// The modifier keys held with the pointer now, sent before the event they came with when
+    /// they changed: a press with Shift adds to a selection, one with the command key toggles.
+    Held(Held),
     /// The view of `level` has `width` by `height` of the window, in `rem` (the body text size
     /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
     /// `rem` is that body text size in logical pixels, which a view computes a place in pixels

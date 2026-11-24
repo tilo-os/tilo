@@ -460,6 +460,8 @@ pub struct Instance {
     /// The window's keyboard focus: the bound control it is in.
     focus: Option<(Level, String)>,
     composing: bool,
+    /// The modifier keys the window last said are held: what a press's `host.Press` reads.
+    held: ui::Held,
     /// How many presses the window sent (`ToApp::Fire`, `ToApp::Invoke`) the instance: the
     /// number each press goes by, in the order they came.
     fired: u64,
@@ -565,6 +567,7 @@ impl Instance {
             taken_build: None,
             focus: None,
             composing: false,
+            held: ui::Held::default(),
             fired: 0,
             last_fire: 0,
             taken_press: 0,
@@ -1748,6 +1751,7 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
+            ToApp::Held(held) => self.held = held,
             // Every write is sent as it is made; one the store refused is said, not kept.
             ToApp::SaveAgain => {}
             // What the person does next serves the call they signed for it: the writes it makes
@@ -1904,6 +1908,7 @@ impl Instance {
             | ToApp::Redo
             | ToApp::Focus { .. }
             | ToApp::Composing(_)
+            | ToApp::Held(_)
             | ToApp::SaveAgain
             | ToApp::Space { .. }
             | ToApp::Serving { .. }) => {
@@ -2044,12 +2049,17 @@ impl Instance {
             return Ok(());
         }
         let action = view.borrow().event_action(key, name);
+        let held = tilolang_runtime::Held {
+            shift: self.held.shift,
+            command: self.held.command,
+            alt: self.held.alt,
+        };
         // A check the project's host approved runs only for an invocation the workspace
         // dispatched, which its invoker can follow and stop: a press of it goes through the
         // dispatch, as the palette's does, rather than running here.
         if let Some((address, argument)) = view
             .borrow()
-            .fired_action(key, name, value.as_ref())
+            .fired_action(key, name, value.as_ref(), held)
             .ok()
             .flatten()
             .and_then(|aref| self.dispatched_check(&aref))
@@ -2062,7 +2072,9 @@ impl Instance {
             .host()
             .zip(action.as_ref())
             .and_then(|(host, action)| target_title(&host, action));
-        let fired = view.borrow().fire_in(key, name, value.as_ref(), gesture);
+        let fired = view
+            .borrow()
+            .fire_held(key, name, value.as_ref(), gesture, held);
         match fired {
             Ok(InvokeOutcome::Done(result)) => {
                 *ran = action.map(|aref| Ran {

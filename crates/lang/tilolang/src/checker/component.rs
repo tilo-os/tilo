@@ -1271,7 +1271,17 @@ impl Checker<'_> {
         let parts = e.at.is_some();
         self.push_sink();
         for (i, (p, carried)) in named.into_iter().enumerate() {
-            let Some(ty) = self.event_param_ty(d, e, p, carried) else {
+            // A press whose action takes a `host.Press` there gets the index with the keys held
+            // with it: the runtime fills the parameter by its type.
+            let press = p.ty.is_none()
+                && matches!(carried, Type::Int)
+                && self.passes_to_press(action, &p.name.name);
+            let ty = if press {
+                Some(press_ty())
+            } else {
+                self.event_param_ty(d, e, p, carried)
+            };
+            let Some(ty) = ty else {
                 self.pop_sink();
                 return Ex::error();
             };
@@ -1297,7 +1307,9 @@ impl Checker<'_> {
                 self.st.event_scalars.insert(local);
             }
             self.st.event_values.insert(local);
-            let placeholder = if parts {
+            let placeholder = if ty == press_ty() {
+                Ex::host(Imp::EventPress, Vec::new(), ty.clone())
+            } else if parts {
                 let part = i32::try_from(i).unwrap_or(0);
                 Ex::host(
                     Imp::EventPart,
@@ -1363,6 +1375,36 @@ impl Checker<'_> {
             )
     }
 
+    /// Whether `e` passes the event's value `name` as it is to a parameter that takes a `host.Press`
+    /// of a declared action or function it calls, anywhere in it: `select(c, i)`, `i` in
+    /// `set(selected, picked(i, selected))`, a step of `then`.
+    fn passes_to_press(&self, e: &ast::Expr, name: &str) -> bool {
+        let ExprKind::Call { callee, args, .. } = &e.kind else {
+            return false;
+        };
+        if let ExprKind::Field { base, .. } = &callee.kind
+            && self.passes_to_press(base, name)
+        {
+            return true;
+        }
+        let press = press_ty();
+        let callable = match &callee.kind {
+            ExprKind::Ident(called) => self.env.callables.iter().find(|c| c.name == *called),
+            _ => None,
+        };
+        args.iter().enumerate().any(|(at, a)| {
+            let here = matches!(&a.value.kind, ExprKind::Ident(n) if n == name)
+                && callable.is_some_and(|c| {
+                    match &a.name {
+                        Some(named) => c.params.iter().find(|p| p.name == named.name),
+                        None => c.params.get(at),
+                    }
+                    .is_some_and(|p| p.ty == press)
+                });
+            here || self.passes_to_press(&a.value, name)
+        })
+    }
+
     fn event_param_ty(
         &mut self,
         d: &Description,
@@ -1392,7 +1434,8 @@ impl Checker<'_> {
             );
             return None;
         }
-        if !fits(carried, &ty) && !ty.is_error() {
+        let press = ty == press_ty() && matches!(carried, Type::Int);
+        if !fits(carried, &ty) && !ty.is_error() && !press {
             let t = self.show(&ty);
             self.err(
                 "E020",
@@ -1651,6 +1694,14 @@ fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
         }
     }
     passed
+}
+
+/// The host's `Press`: a press's index with the modifier keys held with it.
+fn press_ty() -> Ty {
+    Ty::Record(crate::types::TypeKey {
+        app: crate::host::HOST_APP.to_string(),
+        name: crate::host::PRESS_TYPE.to_string(),
+    })
 }
 
 /// Whether values of `ty` hold actions offered to the person (`List<Action>`).

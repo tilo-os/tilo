@@ -446,6 +446,9 @@ pub enum Value {
     /// One part of what an event carries when it also says where its value lands (a drop
     /// carries `[card, at]`): 0 the value, 1 the place.
     EventPart(usize),
+    /// Where a press's `host.Press` goes: the index the event carries, with the modifier keys
+    /// held with it.
+    EventPress,
     /// A view state slot an action reference takes as an argument (`send(c, draft)`):
     /// read when the event fires, so the action gets what the person typed up to the press,
     /// whatever the view last drew. `scalar` slots hold their value boxed.
@@ -547,7 +550,7 @@ impl Value {
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
             Self::Error(_) => "error",
-            Self::Event | Self::EventPart(_) => "event value",
+            Self::Event | Self::EventPart(_) | Self::EventPress => "event value",
             Self::State { .. } => "view state",
             Self::Map(_) => "map",
             Self::Offered(_) => "offered action",
@@ -655,6 +658,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::Coll(_)
         | Value::Event
         | Value::EventPart(_)
+        | Value::EventPress
         | Value::State { .. }
         | Value::AtEvent { .. }
         | Value::Map(_)

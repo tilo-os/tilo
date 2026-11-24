@@ -401,6 +401,7 @@ impl Core {
         match imp {
             Imp::EventValue => self.ret_h(Value::Event),
             Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
+            Imp::EventPress => self.ret_h(Value::EventPress),
             Imp::Actions => {
                 let target = self.ref_arg(a.h(0)?)?;
                 // Where the view shows the item: the item just above it in its group, which

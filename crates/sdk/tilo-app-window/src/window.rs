@@ -282,6 +282,10 @@ pub struct AppWindow {
     focus: Option<String>,
     /// Whether an input method composes in the focused control, as last sent.
     composing: bool,
+    /// The modifier keys held now, as the last window event said.
+    held: wire::Held,
+    /// The modifier keys held, as last sent with a press.
+    held_sent: wire::Held,
     /// How often the app asked for the window to come forward since the window last did.
     activations: u32,
     /// The page this window shows, the same one its views read their events from: the app's
@@ -474,6 +478,8 @@ impl AppWindow {
             input: false,
             focus: None,
             composing: false,
+            held: wire::Held::default(),
+            held_sent: wire::Held::default(),
             activations: 0,
             shown_runs: Vec::new(),
             fired: 0,
@@ -1826,6 +1832,12 @@ impl AppWindow {
         }
         if matches!(event, UiEvent::Press(_) | UiEvent::Fire(..)) {
             self.fired = self.fired.saturating_add(1);
+            // What the person held with the press goes before it, when it changed: the app reads
+            // it as the press's `host.Press`.
+            if self.held != self.held_sent {
+                self.held_sent = self.held;
+                self.out.push(ToApp::Held(self.held));
+            }
         }
         let message = match event {
             UiEvent::Press(key) => {
@@ -3356,6 +3368,12 @@ impl ui::widget::Decorator for AppWindow {
         ) {
             self.input = true;
         }
+        let modifiers = ctx.modifiers.state();
+        self.held = wire::Held {
+            shift: modifiers.shift_key(),
+            command: ui::PlatformConventions::default().command_modifier_down(modifiers),
+            alt: modifiers.alt_key(),
+        };
         if let WindowEvent::Ime(ime) = event {
             let composing =
                 matches!(ime, ui::winit::event::Ime::Preedit(text, _) if !text.is_empty());

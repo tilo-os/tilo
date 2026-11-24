@@ -417,6 +417,8 @@ imports! {
     RandomShuffle = "random_shuffle" ([H] -> [H]);
     RandomId = "random_id" ([] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
+    // A press's index with the modifier keys held with it, as a `host.Press`.
+    EventPress = "event_press" ([] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);
     UiAction = "ui_action" ([H, H, H] -> []);

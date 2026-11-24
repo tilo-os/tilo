@@ -453,6 +453,13 @@ view usage_ring(used: Float, caption: Text) {
   chart's bar or a map's region is pressable without a closure; `hover` carries the index of the
   shape under the pointer as it moves, or none when it leaves them, for the view to keep as state
   (a bar lifted, its figure shown).
+- **A press says which keys were held.** Where the index goes to a parameter that takes a
+  `host.Press`, of an action or of a function a `set` computes with, the runtime fills it with
+  the index and the modifier keys held with it: `shift`, `command` (Ctrl, or ⌘ on a Mac) and
+  `alt`. Any event that carries an index can be read so. A timeline adds a clip to its selection
+  with Shift and toggles one with the command key:
+  `on press(i): set(selected, picked(i, drawn.owners, selected))`, with
+  `fn picked(pressed: host.Press, owners: List<Text>, selected: List<Text>) -> List<Text>`.
 
 Underneath, `ui.Drawing` is a ui-core widget (`#[derive(Component)]`) that lowers shapes to the
 same `kurbo` paths, fills, strokes and gradients the toolkit's own `Chart` and `Sparkline`

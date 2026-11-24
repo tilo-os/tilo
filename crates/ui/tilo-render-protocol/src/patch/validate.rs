@@ -747,6 +747,7 @@ impl<'a> Validator<'a> {
             | ToApp::Undo
             | ToApp::Redo
             | ToApp::Composing(_)
+            | ToApp::Held(_)
             | ToApp::SaveAgain
             | ToApp::History { .. }
             | ToApp::FormSubmit { .. }

@@ -236,6 +236,7 @@ impl Convert<'_> {
             | Value::Rec(_)
             | Value::Event
             | Value::EventPart(_)
+            | Value::EventPress
             | Value::State { .. }
             | Value::Bytes(_)
             | Value::Response(_)

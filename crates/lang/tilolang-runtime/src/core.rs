@@ -32,9 +32,9 @@ use Imp::{
     DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText,
     Earlier, EditField, EngineCall, EngineCancel, EngineCheck, EnginePicture, EngineRun,
     EngineStart, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI,
-    EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt,
-    FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileData, FileEncode,
-    FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove,
+    EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventPress, EventValue, FieldChanged,
+    FileAt, FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileData,
+    FileEncode, FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove,
     FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath,
     FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail,
     FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
@@ -723,10 +723,10 @@ impl Core {
             | ActSave | ActCall | ActCallInput | ActCallVolume | ActRunLine => {
                 self.ui_import(imp, a)
             }
-            EventValue | EventPart | Actions | Lenses | CallMembers | CallInputs | Invoked
-            | LinesRun | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen
-            | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase
-            | Word | EntryParts => self.platform_import(imp, a),
+            EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
+            | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | Links | RunChanges
+            | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd | FieldChanged
+            | Phrase | Word | EntryParts => self.platform_import(imp, a),
             Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp => {
                 self.members_import(imp, a)
             }

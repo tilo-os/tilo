@@ -346,6 +346,7 @@ imports! {
     (RandomShuffle, "random_shuffle", "i", "i"),
     (RandomId, "random_id", "", "i"),
     (EventPart, "event_part", "i", "i"),
+    (EventPress, "event_press", "", "i"),
     (CollMoveAmong, "coll_move_among", "iiili", ""),
     (UiActions, "ui_actions", "iii", ""),
     (UiAction, "ui_action", "iii", ""),

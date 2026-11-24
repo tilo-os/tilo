@@ -121,6 +121,7 @@ pub use store::{
 };
 pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
+pub use view_instance::Held;
 pub use view_instance::{CallStep, EditOutcome, UndoAsk, ViewEvent, ViewInstance};
 pub use view_state::StateKey;
 pub use words::{LoadedCatalogues, SourceWords, Words, WordsRole};

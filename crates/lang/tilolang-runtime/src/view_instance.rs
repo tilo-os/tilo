@@ -509,12 +509,30 @@ impl ViewInstance {
         value: Option<&Value>,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        self.fire_held(key, event, value, gesture, Held::default())
+    }
+
+    /// [`ViewInstance::fire_in`], with the modifier keys `held` while the person pressed: a
+    /// parameter of the action that takes a `host.Press` gets the index the event carries with
+    /// them, so Shift adds to a selection and the command key toggles one.
+    ///
+    /// # Errors
+    ///
+    /// As [`ViewInstance::fire_with`].
+    pub fn fire_held(
+        &self,
+        key: &str,
+        event: &str,
+        value: Option<&Value>,
+        gesture: Option<&str>,
+        held: Held,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         let Some(mut aref) = self.event_action(key, event) else {
             return Err(RuntimeError::NotFound(format!(
                 "the action of event `{event}` on `{key}`"
             )));
         };
-        fill_event(&mut aref, value).map_err(|()| {
+        fill_event(&mut aref, value, held).map_err(|()| {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
@@ -610,11 +628,12 @@ impl ViewInstance {
         key: &str,
         event: &str,
         value: Option<&Value>,
+        held: Held,
     ) -> Result<Option<ActionRef>, RuntimeError> {
         let Some(mut aref) = self.event_action(key, event) else {
             return Ok(None);
         };
-        fill_event(&mut aref, value).map_err(|()| {
+        fill_event(&mut aref, value, held).map_err(|()| {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
@@ -641,7 +660,7 @@ impl ViewInstance {
         if self.core.missing_arguments(&aref).is_empty() {
             return Ok(None);
         }
-        fill_event(&mut aref, value).map_err(|()| {
+        fill_event(&mut aref, value, Held::default()).map_err(|()| {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
@@ -1662,9 +1681,21 @@ impl ViewInstance {
 /// Fill what the event carries (`value`) into the place an argument holds it: the value the
 /// view wrote as the event's own, an option the view set it into, or the part of a tuple the
 /// view reads it as. Anything else is a value of the view's own, already as it stands.
-fn fill_event_value(held: &mut Value, value: Option<&Value>) -> Result<(), ()> {
+fn fill_event_value(held: &mut Value, value: Option<&Value>, keys: Held) -> Result<(), ()> {
     match held {
         Value::Event => *held = value.cloned().ok_or(())?,
+        // A press's index, with the keys held with it, as the `host.Press` it is read as.
+        Value::EventPress => {
+            let Some(Value::Int(index)) = value else {
+                return Err(());
+            };
+            *held = Value::Tuple(vec![
+                Value::Int(*index),
+                Value::Bool(keys.shift),
+                Value::Bool(keys.command),
+                Value::Bool(keys.alt),
+            ]);
+        }
         Value::EventPart(part) => {
             let Some(Value::List(parts)) = value else {
                 return Err(());
@@ -1674,12 +1705,12 @@ fn fill_event_value(held: &mut Value, value: Option<&Value>) -> Result<(), ()> {
         // A view that sets the event's value into a state of its own wraps it in the state's
         // option (`set(editing, c)` on an `Option<Comment>`): the value stands where the
         // wrapper holds it, and the wrapper stays around what the event conveys.
-        Value::Opt(Some(inner)) => fill_event_value(inner, value)?,
+        Value::Opt(Some(inner)) => fill_event_value(inner, value, keys)?,
         // A value the view computes from the event's (`set(expr, x.expr)`) runs once it fires,
         // over the value it carries.
         Value::AtEvent { args, .. } => {
             for arg in args {
-                fill_event_value(arg, value)?;
+                fill_event_value(arg, value, keys)?;
             }
         }
         _ => {}
@@ -1687,13 +1718,22 @@ fn fill_event_value(held: &mut Value, value: Option<&Value>) -> Result<(), ()> {
     Ok(())
 }
 
+/// The modifier keys held with a press, as the window says: what a `host.Press` carries beside
+/// the index. `command` is Ctrl, or ⌘ on a Mac.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub shift: bool,
+    pub command: bool,
+    pub alt: bool,
+}
+
 /// Put the value an event carries where the action reference holds it, through `then`: the
 /// whole of it, or the part of `[value, at]` a place names.
-fn fill_event(aref: &mut ActionRef, value: Option<&Value>) -> Result<(), ()> {
+fn fill_event(aref: &mut ActionRef, value: Option<&Value>, keys: Held) -> Result<(), ()> {
     for arg in &mut aref.args {
         match arg {
-            Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value)?,
-            held => fill_event_value(held, value)?,
+            Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value, keys)?,
+            held => fill_event_value(held, value, keys)?,
         }
     }
     Ok(())
@@ -1815,7 +1855,7 @@ mod event_value_tests {
                     Value::some(Value::Event),
                 ],
             );
-            fill_event(&mut aref, Some(&comment)).expect("the event carries a value");
+            fill_event(&mut aref, Some(&comment), Held::default()).expect("the event carries a value");
             assert_eq!(aref.args[3], Value::some(comment));
         }
 
@@ -1831,7 +1871,7 @@ mod event_value_tests {
                     Value::none(),
                 ],
             );
-            fill_event(&mut aref, Some(&Value::text("said"))).expect("the event carries a value");
+            fill_event(&mut aref, Some(&Value::text("said")), Held::default()).expect("the event carries a value");
             assert_eq!(aref.args[3], Value::none());
         }
     }

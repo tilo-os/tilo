@@ -860,7 +860,33 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: PRESS_TYPE,
+        id: "host-press",
+        doc: "A press as the person made it: what was pressed (a drawing's shape index) and the modifier keys held with it. An action whose parameter takes it gets it from a press event, so Shift can add to a selection and the command key toggle one.",
+        fields: &[
+            (
+                "index",
+                "Int",
+                "What was pressed: the index of the shape, or the row.",
+            ),
+            (
+                "shift",
+                "Bool",
+                "Whether Shift was held: extend the selection.",
+            ),
+            (
+                "command",
+                "Bool",
+                "Whether the command key was held (Ctrl, or ⌘ on a Mac): toggle one in the selection.",
+            ),
+            ("alt", "Bool", "Whether Alt (Option on a Mac) was held."),
+        ],
+    },
 ];
+
+/// The value type a press carries with its modifier keys.
+pub const PRESS_TYPE: &str = "Press";
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read
 /// across apps. `.of(T)` keeps those of one type.
