@@ -307,6 +307,11 @@ d-o4nc1mt2 = Neue Datei
 
 d-o4nc1mt2-name = Name
 
+d-6x2g4o5k = Laufwerk öffnen
+    .doc = Öffnet das Laufwerk `drive` und geht dorthin, wo es offen ist, damit ein Wechseldatenträger ein Ort wie jeder andere Ordner ist.
+
+d-6x2g4o5k-drive = Laufwerk
+
 d-2b6epu9v = Eintrag umbenennen
     .doc = Benennt den Eintrag unter `path` in seinem eigenen Ordner in `name` um.
     .w-a-name-cannot-be-empty = Ein Name darf nicht leer sein
@@ -496,6 +501,7 @@ d-n9jkqy4o = Dateien
 d-z6cheebf = Orte
     .w-places = Orte
     .w-workspace = Arbeitsbereich
+    .w-drives = Laufwerke
     .w-favorites = Favoriten
     .w-folders = Ordner
     .w-this-computer = Dieser Computer

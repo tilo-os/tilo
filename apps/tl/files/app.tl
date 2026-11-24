@@ -504,6 +504,23 @@ action new_file(f: Files, name: Text = "New file.txt") uses files, time (icon: .
     }
 }
 
+/// Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any
+/// other folder. A drive that still has to open shows as such until the device says where it is.
+action open_drive(f: Files, drive: device.Drive) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if let at = drive.mounted {
+        go(f, at.path)
+    } else {
+        device.mount(
+            device.drives,
+            drive: drive.id,
+            safely: drive.preselect == .open_safely,
+            remember: false,
+        )
+        s.notice = "Opening “{drive.label}”…"
+    }
+}
+
 /// Renames the entry at `path` to `name` in its own folder.
 action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .pencil) {
     require name.trim() != "" "A name cannot be empty"
@@ -1053,6 +1070,22 @@ view places(f: Files, s: Session) {
                         icon: .cloud,
                     ) {
                         on select: go(f, w.path)
+                    }
+                }
+            }
+        }
+        let drives = device.drives.drives
+        if not drives.is_empty() {
+            ui.NavSection("Drives") {
+                for d in drives {
+                    if let at = d.mounted {
+                        ui.NavItem(at.path, d.label, icon: .hard_drive) {
+                            on select: go(f, at.path)
+                        }
+                    } else {
+                        ui.NavItem("drive:{d.id}", d.label, icon: .hard_drive) {
+                            on select: open_drive(f, d)
+                        }
                     }
                 }
             }

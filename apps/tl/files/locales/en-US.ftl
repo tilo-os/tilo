@@ -348,6 +348,11 @@ d-o4nc1mt2 = New file
 
 d-o4nc1mt2-name = Name
 
+d-6x2g4o5k = Open drive
+    .doc = Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any other folder.
+
+d-6x2g4o5k-drive = Drive
+
 d-2b6epu9v = Rename entry
     .doc = Renames the entry at `path` to `name` in its own folder.
     .w-a-name-cannot-be-empty = A name cannot be empty
@@ -492,6 +497,7 @@ d-n9jkqy4o = Files
 d-z6cheebf = Places
     .w-places = Places
     .w-workspace = Workspace
+    .w-drives = Drives
     .w-favorites = Favorites
     .w-folders = Folders
     .w-this-computer = This computer
