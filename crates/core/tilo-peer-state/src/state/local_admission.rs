@@ -838,7 +838,7 @@ mod tests {
             };
             for mut message in order {
                 let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
-                    unreachable!()
+                    panic!("a document write")
                 };
                 let (mut write, again) = peer
                     .sequenced_local_document("test.app", "tab:1", (**envelope).clone(), now)
@@ -856,7 +856,7 @@ mod tests {
             .iter()
             .map(|message| match message {
                 NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
-                _ => unreachable!(),
+                _ => panic!("a document write"),
             })
             .collect();
         assert!(
