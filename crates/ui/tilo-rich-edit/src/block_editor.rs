@@ -802,6 +802,9 @@ pub struct BlockEditor {
     /// The picture a view last asked to write in at the caret (`insert`), as it asked: the ask
     /// it answers again only when it changes.
     insert_ask: Option<String>,
+    /// The block a view last asked to make a link to the record it made from it (`link`), as it
+    /// asked: the ask it answers again only when it changes.
+    link_ask: Option<String>,
     /// The paper the document is set on, when a view asks for pages: the stack breaks the
     /// blocks into sheets and the draw puts the paper, the header and the footer under them.
     pages: Option<Pages>,
@@ -1007,6 +1010,7 @@ impl BlockEditor {
             revealed_block: None,
             asked_format: None,
             insert_ask: None,
+            link_ask: None,
             pages: None,
             presence_key: None,
             body: None,

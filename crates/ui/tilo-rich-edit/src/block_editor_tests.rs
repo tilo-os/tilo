@@ -1917,6 +1917,38 @@ tilo_test_env::scenario! {
         dispatch(&mut editor, &named_key(NamedKey::Enter));
         assert_eq!(editor.blocks()[0].text(), "See Trip ideas");
     }
+
+    phase a_view_makes_the_block_a_page_was_made_from_a_link_to_it;
+    {
+        use ui::component::Link;
+        // A view made a page from a block's words and asks the editor to link that block to it:
+        // the words stay where the person wrote them, and read as the page from now on.
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("Trip ideas")]);
+        let block = editor.blocks()[0].id.clone();
+        let page = Link {
+            reference: "tilo://tilo/notes#tl:so.tilo.notes:monday".to_owned(),
+            title: "Trip ideas".to_owned(),
+        };
+        assert!(editor.link_asked(Some(format!("{block}:1")), Some(page.clone())));
+        assert_eq!(
+            editor.blocks()[0].text(),
+            "Trip ideas",
+            "the words stay where the person wrote them"
+        );
+        assert!(
+            editor.blocks()[0]
+                .line
+                .marks()
+                .iter()
+                .any(|span| span.range == (0..10) && matches!(&span.mark, Mark::Reference(_))),
+            "the block reads as the page it became"
+        );
+        assert!(
+            !editor.link_asked(Some(format!("{block}:1")), Some(page)),
+            "each ask is answered once"
+        );
+    }
 }
 
 tilo_test_env::scenario! {

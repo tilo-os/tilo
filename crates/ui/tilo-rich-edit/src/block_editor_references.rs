@@ -15,6 +15,7 @@ use crate::block_editor_body::BodyBinding;
 use crate::slash_menu::SlashHostCommand;
 use ui::component::{Bound, Component, Described, Event, Link, Value};
 use ui::theme::Theme;
+use ui::widget::link_popover::PageEntry;
 use ui::widget::marks::{MentionColors, MentionPaint};
 
 pub const OPEN_REFERENCE: &str = "open_reference";
@@ -66,9 +67,10 @@ pub struct BlockEditorProps {
     /// document, as its own Insert image does.
     #[component(event)]
     pub slash_image: Event,
-    /// The person chose a page from the slash menu, in the block the words are: the view makes the
-    /// page, titled with those words.
-    #[component(event(value = String))]
+    /// The person chose a page from the slash menu, in the block the words are: the block's id,
+    /// then the words. The view makes the page titled with those words, and names the block
+    /// again with `link` once it has.
+    #[component(event(value = Vec<String>))]
     pub slash_page: Event,
     /// The tracked changes the document holds, each time they change: each change's id, and its
     /// kind (0 for one that inserted words, 1 for one that deleted them). What a review panel
@@ -119,6 +121,14 @@ pub struct BlockEditorProps {
     /// end of the document.
     #[component(state)]
     pub insert: Option<String>,
+    /// A block to make a link to a record, as a view asks once it made the page a block named:
+    /// the block's id, then a count the view changes every time it asks (`p0:1`), and the record
+    /// it becomes a link to (`link_to`), read as its title. The block keeps its place and reads
+    /// as the record wherever it is opened, and a rename shows there.
+    #[component(state)]
+    pub link: Option<String>,
+    /// The record the block named by `link` becomes a link to: the page a view made from it.
+    pub link_to: Option<Link>,
     /// The heading the document shows, asked by the view that places an outline beside it: the
     /// place of the heading among the document's headings (`headings` reports them in that
     /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
@@ -446,6 +456,8 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             insert: _,
+            link: _,
+            link_to: _,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -527,6 +539,8 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             insert,
+            link,
+            link_to,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -569,9 +583,10 @@ impl Described for BlockEditor {
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);
+        let linked = self.link_asked(link, link_to);
         self.publish_headings();
         self.publish_changes();
-        rebound || formatted || inserted
+        rebound || formatted || inserted || linked
     }
 }
 
@@ -650,13 +665,45 @@ impl BlockEditor {
         };
         match request.command {
             SlashHostCommand::Image => self.references.slash_image.fire(None),
-            // The page a block makes is titled with the words that stood in it.
-            SlashHostCommand::Page => self
-                .references
-                .slash_page
-                .fire(Some(Value::Text(request.text))),
+            // The page a block makes is titled with the words that stood in it, and stands in
+            // the block it was made from: the view names that block again with `link` once it
+            // made the page, so the words the person wrote become the link to it.
+            SlashHostCommand::Page => self.references.slash_page.fire(Some(Value::List(vec![
+                Value::Text(request.block),
+                Value::Text(request.text),
+            ]))),
             SlashHostCommand::Named(_) => {}
         }
+    }
+
+    /// Answer a view's ask to make a block a link to the record it made from it: the ask names
+    /// the block, then a count the view changes every time it asks (`p0:1`), and `to` is the
+    /// record the block reads as now. Each ask is answered once.
+    pub fn link_asked(&mut self, asked: Option<String>, to: Option<Link>) -> bool {
+        if asked == self.link_ask {
+            return false;
+        }
+        // The page is made by the view in the same press that names the block: an ask that
+        // arrives before the record does is answered when it does, never dropped.
+        let Some(to) = to else {
+            return false;
+        };
+        let Some(asked) = asked else {
+            return false;
+        };
+        let block = match asked.rsplit_once(':') {
+            Some((block, count))
+                if !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                block
+            }
+            _ => asked.as_str(),
+        };
+        let linked = self.link_block_to_page(block, &PageEntry::link(&to.reference, &to.title));
+        if linked {
+            self.link_ask = Some(asked);
+        }
+        linked
     }
 
     pub(super) fn publish_link_query(&mut self) {

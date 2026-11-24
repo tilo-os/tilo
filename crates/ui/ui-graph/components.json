@@ -8054,6 +8054,13 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "link_to",
+          "doc": "The record the block named by `link` becomes a link to: the page a view made from it.",
+          "type": {
+            "option": "link"
+          }
         }
       ],
       "events": [
@@ -8083,8 +8090,10 @@
         },
         {
           "name": "slash_page",
-          "doc": "The person chose a page from the slash menu, in the block the words are: the view makes the page, titled with those words.",
-          "value": "text"
+          "doc": "The person chose a page from the slash menu, in the block the words are: the block's id, then the words. The view makes the page titled with those words, and names the block again with `link` once it has.",
+          "value": {
+            "list": "text"
+          }
         },
         {
           "name": "changes",
@@ -8139,6 +8148,13 @@
         {
           "name": "insert",
           "doc": "A picture to write in at the caret, as a view asks after the person chose a file: the address of its content, then a count the view changes every time it asks (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from its own Insert image, so the picture lands where the person is writing rather than at the end of the document.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "link",
+          "doc": "A block to make a link to a record, as a view asks once it made the page a block named: the block's id, then a count the view changes every time it asks (`p0:1`), and the record it becomes a link to (`link_to`), read as its title. The block keeps its place and reads as the record wherever it is opened, and a rename shows there.",
           "type": {
             "option": "text"
           }
