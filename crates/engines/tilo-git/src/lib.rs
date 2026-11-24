@@ -109,6 +109,9 @@ pub struct Loaded {
     pub stashes: Vec<String>,
     pub remotes: Vec<String>,
     pub worktrees: Vec<String>,
+    /// The commit graph's edges: each a row in the history, the column it leaves, the row and
+    /// column of the parent it reaches.
+    pub edges: Vec<String>,
     pub worktree_error: Option<String>,
 }
 
@@ -144,6 +147,7 @@ fn loaded_json(path: &Path, whitespace: bool, made: &str) -> Result<String, Stri
         stashes: model.stashes.iter().map(write).collect(),
         remotes: model.remotes.iter().map(write).collect(),
         worktrees: model.worktrees.iter().map(write).collect(),
+        edges: model.graph_edges.iter().map(write).collect(),
         worktree_error: model.worktree_error,
     })
 }

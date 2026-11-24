@@ -53,6 +53,7 @@ pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
 
     let layout = crate::graph::layout(&mut model.commits);
     model.graph_width = layout.columns;
+    model.graph_edges = layout.edges;
 
     Some((model, diffs))
 }

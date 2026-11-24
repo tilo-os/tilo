@@ -4,8 +4,17 @@
 
 use crate::model::Commit;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GraphEdge {
+    pub from_row: usize,
+    pub from_column: usize,
+    pub to_row: usize,
+    pub to_column: usize,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct GraphLayout {
+    pub edges: Vec<GraphEdge>,
     pub columns: usize,
 }
 
@@ -21,9 +30,10 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
     // Active columns: each slot holds the commit id that column is reserved for, or `None` when it is
     // free.
     let mut columns: Vec<Option<String>> = Vec::new();
+    let mut edges: Vec<GraphEdge> = Vec::new();
     let mut max_columns = 0usize;
 
-    for commit in commits.iter_mut() {
+    for (row, commit) in commits.iter_mut().enumerate() {
         let id = commit.id.clone();
 
         let mut my_column = columns
@@ -59,7 +69,7 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             let existing = columns
                 .iter()
                 .position(|l| l.as_deref() == Some(parent.as_str()));
-            let _to_column = if let Some(l) = existing {
+            let to_column = if let Some(l) = existing {
                 l
             } else if pi == 0 {
                 // First parent: keep our column, growing the column vec first when this is a fresh
@@ -87,13 +97,19 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                 l
             };
 
-            let _ = to_row;
+            edges.push(GraphEdge {
+                from_row: row,
+                from_column: my_column,
+                to_row,
+                to_column,
+            });
         }
 
         max_columns = max_columns.max(columns.len());
     }
 
     GraphLayout {
+        edges,
         columns: max_columns.max(1),
     }
 }
@@ -134,6 +150,7 @@ mod tests {
         let layout = layout(&mut commits);
         assert!(commits.iter().all(|c| c.column == 0));
         assert_eq!(layout.columns, 1);
+        assert_eq!(layout.edges.len(), 2, "c->b and b->a");
     }
 
     fn merge_commit_uses_a_second_column() {
@@ -150,5 +167,7 @@ mod tests {
             commits.iter().all(|c| c.column < layout.columns),
             "every row has a column of the layout"
         );
+        let from_zero = layout.edges.iter().filter(|e| e.from_row == 0).count();
+        assert_eq!(from_zero, 2, "the merge row points at two parents");
     }
 }

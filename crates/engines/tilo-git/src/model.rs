@@ -217,6 +217,9 @@ pub struct RepoModel {
     pub worktree_error: Option<String>,
 
     pub graph_width: usize,
+    /// The history's graph edges, read from its columns.
+    #[serde(skip)]
+    pub graph_edges: Vec<crate::graph::GraphEdge>,
 
     pub author_name: String,
     pub author_email: String,
