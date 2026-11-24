@@ -30,6 +30,10 @@ pub fn try_os_open(url: &str) -> std::io::Result<()> {
     crate::portal::open_uri(url)
 }
 
+/// The key of the link's "Copy link" action in its accessibility tree: the one child a link
+/// adds beside itself, so a menu, a screen reader and an agent find the address to copy.
+const COPY_CHILD: u64 = 0;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/press/focus/enabled), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -168,6 +172,14 @@ impl Link {
 
     pub fn last_activated(&self) -> Option<&str> {
         self.last_activated.as_deref()
+    }
+
+    /// Put the address it goes to on the person's clipboard, as its "Copy link" action does:
+    /// the address every other thing about the link reports, not the words it shows.
+    pub fn copy_address(&self) {
+        if !self.url.is_empty() {
+            crate::text_selection::clipboard_copy(&self.url);
+        }
     }
 
     /// Bypasses taffy — mirrors
@@ -435,13 +447,19 @@ impl Widget for Link {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.enabled {
             return false;
+        }
+        // The link's own "Copy link", the child its tree names: an agent or an assistive
+        // technology copies what it goes to without opening it.
+        if key_path == [COPY_CHILD] && matches!(action, Action::Activate) && !self.url.is_empty() {
+            self.copy_address();
+            return true;
         }
         match action {
             Action::Activate => {
@@ -454,18 +472,27 @@ impl Widget for Link {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::Link)
-                .with_name(self.label.clone())
-                .with_bounds(self.target())
-                .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.is_focusable())
-                        .focused(self.is_focused())
-                        .disabled(!self.is_enabled()),
-                ),
-        )
+        let mut node = AccessNode::new(Role::Link)
+            .with_name(self.label.clone())
+            .with_bounds(self.target())
+            .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
+        // "Copy link" is an action of the link itself, so a context menu, a screen reader and
+        // an agent copy its address the same way, and none of them opens it.
+        if !self.url.is_empty() {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_key(COPY_CHILD)
+                    .with_name(crate::i18n::widget_format("widget-copy-link", &[]))
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("link")))
     }
 }
 
@@ -626,6 +653,91 @@ mod tests {
             let node = Widget::accessibility(&link).expect("semantics");
             assert_eq!(node.value, None);
         }
+
+        phase a_link_copies_its_address_as_its_own_action;
+        {
+            fn the_copy_is_the_links_own_child() {
+                use crate::a11y::Role;
+                let link = Link::new("https://example.org/page").with_label("The page");
+                let node = Widget::accessibility(&link).expect("semantics");
+                assert_eq!(node.name.as_deref(), Some("The page"));
+                assert_eq!(node.children.len(), 1, "the copy stands beside the link");
+                let copy = &node.children[0];
+                assert_eq!(copy.role, Role::Button);
+                assert_eq!(copy.name.as_deref(), Some("Copy link"));
+            }
+
+            fn an_action_link_offers_no_copy_of_an_address_it_has_not_got() {
+                let link = Link::new("");
+                let node = Widget::accessibility(&link).expect("semantics");
+                assert!(node.children.is_empty());
+            }
+
+            fn the_copy_puts_the_address_on_the_clipboard_and_opens_nothing() {
+                use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+                let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+                let services =
+                    crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+                crate::process::scoped(&services, || {
+                    let mut doc = AutoCommit::new();
+                    let mut link = Link::new("https://example.org/page").with_label("The page");
+                    assert!(link.perform_action(
+                        &crate::a11y::Action::Activate,
+                        &[0],
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT
+                    ));
+                    assert!(link.last_activated().is_none(), "copying opens no page");
+                    assert_eq!(
+                        clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                        Some("https://example.org/page")
+                    );
+                });
+            }
+
+            the_copy_is_the_links_own_child();
+            an_action_link_offers_no_copy_of_an_address_it_has_not_got();
+            the_copy_puts_the_address_on_the_clipboard_and_opens_nothing();
+        }
+    }
+
+    /// The copy reaches an agent as the link's published action, not only a press.
+    #[test]
+    fn a_links_copy_action_is_published_and_copies_its_address() {
+        use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+        use crate::headless::{CONTROL_RESOURCE_PREFIX, FrameHarness};
+        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        crate::process::scoped(&services, || {
+            let mut driver = FrameHarness::new(
+                crate::State::new(),
+                Box::new(
+                    Link::new("https://example.org/page")
+                        .with_label("The page")
+                        .with_id("the-page"),
+                ),
+                (640, 160),
+            );
+            let resource = driver
+                .resources()
+                .into_iter()
+                .find(|resource| {
+                    resource.id.as_str().starts_with(CONTROL_RESOURCE_PREFIX)
+                        && resource.label == "Copy link"
+                })
+                .expect("the link's copy is published through the resource api");
+            driver
+                .invoke_action(
+                    &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                    &serde_json::Map::new(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("https://example.org/page")
+            );
+        });
     }
 
     fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {

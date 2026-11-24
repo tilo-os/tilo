@@ -1208,6 +1208,7 @@ widget-more = Mehr
 widget-number-increase = Vergrößern
 widget-number-decrease = Verkleinern
 widget-copy = Kopieren
+widget-copy-link = Link kopieren
 widget-hosted-applications = Gehostete Anwendungen
 widget-searching = Wird gesucht…
 widget-search-results = Suchergebnisse

@@ -1241,6 +1241,7 @@ widget-more = More
 widget-number-increase = Increase
 widget-number-decrease = Decrease
 widget-copy = Copy
+widget-copy-link = Copy link
 widget-hosted-applications = Hosted applications
 widget-searching = Searching…
 widget-search-results = Search results
