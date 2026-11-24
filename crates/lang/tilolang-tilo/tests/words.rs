@@ -56,7 +56,9 @@ fn app(name: &str) -> tilolang::Compiled {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
     )
     .expect("its ids parse");
-    tilolang::compile_package_source(&source, &ids, &[]).expect("the package compiles")
+    let imports = tilolang_tilo::platform_apps::named_platform_packages_of(&source)
+        .expect("the platform's packages read");
+    tilolang::compile_package_source(&source, &ids, &imports).expect("the package compiles")
 }
 
 /// The notes app as it ships: its source, its ids and the catalogues beside it, compiled into
@@ -69,9 +71,11 @@ fn notes(locale: &str) -> (Host, Package) {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the notes package's ids"),
     )
     .expect("its ids parse");
-    let compiled =
-        tilolang::compile_package_source(&source, &ids, std::slice::from_ref(&discussion.meta))
-            .expect("the notes package compiles");
+    let mut imports = tilolang_tilo::platform_apps::named_platform_packages_of(&source)
+        .expect("the platform's packages read");
+    imports.push(discussion.meta.clone());
+    let compiled = tilolang::compile_package_source(&source, &ids, &imports)
+        .expect("the notes package compiles");
     ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
@@ -310,9 +314,10 @@ fn a_packages_catalogues_all_load() {
     // package reads its 2 catalogues in 4 µs and parses them in 471 µs, under the 1 ms a package
     // may take; a debug test builds unoptimised, where the same parse takes about 3 ms.
     println!("{loaded} catalogues read in {read:?} and parsed in {parsed:?}");
+    // The module carries the source catalogue its sources write, beside each language's.
     assert_eq!(
         loaded,
-        source.locales.len(),
+        source.locales.len() + 1,
         "every catalogue the package has loads"
     );
 }
@@ -324,6 +329,7 @@ fn every_apps_catalogue_parses() {
     let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
     let mut catalogues = Vec::new();
     catalogue_directories(&apps, &mut catalogues);
+    let directories = catalogues.len();
     let mut read = 0;
     for locales in catalogues {
         for file in std::fs::read_dir(&locales).expect("the catalogues read") {
@@ -341,7 +347,12 @@ fn every_apps_catalogue_parses() {
             read += 1;
         }
     }
-    assert!(read >= 100, "an app ships a catalogue ({read} read)");
+    // Each app that keeps a locales directory ships at least one translation there: the
+    // source catalogue is written from its sources into the module, not kept as a file.
+    assert!(
+        read >= directories,
+        "{directories} apps keep a locales directory, and {read} catalogues read"
+    );
 }
 
 /// The `locales` directories under `dir`, wherever an app keeps them.

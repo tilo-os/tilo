@@ -92,15 +92,25 @@ fn windows_reading() -> String {
         "all": [
             {
                 "key": "1", "title": "Groceries", "origin_app": "Notes", "app_key": "so.tilo.notes",
+                "icon": "sticky_note",
                 "strip": "S1", "strip_key": "s1", "workspace": "Work", "workspace_key": "w1",
                 "group_key": "1", "tab_index": 0, "share": 1.0, "local": true, "place": 0,
                 "recency": 2, "focused": false, "preview": "live", "not_responding": false,
+                "elsewhere": false, "device": "laptop", "device_name": "Laptop",
+                "fullscreen": false, "floating": false, "renameable": true, "opens_tabs": false,
+                "controls_desktop": false, "display_id": "screen-1", "bar_location": "top",
+                "bar_field": "", "bar_typing": false,
             },
             {
                 "key": "2", "title": "Inbox", "origin_app": "Mail", "app_key": "so.tilo.mail",
+                "icon": "mail",
                 "strip": "S1", "strip_key": "s1", "workspace": "Work", "workspace_key": "w1",
                 "group_key": "2", "tab_index": 0, "share": 1.0, "local": true, "place": 1,
                 "recency": 1, "focused": true, "preview": "live", "not_responding": false,
+                "elsewhere": false, "device": "laptop", "device_name": "Laptop",
+                "fullscreen": false, "floating": false, "renameable": true, "opens_tabs": false,
+                "controls_desktop": false, "display_id": "screen-1", "bar_location": "top",
+                "bar_field": "", "bar_typing": false,
             },
         ]
     })
@@ -145,8 +155,10 @@ fn invoked(asked: &Asked) -> Vec<(String, String)> {
         .borrow()
         .iter()
         .map(|invocation| match invocation {
-            Invocation::Action { app, action, .. } => {
-                (app.as_str().to_owned(), action.as_str().to_owned())
+            // By the declaration's name: the session's surface names its actions by its own
+            // types (`Window/focus`), and the name a person reads is what the shell calls.
+            Invocation::Action { app, name, .. } => {
+                (app.as_str().to_owned(), name.clone())
             }
             other => panic!("an action invocation: {other:?}"),
         })
@@ -158,11 +170,11 @@ fn window_reporting(asked: &Asked) -> Option<String> {
     let invocations = asked.0.borrow();
     invocations.iter().find_map(|invocation| match invocation {
         Invocation::Action {
-            action,
+            name,
             args,
             target,
             ..
-        } if action.as_str() == "focus" => args
+        } if name.as_str() == "focus" => args
             .iter()
             .find_map(|(_, value)| match value {
                 Value::Ref(window) => Some(window.target.id_string()),
@@ -176,10 +188,13 @@ fn window_reporting(asked: &Asked) -> Option<String> {
 /// How many windows the shell's report is about.
 fn picked(host: &Host, root: &ResourceRef) -> usize {
     let value = host.runtime().read(root, "report_picks").unwrap();
+    // A list projects as its page: its count, and the items the page holds.
     host.runtime()
         .project(&value)
-        .as_array()
-        .map_or(0, Vec::len)
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(0)
 }
 
 tilo_test_env::scenario! {

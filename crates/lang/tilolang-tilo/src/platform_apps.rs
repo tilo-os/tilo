@@ -635,6 +635,33 @@ pub fn named_platform_packages(source: &str) -> Result<Vec<PackageMeta>, String>
     platform_packages_of(named.iter().map(String::as_str))
 }
 
+/// [`named_platform_packages`] of a package of several files: the platform's packages any of
+/// its files names with `use`, each once.
+///
+/// # Errors
+/// A named surface does not read.
+pub fn named_platform_packages_of(
+    source: &tilolang::PackageSource,
+) -> Result<Vec<PackageMeta>, String> {
+    let mut named: Vec<String> = Vec::new();
+    for file in &source.files {
+        for app in tilolang::parser::parse_module(&file.text)
+            .0
+            .into_iter()
+            .flat_map(|module| module.items)
+            .filter_map(|item| match item {
+                tilolang::ast::Item::Use(used) => Some(used.app),
+                _ => None,
+            })
+        {
+            if !named.contains(&app) {
+                named.push(app);
+            }
+        }
+    }
+    platform_packages_of(named.iter().map(String::as_str))
+}
+
 /// Each platform app's package, or why its surface does not read, read once for the build.
 fn packages() -> &'static [Result<PackageMeta, String>] {
     static PACKAGES: std::sync::OnceLock<Vec<Result<PackageMeta, String>>> =

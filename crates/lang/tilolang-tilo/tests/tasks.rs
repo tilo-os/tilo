@@ -147,7 +147,7 @@ pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
 /// How many things the window's header says its page lists, or nothing when it says no number.
 pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
     let shell = view.tree().first_of_kind("ui.NavShell")?;
-    match shell.props.get("count") {
+    match shell.props.get("overview_count") {
         Some(Value::Int(count)) => Some(*count),
         Some(Value::Opt(Some(count))) => match **count {
             Value::Int(count) => Some(count),
@@ -746,15 +746,15 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The count the tasks window shows over its list: the list is the window's content, so the
-/// count stands beside the content's title.
+/// The count the tasks window shows over its list: the overview is the window's list, so the
+/// count stands beside the overview's title.
 fn list_count(view: &ViewInstance) -> Option<i64> {
     match view
         .tree()
         .of_kind("ui.NavShell")
         .last()?
         .props
-        .get("count")
+        .get("overview_count")
     {
         Some(Value::Int(count)) => Some(*count),
         _ => None,
