@@ -61,6 +61,41 @@ mod cases {
             assert_eq!(shown(&view), Value::text("1"));
         }
 
+        phase the_view_reads_as_json_with_its_values_and_the_events_it_answers;
+        // A host that draws the tree itself, or prints it, reads it as JSON: the button by the
+        // key its anchor gives it, the text with the count it shows.
+        {
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let c = rt.create("Counter").unwrap();
+            let view_id = &app.meta().view_named("counter").unwrap().id;
+            let mut view = rt
+                .open_view(&me(), view_id, vec![Value::resource(&c)])
+                .unwrap();
+            let plus = app.meta().view_named("counter").unwrap().anchor_named("plus").unwrap();
+            view.press(plus).unwrap();
+            view.poll_patches().unwrap();
+            let tree = view.tree().to_json();
+            let mut nodes = vec![&tree];
+            let (mut texts, mut buttons) = (Vec::new(), Vec::new());
+            while let Some(node) = nodes.pop() {
+                match node["kind"].as_str().unwrap() {
+                    "ui.Text" => texts.push(node["props"]["value"].clone()),
+                    "ui.Button" => buttons.push(node.clone()),
+                    _ => {}
+                }
+                nodes.extend(node["children"].as_array().unwrap());
+            }
+            assert_eq!(texts, vec![serde_json::json!("1")], "{tree:#}");
+            let [button] = buttons.as_slice() else { panic!("{tree:#}") };
+            assert_eq!(button["key"], serde_json::json!(plus));
+            assert_eq!(button["anchor"], serde_json::json!(plus));
+            assert_eq!(button["props"]["label"], serde_json::json!("+1"));
+            assert_eq!(button["events"], serde_json::json!(["press"]));
+            assert_eq!(button["bound"], serde_json::json!(false));
+        }
+
         phase a_requirement_on_a_given_argument_refuses_the_invocation_with_its_reason;
         // A requirement on an argument the caller gives is checked when the action runs with it:
         // the same title is refused with the requirement's reason and writes nothing, another

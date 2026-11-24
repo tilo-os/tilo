@@ -738,7 +738,7 @@ impl App {
     }
 
     pub fn action(&self, name: &str) -> String {
-        let a = self.meta().actions.iter().find(|a| a.name == name);
+        let a = self.meta().action_named(name);
         a.unwrap_or_else(|| panic!("no action {name}")).id.clone()
     }
 

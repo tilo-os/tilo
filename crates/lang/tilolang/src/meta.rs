@@ -850,6 +850,18 @@ pub struct FnMeta {
     pub result: String,
 }
 
+impl ViewMeta {
+    /// The id of the part of the view written `as name`: the key its node has in the tree the
+    /// view renders.
+    #[must_use]
+    pub fn anchor_named(&self, name: &str) -> Option<&str> {
+        self.anchors
+            .iter()
+            .find(|anchor| anchor.name == name)
+            .map(|anchor| anchor.id.as_str())
+    }
+}
+
 impl TypeMeta {
     /// What one is called in a sentence: its name in words, lower case, in the singular (`TodoList`
     /// is a `todo list`).
@@ -892,6 +904,22 @@ impl PackageMeta {
             return None;
         }
         self.types.iter().find(|ty| ty.name == last)
+    }
+
+    /// The action declared as `name`, for a host that calls it by the name its source gives it
+    /// (the runtime takes its id).
+    #[must_use]
+    pub fn action_named(&self, name: &str) -> Option<&ActionMeta> {
+        self.actions.iter().find(|action| action.name == name)
+    }
+
+    /// The view declared as `name`: never a loop body or an action's presentation, which carry
+    /// the name of the view or action they belong to.
+    #[must_use]
+    pub fn view_named(&self, name: &str) -> Option<&ViewMeta> {
+        self.views
+            .iter()
+            .find(|view| view.name == name && view.row_of.is_none() && view.presents.is_none())
     }
 
     #[must_use]

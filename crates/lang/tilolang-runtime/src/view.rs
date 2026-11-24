@@ -152,6 +152,67 @@ impl UiNode {
             .map(Self::count)
             .fold(1usize, usize::saturating_add)
     }
+
+    /// The subtree as JSON, for a host that draws it itself or shows it as text: each node's
+    /// `kind`, `key`, `props` (as plain JSON values), whether a control is `bound` to a field or
+    /// state, the `events` it answers, its `anchor` and its `children`. Keys are in alphabetical
+    /// order whether or not serde_json keeps insertion order, so the text is the same in every
+    /// build.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::Value as Json;
+        let props: serde_json::Map<String, Json> = self
+            .props
+            .iter()
+            .map(|(name, value)| (name.clone(), shown_json(value)))
+            .collect();
+        let mut node = serde_json::Map::new();
+        node.insert(
+            "anchor".into(),
+            self.anchor.clone().map_or(Json::Null, Json::String),
+        );
+        node.insert("bound".into(), Json::Bool(self.binding.is_some()));
+        node.insert(
+            "children".into(),
+            Json::Array(self.children.iter().map(Self::to_json).collect()),
+        );
+        node.insert(
+            "events".into(),
+            Json::Array(self.events.keys().cloned().map(Json::String).collect()),
+        );
+        node.insert("key".into(), Json::String(self.key.clone()));
+        node.insert("kind".into(), Json::String(self.kind.clone()));
+        node.insert("props".into(), Json::Object(props));
+        Json::Object(node)
+    }
+}
+
+/// A property's value as plain JSON: what it shows, with no type tags. A reference is its id.
+fn shown_json(value: &Value) -> serde_json::Value {
+    use serde_json::Value as Json;
+    match value {
+        Value::Unit | Value::Opt(None) => Json::Null,
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Int(i) => Json::from(*i),
+        Value::Float(f) => Json::from(*f),
+        Value::Text(s) => Json::String(s.clone()),
+        Value::List(items) | Value::Tuple(items) => {
+            Json::Array(items.iter().map(shown_json).collect())
+        }
+        Value::Opt(Some(inner)) => shown_json(inner),
+        Value::Enum(ev) => Json::String(ev.variant.clone()),
+        Value::Ref(r) => Json::String(r.target.id_string()),
+        Value::Actor(a) => serde_json::to_value(a).unwrap_or(Json::Null),
+        Value::Json(j) => (**j).clone(),
+        Value::Map(entries) => Json::Object(
+            entries
+                .iter()
+                .filter_map(|(k, val)| Some((k.as_text()?.to_owned(), shown_json(val))))
+                .collect(),
+        ),
+        Value::Offered(off) => serde_json::to_value(off.as_ref()).unwrap_or(Json::Null),
+        other => Json::String(format!("{other:?}")),
+    }
 }
 
 /// A node as the guest builds it.

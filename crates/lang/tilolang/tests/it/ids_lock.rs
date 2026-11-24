@@ -27,6 +27,19 @@ tilo_test_env::scenario! {
         assert_eq!(back, c.ids);
     }
 
+    phase a_declaration_is_found_by_the_name_its_source_gives_it;
+    {
+        let c = compile(&fixture("counter.tl"));
+        let increment = c.meta.action_named("increment").expect("the action");
+        assert_eq!(Some(increment.id.as_str()), c.ids.get("increment"));
+        let view = c.meta.view_named("counter").expect("the view");
+        assert_eq!(Some(view.id.as_str()), c.ids.get("counter"));
+        assert_eq!(view.anchor_named("plus"), c.ids.get("counter#plus"));
+        assert!(c.meta.action_named("counter").is_none());
+        assert!(c.meta.view_named("increment").is_none());
+        assert!(view.anchor_named("minus").is_none());
+    }
+
     phase ids_are_eight_base32_characters;
     {
         let c = compile(&fixture("counter.tl"));

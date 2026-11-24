@@ -6,13 +6,12 @@
 use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value as Json, json};
+use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy, compile_package_with};
 use tilolang_lex::lexer::{Tok, lex, plain_comments};
 use tilolang_runtime::ids::MemberId;
 use tilolang_runtime::{
-    Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    ViewInstance,
+    Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
 };
 use wasm_bindgen::prelude::*;
 
@@ -342,53 +341,6 @@ fn json_to_value(j: &Json) -> Value {
     }
 }
 
-fn value_to_json(v: &Value) -> Json {
-    match v {
-        Value::Unit | Value::Opt(None) => Json::Null,
-        Value::Bool(b) => Json::Bool(*b),
-        Value::Int(i) => Json::from(*i),
-        Value::Float(f) => Json::from(*f),
-        Value::Text(s) => Json::String(s.clone()),
-        Value::List(items) | Value::Tuple(items) => {
-            Json::Array(items.iter().map(value_to_json).collect())
-        }
-        Value::Opt(Some(inner)) => value_to_json(inner),
-        Value::Enum(ev) => Json::String(ev.variant.clone()),
-        Value::Ref(r) => Json::String(r.target.id_string()),
-        Value::Actor(a) => serde_json::to_value(a).unwrap_or(Json::Null),
-        Value::Json(j) => (**j).clone(),
-        Value::Map(entries) => {
-            let mut m = Map::new();
-            for (k, val) in entries {
-                if let Value::Text(ks) = k {
-                    m.insert(ks.clone(), value_to_json(val));
-                }
-            }
-            Json::Object(m)
-        }
-        Value::Offered(off) => serde_json::to_value(off.as_ref()).unwrap_or(Json::Null),
-        other => Json::String(format!("{other:?}")),
-    }
-}
-
-fn serialize_node(node: &UiNode) -> Json {
-    let mut props = Map::new();
-    for (k, v) in &node.props {
-        props.insert(k.clone(), value_to_json(v));
-    }
-    let events: Vec<&String> = node.events.keys().collect();
-    let children: Vec<Json> = node.children.iter().map(serialize_node).collect();
-    json!({
-        "kind": node.kind,
-        "key": node.key,
-        "props": props,
-        "bound": node.binding.is_some(),
-        "events": events,
-        "anchor": node.anchor,
-        "children": children,
-    })
-}
-
 fn actor_label(invoker: Option<&Actor>) -> &'static str {
     let alice = PeerId::Alice.actor();
     let bob = PeerId::Bob.actor();
@@ -506,11 +458,11 @@ fn session_snapshot(session: &Session) -> Json {
         "pendingAlice": pending_alice,
         "pendingBob": pending_bob,
         "alice": {
-            "tree": serialize_node(session.alice.view.tree()),
+            "tree": session.alice.view.tree().to_json(),
             "canUndo": can_undo_peer(session, PeerId::Alice),
         },
         "bob": {
-            "tree": serialize_node(session.bob.view.tree()),
+            "tree": session.bob.view.tree().to_json(),
             "canUndo": can_undo_peer(session, PeerId::Bob),
         },
         "history": serialize_history(session),
