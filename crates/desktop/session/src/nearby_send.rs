@@ -421,7 +421,7 @@ impl Inner {
             NearbySendAction::RetryTransfer { transfer } => {
                 self.forward(wire::RETRY, json!({"transfer": transfer}), false)
             }
-            NearbySendAction::Share { resource } => {
+            NearbySendAction::InvitePeople { resource } => {
                 (self.share)(&resource).map_err(refused)?;
                 Ok(Started::Done(tilo_actions::ActionOutput::default()))
             }
