@@ -50,7 +50,7 @@ scenario "a week of changes" {
             commits: [
                 json.encode(
                     WireCommit(
-                        id: "5f2c1a9e4b7d3c8a1f6e0b2d9c4a7e3f5b8d1c6a",
+                        sha: "5f2c1a9e4b7d3c8a1f6e0b2d9c4a7e3f5b8d1c6a",
                         summary: "Sow dates per crop",
                         body: "The sowing table is the only place the dates live.",
                         author_name: "Jane Doe",
@@ -68,7 +68,7 @@ scenario "a week of changes" {
                 ),
                 json.encode(
                     WireCommit(
-                        id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+                        sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
                         summary: "Add raised beds and their sizes",
                         author_name: "Jane Doe",
                         author_email: "jane@example.com",
@@ -87,7 +87,7 @@ scenario "a week of changes" {
                 ),
                 json.encode(
                     WireCommit(
-                        id: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+                        sha: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
                         summary: "Start the garden planner",
                         author_name: "Sam Okafor",
                         author_email: "sam@example.com",

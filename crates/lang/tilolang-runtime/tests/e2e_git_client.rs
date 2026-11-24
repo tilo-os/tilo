@@ -559,11 +559,15 @@ mod cases {
         }
 
         fn window(&self) -> ViewInstance {
+            self.view_window("changes")
+        }
+
+        fn view_window(&self, view: &str) -> ViewInstance {
             let mut window = self
                 .rt
                 .open_view(
                     &me(),
-                    &self.app.view("changes"),
+                    &self.app.view(view),
                     vec![Value::resource(&self.root)],
                 )
                 .unwrap();
@@ -642,6 +646,58 @@ mod cases {
         for child in &node.children {
             collect_labels(child, out);
         }
+    }
+
+    /// The keys a row answers to, as its `keys` prop carries them.
+    fn keys_of(node: &tilolang_runtime::UiNode) -> Vec<String> {
+        match node.props.get("keys") {
+            Some(Value::List(keys)) => keys
+                .iter()
+                .map(|key| match key {
+                    Value::Text(key) => key.clone(),
+                    other => panic!("a key is text, not {other:?}"),
+                })
+                .collect(),
+            other => panic!("{} carries no keys: {other:?}", node.kind),
+        }
+    }
+
+    /// The rows of the first list of `window`: the rows the arrow keys step through.
+    fn rows_of<'a>(window: &'a ViewInstance) -> Vec<&'a tilolang_runtime::UiNode> {
+        let list = of_kind(window.tree(), "ui.VirtualList")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the window shows no list"));
+        let rows = of_kind(list, "ui.ListItem");
+        assert!(!rows.is_empty(), "the list holds rows");
+        rows
+    }
+
+    /// The text field of `window` whose placeholder is `placeholder`.
+    fn text_field<'a>(window: &'a ViewInstance, placeholder: &str) -> &'a tilolang_runtime::UiNode {
+        of_kind(window.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| {
+                matches!(
+                    field.props.get("placeholder"),
+                    Some(Value::Text(text)) if text == placeholder
+                )
+            })
+            .unwrap_or_else(|| panic!("no text field reading {placeholder:?}"))
+    }
+
+    /// The id of the first commit the repository answered with.
+    fn first_commit(s: &Site) -> String {
+        serde_json::from_str::<serde_json::Value>(
+            s.snapshot()["commits"][0]
+                .as_str()
+                .expect("a commit as the engine wrote it"),
+        )
+        .expect("a commit's fields")
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("the commit's id")
+        .to_owned()
     }
 
     tilo_test_env::scenario! {
@@ -950,6 +1006,29 @@ mod cases {
                 serde_json::Value::Bool(true),
                 "the device renders the whitespace the person asked to see"
             );
+
+            // The window is the person's own record: it is admitted to its author alone, so no
+            // other member's toggle can reach it, and a toggle writes that one record.
+            let other = person("bo");
+            assert!(s.rt.readers_admit(&me(), &session), "the author reads their own window");
+            assert!(
+                !s.rt.readers_admit(&other, &session),
+                "another member is not admitted to this person's diff preferences"
+            );
+            // The toggles wrote this person's window and nothing of the repository's own.
+            let name = s.text(&s.root, "name");
+            let head = s.text(&s.root, "head");
+            assert_eq!(s.records(&s.root, "sessions").len(), 1, "the person's one window");
+            assert_eq!(
+                s.enum_field(&session, "layout").variant,
+                s.app.compiled.ids.get("DiffLayout.split").unwrap().to_owned(),
+                "the person's own window is where the layout is kept"
+            );
+            assert_eq!(s.rt.read(&session, "highlight").unwrap(), Value::Bool(false));
+            assert_eq!(s.rt.read(&session, "wrap").unwrap(), Value::Bool(false));
+            assert_eq!(s.rt.read(&session, "whitespace").unwrap(), Value::Bool(true));
+            assert_eq!(s.text(&s.root, "name"), name);
+            assert_eq!(s.text(&s.root, "head"), head);
         }
 
         phase history_reads_a_commits_files_and_their_changes;
@@ -973,6 +1052,224 @@ mod cases {
             assert!(files.contains("src/beds.rs"), "{files}");
             assert!(files.contains("fn beds()"), "{files}");
             assert!(files.contains("rust"), "{files}");
+        }
+
+        phase every_decision_answers_a_key;
+        {
+            let s = Site::new();
+            // The window's own keys: Shift+S stages every file, and Ctrl+Enter commits from
+            // anywhere, already bound.
+            assert_eq!(
+                s.app.meta().action_named("stage_all").and_then(|a| a.key.as_deref()),
+                Some("Shift+s"),
+                "Shift+S stages every file"
+            );
+            assert_eq!(
+                s.app.meta().action_named("commit").and_then(|a| a.key.as_deref()),
+                Some("Ctrl+enter"),
+                "Ctrl+Enter commits from anywhere"
+            );
+
+            // A conflicted file is one kind of row, so both kinds of key are checked.
+            {
+                let mut repo = s.engine.repo.borrow_mut();
+                repo.changes[0].kind = "conflicted";
+                repo.changes[0].ours = 2;
+                repo.changes[0].theirs = 3;
+            }
+            s.open(REPO);
+            let changes = s.window();
+            let rows = rows_of(&changes);
+            assert_eq!(
+                keys_of(rows[0]),
+                ["s", "o", "t"],
+                "a conflicted file stages with s and keeps a side with o or t"
+            );
+            assert_eq!(keys_of(rows[1]), ["s"], "a plain change stages with s");
+            assert_eq!(
+                text_prop(text_field(&changes, "Commit message"), "key"),
+                "c",
+                "c writes the commit message"
+            );
+
+            // Enter opens a commit and Backspace or Escape steps back out; Enter switches to a
+            // branch and Delete deletes it.
+            let history = s.view_window("history");
+            let rows = rows_of(&history);
+            assert_eq!(keys_of(rows[0]), ["Enter", "Backspace", "Escape"]);
+            let branches = s.view_window("branches");
+            let keyed: Vec<_> = rows_of(&branches)
+                .into_iter()
+                .filter(|row| row.props.contains_key("keys"))
+                .collect();
+            assert_eq!(keyed.len(), 1, "the one local branch is a row with keys");
+            assert_eq!(keys_of(keyed[0]), ["Enter", "Delete"]);
+            assert_eq!(
+                text_prop(text_field(&branches, "New branch name"), "key"),
+                "b",
+                "b writes a new branch name"
+            );
+        }
+
+        phase a_key_acts_on_the_row_it_is_pressed_on;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            // s stages the selected file, and again takes it back out.
+            let change = s.records(&s.session(), "changes")[0].clone();
+            s.call(
+                "change_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::resource(&change),
+                    Value::text("s"),
+                ],
+            );
+            assert_eq!(s.engine.asked_with("stage_file").len(), 1);
+            let staged = s
+                .records(&s.session(), "changes")
+                .into_iter()
+                .find(|c| s.text(c, "path") == "README.md")
+                .expect("README.md is still listed");
+            s.call(
+                "change_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::resource(&staged),
+                    Value::text("s"),
+                ],
+            );
+            assert_eq!(s.engine.asked_with("unstage_file").len(), 1);
+
+            // o and t keep our side or theirs of a conflicted file.
+            let c = Site::new();
+            {
+                let mut repo = c.engine.repo.borrow_mut();
+                repo.changes[0].kind = "conflicted";
+                repo.changes[0].ours = 2;
+                repo.changes[0].theirs = 3;
+                repo.changes[1].kind = "conflicted";
+            }
+            c.open(REPO);
+            let conflicts = c.records(&c.session(), "changes");
+            c.call(
+                "change_on_key",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(&conflicts[0]),
+                    Value::text("o"),
+                ],
+            );
+            c.call(
+                "change_on_key",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(&conflicts[1]),
+                    Value::text("t"),
+                ],
+            );
+            let asked = c.engine.asked_with("resolve_conflict");
+            assert_eq!(asked.len(), 2);
+            assert_eq!(
+                field(&asked[0], "ours"),
+                serde_json::Value::Bool(true),
+                "o keeps our side"
+            );
+            assert_eq!(
+                field(&asked[1], "ours"),
+                serde_json::Value::Bool(false),
+                "t keeps theirs"
+            );
+        }
+
+        phase the_keys_of_history_and_branches_act;
+        {
+            // Enter opens a commit's files, and Backspace or Escape steps back out.
+            let s = Site::new();
+            s.open(REPO);
+            let id = first_commit(&s);
+            s.call(
+                "commit_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(id.clone()),
+                    Value::text("Enter"),
+                ],
+            );
+            assert_eq!(s.engine.asked_with("commit_detail").len(), 1);
+            assert_eq!(s.text(&s.session(), "commit_id"), id);
+            s.call(
+                "commit_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(id.clone()),
+                    Value::text("Backspace"),
+                ],
+            );
+            assert_eq!(s.text(&s.session(), "commit_id"), "", "Backspace steps back out");
+            s.call(
+                "commit_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(id.clone()),
+                    Value::text("Enter"),
+                ],
+            );
+            s.call(
+                "commit_on_key",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(id),
+                    Value::text("Escape"),
+                ],
+            );
+            assert_eq!(s.text(&s.session(), "commit_id"), "", "Escape steps back out");
+
+            // Enter checks out the selected branch, and Delete deletes a local one, never a remote.
+            let b = Site::new();
+            b.open(REPO);
+            b.call(
+                "branch_on_key",
+                vec![
+                    Value::resource(&b.root),
+                    Value::text("main"),
+                    Value::Bool(false),
+                    Value::text("Enter"),
+                ],
+            );
+            assert_eq!(
+                b.text(&b.session(), "pending_switch"),
+                "main",
+                "a switch over uncommitted work asks first"
+            );
+            b.call(
+                "create_branch",
+                vec![Value::resource(&b.root), Value::text("topic")],
+            );
+            b.call(
+                "branch_on_key",
+                vec![
+                    Value::resource(&b.root),
+                    Value::text("topic"),
+                    Value::Bool(false),
+                    Value::text("Delete"),
+                ],
+            );
+            assert_eq!(b.engine.asked_with("delete_branch").len(), 1);
+            b.call(
+                "branch_on_key",
+                vec![
+                    Value::resource(&b.root),
+                    Value::text("origin/main"),
+                    Value::Bool(true),
+                    Value::text("Delete"),
+                ],
+            );
+            assert_eq!(
+                b.engine.asked_with("delete_branch").len(),
+                1,
+                "a remote branch is not deleted"
+            );
         }
 
         phase the_window_shows_the_open_page_and_then_the_changes;

@@ -283,7 +283,7 @@ type WireChange {
 }
 
 type WireCommit {
-    id: Text = ""
+    sha: Text = ""
     summary: Text = ""
     body: Text = ""
     author_name: Text = ""
@@ -472,12 +472,37 @@ fn refs_of(items: List<Text>) -> List<RefLabel> {
         .map(r -> RefLabel(name: r.name, kind: r.kind))
 }
 
+/// The commits the device's engine answered with; `id` reads from the engine's own text, since a
+/// record's `.id` is the resource it is, which a commit is not.
 fn commits_of(items: List<Text>) -> List<WireCommit> {
     items.flat_map(
         t -> match json.decode<WireCommit>(t) {
-            .ok(w) => [w],
+            .ok(w) => [with_sha(w, t)],
             .err(_) => [],
         },
+    )
+}
+
+/// The commit `w`, with the identity the engine wrote in its text: a record's `.id` names the
+/// resource it is, and a commit is a value of the text, no resource.
+fn with_sha(w: WireCommit, raw: Text) -> WireCommit {
+    let written = match json.parse(raw) {
+        .ok(value) => std.json_text(value, "id"),
+        .err(_) => "",
+    }
+    let sha = if written == "" { w.sha } else { written }
+    WireCommit(
+        sha: sha,
+        summary: w.summary,
+        body: w.body,
+        author_name: w.author_name,
+        author_email: w.author_email,
+        time: w.time,
+        age: w.age,
+        date: w.date,
+        parents: w.parents,
+        refs: w.refs,
+        column: w.column,
     )
 }
 
@@ -580,7 +605,7 @@ fn worktree_error(g: Repository) -> Text {
 }
 
 fn full_id(c: Option<WireCommit>) -> Text {
-    if let one = c { one.id } else { "" }
+    if let one = c { one.sha } else { "" }
 }
 
 fn made(g: Repository) -> Text {
@@ -685,6 +710,16 @@ action unstage_file(g: Repository, c: Change) {
     asks(g, s, "unstage_file", json.encode(FileAsk(path: s.path, file: c.path)))
 }
 
+/// The key pressed on a file's row: `s` stages it or takes it back out of the next commit, and on
+/// a conflicted file `o` or `t` keeps our side or theirs.
+action change_on_key(g: Repository, c: Change, key: Text) {
+    if key == "s" {
+        if c.area == .staged { unstage_file(g, c) } else { stage_file(g, c) }
+    } else if key == "o" and c.kind == .conflicted {
+        resolve_conflict(g, c, true)
+    } else if key == "t" and c.kind == .conflicted { resolve_conflict(g, c, false) }
+}
+
 /// Discards the working tree's edits to one file, or deletes it when it was never tracked.
 destructive action discard_file(g: Repository, c: Change) (
     icon: .undo_2,
@@ -699,7 +734,7 @@ destructive action discard_file(g: Repository, c: Change) (
 }
 
 /// Stages every change.
-action stage_all(g: Repository) {
+action stage_all(g: Repository) (icon: .plus, key: "Shift+S") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
     asks(g, s, "stage_all", json.encode(PathAsk(path: s.path)))
 }
@@ -832,6 +867,14 @@ destructive action delete_branch(g: Repository, name: Text) (icon: .trash, label
     if s.trouble == "" {
         s.notice = "Deleted the branch {name}"
     }
+}
+
+/// The key pressed on a branch's row: `Enter` switches to it, and `Delete` deletes it when it is a
+/// local branch that is not the one checked out.
+action branch_on_key(g: Repository, name: Text, is_remote: Bool, key: Text) {
+    if key == "Enter" {
+        checkout_branch(g, name)
+    } else if key == "Delete" and not is_remote { delete_branch(g, name) }
 }
 
 /// Stashes the working tree's changes, with a message.
@@ -1017,6 +1060,18 @@ action read_commit(g: Repository, id: Text) {
             s.commit_id = id
             s.commit_files = text
         }
+    }
+}
+
+/// The key pressed on a commit's row: `Enter` opens its changed files, and `Backspace` or `Escape`
+/// steps back out of them, leaving the list of commits as it was.
+action commit_on_key(g: Repository, id: Text, key: Text) {
+    if key == "Enter" {
+        read_commit(g, id)
+    } else if key == "Backspace" or key == "Escape" {
+        let s = g.sessions.first() ?? g.sessions.insert(Session())
+        s.commit_id = ""
+        s.commit_files = ""
     }
 }
 
@@ -1437,7 +1492,12 @@ view changes_list(g: Repository, s: Session, chosen: State<Option<Change>>) {
         ui.VirtualList(selection_follows_focus: true, in_column: true, narrow: space.compact) {
             on select(x: Change): set(chosen, .some(x))
             for c in s.changes {
-                ui.ListItem(item: c, group: .some(area_word(c.area))) {
+                ui.ListItem(
+                    item: c,
+                    group: .some(area_word(c.area)),
+                    keys: if c.kind == .conflicted { ["s", "o", "t"] } else { ["s"] },
+                ) {
+                    on shortcut(k): change_on_key(g, c, k)
                     change_row(g, c)
                     menu: {
                         if c.area == .staged {
@@ -1499,7 +1559,7 @@ view change_row(g: Repository, c: Change) {
 
 view commit_box(g: Repository, s: Session, message: State<Text>) {
     stack(padding: .section, gap: .related) {
-        ui.TextInput(bind: message, placeholder: "Commit message", entry: true)
+        ui.TextInput(bind: message, placeholder: "Commit message", entry: true, key: "c")
         ui.Button(
             if g.head == "" { "Commit" } else { "Commit to {g.head}" },
             icon: .git_commit_horizontal,
@@ -1738,7 +1798,7 @@ view history(g: Repository) {
     state chosen: Text = ""
     let s = g.sessions.first()
     let commits = committed(g)
-    let reading = commits.find(x -> x.id == chosen) ?? commits.first()
+    let reading = commits.find(x -> x.sha == chosen) ?? commits.first()
     let read = if let w = s { w.commit_id == full_id(reading) } else { false }
     let files = if let w = s { commit_files(g, w) } else { [] }
     ui.NavShell(
@@ -1759,7 +1819,8 @@ view history(g: Repository) {
                 ) {
                     on select_value(id: Text): set(chosen, id).then(read_commit(g, id))
                     for c in commits {
-                        ui.ListItem(value: c.id) {
+                        ui.ListItem(value: c.sha, keys: ["Enter", "Backspace", "Escape"]) {
+                            on shortcut(k): commit_on_key(g, c.sha, k)
                             commit_row(c)
                         }
                     }
@@ -1781,7 +1842,7 @@ view commit_row(c: WireCommit) {
         title: c.summary,
         prefix: ref_names(c),
         secondary: "{c.author_name}, {said_ago(c.age)}",
-        meta: short(c.id),
+        meta: short(c.sha),
         icon: .git_commit_horizontal,
     )
 }
@@ -1800,7 +1861,7 @@ view commit_page(c: WireCommit, read: Bool, files: List<CommitFile>) {
             stack(gap: .tight) {
                 row(gap: .related) {
                     ui.Text("Commit", role: .caption, secondary: true)
-                    ui.Text(c.id, role: .code)
+                    ui.Text(c.sha, role: .code)
                 }
                 row(gap: .related) {
                     ui.Text("Date", role: .caption, secondary: true)
@@ -1880,14 +1941,20 @@ view branches(g: Repository) {
             ui.Scroll {
                 stack(padding: .group, gap: .group, max: 64rem) {
                     ui.Section("Branches") {
-                        for b in branched(g).filter(x -> not x.is_remote) {
-                            branch_row(g, b)
+                        ui.VirtualList(name: "Branches", selection_follows_focus: true) {
+                            for b in branched(g).filter(x -> not x.is_remote) {
+                                ui.ListItem(value: b.name, keys: ["Enter", "Delete"]) {
+                                    on shortcut(k): branch_on_key(g, b.name, b.is_remote, k)
+                                    branch_row(g, b)
+                                }
+                            }
                         }
                         row(gap: .related) {
                             ui.TextInput(
                                 bind: new_branch,
                                 placeholder: "New branch name",
                                 entry: true,
+                                key: "b",
                             ) {
                                 on submit: create_branch(g, new_branch)
                             }
@@ -1899,8 +1966,12 @@ view branches(g: Repository) {
                     let remote_branches = branched(g).filter(x -> x.is_remote)
                     if not remote_branches.is_empty() {
                         ui.Section("Remote branches") {
-                            for b in remote_branches {
-                                branch_row(g, b)
+                            ui.VirtualList(name: "Remote branches", selection_follows_focus: true) {
+                                for b in remote_branches {
+                                    ui.ListItem(value: b.name) {
+                                        branch_row(g, b)
+                                    }
+                                }
                             }
                         }
                     }

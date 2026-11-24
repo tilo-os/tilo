@@ -431,7 +431,7 @@ d-eqy5lhxf = Übertragener Commit
        *[other] übertragene Commits
     }
 
-d-5ycbn6i4 = Id
+d-ktz2fyrf = SHA
 
 d-ugphvrb2 = Zusammenfassung
 
@@ -857,6 +857,13 @@ d-33dk6utz-c = Ä
 
 d-33dk6utz-ours = Unsere
 
+d-6jfbtamv = Taste für eine Datei
+    .doc = Die auf einer Dateizeile gedrückte Taste: `s` stellt sie bereit oder nimmt sie aus dem nächsten Commit zurück, und bei einer Konfliktdatei behält `o` oder `t` unsere oder ihre Seite.
+
+d-6jfbtamv-c = C
+
+d-6jfbtamv-key = Taste
+
 d-pzeglzgm = Zweig anlegen
     .doc = Legt einen Zweig an und wechselt zu ihm.
     .w-a-branch-has-a-name = A branch has a name
@@ -888,6 +895,15 @@ d-vvjj7n6v = Zweig löschen
     .doc = Löscht einen lokalen Zweig.
 
 d-vvjj7n6v-name = Name
+
+d-js4difv7 = Taste für einen Zweig
+    .doc = Die auf einer Zweigzeile gedrückte Taste: `Enter` wechselt zu ihm, und `Delete` löscht ihn, wenn er ein lokaler Zweig ist, der nicht ausgecheckt ist.
+
+d-js4difv7-name = Name
+
+d-js4difv7-is_remote = Ist Remote
+
+d-js4difv7-key = Taste
 
 d-mu2sgzjp = Änderungen ablegen
     .doc = Legt die Änderungen des Arbeitsverzeichnisses mit einer Nachricht im Stash ab.
@@ -930,6 +946,13 @@ d-vbt5h6db = Commit lesen
     .doc = Liest die geänderten Dateien eines Commits und ihre Diffs beim Öffnen.
 
 d-vbt5h6db-id = Id
+
+d-7xbbdu3w = Taste für einen Commit
+    .doc = Die auf einer Commit-Zeile gedrückte Taste: `Enter` öffnet seine geänderten Dateien, und `Backspace` oder `Escape` geht aus ihnen zurück und lässt die Commit-Liste, wie sie war.
+
+d-7xbbdu3w-id = Id
+
+d-7xbbdu3w-key = Taste
 
 d-umhtkuee = Diff-Ansicht
     .doc = Ändert, wie diese Person Diffs liest: eine Spalte oder zwei.
@@ -981,6 +1004,9 @@ d-qmat4wnw = Anlegen
 d-u3txosuf = Anlegen
 
 d-464a2hax = Änderungen
+    .w-s = s
+    .w-o = o
+    .w-t = t
     .w-changes = Changes
     .w-git = Git
     .w-refresh = Refresh
@@ -1051,6 +1077,9 @@ d-m3qefblf = Verlauf
     .w-history = History
     .w-git = Git
     .w-no-commits-yet = No commits yet
+    .w-enter = Enter
+    .w-backspace = Backspace
+    .w-escape = Escape
 
 d-eu2tlikq = Commit-Zeile
 
@@ -1068,6 +1097,8 @@ d-fxxvyq63 = Geänderte Datei
     .w-only-the-file-s-permissions-changed = Only the file's permissions changed.
 
 d-m4t7437c = Zweige
+    .w-enter = Enter
+    .w-delete = Delete
     .w-branches = Branches
     .w-git = Git
     .w-new-branch-name = New branch name
