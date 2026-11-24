@@ -141,7 +141,13 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
                     .and_then(|rest| rest.rsplit_once('.'))
                     .map_or_else(
                         || workspace.clone(),
-                        |(app, _)| workspace.app(app).kind(kind).resource(id.to_owned()),
+                        |(app, _)| {
+                            workspace
+                                .clone()
+                                .app(app)
+                                .kind(kind)
+                                .resource(id.to_owned())
+                        },
                     );
                 let acting = Acting::handed_agent(agent.as_str(), member.for_person.as_str());
                 let preset = acting.handed_preset(&policy.workspace);
@@ -1615,11 +1621,12 @@ impl Workspaces {
                 .resources
                 .show_live(rows, hex::encode(device.cert.user_public_key));
         }
-        if let Ok(permissions) = governed
+        let policy = governed
             .peer()
             .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
-        {
-            governed.resources.follow_policy(permissions.policy.clone());
+            .map(|permissions| std::sync::Arc::clone(&permissions.policy));
+        if let Ok(policy) = policy {
+            governed.resources.follow_policy(policy);
         }
         governed.store_with_surfaces(&self.inner.host.surfaces)
     }
