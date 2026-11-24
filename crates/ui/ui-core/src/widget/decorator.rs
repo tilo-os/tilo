@@ -536,6 +536,7 @@ decorator_trait! {
         fn disclosing() -> Option<crate::widget::Disclosing>;
         fn is_band() -> bool;
         fn keeps_its_words() -> bool;
+        fn keeps_its_items() -> bool;
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;

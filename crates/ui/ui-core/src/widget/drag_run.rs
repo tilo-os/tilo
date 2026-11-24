@@ -1135,6 +1135,12 @@ impl Widget for DragRun {
             .collect()
     }
 
+    /// Each item keeps the width its view takes: a row gives the run at least its items, so
+    /// they never stand over each other.
+    fn keeps_its_items(&self) -> bool {
+        !self.is_list()
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1308,6 +1314,80 @@ mod tests {
                 (rects[1].x0 - rects[0].x1 - 12.0).abs() < 0.5,
                 "packed a sibling gap apart: {rects:?}"
             );
+        }
+    }
+
+    /// A dock of icon-only buttons beside the apps running now, in a row that hugs them inside a
+    /// sideways scroll: both share the row's room, and the run still gets the width of its items,
+    /// one sibling gap apart, so no button (nor the count on its corner) stands over the next.
+    #[test]
+    fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
+        use crate::widget::arrange::Fit;
+        use crate::widget::{BadgeContent, Button, ButtonRole, ChipStyle, Scrollable};
+        fn dock() -> Element {
+            let mut run =
+                DragRun::new("dock").distribute(crate::widget::arrange::Distribute::Center);
+            for (index, key) in ["files", "writer", "mail", "photos", "music"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut button =
+                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Plain);
+                if index == 2 {
+                    button = button.with_count(BadgeContent::Count(12), ChipStyle::default());
+                }
+                run = run.push(RunItem {
+                    key: key.to_owned(),
+                    label: key.to_owned(),
+                    item: None,
+                    group: RunGroup::Leading,
+                    view: Box::new(button),
+                });
+            }
+            let mut running = FlexRow::row().gap(Rhythm::Sibling);
+            for key in ["chat", "notes"] {
+                running = running.push(Box::new(
+                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Plain),
+                ));
+            }
+            Box::new(
+                FlexRow::row()
+                    .gap(Rhythm::Sibling)
+                    .push_fit(Box::new(run), Fit::fill(1.0))
+                    .push_fit(Box::new(running), Fit::fill(1.0)),
+            )
+        }
+        fn collect(node: &crate::headless::InspectionNode, out: &mut Vec<Rect>) {
+            if node.widget == "Button" {
+                let [x, y, w, h] = node.rect;
+                out.push(Rect::new(x, y, x + w, y + h));
+            }
+            for child in &node.children {
+                collect(child, out);
+            }
+        }
+        for theme in [Theme::light(), Theme::dark()] {
+            let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                Scrollable::new_horizontal().with_child(dock()),
+                (1280, 200),
+                theme,
+            );
+            let mut buttons = Vec::new();
+            collect(&host.inspection().root, &mut buttons);
+            assert_eq!(
+                buttons.len(),
+                7,
+                "five in the run, two running: {buttons:?}"
+            );
+            for pair in buttons.windows(2) {
+                let [left, right] = pair else { continue };
+                assert!(
+                    (right.x0 - left.x1 - gap).abs() < 0.5,
+                    "each button a sibling gap after the one before: {buttons:?}"
+                );
+            }
         }
     }
 

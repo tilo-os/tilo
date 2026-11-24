@@ -105,6 +105,15 @@ impl Layout for FlexLayout {
         {
             style.min_size.width = taffy::Dimension::auto();
         }
+        // A part whose items keep their width (a run of tiles) is never laid out narrower than
+        // them, even when it shares the row's room with parts beside it: those take the room it
+        // leaves, and the run never draws its items over each other.
+        if self.axis == Axis::Inline
+            && part.element.keeps_its_items()
+            && part.fit.width.min.is_none()
+        {
+            style.min_size.width = taffy::Dimension::auto();
+        }
         // A row that wraps flows its items at their own width: one that fills breaks onto a
         // line of its own when its own width does not fit beside what comes before it, and
         // then takes the width left on its line. From a zero basis it would never break, and

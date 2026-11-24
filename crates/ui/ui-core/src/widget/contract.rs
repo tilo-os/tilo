@@ -882,6 +882,14 @@ pub trait Widget {
         false
     }
 
+    /// Whether this widget's items keep their own width whatever room it is given: a run of tiles
+    /// that neither wraps, elides nor scrolls. A row never lays such a part out narrower than its
+    /// items, even where it takes a share of the row's room beside other parts that do: squeezed,
+    /// its items would stand over each other.
+    fn keeps_its_items(&self) -> bool {
+        false
+    }
+
     /// Where a band stands in its column, set by the column after each layout: what it leaves when
     /// dropped, so the column a rebuild makes can draw it leaving.
     fn note_placement(&mut self, _placement: Placement) {}
