@@ -244,7 +244,11 @@ d-ef6s7d6m = Rechnung
     .w-surfaces = Flächen
 
 d-2so3oy4c = Kurven
+    .w-y-f-x = y = f(x)
     .w-nothing-graphed-yet = Noch nichts gezeichnet
 
 d-gdbpqtv2 = Flächen
+    .w-z-f-x-y = z = f(x, y)
     .w-nothing-graphed-yet = Noch nichts gezeichnet
+
+d-so-tilo-calculator-keywords = rechnen, mathe, mathematik, grundrechnen, wissenschaftlicher rechner, zahlen, taschenrechner, kcalc, qalculate

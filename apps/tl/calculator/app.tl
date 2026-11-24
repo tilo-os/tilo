@@ -2,17 +2,7 @@ app so.tilo.calculator "Calculator" (
     icon: .hash,
     category: .utility,
     tagline: "Arithmetic and scientific calculations",
-    keywords: [
-        "calc",
-        "math",
-        "maths",
-        "arithmetic",
-        "scientific calculator",
-        "numbers",
-        "gnome calculator",
-        "kcalc",
-        "qalculate",
-    ],
+    keywords: ["calc", "math", "maths", "arithmetic", "scientific calculator", "numbers", "gnome calculator", "kcalc", "qalculate"],
 )
 
 /// One calculation worked out: what was typed, and what it came to. It stands in the calculator's
@@ -75,9 +65,7 @@ primary action calculate(
     let kept = c.calculations.insert(Calculation(expr: expr, result: result))
     // A calculator's record is its recent work: the oldest goes as a new one arrives.
     if c.calculations.len() > 100 {
-        if let oldest = c.calculations.first() {
-            c.calculations.remove(oldest)
-        }
+        if let oldest = c.calculations.first() { c.calculations.remove(oldest) }
     }
     kept
 }
@@ -102,7 +90,10 @@ action add_curve(c: Calculator, formula: Text = "") -> Curve (icon: .plus, label
 }
 
 /// Adds a surface to the 3D graph.
-action add_surface(c: Calculator, formula: Text = "") -> Surface (icon: .plus, label: "Add surface") {
+action add_surface(c: Calculator, formula: Text = "") -> Surface (
+    icon: .plus,
+    label: "Add surface",
+) {
     c.surfaces.insert(Surface(expr: formula))
 }
 
@@ -269,7 +260,19 @@ view window(
         } else if mode == 2 {
             graph2d_face(c, deg, answer, memory, width, centre, traced, grabbed, held_centre)
         } else {
-            graph3d_face(c, deg, answer, memory, yaw, pitch, zoom, grabbed, grabbed_y, held_yaw, held_pitch)
+            graph3d_face(
+                c,
+                deg,
+                answer,
+                memory,
+                yaw,
+                pitch,
+                zoom,
+                grabbed,
+                grabbed_y,
+                held_yaw,
+                held_pitch,
+            )
         }
     }
 }
@@ -300,9 +303,7 @@ view calculator_face(
             .then(set(expr, out))
             .then(set(answer, value))
             .then(set(fresh, true))
-    } else {
-        set(fresh, fresh)
-    }
+    } else { set(fresh, fresh) }
     split(side: .trailing, collapse: .stack) {
         primary(min: 18rem) {
             stack(gap: .section) {
@@ -360,10 +361,22 @@ view keys(
     commit: Action,
 ) {
     row(gap: .tight) {
-        ui.Button("M+", role: .secondary, size: .small, enabled: valid, description: "The expression is no number yet") {
+        ui.Button(
+            "M+",
+            role: .secondary,
+            size: .small,
+            enabled: valid,
+            description: "The expression is no number yet",
+        ) {
             on press: set(memory, memory + value)
         }
-        ui.Button("M−", role: .secondary, size: .small, enabled: valid, description: "The expression is no number yet") {
+        ui.Button(
+            "M−",
+            role: .secondary,
+            size: .small,
+            enabled: valid,
+            description: "The expression is no number yet",
+        ) {
             on press: set(memory, memory - value)
         }
         ui.Button("MR", role: .secondary, size: .small) {
@@ -522,7 +535,12 @@ view keys(
         ui.Button("mod", role: .key) {
             on press: set(expr, begun(expr, "mod(", fresh)).then(set(fresh, false))
         }
-        ui.Button("=", role: .primary, enabled: valid, description: "The expression is no number yet") {
+        ui.Button(
+            "=",
+            role: .primary,
+            enabled: valid,
+            description: "The expression is no number yet",
+        ) {
             on press: commit
         }
     }
@@ -587,7 +605,11 @@ view convert_face(
             placeholder: "Result",
         )
         if not converted.is_nan() {
-            ui.Text("{said(value)} {src} = {said(converted)} {dst}", role: .caption, secondary: true)
+            ui.Text(
+                "{said(value)} {src} = {said(converted)} {dst}",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }
@@ -621,11 +643,12 @@ view graph2d_face(
                 ) {
                     // The pointer reads the curve where it stands, a drag pans what is shown, the
                     // wheel and a pinch zoom it.
-                    on pointer(x, y): set(traced, sample_near(x))
-                    on drag_start(x, y): set(grabbed, x).then(set(held_centre, centre))
-                    on drag(x, y): set(centre, panned(held_centre, grabbed ?? x, x, width))
-                    on drag_end(x, y): set(grabbed, .none)
-                    on wheel(dx, dy): set(width, zoomed_by(width, dy)).then(set(centre, centre + dx / 200.0 * width))
+                    on pointer(x): set(traced, sample_near(x))
+                    on drag_start(x): set(grabbed, x).then(set(held_centre, centre))
+                    on drag(x): set(centre, panned(held_centre, grabbed ?? x, x, width))
+                    on drag_end: set(grabbed, .none)
+                    on wheel(dx, dy): set(width, zoomed_by(width, dy))
+                        .then(set(centre, centre + dx / 200.0 * width))
                     on pinch(scale): set(width, scaled_by(width, scale))
                 }
                 row(gap: .tight) {
@@ -645,9 +668,17 @@ view graph2d_face(
                         on press: set(centre, centre + width / 2.0)
                     }
                     if let at = traced {
-                        ui.Text(trace_said(shown, deg, answer, memory, xmin, xmax, at), role: .caption, numeric: true)
+                        ui.Text(
+                            trace_said(shown, deg, answer, memory, xmin, xmax, at),
+                            role: .caption,
+                            numeric: true,
+                        )
                     } else {
-                        ui.Text("Point at the graph to read a value; drag to pan, scroll to zoom", role: .caption, secondary: true)
+                        ui.Text(
+                            "Point at the graph to read a value; drag to pan, scroll to zoom",
+                            role: .caption,
+                            secondary: true,
+                        )
                     }
                 }
             }
@@ -687,10 +718,16 @@ view graph3d_face(
                     motion: .brisk,
                 ) {
                     // A drag turns the surface about: across it turns it, up and down tilts it.
-                    on drag_start(x, y): set(grabbed, x).then(set(grabbed_y, y)).then(set(held_yaw, yaw)).then(set(held_pitch, pitch))
-                    on drag(x, y): set(yaw, held_yaw + (x - (grabbed ?? x)) * 3.0).then(set(pitch, tilted(held_pitch + (y - grabbed_y) * 2.0)))
-                    on drag_end(x, y): set(grabbed, .none)
-                    on wheel(dx, dy): set(zoom, zoomed_3d(zoom, dy))
+                    on drag_start(x, y): set(grabbed, x)
+                        .then(set(grabbed_y, y))
+                        .then(set(held_yaw, yaw))
+                        .then(set(held_pitch, pitch))
+                    on drag(x, y): set(yaw, held_yaw + (x - (grabbed ?? x)) * 3.0)
+                        .then(
+                            set(pitch, tilted(held_pitch + (y - grabbed_y) * 2.0)),
+                        )
+                    on drag_end: set(grabbed, .none)
+                    on wheel(dy): set(zoom, zoomed_3d(zoom, dy))
                     on pinch(scale): set(zoom, (zoom * scale).clamp(0.2, 5.0))
                 }
                 row(gap: .tight) {
@@ -820,12 +857,11 @@ view surfaces_panel(c: Calculator, title: Text) {
     }
 }
 
+/// A key that starts a value: after a worked-out result it starts the next expression afresh,
+/// where an operator continues the result as it stands.
 // ---------------------------------------------------------------------------
 // What a keypress does to the expression
 // ---------------------------------------------------------------------------
-
-/// A key that starts a value: after a worked-out result it starts the next expression afresh,
-/// where an operator continues the result as it stands.
 fn begun(x: Text, s: Text, fresh: Bool) -> Text {
     if fresh {
         return s
@@ -884,6 +920,9 @@ fn reciprocal(x: Text) -> Text {
     "1/(" + x + ")"
 }
 
+/// The result of `text`, or not-a-number when it does not parse. `degrees` works the
+/// trigonometric functions in degrees; `answer` and `memory` are the values named `ans` and
+/// `mem`.
 // ---------------------------------------------------------------------------
 // The expression engine
 // ---------------------------------------------------------------------------
@@ -894,10 +933,6 @@ fn reciprocal(x: Text) -> Text {
 // read. A parse that goes wrong answers not-a-number, which the display reads as no result.
 //
 // The typesetting the display shows is plain text: what a person types is what the parser reads.
-
-/// The result of `text`, or not-a-number when it does not parse. `degrees` works the
-/// trigonometric functions in degrees; `answer` and `memory` are the values named `ans` and
-/// `mem`.
 fn eval(text: Text, degrees: Bool, answer: Float, memory: Float) -> Float {
     eval_at(text, degrees, answer, memory, 0.0, 0.0)
 }
@@ -943,9 +978,7 @@ fn skip(cs: List<Text>, st: Map<Float>) -> Text {
     if peek_raw(cs, st) == " " {
         st.put("i", index(st) + 1.0)
         skip(cs, st)
-    } else {
-        peek_raw(cs, st)
-    }
+    } else { peek_raw(cs, st) }
 }
 
 fn peek_raw(cs: List<Text>, st: Map<Float>) -> Text {
@@ -959,9 +992,7 @@ fn peek(cs: List<Text>, st: Map<Float>) -> Text {
 
 fn take(cs: List<Text>, st: Map<Float>) -> Text {
     let c = peek(cs, st)
-    if c != "" {
-        st.put("i", index(st) + 1.0)
-    }
+    if c != "" { st.put("i", index(st) + 1.0) }
     c
 }
 
@@ -988,7 +1019,6 @@ fn starts_value(c: Text) -> Bool {
 }
 
 // -- the grammar, by binding power ------------------------------------------------------------
-
 fn sum(cs: List<Text>, st: Map<Float>) -> Float {
     sum_rest(cs, st, product(cs, st))
 }
@@ -1100,16 +1130,14 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
         let from = index(st)
         sum(cs, st)
         let to = index(st)
-        let integrand = cs.map((c, i) -> if i >= from.to_int() and i < to.to_int() { c } else { "" }).join("")
+        let integrand = cs
+            .map((c, i) -> if i >= from.to_int() and i < to.to_int() { c } else { "" })
+            .join("")
         let second_given = peek(cs, st) == ","
-        if second_given {
-            take(cs, st)
-        }
+        if second_given { take(cs, st) }
         let first = if second_given { sum(cs, st) } else { 0.0 }
         let third_given = peek(cs, st) == ","
-        if third_given {
-            take(cs, st)
-        }
+        if third_given { take(cs, st) }
         let second = if third_given { sum(cs, st) } else { 0.0 }
         if not third_given or take(cs, st) != ")" {
             return bad()
@@ -1118,9 +1146,7 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
     }
     let first = sum(cs, st)
     let second_given = peek(cs, st) == ","
-    if second_given {
-        take(cs, st)
-    }
+    if second_given { take(cs, st) }
     let second = if second_given { sum(cs, st) } else { 0.0 }
     if take(cs, st) != ")" {
         return bad()
@@ -1139,24 +1165,43 @@ fn integrate(text: Text, a: Float, b: Float, st: Map<Float>) -> Float {
     let memory = st.get("mem") ?? 0.0
     let h = (b - a) / 256.0
     // The ends count once, the odd points four times and the even ones twice.
-    let ends = eval_at(text, degrees, answer, memory, a, 0.0) + eval_at(text, degrees, answer, memory, b, 0.0)
+    let ends = eval_at(text, degrees, answer, memory, a, 0.0)
+        + eval_at(text, degrees, answer, memory, b, 0.0)
     let odds = odd_points(text, degrees, answer, memory, a, h, 1.0)
     let evens = even_points(text, degrees, answer, memory, a, h, 2.0)
     h / 3.0 * (ends + 4.0 * odds + 2.0 * evens)
 }
 
-fn odd_points(text: Text, degrees: Bool, answer: Float, memory: Float, a: Float, h: Float, i: Float) -> Float {
+fn odd_points(
+    text: Text,
+    degrees: Bool,
+    answer: Float,
+    memory: Float,
+    a: Float,
+    h: Float,
+    i: Float,
+) -> Float {
     if i >= 256.0 {
         return 0.0
     }
-    eval_at(text, degrees, answer, memory, a + h * i, 0.0) + odd_points(text, degrees, answer, memory, a, h, i + 2.0)
+    eval_at(text, degrees, answer, memory, a + h * i, 0.0)
+        + odd_points(text, degrees, answer, memory, a, h, i + 2.0)
 }
 
-fn even_points(text: Text, degrees: Bool, answer: Float, memory: Float, a: Float, h: Float, i: Float) -> Float {
+fn even_points(
+    text: Text,
+    degrees: Bool,
+    answer: Float,
+    memory: Float,
+    a: Float,
+    h: Float,
+    i: Float,
+) -> Float {
     if i >= 256.0 {
         return 0.0
     }
-    eval_at(text, degrees, answer, memory, a + h * i, 0.0) + even_points(text, degrees, answer, memory, a, h, i + 2.0)
+    eval_at(text, degrees, answer, memory, a + h * i, 0.0)
+        + even_points(text, degrees, answer, memory, a, h, i + 2.0)
 }
 
 fn read_name(cs: List<Text>, st: Map<Float>) -> Text {
@@ -1229,7 +1274,7 @@ fn apply(name: Text, a: Float, b: Float, second_given: Bool, st: Map<Float>) -> 
     if name == "ln" {
         return a.ln()
     }
-    if name == "log10" or (name == "log" and not second_given) {
+    if name == "log10" or name == "log" and not second_given {
         return a.log10()
     }
     if name == "log2" {
@@ -1338,14 +1383,13 @@ fn said(v: Float) -> Text {
         return "-∞"
     }
     let size = v.abs()
-    if size >= 1e15 or (size != 0.0 and size < 1e-9) {
+    if size >= 1000000000000000.0 or size != 0.0 and size < 1e-9 {
         return v.to_text()
     }
     v.round(10).to_text()
 }
 
 // -- the number reader ------------------------------------------------------------------------
-
 fn digits(cs: List<Text>, st: Map<Float>, acc: Float) -> Float {
     let d = digit(peek(cs, st))
     if d < 0.0 {
@@ -1368,9 +1412,7 @@ fn number(cs: List<Text>, st: Map<Float>) -> Float {
     let start = index(st)
     let whole = digits(cs, st, 0.0)
     let dot = peek(cs, st) == "."
-    if dot {
-        take(cs, st)
-    }
+    if dot { take(cs, st) }
     let fraction = if dot { fractional(cs, st, 0.1, 0.0) } else { 0.0 }
     let value = whole + fraction
     if index(st) == start {
@@ -1381,12 +1423,10 @@ fn number(cs: List<Text>, st: Map<Float>) -> Float {
         let save = index(st)
         take(cs, st)
         let negative = peek(cs, st) == "-"
-        if negative or peek(cs, st) == "+" {
-            take(cs, st)
-        }
+        if negative or peek(cs, st) == "+" { take(cs, st) }
         if digit(peek(cs, st)) >= 0.0 {
             let sign = if negative { -1.0 } else { 1.0 }
-            return value * (10.0).pow(sign * digits(cs, st, 0.0))
+            return value * 10.0.pow(sign * digits(cs, st, 0.0))
         }
         st.put("i", save)
     }
@@ -1400,7 +1440,6 @@ fn number(cs: List<Text>, st: Map<Float>) -> Float {
 // A fixed table, so a conversion works with the network off. Each unit reaches its quantity's
 // base unit by a factor and an offset (temperature's units do not share a zero), and comes back
 // the same way. Money is not here: a rate is a fact about the moment, and a stale one would lie.
-
 fn symbols(q: Quantity) -> List<Text> {
     if q == .length {
         return ["mm", "cm", "m", "km", "in", "ft", "yd", "mi", "nmi"]
@@ -1436,11 +1475,17 @@ fn default_to(q: Quantity) -> Text {
 }
 
 fn default_from_at(q: Quantity) -> Int {
-    if q == .length { 2 } else if q == .mass { 1 } else if q == .volume { 0 } else if q == .time { 1 } else { 0 }
+    if q == .length {
+        2
+    } else if q == .mass { 1 } else if q == .volume { 0 } else if q == .time { 1 } else { 0 }
 }
 
 fn default_to_at(q: Quantity) -> Int {
-    if q == .length { 5 } else if q == .mass { 3 } else if q == .volume { 3 } else if q == .time { 0 } else if q == .area { 2 } else { 1 }
+    if q == .length {
+        5
+    } else if q == .mass {
+        3
+    } else if q == .volume { 3 } else if q == .time { 0 } else if q == .area { 2 } else { 1 }
 }
 
 /// How many base units one of `unit` is; not-a-number where the table has no such unit, so a
@@ -1471,44 +1516,102 @@ fn unit_factor(q: Quantity, unit: Text) -> Float {
 }
 
 fn length_factor(u: Text) -> Float {
-    if u == "mm" { 0.001 } else if u == "cm" { 0.01 } else if u == "m" { 1.0 } else if u == "km" { 1000.0 } else if u == "in" { 0.0254 } else if u == "ft" { 0.3048 } else if u == "yd" { 0.9144 } else if u == "mi" { 1609.344 } else if u == "nmi" { 1852.0 } else { bad() }
+    if u == "mm" {
+        0.001
+    } else if u == "cm" {
+        0.01
+    } else if u == "m" {
+        1.0
+    } else if u == "km" {
+        1000.0
+    } else if u == "in" {
+        0.0254
+    } else if u == "ft" {
+        0.3048
+    } else if u == "yd" {
+        0.9144
+    } else if u == "mi" { 1609.344 } else if u == "nmi" { 1852.0 } else { bad() }
 }
 
 fn mass_factor(u: Text) -> Float {
-    if u == "mg" { 0.000001 } else if u == "g" { 0.001 } else if u == "kg" { 1.0 } else if u == "lb" { 0.45359237 } else if u == "oz" { 0.028349523 } else if u == "t" { 1000.0 } else { bad() }
+    if u == "mg" {
+        1e-6
+    } else if u == "g" {
+        0.001
+    } else if u == "kg" {
+        1.0
+    } else if u == "lb" {
+        0.45359237
+    } else if u == "oz" { 0.028349523 } else if u == "t" { 1000.0 } else { bad() }
 }
 
 fn volume_factor(u: Text) -> Float {
-    if u == "ml" { 0.001 } else if u == "l" { 1.0 } else if u == "tsp" { 0.004928922 } else if u == "tbsp" { 0.014786765 } else if u == "fl oz" { 0.028413063 } else if u == "gal" { 3.785411784 } else { bad() }
+    if u == "ml" {
+        0.001
+    } else if u == "l" {
+        1.0
+    } else if u == "tsp" {
+        0.004928922
+    } else if u == "tbsp" {
+        0.014786765
+    } else if u == "fl oz" { 0.028413063 } else if u == "gal" { 3.785411784 } else { bad() }
 }
 
 fn temperature_factor(u: Text) -> Float {
-    if u == "°C" { 1.0 } else if u == "°F" { 0.5555555555555556 } else if u == "K" { 1.0 } else { bad() }
+    if u == "°C" {
+        1.0
+    } else if u == "°F" { 0.5555555555555556 } else if u == "K" { 1.0 } else { bad() }
 }
 
 fn time_factor(u: Text) -> Float {
-    if u == "s" { 1.0 } else if u == "min" { 60.0 } else if u == "h" { 3600.0 } else if u == "d" { 86400.0 } else if u == "wk" { 604800.0 } else if u == "yr" { 31557600.0 } else { bad() }
+    if u == "s" {
+        1.0
+    } else if u == "min" {
+        60.0
+    } else if u == "h" {
+        3600.0
+    } else if u == "d" {
+        86400.0
+    } else if u == "wk" { 604800.0 } else if u == "yr" { 31557600.0 } else { bad() }
 }
 
 fn speed_factor(u: Text) -> Float {
-    if u == "m/s" { 1.0 } else if u == "km/h" { 0.277777778 } else if u == "mph" { 0.44704 } else if u == "kn" { 0.514444444 } else { bad() }
+    if u == "m/s" {
+        1.0
+    } else if u == "km/h" {
+        0.277777778
+    } else if u == "mph" { 0.44704 } else if u == "kn" { 0.514444444 } else { bad() }
 }
 
 fn area_factor(u: Text) -> Float {
-    if u == "m²" { 1.0 } else if u == "ha" { 10000.0 } else if u == "ft²" { 0.09290304 } else if u == "ac" { 4046.856422 } else if u == "km²" { 1000000.0 } else { bad() }
+    if u == "m²" {
+        1.0
+    } else if u == "ha" {
+        10000.0
+    } else if u == "ft²" {
+        0.09290304
+    } else if u == "ac" { 4046.856422 } else if u == "km²" { 1000000.0 } else { bad() }
 }
 
 fn data_factor(u: Text) -> Float {
-    if u == "B" { 1.0 } else if u == "kB" { 1000.0 } else if u == "MB" { 1000000.0 } else if u == "GB" { 1000000000.0 } else if u == "KiB" { 1024.0 } else if u == "GiB" { 1073741824.0 } else { bad() }
+    if u == "B" {
+        1.0
+    } else if u == "kB" {
+        1000.0
+    } else if u == "MB" {
+        1000000.0
+    } else if u == "GB" {
+        1000000000.0
+    } else if u == "KiB" { 1024.0 } else if u == "GiB" { 1073741824.0 } else { bad() }
 }
 
 /// The offset a unit reaches its base with: only temperature has one.
 fn unit_offset(q: Quantity, unit: Text) -> Float {
     if q == .temperature {
-        if unit == "°C" { 273.15 } else if unit == "°F" { 255.3722222222222 } else if unit == "K" { 0.0 } else { bad() }
-    } else {
-        0.0
-    }
+        if unit == "°C" {
+            273.15
+        } else if unit == "°F" { 255.3722222222222 } else if unit == "K" { 0.0 } else { bad() }
+    } else { 0.0 }
 }
 
 fn convert_value(q: Quantity, v: Float, from: Text, to: Text) -> Float {
@@ -1519,23 +1622,79 @@ fn convert_value(q: Quantity, v: Float, from: Text, to: Text) -> Float {
     (base - unit_offset(q, to)) / unit_factor(q, to)
 }
 
+/// The samples a curve is drawn through, 0 to 63.
 // ---------------------------------------------------------------------------
 // The graphs
 // ---------------------------------------------------------------------------
 //
 // A graph is sampled in the view and drawn as shapes of the design system (`ui.Drawing`): points
 // are fractions of the drawing's box, so the same curve scales with the window and the theme.
-
-/// The samples a curve is drawn through, 0 to 63.
 fn steps() -> List<Float> {
     [
-        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
-        10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0,
-        20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0,
-        30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0,
-        40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0, 49.0,
-        50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0, 57.0, 58.0, 59.0,
-        60.0, 61.0, 62.0, 63.0,
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        30.0,
+        31.0,
+        32.0,
+        33.0,
+        34.0,
+        35.0,
+        36.0,
+        37.0,
+        38.0,
+        39.0,
+        40.0,
+        41.0,
+        42.0,
+        43.0,
+        44.0,
+        45.0,
+        46.0,
+        47.0,
+        48.0,
+        49.0,
+        50.0,
+        51.0,
+        52.0,
+        53.0,
+        54.0,
+        55.0,
+        56.0,
+        57.0,
+        58.0,
+        59.0,
+        60.0,
+        61.0,
+        62.0,
+        63.0,
     ]
 }
 
@@ -1564,12 +1723,31 @@ fn down(ymin: Float, ymax: Float, y: Float) -> Float {
 
 /// A curve's points, x and y in turn, with the samples off the top or bottom of the view left
 /// out so the line is clipped to what a person can see.
-fn curve_points(expr: Text, deg: Bool, answer: Float, memory: Float, xmin: Float, xmax: Float, ymin: Float, ymax: Float) -> List<Float> {
+fn curve_points(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    xmin: Float,
+    xmax: Float,
+    ymin: Float,
+    ymax: Float,
+) -> List<Float> {
     steps().flat_map((v, i) -> curve_point(expr, deg, answer, memory, xmin, xmax, ymin, ymax, i))
 }
 
 /// One sample's place in the box, or none where it is off the top or bottom of the view.
-fn curve_point(expr: Text, deg: Bool, answer: Float, memory: Float, xmin: Float, xmax: Float, ymin: Float, ymax: Float, i: Int) -> List<Float> {
+fn curve_point(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    xmin: Float,
+    xmax: Float,
+    ymin: Float,
+    ymax: Float,
+    i: Int,
+) -> List<Float> {
     let x = sample_x(xmin, xmax, i)
     let y = eval_at(expr, deg, answer, memory, x, 0.0)
     if y.is_nan() or y < ymin or y > ymax {
@@ -1580,13 +1758,47 @@ fn curve_point(expr: Text, deg: Bool, answer: Float, memory: Float, xmin: Float,
 
 /// The grid the 2D graph is read against: its lines and the numbers at its corners.
 fn grid2d(xmin: Float, xmax: Float, ymin: Float, ymax: Float) -> List<ui.Shape> {
-    let verticals = quarters().map(v -> ui.Shape.line(x1: v, y1: 0.0, x2: v, y2: 1.0, stroke: .track, weight: .hairline))
-    let horizontals = quarters().map(v -> ui.Shape.line(x1: 0.0, y1: v, x2: 1.0, y2: v, stroke: .track, weight: .hairline))
+    let verticals = quarters()
+        .map(
+            v -> ui.Shape.line(x1: v, y1: 0.0, x2: v, y2: 1.0, stroke: .track, weight: .hairline),
+        )
+    let horizontals = quarters()
+        .map(
+            v -> ui.Shape.line(x1: 0.0, y1: v, x2: 1.0, y2: v, stroke: .track, weight: .hairline),
+        )
     let corners = [
-        ui.Shape.text(x: 0.005, y: 0.985, text: said(xmin), role: .caption, ink: .muted, anchor: .start),
-        ui.Shape.text(x: 0.995, y: 0.985, text: said(xmax), role: .caption, ink: .muted, anchor: .end),
-        ui.Shape.text(x: 0.005, y: 0.03, text: said(ymin), role: .caption, ink: .muted, anchor: .start),
-        ui.Shape.text(x: 0.005, y: 0.06, text: said(ymax), role: .caption, ink: .muted, anchor: .start),
+        ui.Shape.text(
+            x: 0.005,
+            y: 0.985,
+            text: said(xmin),
+            role: .caption,
+            ink: .muted,
+            anchor: .start,
+        ),
+        ui.Shape.text(
+            x: 0.995,
+            y: 0.985,
+            text: said(xmax),
+            role: .caption,
+            ink: .muted,
+            anchor: .end,
+        ),
+        ui.Shape.text(
+            x: 0.005,
+            y: 0.03,
+            text: said(ymin),
+            role: .caption,
+            ink: .muted,
+            anchor: .start,
+        ),
+        ui.Shape.text(
+            x: 0.005,
+            y: 0.06,
+            text: said(ymax),
+            role: .caption,
+            ink: .muted,
+            anchor: .start,
+        ),
     ]
     [verticals, horizontals, corners].flat_map(s -> s)
 }
@@ -1598,7 +1810,17 @@ fn quarters() -> List<Float> {
 
 /// The 2D graph's shapes: the grid under the curves, the curves, and the sample dots the pointer
 /// reads a value at, the one it is nearest lifted.
-fn plot2d(shown: List<Curve>, deg: Bool, answer: Float, memory: Float, xmin: Float, xmax: Float, ymin: Float, ymax: Float, traced: Option<Int>) -> List<ui.Shape> {
+fn plot2d(
+    shown: List<Curve>,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    xmin: Float,
+    xmax: Float,
+    ymin: Float,
+    ymax: Float,
+    traced: Option<Int>,
+) -> List<ui.Shape> {
     let grid = grid2d(xmin, xmax, ymin, ymax)
     let curves = shown.map(
         (x, i) -> ui.Shape.path(
@@ -1611,30 +1833,47 @@ fn plot2d(shown: List<Curve>, deg: Bool, answer: Float, memory: Float, xmin: Flo
     let dots = shown.flat_map(
         (x, i) -> if i == 0 {
             dots_for(x.expr, deg, answer, memory, xmin, xmax, ymin, ymax, traced ?? -1)
-        } else {
-            []
-        },
+        } else { [] },
     )
     [grid, curves, dots].flat_map(s -> s)
 }
 
 /// The dots on a curve: where each sample stands, the one under the pointer lifted.
-fn dots_for(expr: Text, deg: Bool, answer: Float, memory: Float, xmin: Float, xmax: Float, ymin: Float, ymax: Float, picked: Int) -> List<ui.Shape> {
-    steps().map(
-        (v, i) -> ui.Shape.ellipse(
-            cx: sample_x(xmin, xmax, i),
-            cy: dot_y(expr, deg, answer, memory, sample_x(xmin, xmax, i), ymin, ymax),
-            rx: if i == picked { 0.014 } else { 0.007 },
-            ry: if i == picked { 0.014 } else { 0.007 },
-            stroke: .some(.accent),
-            weight: .hairline,
-        ),
-    )
+fn dots_for(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    xmin: Float,
+    xmax: Float,
+    ymin: Float,
+    ymax: Float,
+    picked: Int,
+) -> List<ui.Shape> {
+    steps()
+        .map(
+            (v, i) -> ui.Shape.ellipse(
+                cx: sample_x(xmin, xmax, i),
+                cy: dot_y(expr, deg, answer, memory, sample_x(xmin, xmax, i), ymin, ymax),
+                rx: if i == picked { 0.014 } else { 0.007 },
+                ry: if i == picked { 0.014 } else { 0.007 },
+                stroke: .some(.accent),
+                weight: .hairline,
+            ),
+        )
 }
 
 /// A dot's height, or below the drawing where the sample is no number: nothing is drawn there,
 /// and the dot keeps its place in the list so the pointer's index still means its sample.
-fn dot_y(expr: Text, deg: Bool, answer: Float, memory: Float, x: Float, ymin: Float, ymax: Float) -> Float {
+fn dot_y(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    x: Float,
+    ymin: Float,
+    ymax: Float,
+) -> Float {
     let y = eval_at(expr, deg, answer, memory, x, 0.0)
     if y.is_nan() {
         return 2.0
@@ -1644,11 +1883,23 @@ fn dot_y(expr: Text, deg: Bool, answer: Float, memory: Float, x: Float, ymin: Fl
 
 /// The curve's ink, by its place in the list.
 fn ink_at(i: Int) -> ui.Ink {
-    if i % 5 == 0 { .accent } else if i % 5 == 1 { .info } else if i % 5 == 2 { .success } else if i % 5 == 3 { .warning } else { .danger }
+    if i % 5 == 0 {
+        .accent
+    } else if i % 5 == 1 {
+        .info
+    } else if i % 5 == 2 { .success } else if i % 5 == 3 { .warning } else { .danger }
 }
 
 /// What the pointer stands at, in words: the first visible curve's value at that sample.
-fn trace_said(shown: List<Curve>, deg: Bool, answer: Float, memory: Float, xmin: Float, xmax: Float, at: Int) -> Text {
+fn trace_said(
+    shown: List<Curve>,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    xmin: Float,
+    xmax: Float,
+    at: Int,
+) -> Text {
     if let first = shown.first() {
         if at >= 0 and at < 64 {
             let x = sample_x(xmin, xmax, at)
@@ -1661,12 +1912,23 @@ fn trace_said(shown: List<Curve>, deg: Bool, answer: Float, memory: Float, xmin:
 
 /// The 3D graph's shapes: the floor grid under every visible surface, each drawn as its rows and
 /// columns of points.
-fn plot3d(shown: List<Surface>, starter: Bool, deg: Bool, answer: Float, memory: Float, yaw: Float, pitch: Float, zoom: Float) -> List<ui.Shape> {
+fn plot3d(
+    shown: List<Surface>,
+    starter: Bool,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    yaw: Float,
+    pitch: Float,
+    zoom: Float,
+) -> List<ui.Shape> {
     let floor = lines3d(yaw, pitch, zoom)
     let plots = if starter {
         surface_lines(starter_surface(), deg, answer, memory, yaw, pitch, zoom, .accent)
     } else {
-        shown.flat_map((x, i) -> surface_lines(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)))
+        shown.flat_map(
+            (x, i) -> surface_lines(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)),
+        )
     }
     [floor, plots].flat_map(s -> s)
 }
@@ -1677,22 +1939,73 @@ fn starter_surface() -> Text {
 }
 
 /// One surface's rows and columns, each a path across the box.
-fn surface_lines(expr: Text, deg: Bool, answer: Float, memory: Float, yaw: Float, pitch: Float, zoom: Float, ink: ui.Ink) -> List<ui.Shape> {
-    let rows = lattice().map((v, j) -> ui.Shape.path(points: row_points(expr, deg, answer, memory, yaw, pitch, zoom, j), stroke: .some(ink), weight: .hairline))
-    let columns = lattice().map((v, i) -> ui.Shape.path(points: column_points(expr, deg, answer, memory, yaw, pitch, zoom, i), stroke: .some(ink), weight: .hairline))
+fn surface_lines(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    yaw: Float,
+    pitch: Float,
+    zoom: Float,
+    ink: ui.Ink,
+) -> List<ui.Shape> {
+    let rows = lattice()
+        .map(
+            (v, j) -> ui.Shape.path(
+                points: row_points(expr, deg, answer, memory, yaw, pitch, zoom, j),
+                stroke: .some(ink),
+                weight: .hairline,
+            ),
+        )
+    let columns = lattice()
+        .map(
+            (v, i) -> ui.Shape.path(
+                points: column_points(expr, deg, answer, memory, yaw, pitch, zoom, i),
+                stroke: .some(ink),
+                weight: .hairline,
+            ),
+        )
     [rows, columns].flat_map(s -> s)
 }
 
-fn row_points(expr: Text, deg: Bool, answer: Float, memory: Float, yaw: Float, pitch: Float, zoom: Float, j: Int) -> List<Float> {
+fn row_points(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    yaw: Float,
+    pitch: Float,
+    zoom: Float,
+    j: Int,
+) -> List<Float> {
     lattice().flat_map((v, i) -> project_point(expr, deg, answer, memory, yaw, pitch, zoom, i, j))
 }
 
-fn column_points(expr: Text, deg: Bool, answer: Float, memory: Float, yaw: Float, pitch: Float, zoom: Float, i: Int) -> List<Float> {
+fn column_points(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    yaw: Float,
+    pitch: Float,
+    zoom: Float,
+    i: Int,
+) -> List<Float> {
     lattice().flat_map((v, j) -> project_point(expr, deg, answer, memory, yaw, pitch, zoom, i, j))
 }
 
 /// One point of a surface, turned by the orbit and tilted, as a place in the drawing.
-fn project_point(expr: Text, deg: Bool, answer: Float, memory: Float, yaw: Float, pitch: Float, zoom: Float, i: Int, j: Int) -> List<Float> {
+fn project_point(
+    expr: Text,
+    deg: Bool,
+    answer: Float,
+    memory: Float,
+    yaw: Float,
+    pitch: Float,
+    zoom: Float,
+    i: Int,
+    j: Int,
+) -> List<Float> {
     let x = -7.0 + 14.0 * i.to_float() / 12.0
     let y = -7.0 + 14.0 * j.to_float() / 12.0
     let z = eval_at(expr, deg, answer, memory, x, y)

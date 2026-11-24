@@ -3,6 +3,8 @@
 
 d-so-tilo-calculator = Calculator
 
+d-so-tilo-calculator-keywords = calc, math, maths, arithmetic, scientific calculator, numbers, gnome calculator, kcalc, qalculate
+
 d-q3wxb24v = Calculation
     .doc = One calculation worked out: what was typed, and what it came to.
     .noun = { $count ->
@@ -245,7 +247,9 @@ d-ef6s7d6m = Calculation
     .w-surfaces = Surfaces
 
 d-2so3oy4c = Curves panel
+    .w-y-f-x = y = f(x)
     .w-nothing-graphed-yet = Nothing graphed yet
 
 d-gdbpqtv2 = Surfaces panel
+    .w-z-f-x-y = z = f(x, y)
     .w-nothing-graphed-yet = Nothing graphed yet
