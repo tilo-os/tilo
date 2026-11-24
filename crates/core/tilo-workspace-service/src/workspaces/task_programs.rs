@@ -431,8 +431,8 @@ fn default_group(caller: ProgramCaller<'_>) -> WorkGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::{CatalogueQuery, PendingPoll};
-    use tilo_actions::{ActionAddress, InvokeArgument, RemoteActionTarget};
+    use tilo_actions::remote::{CatalogueQuery, InvokeArgument, PendingPoll, RemoteActionTarget};
+    use tilo_actions::ActionAddress;
 
     /// A host no step reaches: every case below is refused before a program runs.
     struct NoPrograms;
