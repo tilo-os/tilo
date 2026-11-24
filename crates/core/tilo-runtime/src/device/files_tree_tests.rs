@@ -557,8 +557,9 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         "another person's daemon does not answer for Ada"
     );
 
-    // A folder the workspace grants Bob's app reaches his mount without it being mounted again,
-    // and taking the grant back refuses his next read and write there at once, while the rest
+    // A folder the workspace grants Bob reaches his mount without it being mounted again (one it
+    // grants only an app of his reaches that app, not the mount acting as him), and taking the
+    // grant back refuses his next read and write there at once, while the rest
     // of the workspace stands.
     let folder = "shared";
     let granted = format!("/var/workspace/{folder}");
@@ -573,8 +574,7 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         Scope::FsPath(granted),
         Granted::Write,
     )
-    .with_id("bob-shared")
-    .through("so.tilo.notes");
+    .with_id("bob-shared");
     hosted
         .commit_own_membership(
             &workspace,
