@@ -1239,6 +1239,11 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
+  A record brought into another workspace stays where it lives: the workspace
+  in front holds a reference by the record's name, and opening it reads the
+  record there with the reader's grants. A reader without access sees the
+  reference as unavailable and learns nothing about the record. Removing the
+  reference leaves the record unchanged. Nothing is copied.
 
 ### What goes
 
