@@ -1,11 +1,13 @@
 //! The person's list of their workspaces, written by the device that holds their own workspace.
 //!
 //! A workspace is listed when the person's own daemon makes one for them, redeems the invitation
-//! into one, or lets one go: the daemon holds the person's own workspace, so its write is decided
-//! there like any other record's. A host that merely admits someone holds no copy of their own
-//! workspace and writes nothing; a server that makes a workspace for them holds no copy of it
-//! either, because founding it is their own device's, so nothing of theirs is written on the
-//! server.
+//! into one, or lets one go, and when a server their device hands their own workspace to takes it
+//! in: the daemon holds the person's own workspace, so its write is decided there like any other
+//! record's. A host that merely admits someone holds no copy of their own workspace and writes
+//! nothing; a server that makes a workspace for them holds no copy of it either, because founding
+//! it is their own device's. A server their own device hands their own workspace to is named among
+//! its holders as it takes it in, so it writes what it knows of their list there: a login that
+//! reads the list from that server finds their workspaces, not an empty list.
 //!
 //! One writer runs wherever the person's own workspace is governed: the daemon calls these
 //! changes as part of the action that made the workspace, took the device into one that is
@@ -143,13 +145,30 @@ impl Workspaces {
         let their_own = person_workspace_id(person);
         let mut known: Vec<(String, String)> = Vec::new();
         if *person == self.device_cert().user_public_key {
-            // What this host governs is all theirs.
-            known.extend(
-                self.list()
-                    .await
-                    .into_iter()
-                    .map(|summary| (summary.workspace, summary.name)),
-            );
+            // What this host governs that is theirs: the workspaces their member
+            // list holds them in. A host that runs other people's workspaces
+            // beside them governs those as well, and none of them is listed here.
+            let now = tilo_clock::wall();
+            for workspace in self.ids().await {
+                let Ok(state) = self.workspace(&workspace.to_string()).await else {
+                    continue;
+                };
+                let governed = state.lock().await;
+                let theirs = governed
+                    .peer()
+                    .governance()
+                    .governed_members(now)
+                    .is_ok_and(|list| {
+                        list.members
+                            .iter()
+                            .any(|member| member.root() == Some(*person) && !member.removed)
+                    });
+                let listed = (governed.workspace().to_owned(), governed.name());
+                drop(governed);
+                if theirs {
+                    known.push(listed);
+                }
+            }
         }
         let own = self.own().map(|own| own.of(person)).unwrap_or_default();
         let mut invited = self.inner.memberships.of(person);

@@ -381,19 +381,20 @@ impl Workspaces {
     }
 
     /// Have the server `device`, at `addr`, hold `workspace` as well, as
-    /// `role`, as its owners chose ([`Workspaces::chooses_servers`]): hand the
-    /// workspace over with [`HOST_WORKSPACE`] and name the address it answers,
-    /// which says that role, among the workspace's holders. A device of this
-    /// device's own person is admitted to the workspace as one of the owner's
-    /// devices first; another person's server takes the workspace only
-    /// when its operator's work setting does. Asked again, the server is
-    /// handed the workspace afresh, as `role`. Answers that address once the
-    /// server says it keeps every change this device's store keeps of the
-    /// workspace ([`Self::caught_up_with_this`]): only then may this device
-    /// go without the workspace losing any of them. Before this answers,
-    /// every other device the workspace names to keep it that can be reached
-    /// takes in the change naming the new one, so whichever device goes next,
-    /// the rest still reach one another.
+    /// `role`, as its owners chose ([`Workspaces::chooses_servers`]): ask the
+    /// address it signs for the workspace, name it among the workspace's
+    /// holders, and hand the workspace over with [`HOST_WORKSPACE`], which a
+    /// hand-over that names no server is refused. A device of this device's own
+    /// person is admitted to the workspace as one of the owner's devices first;
+    /// another person's server takes the workspace only when its operator's work
+    /// setting does. Asked again, the server is handed the workspace afresh, as
+    /// `role`. Answers that address once the server says it keeps every change
+    /// this device's store keeps of the workspace
+    /// ([`Self::caught_up_with_this`]): only then may this device go without the
+    /// workspace losing any of them. Before this answers, every other device the
+    /// workspace names to keep it that can be reached takes in the change naming
+    /// the new one, so whichever device goes next, the rest still reach one
+    /// another.
     ///
     /// # Errors
     ///
@@ -417,27 +418,58 @@ impl Workspaces {
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
         let named_before = self.names_server(workspace, device).await;
-        let (workspace_id, arguments) = self.hand_over(workspace, &member, role).await?;
-        let answer = reached.ask(HOST_WORKSPACE, arguments).await?;
+        let workspace_id = {
+            let governed = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            governed.lock().await.workspace_id()
+        };
+        // The address the server signs for the workspace, asked ahead of the
+        // hand-over: the hand-over carries this device's change naming the server
+        // among the workspace's holders, and naming it needs the address it
+        // signed. The server answers the same address at the hand-over, which
+        // takes it in only when its owner's device has named it.
+        let hint = match self
+            .named_for_hand_over(&reached, workspace, workspace_id, role)
+            .await
+        {
+            Ok(hint) => hint,
+            Err(error) => return Err(self.unnamed(workspace, device, named_before, error).await),
+        };
+        let (handed_id, arguments) = match self.hand_over(workspace, &member, role).await {
+            Ok(handed) => handed,
+            Err(error) => return Err(self.unnamed(workspace, device, named_before, error).await),
+        };
+        if handed_id != workspace_id {
+            return Err(self
+                .unnamed(
+                    workspace,
+                    device,
+                    named_before,
+                    "the device is named for another workspace".into(),
+                )
+                .await);
+        }
+        let answer = match reached.ask(HOST_WORKSPACE, arguments).await {
+            Ok(answer) => answer,
+            Err(error) => return Err(self.unnamed(workspace, device, named_before, error).await),
+        };
         let hosted: HostedWorkspace =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
-        let hint: TransportHint = super::decode_hex(&hosted.host_hint)?;
-        let address =
-            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
-        if hint.host != member
-            || address.holds_keys != (role == CopyRole::KeyHolder)
-            || address.workspace_id != workspace_id
-        {
-            return Err(
-                "the device answered an address that is not its own for the workspace in the \
-                 role it was asked to hold it in"
-                    .into(),
-            );
+        let answered: TransportHint = super::decode_hex(&hosted.host_hint)?;
+        if answered != hint {
+            return Err(self
+                .unnamed(
+                    workspace,
+                    device,
+                    named_before,
+                    "the device answered an address that is not the one it signed for the \
+                     workspace in the role it was asked to hold it in"
+                        .into(),
+                )
+                .await);
         }
-        self.name_host(workspace, |governance, key, now| {
-            governance.author_keeping_device(&hint, key, now)
-        })
-        .await?;
         let _ = self.inner.changes.send(workspace.to_owned());
         // Named, the server may link to this device's: it takes in what this
         // device keeps over that link, which only a device the workspace
@@ -446,24 +478,17 @@ impl Workspaces {
             .caught_up_with_this(workspace, workspace_id, &reached)
             .await
         {
-            let unnamed = if named_before {
-                Ok(false)
-            } else {
-                self.name_host(workspace, |governance, key, now| {
-                    governance.author_keeping_device_removed(&device, key, now)
-                })
-                .await
-                .map(|()| true)
-            };
+            let said = self
+                .unnamed(
+                    workspace,
+                    device,
+                    named_before,
+                    format!("this device keeps the workspace: {error}"),
+                )
+                .await;
             let _ = self.inner.changes.send(workspace.to_owned());
             tracing::warn!(%workspace, server = %hex::encode(device), %error, "a server handed the workspace did not say it keeps all of it; this device keeps it");
-            return Err(match unnamed {
-                Ok(_) => format!("this device keeps the workspace: {error}"),
-                Err(unnamed) => format!(
-                    "this device keeps the workspace: {error}; the server is still named \
-                     among those keeping it ({unnamed})"
-                ),
-            });
+            return Err(said);
         }
         // A device that keeps the workspace but never hears of the one just named cannot link
         // to it once this device has gone, and nothing else would tell it: each takes in the
@@ -479,6 +504,68 @@ impl Workspaces {
             tracing::warn!(%workspace, server = %hex::encode(device), %error, "a server's administrators were not granted its controls");
         }
         Ok(hint)
+    }
+
+    /// The address `reached` signs for `workspace` in `role`, checked to be its
+    /// own for the workspace, and this device's change naming it among the
+    /// workspace's holders: what the hand-over carries, and the address it
+    /// answers.
+    ///
+    /// # Errors
+    ///
+    /// The device answered an address that is not its own for the workspace in
+    /// that role, or the change could not be written here.
+    async fn named_for_hand_over(
+        &self,
+        reached: &OtherHost,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+        role: CopyRole,
+    ) -> Result<TransportHint, String> {
+        let hint = reached.address(workspace, workspace_id, role).await?;
+        let address =
+            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
+        if hint.host != reached.certificate
+            || address.holds_keys != (role == CopyRole::KeyHolder)
+            || address.workspace_id != workspace_id
+        {
+            return Err(
+                "the device answered an address that is not its own for the workspace in the \
+                 role it was asked to hold it in"
+                    .into(),
+            );
+        }
+        self.name_host(workspace, |governance, key, now| {
+            governance.author_keeping_device(&hint, key, now)
+        })
+        .await?;
+        Ok(hint)
+    }
+
+    /// Undo the naming this call made for `device`, unless `named_before`, and
+    /// answer why the hand-over failed: a server named among a workspace's
+    /// holders that does not hold it is named no more.
+    async fn unnamed(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+        named_before: bool,
+        error: String,
+    ) -> String {
+        if named_before {
+            return error;
+        }
+        match self
+            .name_host(workspace, |governance, key, now| {
+                governance.author_keeping_device_removed(&device, key, now)
+            })
+            .await
+        {
+            Ok(()) => error,
+            Err(unnamed) => {
+                format!("{error}; the server is still named among those keeping it ({unnamed})")
+            }
+        }
     }
 
     /// Have every device that keeps `workspace`, besides this one and `named`, take in every
@@ -1038,7 +1125,7 @@ impl Workspaces {
     /// first, so it takes in and writes the workspace's changes as they do;
     /// named a store, it holds no keys all the same
     /// ([`tilo_peer_state::PeerGovernance::key_holders`]).
-    async fn hand_over(
+    pub(super) async fn hand_over(
         &self,
         workspace: &str,
         member: &DeviceCert,
@@ -1109,6 +1196,15 @@ impl Workspaces {
         named: &str,
     ) -> Result<Value, String> {
         let reached = self.reach_host(device, addr).await?;
+        let workspace_id = {
+            let governed = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            governed.lock().await.workspace_id()
+        };
+        self.named_for_hand_over(&reached, workspace, workspace_id, CopyRole::KeyHolder)
+            .await?;
         let (_, mut arguments) = self
             .hand_over(workspace, &reached.certificate, CopyRole::KeyHolder)
             .await?;
@@ -1490,6 +1586,30 @@ struct OtherHost {
 }
 
 impl OtherHost {
+    /// The address this host signs for `workspace_id` as `role`, asked before
+    /// the workspace is handed over: it takes nothing in for it.
+    async fn address(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+        role: CopyRole,
+    ) -> Result<TransportHint, String> {
+        let mut arguments = Map::new();
+        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+        arguments.insert(
+            "workspace_id".into(),
+            Value::String(workspace_id.to_string()),
+        );
+        arguments.insert(
+            "role".into(),
+            serde_json::to_value(role).map_err(|error| error.to_string())?,
+        );
+        let answer = self.ask(HOST_WORKSPACE, arguments).await?;
+        let hosted: HostedWorkspace =
+            serde_json::from_value(answer).map_err(|error| error.to_string())?;
+        super::decode_hex(&hosted.host_hint)
+    }
+
     /// Ask the host the host operation `action` with `arguments`, and answer
     /// what it produced.
     async fn ask(&self, action: &str, arguments: Map<String, Value>) -> Result<Value, String> {
@@ -1750,7 +1870,7 @@ impl Workspaces {
         workspace: &GovernedWorkspace,
         addr: &EndpointAddr,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        self.signed_hint(workspace, self.own_role(workspace), addr)
+        self.signed_hint(workspace.workspace_id(), self.own_role(workspace), addr)
     }
 
     /// [`Self::transport_hint`], saying this device holds `workspace` as
@@ -1761,16 +1881,29 @@ impl Workspaces {
         role: CopyRole,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         let addr = self.endpoint_addr();
-        self.signed_hint(workspace, role, &addr)
+        self.signed_hint(workspace.workspace_id(), role, &addr)
     }
 
-    /// Sign `workspace`'s answer for this device holding it `role`, answering at `addr`.
+    /// The signed address this host answers at for `workspace_id`, holding it
+    /// as `role`: what a hand-over names it by, asked before it holds the
+    /// workspace, since the person's device names it in the change it hands
+    /// over with.
+    pub(super) fn host_address(
+        &self,
+        workspace_id: WorkspaceId,
+        role: CopyRole,
+    ) -> Result<TransportHint, CollaborationError> {
+        let addr = self.endpoint_addr();
+        self.signed_hint(workspace_id, role, &addr)
+    }
+
+    /// Sign `workspace_id`'s answer for this device holding it `role`, answering at `addr`.
     fn signed_hint(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace_id: WorkspaceId,
         role: CopyRole,
         addr: &EndpointAddr,
-    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+    ) -> Result<TransportHint, CollaborationError> {
         let holds_keys = role == CopyRole::KeyHolder;
         let host = &self.inner.host;
         // An invitation is handed to whoever the link reaches, so what this
@@ -1788,7 +1921,7 @@ impl Workspaces {
             label: claim.label,
             cloud: claim.cloud,
             origin: claim.origin,
-            workspace_id: workspace.workspace_id(),
+            workspace_id,
             endpoint_addr,
             user_public_key: host.cert.user_public_key,
             device_certificate: host.cert.clone(),
