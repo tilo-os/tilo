@@ -227,7 +227,7 @@ pub struct PageCall {
 #[serde(rename_all = "snake_case")]
 pub enum CallAnswer {
     /// The call as it stands after the step, in the vocabulary the view's call service reads.
-    Answered(runtime_collab::native_media::Snapshot),
+    Answered(Box<runtime_collab::native_media::Snapshot>),
     /// Why the step could not be taken, in the browser's own words.
     Refused(String),
 }
