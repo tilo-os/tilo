@@ -133,7 +133,7 @@ fn opened(documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new(
         "ada",
         crate::fixtures::Workspace::new(),
-        &[crate::fixtures::AGENT, CHAT],
+        &[CHAT],
     );
     ada.host.runtime().set_earlier(CHAT_APP, documents);
     let all = ada.host.root_of(CHAT_APP).expect("the conversations");
@@ -285,7 +285,7 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
 
     assert_eq!(ada.host.migrate(), 0, "it runs once");
     assert_eq!(ada.commit(), 0);
-    let grace = ada.fork("grace", &[crate::fixtures::AGENT, CHAT]);
+    let grace = ada.fork("grace", &[CHAT]);
     grace.host.runtime().set_earlier(CHAT_APP, &documents);
     assert_eq!(
         grace.host.migrate(),

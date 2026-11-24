@@ -1463,10 +1463,12 @@ tilo_test_env::scenario! {
         if let Err(why) = &planned {
             panic!("New channel run by address: {why}");
         }
-        let made = ada
-            .host
-            .take_returned(&action)
-            .expect("the invocation answers the channel it made");
+        let made = target(
+            &ada
+                .host
+                .take_returned(&action)
+                .expect("the invocation answers the channel it made"),
+        );
         ada.commit();
         assert_eq!(channels(&ada).len(), 2, "the address made a channel");
         assert_eq!(name_of(&ada, &made), "new-channel");
@@ -1697,14 +1699,9 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     // The app's own read of the message holds what it says.
     let read = ada
         .host
-        .answer(
-            tilolang_tilo::effects::HostEffect::ReadValues {
-                item: target(&message).id_string(),
-            },
-            None,
-        )
+        .read_values(&target(&message).id_string())
         .expect("the message reads");
-    let read = serde_json::to_string(&read.value).expect("the reading as JSON");
+    let read = serde_json::to_string(&read).expect("the reading as JSON");
     assert!(
         read.contains("The launch build is on the test machines."),
         "the read holds the message's text: {read}"

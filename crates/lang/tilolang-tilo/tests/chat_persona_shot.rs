@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
-use tilo_render_protocol::patch::{self as wire, ToApp};
+use tilo_render_protocol::patch::{self as wire, ToApp, Transport};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::background::Waker;
@@ -87,7 +87,7 @@ fn channel(instance: &Instance) -> tilolang_runtime::ResourceRef {
 /// Chat's window as its app sends it, its channel open, in both themes, saved beside `out`.
 #[test]
 fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
-    let (app_end, window_end) = pair();
+    let (app_end, mut window_end) = pair();
     let names = Rc::new(Told::new("ada".into(), Rc::new(Installed)));
     names.tell(
         "Ada".to_owned(),

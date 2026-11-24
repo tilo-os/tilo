@@ -1284,6 +1284,7 @@ mod tests {
             target: Some(record),
             from: None,
             asks: false,
+            shows: Vec::new(),
         };
         let answer = invoker.invoke(&invocation);
         assert!(
@@ -1349,6 +1350,8 @@ mod tests {
             author: None,
             target: Some(model),
             from: None,
+            asks: false,
+            shows: Vec::new(),
         };
         invoker.invoke(&invocation);
         let sent = api.0.borrow();

@@ -123,13 +123,13 @@ fn action(host: &Host, name: &str) -> String {
 /// Run the shell's action `name` on its document `root`, as a press or an agent's call does: the
 /// document first, then the arguments it declares.
 fn invoke(host: &Host, root: &ResourceRef, name: &str, args: Vec<Value>) -> Value {
-    let mut args = vec![Value::resource(root)];
-    args.extend(args);
+    let mut all = vec![Value::resource(root)];
+    all.extend(args);
     match host
         .runtime()
         .invoke_action(
             &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            (action(host, name).as_str(), args),
+            (action(host, name).as_str(), all),
         )
         .unwrap_or_else(|why| panic!("{name}: {why}"))
     {
