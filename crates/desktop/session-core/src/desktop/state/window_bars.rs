@@ -359,7 +359,6 @@ impl DesktopHandle {
         self.queue_bar_ask(|bars| bars.events.push((tab, connection, event)));
     }
 
-
     /// `tab` 's app asked for its window's search in the bar to open, as its own Ctrl+F (or Ctrl+H,
     /// for `opening` ) does.
     pub fn open_bar_search(&self, tab: u64, opening: SearchOpening) {
@@ -616,11 +615,11 @@ mod tests {
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
     use ui::window_toolbar::ToolbarAction;
 
-    /// A shell of one window running an app of its own.
+    /// A shell of one window running an app of its own: tab 7, the window the tests address.
     fn shell() -> DesktopHandle {
         let mut minter = IdMinter::new(7);
         let tab = Tab {
-            id: minter.mint(),
+            id: 7,
             title: "App0".into(),
             tile: TileContent::LocalApp {
                 app_id: "so.tilo.app0".into(),
@@ -713,21 +712,10 @@ mod tests {
         assert_eq!(held.leading.len(), 1);
         assert_eq!(held.actions.len(), 1);
         assert_eq!(held.sidebar, Some(true));
-        handle.bar_event(
-            7,
-            ToolbarEvent::Action {
-                id: "save".into(),
-            },
-        );
+        handle.bar_event(7, ToolbarEvent::Action { id: "save".into() });
         assert_eq!(
             handle.take_bar_events(),
-            vec![(
-                7,
-                41,
-                ToolbarEvent::Action {
-                    id: "save".into()
-                }
-            )],
+            vec![(7, 41, ToolbarEvent::Action { id: "save".into() })],
             "a press goes back to the app that declared the bar"
         );
     }
@@ -737,33 +725,17 @@ mod tests {
     #[test]
     fn bar_events_go_to_the_app_that_declared_the_bar() {
         let handle = shell();
-        handle.bar_event(
-            7,
-            ToolbarEvent::Search {
-                query: "x".into(),
-            },
-        );
+        handle.bar_event(7, ToolbarEvent::Search { query: "x".into() });
         assert!(
             handle.take_bar_events().is_empty(),
             "no app declared a bar to hear it"
         );
         handle.declare_bar(7, 41, Some(WindowToolbar::default()));
         handle.follow_bars();
-        handle.bar_event(
-            7,
-            ToolbarEvent::Search {
-                query: "y".into(),
-            },
-        );
+        handle.bar_event(7, ToolbarEvent::Search { query: "y".into() });
         assert_eq!(
             handle.take_bar_events(),
-            vec![(
-                7,
-                41,
-                ToolbarEvent::Search {
-                    query: "y".into()
-                }
-            )]
+            vec![(7, 41, ToolbarEvent::Search { query: "y".into() })]
         );
     }
 
