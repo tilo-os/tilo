@@ -368,7 +368,7 @@ impl std::fmt::Debug for BlobClient {
         f.debug_struct("BlobClient")
             .field("session", &self.worker.session)
             .field("target", &self.target)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1178,6 +1178,10 @@ fn drive(stream: Stream, session: bool, mut jobs: tokio::sync::mpsc::UnboundedRe
 #[allow(
     clippy::future_not_send,
     reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match answers every job the worker takes, and reading the kinds together is what keeps their answers one policy"
 )]
 async fn run_job(job: Job, session: &Session) {
     match job {
