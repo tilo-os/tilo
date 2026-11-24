@@ -506,6 +506,8 @@ fn answer<T: serde::Serialize>(
 }
 
 fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
+    /// A year in seconds: an item last changed longer ago than this is stale.
+    const YEAR: u64 = 365 * 24 * 60 * 60;
     let code = facts.code;
     Ok(ItemView {
         reference: ItemRef::from_id(facts.id.as_str()).ok_or(vault_items::ItemError::Damaged)?,
@@ -523,6 +525,21 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
         algorithm: code.map(|code| code.algorithm.word().to_owned()),
         digits: code.map(|code| code.digits),
         period: code.map(|code| code.period),
+        tags: facts.tags,
+        fields: facts.field_labels,
+        has_notes: facts.has_notes,
+        changed_at: facts.changed_unix,
+        concerns: [
+            (facts.weak, person_vault::Concern::Weak),
+            (facts.reused, person_vault::Concern::Reused),
+            (
+                tilo_clock::unix_now().saturating_sub(facts.changed_unix) > YEAR,
+                person_vault::Concern::Stale,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(holds, concern)| holds.then_some(concern))
+        .collect(),
     })
 }
 
@@ -546,6 +563,11 @@ fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items:
         algorithm,
         digits,
         period,
+        title,
+        notes,
+        fields,
+        tags,
+        generate,
         secret,
     } = adding;
     let places = belongs_to
@@ -568,14 +590,58 @@ fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items:
     } else {
         vault_items::CodeParams::default()
     };
-    let item = NewItem::new(kind, places, username, secret).with_code(code);
-    let kept = if sent_in.trim().is_empty() {
-        items.add(item)?
-    } else {
-        // Only a key says where it rides in a request to its service.
-        items.add_key(item, &vault_items::KeyIn::parse(&sent_in)?)?
+    let secret = match generate {
+        None => zeroize::Zeroizing::new(secret),
+        Some(_) if !secret.is_empty() => {
+            return Err(vault_items::ItemError::Invalid(
+                "An item takes a secret or draws one, not both",
+            ));
+        }
+        Some(_) if kind != vault_items::ItemKind::Login => {
+            return Err(vault_items::ItemError::Invalid(
+                "Only a login's password is drawn by the vault",
+            ));
+        }
+        Some(asked) => drawn(asked)?,
     };
-    view(kept)
+    let extras = vault_items::Extras {
+        title,
+        notes: zeroize::Zeroizing::new(notes),
+        fields: fields
+            .into_iter()
+            .map(|field| (field.label, zeroize::Zeroizing::new(field.value)))
+            .collect(),
+        tags,
+    };
+    let item = NewItem::new(kind, places, username, secret.to_string()).with_code(code);
+    // Only a key says where it rides in a request to its service.
+    let sent_in = if sent_in.trim().is_empty() {
+        None
+    } else {
+        Some(vault_items::KeyIn::parse(&sent_in)?)
+    };
+    view(items.add_with(item, sent_in.as_ref(), &extras)?)
+}
+
+/// A strong password drawn here for `asked`: never sent, never typed.
+fn drawn(
+    asked: person_vault::Generate,
+) -> Result<zeroize::Zeroizing<String>, vault_items::ItemError> {
+    if !(person_vault::Generate::SHORTEST..=person_vault::Generate::LONGEST).contains(&asked.length)
+    {
+        return Err(vault_items::ItemError::Invalid(
+            "A drawn password is 12 to 128 characters long",
+        ));
+    }
+    accounts::GeneratedPasswordPolicy {
+        length: usize::from(asked.length),
+        lowercase: true,
+        uppercase: asked.capitals,
+        digits: asked.digits,
+        symbols: asked.symbols,
+    }
+    .generate()
+    .map_err(|_| vault_items::ItemError::Invalid("No password could be drawn here"))
 }
 
 fn remove(items: &mut VaultItems, item: &ItemRef) -> Result<KeptItems, vault_items::ItemError> {

@@ -290,6 +290,123 @@ pub struct ItemFacts {
     pub added_unix: u64,
     /// When it was last handed to something that signs in.
     pub last_used_unix: Option<u64>,
+    /// The tags a person gave it.
+    pub tags: Vec<String>,
+    /// The labels of the fields a person added to it, such as `PIN`: never their values.
+    pub field_labels: Vec<String>,
+    /// Whether it keeps a note.
+    pub has_notes: bool,
+    /// When its entry last changed, in seconds since the Unix epoch.
+    pub changed_unix: u64,
+    /// A login whose password is shorter than 12 characters or misses a capital, a small
+    /// letter or a digit.
+    pub weak: bool,
+    /// A login whose password another login of the vault keeps too.
+    pub reused: bool,
+}
+
+/// What a person keeps with an item beside its secret, as Passwords shows it: what it is
+/// called, a note, the fields they added (a PIN, a recovery code) and its tags. The note and
+/// the fields' values are secrets as the item's own is: sealed with it, never listed.
+#[derive(Default)]
+pub struct Extras {
+    pub title: String,
+    pub notes: Zeroizing<String>,
+    /// Each field by its label, with its value.
+    pub fields: Vec<(String, Zeroizing<String>)>,
+    pub tags: Vec<String>,
+}
+
+impl std::fmt::Debug for Extras {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Extras")
+            .field("title", &self.title)
+            .field("tags", &self.tags)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The longest title, tag or field label an item keeps.
+const MAX_LABEL_CHARS: usize = 200;
+/// The most fields or tags one item keeps.
+const MAX_EXTRAS: usize = 64;
+/// The prefix of the fields the vault keeps of an item itself ([`KIND_FIELD`] and the rest),
+/// which no person's field takes.
+const OWN_FIELD_PREFIX: &str = "tilo.vault.";
+
+impl Extras {
+    /// Whether nothing is kept beside the secret.
+    fn is_empty(&self) -> bool {
+        self.title.trim().is_empty()
+            && self.notes.is_empty()
+            && self.fields.is_empty()
+            && self.tags.is_empty()
+    }
+
+    /// `self` as it is kept, or why it is not: a label is one line, no field is the vault's
+    /// own, and nothing is longer than an item keeps.
+    fn checked(&self) -> Result<(), ItemError> {
+        let one_line = |text: &str| {
+            text.chars().count() <= MAX_LABEL_CHARS && !text.chars().any(char::is_control)
+        };
+        if !one_line(self.title.trim()) {
+            return Err(ItemError::Invalid("That is not a title to keep"));
+        }
+        if self.fields.len() > MAX_EXTRAS || self.tags.len() > MAX_EXTRAS {
+            return Err(ItemError::Invalid(
+                "An item keeps at most 64 fields and 64 tags",
+            ));
+        }
+        if self.notes.len() > MAX_SECRET_BYTES
+            || self
+                .fields
+                .iter()
+                .any(|(_, value)| value.len() > MAX_SECRET_BYTES)
+        {
+            return Err(ItemError::Invalid("That is too long to keep"));
+        }
+        for (label, _) in &self.fields {
+            let label = label.trim();
+            if label.is_empty() || !one_line(label) || label.starts_with(OWN_FIELD_PREFIX) {
+                return Err(ItemError::Invalid("That is not a field's label"));
+            }
+        }
+        if self.tags.iter().any(|tag| !one_line(tag.trim())) {
+            return Err(ItemError::Invalid("That is not a tag"));
+        }
+        Ok(())
+    }
+
+    /// `self` written onto `entry`, which keeps its secret and the vault's own fields.
+    fn dress(&self, entry: &mut SecretItem) {
+        if !self.title.trim().is_empty() {
+            self.title.trim().clone_into(&mut entry.title);
+        }
+        self.notes.as_str().clone_into(&mut entry.notes);
+        for (label, value) in &self.fields {
+            if !value.is_empty() {
+                entry
+                    .fields
+                    .insert(label.trim().to_owned(), value.as_str().to_owned());
+            }
+        }
+        entry.tags = self
+            .tags
+            .iter()
+            .map(|tag| tag.trim().to_owned())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+    }
+}
+
+/// Whether a password a person chose is weak: shorter than 12 characters, or without a
+/// capital, a small letter or a digit.
+fn is_weak(password: &str) -> bool {
+    password.chars().count() < 12
+        || !password.chars().any(char::is_uppercase)
+        || !password.chars().any(char::is_lowercase)
+        || !password.chars().any(|character| character.is_ascii_digit())
 }
 
 /// An item to keep.
@@ -706,8 +823,30 @@ impl Sealed {
             title: String::new(),
             added_unix: self.added_unix,
             last_used_unix: self.last_used_unix,
+            tags: Vec::new(),
+            field_labels: Vec::new(),
+            has_notes: false,
+            changed_unix: self.added_unix,
+            weak: self.kind == ItemKind::Login && is_weak(&self.secret),
+            reused: false,
         }
     }
+}
+
+/// `facts` with what `entry` keeps beside the item: its title, tags, the labels of its
+/// fields, whether it keeps a note and when it last changed.
+fn dressed(mut facts: ItemFacts, entry: &SecretItem) -> ItemFacts {
+    facts.title.clone_from(&entry.title);
+    facts.tags = entry.tags.iter().cloned().collect();
+    facts.field_labels = entry
+        .fields
+        .keys()
+        .filter(|label| !label.starts_with(OWN_FIELD_PREFIX))
+        .cloned()
+        .collect();
+    facts.has_notes = !entry.notes.is_empty();
+    facts.changed_unix = entry.updated_unix;
+    facts
 }
 
 /// A code generator's seed in one spelling, when `text` is one: base32
@@ -830,8 +969,8 @@ impl VaultItems {
             .entries
             .iter()
             .filter_map(|(id, (entry, uses))| {
-                let mut facts = Sealed::of_entry(entry, uses)?.facts(id.clone());
-                facts.title.clone_from(&entry.title);
+                let mut facts = dressed(Sealed::of_entry(entry, uses)?.facts(id.clone()), entry);
+                facts.reused = self.reused(id, entry);
                 Some(facts)
             })
             .collect();
@@ -846,11 +985,56 @@ impl VaultItems {
     /// What is safe to say of the item `sealed` was written as, titled as its entry is: the
     /// entry's own title, which Passwords shows.
     fn written(&self, id: &ItemId, sealed: &Sealed) -> ItemFacts {
-        let mut facts = sealed.facts(id.clone());
-        if let Some((entry, _)) = self.entries.get(id) {
-            facts.title.clone_from(&entry.title);
+        let facts = sealed.facts(id.clone());
+        match self.entries.get(id) {
+            Some((entry, _)) => {
+                let reused = self.reused(id, entry);
+                ItemFacts {
+                    reused,
+                    ..dressed(facts, entry)
+                }
+            }
+            None => facts,
         }
-        facts
+    }
+
+    /// Whether another login of the vault keeps the password the login `entry` keeps.
+    fn reused(&self, id: &ItemId, entry: &SecretItem) -> bool {
+        let is_login = |entry: &SecretItem| {
+            entry.kind == SecretItemKind::Login && !entry.fields.contains_key(KIND_FIELD)
+        };
+        is_login(entry)
+            && !entry.password.is_empty()
+            && self.entries.iter().any(|(other, (kept, _))| {
+                other != id && is_login(kept) && kept.password == entry.password
+            })
+    }
+
+    /// Keep `item` with what a person keeps beside it ([`Extras`]), answering what is safe to
+    /// say of it, its id included: a key says where it rides in a request when `sent_in` does.
+    /// Checked whole before anything is kept.
+    pub fn add_with(
+        &mut self,
+        item: NewItem,
+        sent_in: Option<&KeyIn>,
+        extras: &Extras,
+    ) -> Result<ItemFacts, ItemError> {
+        extras.checked()?;
+        let added = match sent_in {
+            Some(sent_in) => self.add_key(item, sent_in)?,
+            None => self.add(item)?,
+        };
+        if extras.is_empty() {
+            return Ok(added);
+        }
+        if let Some((entry, _)) = self.entries.get_mut(&added.id) {
+            extras.dress(entry);
+            if let Some(VaultChange::Keep(kept)) = self.changes.last_mut() {
+                extras.dress(kept);
+            }
+        }
+        let sealed = self.sealed(&added.id)?;
+        Ok(self.written(&added.id, &sealed))
     }
 
     /// Keep `item`, answering what is safe to say of it, its id included.

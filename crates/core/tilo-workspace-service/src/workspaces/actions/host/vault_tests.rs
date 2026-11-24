@@ -205,7 +205,20 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
     );
     assert_eq!(
         fields(&kept),
-        ["addedAt", "belongsTo", "kind", "reference", "title"]
+        [
+            "addedAt",
+            "belongsTo",
+            "changedAt",
+            "concerns",
+            "kind",
+            "reference",
+            "title"
+        ]
+    );
+    assert_eq!(
+        kept["concerns"],
+        json!(["weak"]),
+        "a password with no capital and no digit is called weak"
     );
 
     // Every member of the workspace reads the same item, and none of them
@@ -302,6 +315,147 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
     .await
     .expect("Bo takes it back");
     assert_eq!(remaining["items"], json!([]));
+    server.shutdown().await;
+}
+
+/// What a person keeps beside a secret is the vault's too: an item's title, its note, the
+/// fields they added and its tags travel in with its add. A listing names its title, its tags
+/// and its fields' labels, and says whether it keeps a note; never the secret, the note or a
+/// field's value. A password the vault draws itself is sent by nobody. None of it is in a log
+/// line or a file in the clear.
+#[tokio::test]
+async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_secrets() {
+    const NOTE: &str = "made-up-recovery-words-4471";
+    const PIN: &str = "made-up-pin-7351";
+    const STRONG: &str = "Made-up-Strong-Pass-0451";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let (lines, logging) = super::web_call_tests::logged();
+
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        json!({
+            "kind": "login",
+            "belongsTo": ["https://bank.example"],
+            "username": NAME,
+            "title": "Bank",
+            "notes": NOTE,
+            "fields": [{"label": "PIN", "value": PIN}],
+            "tags": ["money", "family"],
+            "secret": STRONG,
+        }),
+    )
+    .await
+    .expect("Ada keeps a login with a note, a field and tags");
+    assert_eq!(kept["title"], "Bank");
+    assert_eq!(kept["tags"], json!(["family", "money"]));
+    assert_eq!(kept["fields"], json!(["PIN"]));
+    assert_eq!(kept["hasNotes"], true);
+    assert_eq!(
+        kept.get("concerns"),
+        None,
+        "a strong password is no concern: {kept}"
+    );
+
+    // The same password kept again is reused, and both say so; a drawn one is neither weak
+    // nor reused, and nobody sent it.
+    ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        json!({"kind": "login", "belongsTo": ["https://shop.example"], "secret": STRONG}),
+    )
+    .await
+    .expect("Ada keeps the same password for a shop");
+    let drawn = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        json!({
+            "kind": "login",
+            "belongsTo": ["https://mail.example"],
+            "title": "Mail",
+            "generate": {"length": 24},
+        }),
+    )
+    .await
+    .expect("the vault draws a password for Ada's mail");
+    for refused in [
+        json!({"kind": "login", "belongsTo": ["https://a.example"], "generate": {}, "secret": "x"}),
+        json!({"kind": "login", "belongsTo": ["https://a.example"], "generate": {"length": 8}}),
+        json!({"kind": "key", "belongsTo": ["https://a.example"], "generate": {}}),
+        json!({"kind": "login", "belongsTo": ["https://a.example"], "secret": "x",
+               "fields": [{"label": "tilo.vault.kind", "value": "value"}]}),
+    ] {
+        let said = ask(
+            &service,
+            workspace_id,
+            (&ada, &as_ada),
+            person_vault::ADD,
+            refused.clone(),
+        )
+        .await;
+        assert!(
+            matches!(said, Err(ActionCallError::Refused { .. })),
+            "{refused}: {said:?}"
+        );
+    }
+
+    let listed = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3, "{listed}");
+    let by = |reference: &Value| {
+        items
+            .iter()
+            .find(|item| item["reference"] == *reference)
+            .unwrap()
+            .clone()
+    };
+    let mut bank = kept.clone();
+    bank["concerns"] = json!(["reused"]);
+    assert_eq!(by(&kept["reference"]), bank);
+    let shop = items
+        .iter()
+        .find(|item| item["belongsTo"] == json!(["https://shop.example"]))
+        .unwrap();
+    assert_eq!(shop["concerns"], json!(["reused"]), "{listed}");
+    let mail = by(&drawn["reference"]);
+    assert_eq!(mail["title"], "Mail");
+    assert_eq!(
+        mail.get("concerns"),
+        None,
+        "a drawn password is no concern: {listed}"
+    );
+
+    let said = listed.to_string() + &kept.to_string() + &drawn.to_string();
+    for secret in [STRONG, NOTE, PIN, NAME] {
+        assert!(!said.contains(secret), "{secret} answered back: {said}");
+    }
+    drop(logging);
+    let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
+    for secret in [STRONG, NOTE, PIN] {
+        assert!(!logged.contains(secret), "{secret} logged");
+        let clear = files_holding(dir.path(), secret.as_bytes());
+        assert!(clear.is_empty(), "{secret} in the clear: {clear:?}");
+    }
     server.shutdown().await;
 }
 

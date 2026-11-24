@@ -5,9 +5,11 @@
 //! runs their workspace, bound to where it belongs: a site, a service, a
 //! server. Only the person's own device
 //! adds one, lists them or removes one; an agent's request is refused. A
-//! secret travels in with [`ADD`] and never back: a listing says an item's
-//! title, kind, where it belongs, when it was added and when it was last
-//! used, and nothing else.
+//! secret travels in with [`ADD`] and never back, and so do a note and the
+//! values of the fields kept with it: a listing says an item's title, kind,
+//! tags, its fields' labels, whether it keeps a note, where it belongs, when
+//! it was added, changed and last used, and whether a login's password is
+//! weak or reused, and nothing else.
 //!
 //! The same vault keeps the entries of the person's Passwords: logins,
 //! keys, notes and Wi-Fi passwords they read and edit themselves, from any
@@ -258,6 +260,35 @@ pub struct ItemView {
     /// How many seconds one of a code generator's codes stands, for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<u64>,
+    /// The tags a person gave it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The labels of the fields a person added to it, such as `PIN`: never their values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// Whether it keeps a note, which is as secret as the item itself and never listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_notes: bool,
+    /// When it last changed, in seconds since the Unix epoch.
+    #[serde(default)]
+    pub changed_at: u64,
+    /// What is wrong with it, for a person to fix: a login's password that is weak or
+    /// reused, an item not changed in a year.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concerns: Vec<Concern>,
+}
+
+/// What is wrong with an item, for a person to fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Concern {
+    /// A login's password shorter than 12 characters, or without a capital, a small letter or
+    /// a digit.
+    Weak,
+    /// A login's password another login of the vault keeps too.
+    Reused,
+    /// Not changed in more than a year.
+    Stale,
 }
 
 /// Every item the person's vault keeps, oldest first.
@@ -294,6 +325,25 @@ pub struct AddItem {
     /// How many seconds one of a code generator's codes stands; 30 where it is left out.
     #[serde(default)]
     pub period: Option<u64>,
+    /// What it is called: what a person picks it by.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// A note kept with it: sealed as its secret is, never answered back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    /// The fields a person adds to it, such as a PIN: each value sealed as its secret is, and
+    /// only the labels ever answered back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<ItemField>,
+    /// The tags a person gives it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Draw a strong password for it where the vault is, in place of a secret sent here: so
+    /// nobody types it, sees it or sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate: Option<Generate>,
+    /// The secret. Left out only where [`Self::generate`] draws one.
+    #[serde(default)]
     pub secret: String,
 }
 
@@ -303,8 +353,86 @@ impl std::fmt::Debug for AddItem {
             .debug_struct("AddItem")
             .field("kind", &self.kind)
             .field("belongs_to", &self.belongs_to)
+            .field("tags", &self.tags)
             .finish_non_exhaustive()
     }
+}
+
+/// A field a person adds to an item: its label, which is safe to say, and its value, which is
+/// as secret as the item.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemField {
+    pub label: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for ItemField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ItemField")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A password the vault draws itself: how long it is, and the kinds of character it takes
+/// beside small letters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Generate {
+    #[serde(default = "Generate::twenty")]
+    pub length: u16,
+    #[serde(default = "Generate::yes")]
+    pub capitals: bool,
+    #[serde(default = "Generate::yes")]
+    pub digits: bool,
+    #[serde(default = "Generate::yes")]
+    pub symbols: bool,
+}
+
+impl Generate {
+    /// The shortest password the vault draws.
+    pub const SHORTEST: u16 = 12;
+    /// The longest password the vault draws.
+    pub const LONGEST: u16 = 128;
+
+    const fn twenty() -> u16 {
+        20
+    }
+
+    const fn yes() -> bool {
+        true
+    }
+}
+
+impl Default for Generate {
+    fn default() -> Self {
+        Self {
+            length: Self::twenty(),
+            capitals: true,
+            digits: true,
+            symbols: true,
+        }
+    }
+}
+
+/// The arguments of [`ADD`] that carry a secret: the secret, the note and the fields' values.
+/// Whatever keeps a call of it (an invocation's record, a log line) keeps none of them.
+pub const SEALED_ARGUMENTS: [&str; 3] = ["secret", "notes", "fields"];
+
+/// Whether `target` is the vault's [`ADD`], whose [`SEALED_ARGUMENTS`] no record keeps: asked
+/// of the vault's provider, or of the vault in its workspace's own tree.
+#[must_use]
+pub fn seals_arguments(target: &RemoteActionTarget) -> bool {
+    target.address.action == ADD
+        && (target.provider == PROVIDER
+            || target.address.resource == RESOURCE
+            || target
+                .address
+                .resource
+                .strip_suffix(super::WORKSPACE_VAULT)
+                .is_some_and(|rest| rest.ends_with('/')))
 }
 
 /// A parameter that takes a secret by reference: the address of an item of
@@ -1292,7 +1420,10 @@ mod tests {
         let said = serde_json::to_value(&some).unwrap();
         assert_eq!(said["always"][0]["agent"], "scout");
         assert_eq!(said["always"][0]["since"], 7);
-        assert!(said["always"][0].get("app").is_none(), "an agent's leave names no app");
+        assert!(
+            said["always"][0].get("app").is_none(),
+            "an agent's leave names no app"
+        );
         assert_eq!(serde_json::from_value::<ItemUses>(said).unwrap(), some);
         let back: TakeBack =
             serde_json::from_value(serde_json::json!({"item": format!("vault.item:{ID}")}))
@@ -1413,6 +1544,11 @@ mod tests {
             algorithm: None,
             digits: None,
             period: None,
+            tags: Vec::new(),
+            fields: Vec::new(),
+            has_notes: false,
+            changed_at: 1_800_000_000,
+            concerns: Vec::new(),
         };
         let json = serde_json::to_value(KeptItems { items: vec![view] }).unwrap();
         let mut fields: Vec<&str> = json["items"][0]
@@ -1427,6 +1563,7 @@ mod tests {
             [
                 "addedAt",
                 "belongsTo",
+                "changedAt",
                 "kind",
                 "lastUsedAt",
                 "reference",

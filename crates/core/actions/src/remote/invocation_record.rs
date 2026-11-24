@@ -42,6 +42,21 @@ fn given(mut state: InvocationState) -> InvocationState {
     state
 }
 
+/// `request` as its record keeps it: without the arguments that carry a secret
+/// ([`super::person_vault::SEALED_ARGUMENTS`] of the vault's add), which reach the provider in
+/// the call alone. Run again from its record, such a call is refused for want of its secret.
+fn journaled(request: &InvokeRequest) -> InvokeRequest {
+    let mut kept = request.clone();
+    if super::person_vault::seals_arguments(&request.target)
+        && let InvokeArgument::Json(arguments) = &mut kept.argument
+    {
+        for sealed in super::person_vault::SEALED_ARGUMENTS {
+            arguments.remove(sealed);
+        }
+    }
+    kept
+}
+
 /// Where an invocation runs: the provider, and the caller it runs as there.
 pub type Route = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
@@ -131,7 +146,7 @@ impl Invocations {
         let recorded = Recorded {
             caller: caller.clone(),
             asked: asked.clone(),
-            request: request.clone(),
+            request: journaled(request),
             workspace: workspace.map(str::to_owned),
             started_ms: tilo_clock::unix_now_ms(),
             ended_ms: None,
@@ -880,6 +895,46 @@ mod tests {
                 other => panic!("the answer was ready, not {other:?}"),
             }
         }
+    }
+
+    /// A call of the vault's add is recorded as every call is, and its record keeps none of
+    /// what it sealed: not the secret, not the note, not a field's value. What is safe to say
+    /// of it stays.
+    #[test]
+    fn a_vault_add_is_recorded_without_its_secrets() {
+        let invocations = Arc::new(Invocations::default());
+        let asked = Caller::local_person("ada").in_new_execution();
+        let mut request = request();
+        request.target = super::super::person_vault::target(super::super::person_vault::ADD);
+        let serde_json::Value::Object(arguments) = serde_json::json!({
+            "kind": "login",
+            "belongsTo": ["https://bank.example"],
+            "title": "Bank",
+            "secret": "made-up-password-0451",
+            "notes": "made-up-recovery-words",
+            "fields": [{"label": "PIN", "value": "made-up-pin-7351"}],
+        }) else {
+            unreachable!("an object");
+        };
+        request.argument = InvokeArgument::Json(arguments);
+        let runs = Arc::new(Runs::default());
+        invocations.record(&asked, &asked, &request, Some("w1"), (runs, asked.clone()));
+        let kept = invocations.get(&asked, &request.invocation).unwrap();
+        let written = serde_json::to_string(&kept.request).unwrap()
+            + &invocations
+                .listed("w1")
+                .iter()
+                .map(|listed| serde_json::to_string(&listed.request).unwrap())
+                .collect::<String>();
+        for secret in [
+            "made-up-password-0451",
+            "made-up-recovery-words",
+            "made-up-pin-7351",
+        ] {
+            assert!(!written.contains(secret), "{written}");
+        }
+        assert!(written.contains("https://bank.example"), "{written}");
+        assert!(written.contains("Bank"), "{written}");
     }
 
     #[test]
