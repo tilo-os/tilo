@@ -78,8 +78,10 @@ pub(super) fn forget(path: &Path) {
 pub struct DeviceKeyLock {
     key: SigningKey,
     path: PathBuf,
-    #[cfg(unix)]
-    _lock: Option<advisory_lock::FileLock>,
+    /// The exclusive lock that makes this process the device's one writer: on the key file
+    /// itself, or, for a key kept in the platform's secret store, on a lock file beside where
+    /// the store's key is named ([`platform_store_lock`]).
+    _lock: advisory_lock::FileLock,
 }
 
 impl DeviceKeyLock {
@@ -108,22 +110,16 @@ impl std::fmt::Debug for DeviceKeyLock {
 /// device: its daemon. While the returned lock lives, a second process taking the key is refused,
 /// and reads of the key in this process answer this one.
 ///
-/// A key kept in the platform's secret store (macOS, Android) is read by the user's own runtime
-/// alone, and has no file to lock.
+/// A key file is locked itself: `flock` on Unix, `LockFileEx` on Windows. A key kept in the
+/// platform's secret store (the login Keychain on macOS, the Keystore-wrapped store on Android)
+/// has no file of its own, so the lock is taken on a lock file beside the place its key is
+/// named, which records the process that took it.
 ///
 /// # Errors
 /// Another process took the key ([`PersistError::KeyInUse`]), this process took it already, or
 /// it cannot be read as [`super::read_device_key`] reads it.
 pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistError> {
     let path = paths.device_privkey.clone();
-    if paths.device_key_ownership != super::DeviceKeyOwnership::File {
-        return Ok(DeviceKeyLock {
-            key: super::load_device_key(paths)?,
-            path,
-            #[cfg(unix)]
-            _lock: None,
-        });
-    }
     // One take at a time: two threads of this process opening the file would refuse each other.
     let mut taken = taken();
     let file = file_at(&path);
@@ -136,8 +132,12 @@ pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistEr
             program: program_of(std::process::id()),
         });
     }
-    #[cfg_attr(not(unix), expect(unused_variables, reason = "no file lock off Unix"))]
-    let (key, lock) = take_file(&path)?;
+    let (key, lock) = if paths.device_key_ownership == super::DeviceKeyOwnership::File {
+        take_file(&path)?
+    } else {
+        let lock = platform_store_lock(&path)?;
+        (super::load_device_key(paths)?, lock)
+    };
     taken.push(Taken {
         path: path.clone(),
         file,
@@ -147,13 +147,41 @@ pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistEr
     Ok(DeviceKeyLock {
         key,
         path,
-        #[cfg(unix)]
         _lock: lock,
     })
 }
 
+/// Where the lock of a key kept in the platform's secret store is taken: beside the place its
+/// key file would be, in the identity tree of the account whose store keeps it.
+fn platform_store_lock_path(path: &Path) -> PathBuf {
+    path.with_file_name("keypair.lock")
+}
+
+/// The exclusive lock on the lock file of a key kept in the platform's secret store, with this
+/// process recorded in it so a second process is told which one took the key.
+fn platform_store_lock(path: &Path) -> Result<advisory_lock::FileLock, PersistError> {
+    let lock_path = platform_store_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match advisory_lock::FileLock::try_open(&lock_path, advisory_lock::LockMode::Exclusive) {
+        Ok(lock) => {
+            lock.resource_owner()?;
+            Ok(lock)
+        }
+        Err(advisory_lock::TryLockError::WouldBlock) => {
+            let pid = advisory_lock::owner_pid(&lock_path);
+            Err(PersistError::KeyInUse {
+                pid,
+                program: pid.and_then(program_of),
+            })
+        }
+        Err(advisory_lock::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
 #[cfg(unix)]
-fn take_file(path: &Path) -> Result<(SigningKey, Option<advisory_lock::FileLock>), PersistError> {
+fn take_file(path: &Path) -> Result<(SigningKey, advisory_lock::FileLock), PersistError> {
     super::protect_secret_process()?;
     let file = super::open_regular_without_symlinks(path).map_err(|error| {
         PersistError::Io(io::Error::new(
@@ -187,14 +215,37 @@ fn take_file(path: &Path) -> Result<(SigningKey, Option<advisory_lock::FileLock>
     // Secret Service that it took the device's key instead.
     #[cfg(target_os = "linux")]
     tilo_secrets::arm_device_proof(Zeroizing::new(key.to_bytes()).as_ref());
-    Ok((key, Some(lock)))
+    Ok((key, lock))
 }
 
-/// Where no file lock reaches another process, the key is read as any reader reads it.
+/// On Windows the key file is locked with `LockFileEx` over the whole file: a second process
+/// cannot lock it, nor read the bytes the lock covers, while the daemon keeps it. The key is read
+/// through the handle that took the lock. Windows does not say which process has a file locked.
 #[cfg(not(unix))]
-fn take_file(path: &Path) -> Result<(SigningKey, ()), PersistError> {
-    let key = super::signing_key_from_file(path, 0o007, super::SecretOwner::RootOrReader)?;
-    Ok((key, ()))
+fn take_file(path: &Path) -> Result<(SigningKey, advisory_lock::FileLock), PersistError> {
+    let file = fs::File::open(path).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            error.kind(),
+            format!("cannot open secret key {}: {error}", path.display()),
+        ))
+    })?;
+    let lock = match advisory_lock::FileLock::try_exclusive(file) {
+        Ok(lock) => lock,
+        Err(advisory_lock::TryLockError::WouldBlock) => {
+            return Err(PersistError::KeyInUse {
+                pid: None,
+                program: None,
+            });
+        }
+        Err(advisory_lock::TryLockError::Error(error)) => return Err(error.into()),
+    };
+    let key = super::signing_key_from_open_file(
+        lock.file(),
+        path,
+        0o007,
+        super::SecretOwner::RootOrReader,
+    )?;
+    Ok((key, lock))
 }
 
 /// The process whose lock on the file `(device, inode)` refuses this one, as the kernel lists
@@ -259,53 +310,65 @@ mod tests {
     /// The child this test starts takes the key under the root this names, says so, and keeps
     /// it until its standard input ends.
     const CHILD: &str = "TILO_TEST_TAKE_DEVICE_KEY_UNDER";
+    /// Set for a child that takes a key kept in the platform's secret store.
+    const CHILD_STORE: &str = "TILO_TEST_TAKE_DEVICE_KEY_FROM_STORE";
     /// What the child says once it took the key.
     const SAID_TAKEN: &str = "the device key is taken";
-    const TEST: &str =
+    const FILE_TEST: &str =
         "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
+    const STORE_TEST: &str = "persist::one_writer::tests::a_second_process_taking_a_key_the_platform_store_keeps_is_refused_naming_the_first";
 
-    fn device_key_under(root: &Path) -> Result<IdentityPaths, PersistError> {
+    /// A key under `root`, in a file or in the platform's secret store, which this thread's
+    /// store keeps for the test.
+    fn device_key_under(root: &Path, store: bool) -> IdentityPaths {
         let paths = IdentityPaths::under(root);
-        super::super::load_or_create_device_key(&paths)?;
-        Ok(paths)
+        let paths = if store {
+            paths.with_device_key_ownership(super::super::DeviceKeyOwnership::PlatformStore)
+        } else {
+            paths
+        };
+        super::super::load_or_create_device_key(&paths).unwrap();
+        paths
     }
 
-    /// One process writes as the device: a second one that takes its key is refused and told
-    /// which process has it, and takes it once that process let go. Inside the first, a read
-    /// of the key answers the key it took.
-    #[test]
-    fn a_second_process_taking_the_key_is_refused_naming_the_first() {
+    /// The child's side: take the key, say so, keep it until standard input ends.
+    fn take_in_child(root: std::ffi::OsString) {
+        let store = std::env::var_os(CHILD_STORE).is_some();
+        let _memory = store.then(|| tilo_secrets::scope_thread(tilo_secrets::memory_backend()));
+        let paths = device_key_under(Path::new(&root), store);
+        let lock = take_device_key(&paths).expect("the first process takes the key");
+        assert_eq!(
+            super::super::load_device_key(&paths).unwrap().to_bytes(),
+            lock.key().to_bytes(),
+            "a read in the process that took the key answers that key"
+        );
+        println!("{SAID_TAKEN}");
+        let mut rest = String::new();
+        let _ = io::Read::read_to_string(&mut io::stdin(), &mut rest);
+        drop(lock);
+    }
+
+    /// One process writes as the device: a second one that takes its key, kept where `store`
+    /// says, is refused and told which process has it, and takes it once that process let go.
+    fn second_process_is_refused(test: &str, store: bool) {
         use std::io::{BufRead as _, BufReader};
         use std::process::{Command, Stdio};
         use tilo_test_env::SpawnUnderEnvLock as _;
 
-        if let Some(root) = std::env::var_os(CHILD) {
-            let paths = IdentityPaths::under(PathBuf::from(root));
-            let lock = take_device_key(&paths).expect("the first process takes the key");
-            assert_eq!(
-                super::super::read_device_key(&paths.device_privkey)
-                    .unwrap()
-                    .to_bytes(),
-                lock.key().to_bytes(),
-                "a read in the process that took the key answers that key"
-            );
-            println!("{SAID_TAKEN}");
-            let mut rest = String::new();
-            let _ = io::Read::read_to_string(&mut io::stdin(), &mut rest);
-            drop(lock);
-            return;
-        }
-
+        let _memory = store.then(|| tilo_secrets::scope_thread(tilo_secrets::memory_backend()));
         let root = tempfile::tempdir().unwrap();
-        let paths = device_key_under(root.path()).unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+        let paths = device_key_under(root.path(), store);
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
             .env(CHILD, root.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn_locked()
-            .unwrap();
+            .stderr(Stdio::null());
+        if store {
+            child.env(CHILD_STORE, "1");
+        }
+        let mut child = child.spawn_locked().unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(
             // The test harness names the test on the line the child's word ends.
@@ -336,5 +399,25 @@ mod tests {
         );
         drop(lock);
         drop(take_device_key(&paths).expect("a key let go of is taken again"));
+    }
+
+    #[test]
+    fn a_second_process_taking_the_key_is_refused_naming_the_first() {
+        if let Some(root) = std::env::var_os(CHILD) {
+            take_in_child(root);
+            return;
+        }
+        second_process_is_refused(FILE_TEST, false);
+    }
+
+    /// The login Keychain and the Android Keystore have no file to lock: the lock beside the
+    /// key's place refuses a second process all the same.
+    #[test]
+    fn a_second_process_taking_a_key_the_platform_store_keeps_is_refused_naming_the_first() {
+        if let Some(root) = std::env::var_os(CHILD) {
+            take_in_child(root);
+            return;
+        }
+        second_process_is_refused(STORE_TEST, true);
     }
 }

@@ -17,8 +17,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use tilo_seal::SymmetricKey;
-use tilo_seal::secret_service::{DH_ALGORITHM, Handshake, TransportKey};
+use tilo_seal::secret_service::{
+    CallerKey, DH_ALGORITHM, Handshake, TransportKey, open_vault, seal_vault,
+};
 use tilo_secret_service::app::{CallerId, UnknownCaller};
 use tilo_secret_service::service::{
     BUS_NAME, CallerResolver, Core, MANAGEMENT_PATH, Managers, ROOT, WireSecret, publish,
@@ -27,6 +28,7 @@ use tilo_secret_service::store::{KeySource, Locked, Store};
 use zbus::connection::Builder;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, Proxy};
+use zeroize::Zeroizing;
 
 const SERVICE: &str = "org.freedesktop.Secret.Service";
 const COLLECTION: &str = "org.freedesktop.Secret.Collection";
@@ -45,15 +47,46 @@ impl CallerResolver for Identity {
     }
 }
 
+/// A stand-in for the device's daemon, which alone keeps the device key: the
+/// key `[seed; 32]` while `seed` is not 0, none while it is (a device with no
+/// identity yet).
 #[derive(Clone)]
 struct DeviceKey(Arc<AtomicU8>);
 
-impl KeySource for DeviceKey {
-    fn release(&self) -> Result<SymmetricKey, Locked> {
+impl DeviceKey {
+    const SALT: [u8; 32] = [4; 32];
+    const ACCOUNT: &'static [u8] = b"1000";
+
+    fn seed(&self) -> Result<[u8; 32], Locked> {
         match self.0.load(Ordering::SeqCst) {
             0 => Err(Locked::NoIdentity),
-            byte => Ok(SymmetricKey::from_bytes([byte; 32])),
+            seed => Ok([seed; 32]),
         }
+    }
+}
+
+impl KeySource for DeviceKey {
+    fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, Locked> {
+        Ok(seal_vault(&self.seed()?, &Self::SALT, Self::ACCOUNT, plain).unwrap())
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, Locked> {
+        open_vault(&self.seed()?, &Self::SALT, Self::ACCOUNT, sealed).map_err(|error| match error {
+            tilo_seal::Error::WrongKey => Locked::KeyChanged,
+            _ => Locked::Corrupt,
+        })
+    }
+
+    fn check_caller(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+        proof: &[u8],
+    ) -> Result<bool, Locked> {
+        Ok(CallerKey::derive(&self.seed()?)
+            .unwrap()
+            .verify(challenge, caller, program, proof))
     }
 }
 

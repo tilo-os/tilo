@@ -17,6 +17,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+mod device_daemon;
+use device_daemon::DeviceDaemon;
+
 fn service() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-secret-service")
 }
@@ -25,6 +28,8 @@ const NAME: &str = "org.freedesktop.secrets";
 struct Session {
     root: tempfile::TempDir,
     bus: tilo_test_env::PrivateBus,
+    /// The device's daemon, which keeps the key under `identity`.
+    device: DeviceDaemon,
     service: Option<Child>,
 }
 
@@ -40,9 +45,11 @@ impl Session {
             }
         }
         let bus = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
+        let device = DeviceDaemon::start(&root.path().join("identity"), &root.path().join("daemon"));
         let mut session = Self {
             root,
             bus,
+            device,
             service: None,
         };
         session.start_service();
@@ -84,7 +91,7 @@ impl Session {
         let service = self
             .command(service())
             .arg("serve")
-            .env("TILO_IDENTITY_ROOT", self.path("identity"))
+            .env(device_daemon::PROFILE, self.device.profile())
             .stdout(Stdio::null())
             .spawn_locked()
             .expect("the service binary starts");

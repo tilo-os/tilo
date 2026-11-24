@@ -44,6 +44,8 @@ pub struct WebLink {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod daemon;
+#[cfg(not(target_arch = "wasm32"))]
 mod kept;
 
 #[cfg(not(target_arch = "wasm32"))]

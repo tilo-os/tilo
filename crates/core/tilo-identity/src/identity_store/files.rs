@@ -44,18 +44,16 @@ impl IdentityStore for Files {
         _workspace: super::WorkspaceId,
         device: &VerifyingKey,
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
-        let stored_key = tilo_device_identity::persist::load_device_key(&self.paths)
+        // The certificate at these paths names this device's key, and the person whose device
+        // this is: the registry knows that person, and the host that keeps their devices says
+        // which keys they took back.
+        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
             .map_err(|e| e.to_string())?;
-        if stored_key.verifying_key() != *device {
+        if cert.device_public_key != device.to_bytes() {
             return Err("native device identity store changed".into());
         }
         let store = crate::store::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
         let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
-        // The certificate these paths hold names the person whose device this is: the registry
-        // knows that person, and the host that holds their devices says which keys they took
-        // back.
-        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
-            .map_err(|e| e.to_string())?;
         if registry.identity_of(&cert.user_public_key).is_none() {
             return Err("this device has no identity to sign in with".into());
         }

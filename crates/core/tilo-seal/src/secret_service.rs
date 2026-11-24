@@ -59,6 +59,51 @@ pub fn store_key(
     Ok(SymmetricKey::from_bytes(*out))
 }
 
+/// What a person's vault is sealed under, beside its store key ([`store_key`]).
+pub const VAULT_RECORD: &[u8] = b"vault-v1";
+
+fn vault_context() -> crate::Context<'static> {
+    crate::Context::new(crate::Label::SecretService, VAULT_RECORD)
+}
+
+/// `plain`, a person's vault, sealed under their store key on this device ([`store_key`]):
+/// what the device's daemon does for the person's Secret Service, which never sees the key.
+///
+/// # Errors
+///
+/// As [`store_key`], or the seal failed.
+pub fn seal_vault(
+    device_secret: &[u8],
+    user_salt: &[u8; 32],
+    account: &[u8],
+    plain: &[u8],
+) -> Result<Vec<u8>> {
+    crate::envelope::seal(
+        &store_key(device_secret, user_salt, account)?,
+        vault_context(),
+        plain,
+    )
+}
+
+/// The vault `sealed` opened with the person's store key on this device ([`seal_vault`]).
+///
+/// # Errors
+///
+/// [`Error::WrongKey`] when it was sealed under another key (another device's, another
+/// person's), or as [`crate::envelope::open`].
+pub fn open_vault(
+    device_secret: &[u8],
+    user_salt: &[u8; 32],
+    account: &[u8],
+    sealed: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    crate::envelope::open(
+        &store_key(device_secret, user_salt, account)?,
+        vault_context(),
+        sealed,
+    )
+}
+
 pub const CALLER_PROOF_LEN: usize = 32;
 
 /// What a process that holds the device identity proves it with, to the

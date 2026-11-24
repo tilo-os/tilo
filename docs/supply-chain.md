@@ -42,9 +42,11 @@ operate it. Companion to `docs/security/design-rationale.md`.
   requires the expected digest and generation so a caller cannot validate a
   good signature and then accidentally install a different image:
 
+  `endorse` asks this computer's device service to sign, and fails when it isn't running.
+
   ```sh
   tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS image.grant
-  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT image.grant \
+  tilo-image-trust endorse DEVICE_CERT image.grant \
     sha256:MANIFEST_DIGEST GENERATION ISSUED_NS image.endorsement
   tilo-image-trust revocations ROOT_PUBLIC_KEY revocations.bin REVOCATION_ENTRY...
   tilo-image-trust verify ROOT_PUBLIC_KEY revocations.bin image.endorsement \

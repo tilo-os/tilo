@@ -167,10 +167,9 @@ the recovery key always remains (`tilo-disk-encrypt`).
     boot key. A device without the root says so and the next is asked; a
     refusal stops the ask instead of moving to another device. A machine with
     a session signed in on it asks that session's socket first, as before, and
-    only reaches the network when the session holds no root either. It dials
-    the relay `--relay` names, else the one its `/etc/tilo/server.toml` names
-    (the server image's, which its own enrollment already uses), else the
-    public one, so a deployment on its own relay is reached there.
+    only reaches the network when the session keeps no root either. The
+    computer's daemon dials them, as the one process that keeps its device
+    key, over the relays the person's devices use.
 - **The passphrase or recovery key** at the keyboard, as today.
 
 Wi-Fi-only machines need the network in early boot. The initramfs runs the

@@ -6,7 +6,6 @@
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::fd::AsRawFd as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -22,24 +21,10 @@ const RECORD: &str = "uuid:5b0e2a6c-1f7d-4c3e-9a8b-2d4f6e8a0c1e";
 const SESSION: &str = "0123456789abcdef0123456789abcdef";
 const STREAM: &str = "fedcba9876543210fedcba9876543210";
 
-/// This device's identity under `dir`: a key of its own, as a device that can reach a hosted
-/// workspace has one, for the runtime to read before it asks the session for anything.
-fn device_identity(dir: &Path) -> PathBuf {
-    let root = dir.join("identity");
-    let private = root.join("device-private");
-    std::fs::create_dir_all(&private).unwrap();
-    let key = private.join("keypair.bin");
-    std::fs::write(&key, [7_u8; 32]).unwrap();
-    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
-    root
-}
-
 /// The device's session as the supervisor reaches it at `runtime`: each workspace terminal it is
-/// asked for, with the connection it was asked on. Every request proves what the real session
-/// requires of this process before it serves one: that it holds the device identity, made with a
-/// key derived from the device key over its own pid and start time for the request it makes. The
-/// runtime reads the key before it serves anything, which is what arms the proof; a process that
-/// has not read it yet proves nothing and the session refuses it as a sandboxed program.
+/// asked for, with the connection it was asked on. The runtime never reads the device key, which
+/// only the device's daemon keeps, so the session can look at it as at any process of the login:
+/// a request carries no proof of the device's identity.
 fn session(runtime: &Path) -> mpsc::Receiver<(Request, UnixStream)> {
     let dir = runtime.join("tilo-session");
     std::fs::create_dir_all(&dir).unwrap();
@@ -54,38 +39,16 @@ fn session(runtime: &Path) -> mpsc::Receiver<(Request, UnixStream)> {
                 .unwrap();
             let request = Request::of(line.strip_suffix(b"\n").unwrap())
                 .unwrap_or_else(|| panic!("not a workspace terminal: {line:?}"));
-            proves_the_device_identity(&request);
+            assert!(
+                request.proof.is_none(),
+                "the runtime proves nothing it would need the device key for: {request:?}"
+            );
             if asked.send((request, stream)).is_err() {
                 return;
             }
         }
     });
     asks
-}
-
-/// What the session checks before it serves a workspace terminal: `request` is proved with the
-/// key derived from the device secret, over the asking process's own statement, for the request
-/// it makes.
-#[track_caller]
-fn proves_the_device_identity(request: &Request) {
-    let key = tilo_secrets::device_session_key().unwrap_or_else(|| {
-        panic!(
-            "the runtime holds the device identity before it asks the session for a terminal, \
-             or the session refuses it as sandboxed: {request:?}"
-        )
-    });
-    let proof = hex::decode(
-        request
-            .proof
-            .as_deref()
-            .unwrap_or_else(|| panic!("the request proves it: {request:?}")),
-    )
-    .unwrap();
-    let statement = runtime_portal::holder_proof::statement(std::process::id()).unwrap();
-    assert!(
-        key.verify(&statement, &request.op, b"", &proof),
-        "the proof is this process's, for this request: {request:?}"
-    );
 }
 
 fn serving(dir: &Path) -> PathBuf {
@@ -101,10 +64,11 @@ fn serving(dir: &Path) -> PathBuf {
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        tilo_secrets::device_session_key().is_some(),
-        "the runtime reads the device key before it binds, so it can prove it holds the \
-         device identity for whatever it is asked"
+    // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads a flag.
+    let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    assert_eq!(
+        dumpable, 1,
+        "the runtime reads no device key, so the session can look at it as at any process"
     );
     socket
 }
@@ -289,9 +253,7 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             let runtime = dir.path().join("run");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", &runtime);
-            env.set("TILO_IDENTITY_ROOT", device_identity(dir.path()));
-            // Fixture images the runtime-import thread answers from, so that nothing but the
-            // runtime's own start reads the device key: the ordering this test is about.
+            env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
             let asks = session(&runtime);
             let socket = serving(dir.path());
@@ -355,7 +317,7 @@ fn a_lost_stream_is_said_and_the_window_comes_back_to_the_hosts_session() {
             let runtime = dir.path().join("run");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", &runtime);
-            env.set("TILO_IDENTITY_ROOT", device_identity(dir.path()));
+            env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
             let asks = session(&runtime);
             let socket = serving(dir.path());

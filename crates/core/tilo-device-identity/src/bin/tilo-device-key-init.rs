@@ -5,11 +5,17 @@
 //! `TILO_NODE_SESSION_DEVICE=<hex>`, a systemd `EnvironmentFile` the node's
 //! server names the session with (`--session-device`).
 //!
+//! The key is made here and handed to the device's daemon in its file, which the daemon takes as
+//! the one process that writes as the device: this program keeps no copy, and a device whose
+//! daemon has the key already is refused.
+//!
 //! `--branch` runs at every boot before anything uses the machine's key: it
 //! records which machine the key belongs to and re-keys a machine whose disk
 //! was copied from another (`tilo_device_identity::branch`).
 
-use tilo_device_identity::persist::{DeviceKeyOutcome, IdentityPaths, load_or_create_device_key};
+use tilo_device_identity::persist::{
+    DeviceKeyOutcome, IdentityPaths, load_or_create_device_key, take_device_key,
+};
 
 fn main() {
     if let Err(error) = provision(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -39,7 +45,7 @@ fn provision(args: &[String]) -> Result<(), String> {
             let device = create(&IdentityPaths::under(root), "node session")?;
             let line = format!(
                 "TILO_NODE_SESSION_DEVICE={}\n",
-                hex::encode(device.verifying_key().to_bytes())
+                hex::encode(device.to_bytes())
             );
             std::fs::write(out, line).map_err(|error| format!("write {out}: {error}"))
         }
@@ -49,12 +55,19 @@ fn provision(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn create(paths: &IdentityPaths, what: &str) -> Result<ed25519_dalek::SigningKey, String> {
-    let (device, outcome) = load_or_create_device_key(paths).map_err(|error| error.to_string())?;
+/// Make the device key under `paths` when there is none, before the daemon that writes as the
+/// device starts: it is handed over in the file, which the daemon takes. Nothing here keeps it,
+/// and a device whose daemon took the key already is refused rather than read beside it.
+fn create(paths: &IdentityPaths, what: &str) -> Result<ed25519_dalek::VerifyingKey, String> {
+    let (_, outcome) = load_or_create_device_key(paths).map_err(|error| error.to_string())?;
+    // Taken and let go at once: a running daemon refuses it, naming itself.
+    let taken = take_device_key(paths).map_err(|error| error.to_string())?;
+    let public = taken.key().verifying_key();
+    drop(taken);
     if outcome == DeviceKeyOutcome::Created {
         eprintln!("created {what} device identity");
     }
-    Ok(device)
+    Ok(public)
 }
 
 #[cfg(unix)]

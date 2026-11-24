@@ -103,9 +103,9 @@ pub use fs::QuickFS;
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
-    CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials, identity_paths,
-    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_mount_identity,
-    load_revocation_list, revocation_list_path,
+    CertifiedIdentityError, PeerCredentials, device_public_key, identity_paths,
+    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_revocation_list,
+    revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
 #[cfg(feature = "filesystem")]

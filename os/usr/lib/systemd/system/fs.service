@@ -61,8 +61,10 @@ Type=simple
 #
 # `--member person:local` is the member the shipped list grants to.
 # The shipped default uses a human-readable local member. The mount also
-# has the machine's durable certified device key, shared with the shell, so
-# remote policies can name a stable cryptographic member when required.
+# presents the machine's certified device identity: it reads the certificate
+# from /var/lib/tilo and learns the device's public key from the device's
+# daemon, which is the only process that keeps the key, so remote policies
+# can name a stable cryptographic member when required.
 #
 # The shipped list grants that member read+write on the whole
 # workspace — i.e. exactly the access an unenforced mount gave. This

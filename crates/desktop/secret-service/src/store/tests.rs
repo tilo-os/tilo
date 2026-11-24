@@ -1,33 +1,82 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+
+use tilo_device_identity::persist::IdentityPaths;
+use tilo_seal::secret_service::{CallerKey, open_vault, seal_vault};
 
 use super::*;
 
+/// A stand-in for the device's daemon, which alone keeps the device key: it
+/// seals, opens and checks proofs with the key it is given (none while the
+/// device has no identity), under the person's salt and account.
 #[derive(Clone)]
-struct Switch {
-    state: Arc<AtomicU8>,
+struct TestDaemon {
+    key: Arc<StdMutex<Option<SigningKey>>>,
+    salt: PathBuf,
+    account: String,
 }
 
-impl Switch {
-    const ABSENT: u8 = 0;
-
-    fn new(state: u8) -> Self {
+impl TestDaemon {
+    /// The daemon of a device whose key is `key`, for the person whose
+    /// salt is in `secrets`.
+    fn new(secrets: &Path, key: Option<SigningKey>, account: &str) -> Self {
         Self {
-            state: Arc::new(AtomicU8::new(state)),
+            key: Arc::new(StdMutex::new(key)),
+            salt: secrets.join("salt"),
+            account: account.to_owned(),
         }
     }
 
-    fn set(&self, state: u8) {
-        self.state.store(state, Ordering::SeqCst);
+    /// The daemon of a device keyed by `seed`, for the store `store_at` makes in `dir`.
+    fn seeded(dir: &Path, seed: Option<u8>) -> Self {
+        Self::new(
+            &dir.join("secrets"),
+            seed.map(|seed| SigningKey::from_bytes(&[seed; 32])),
+            "1000",
+        )
+    }
+
+    fn set(&self, seed: u8) {
+        *self.key.lock().unwrap() = Some(SigningKey::from_bytes(&[seed; 32]));
+    }
+
+    fn seed(&self) -> std::result::Result<Zeroizing<[u8; 32]>, Locked> {
+        let key = self.key.lock().unwrap();
+        let key = key.as_ref().ok_or(Locked::NoIdentity)?;
+        Ok(Zeroizing::new(key.to_bytes()))
+    }
+
+    fn salt(&self) -> Zeroizing<[u8; 32]> {
+        load_or_create_salt(&self.salt).unwrap()
     }
 }
 
-impl KeySource for Switch {
-    fn release(&self) -> std::result::Result<SymmetricKey, Locked> {
-        match self.state.load(Ordering::SeqCst) {
-            Self::ABSENT => Err(Locked::NoIdentity),
-            byte => Ok(SymmetricKey::from_bytes([byte; 32])),
-        }
+impl KeySource for TestDaemon {
+    fn seal(&self, plain: &[u8]) -> std::result::Result<Vec<u8>, Locked> {
+        let seed = self.seed()?;
+        Ok(seal_vault(seed.as_ref(), &self.salt(), self.account.as_bytes(), plain).unwrap())
+    }
+
+    fn open(&self, sealed: &[u8]) -> std::result::Result<Zeroizing<Vec<u8>>, Locked> {
+        let seed = self.seed()?;
+        open_vault(seed.as_ref(), &self.salt(), self.account.as_bytes(), sealed).map_err(
+            |error| match error {
+                tilo_seal::Error::WrongKey => Locked::KeyChanged,
+                _ => Locked::Corrupt,
+            },
+        )
+    }
+
+    fn check_caller(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+        proof: &[u8],
+    ) -> std::result::Result<bool, Locked> {
+        let seed = self.seed()?;
+        Ok(CallerKey::derive(seed.as_ref())
+            .unwrap()
+            .verify(challenge, caller, program, proof))
     }
 }
 
@@ -59,7 +108,7 @@ fn new_item(label: &str, pairs: &[(&str, &str)], secret: &[u8]) -> NewItem {
     }
 }
 
-fn store_at(dir: &Path, keys: &Switch) -> Store {
+fn store_at(dir: &Path, keys: &TestDaemon) -> Store {
     Store::new(dir.join("secrets/vault.tseal"), Box::new(keys.clone()))
 }
 
@@ -69,7 +118,7 @@ tilo_test_env::scenario! {
     phase a_locked_store_writes_nothing_and_opens_once_the_identity_is_there;
     {
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(Switch::ABSENT);
+        let keys = TestDaemon::seeded(dir.path(), None);
         let store = store_at(dir.path(), &keys);
 
         assert_eq!(store.locked(), Some(Locked::NoIdentity));
@@ -109,7 +158,7 @@ tilo_test_env::scenario! {
     phase items_persist_sealed_and_open_only_under_the_same_key;
     {
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(7);
+        let keys = TestDaemon::seeded(dir.path(), Some(7));
         let first = store_at(dir.path(), &keys);
         let made = first
             .create_item(
@@ -146,7 +195,7 @@ tilo_test_env::scenario! {
         assert_eq!(secret.expose(), b"correct horse");
         assert_eq!(content_type, "text/plain");
 
-        let other = Switch::new(9);
+        let other = TestDaemon::seeded(dir.path(), Some(9));
         let foreign = store_at(dir.path(), &other);
         assert_eq!(foreign.locked(), Some(Locked::KeyChanged));
         assert!(
@@ -169,7 +218,7 @@ tilo_test_env::scenario! {
     phase search_lookup_replace_and_delete_work_like_libsecret_expects;
     {
         let dir = tempfile::tempdir().unwrap();
-        let store = store_at(dir.path(), &Switch::new(7));
+        let store = store_at(dir.path(), &TestDaemon::seeded(dir.path(), Some(7)));
         let me = system();
         let one = store
             .create_item(
@@ -237,7 +286,7 @@ tilo_test_env::scenario! {
     phase the_session_collection_is_not_kept_on_disk;
     {
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(7);
+        let keys = TestDaemon::seeded(dir.path(), Some(7));
         let first = store_at(dir.path(), &keys);
         let me = system();
         let kept = first
@@ -257,45 +306,54 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase the_device_identity_releases_a_key_bound_to_device_person_and_salt;
+    phase with_no_device_daemon_the_store_is_locked_saying_so_and_writes_nothing;
+    // The device key is the daemon's alone: with nothing listening where the
+    // daemon is reached, the store is locked with the daemon's refusal, and
+    // no proof can be checked. Nothing else is asked for the key.
     {
-        use tilo_device_identity::persist::load_or_create_device_key;
         let dir = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(dir.path().join("system"));
-        let salt = dir.path().join("home/secrets/salt");
-        let keys = DeviceIdentityKey::new(paths.clone(), salt.clone(), "1000");
-
-        assert_eq!(keys.release().err(), Some(Locked::NoIdentity));
-        assert!(!salt.exists());
-
-        load_or_create_device_key(&paths).unwrap();
-        let first = keys.release().unwrap();
-        assert_eq!(
-            first.expose_secret(),
-            keys.release().unwrap().expose_secret()
-        );
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&salt).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        let other_person = DeviceIdentityKey::new(paths.clone(), salt.clone(), "1001");
-        assert_ne!(
-            first.expose_secret(),
-            other_person.release().unwrap().expose_secret()
-        );
-        let other_home = DeviceIdentityKey::new(paths, dir.path().join("elsewhere/salt"), "1000");
-        assert_ne!(
-            first.expose_secret(),
-            other_home.release().unwrap().expose_secret()
+        let secrets = dir.path().join("home/secrets");
+        let nobody = DeviceActions::at(dir.path().join("sockets/native.sock"));
+        let store = Store::new(
+            secrets.join("vault.tseal"),
+            Box::new(DeviceDaemon::new(nobody.clone(), secrets.join("salt"), "1000")),
         );
 
-        // A salt that is present but damaged is never replaced.
-        std::fs::write(&salt, b"short").unwrap();
-        assert!(matches!(keys.release(), Err(Locked::Unreadable(_))));
-        assert_eq!(std::fs::read(&salt).unwrap(), b"short");
+        let Some(Locked::NotRunning(why)) = store.locked() else {
+            panic!("not locked as the daemon not running: {:?}", store.locked());
+        };
+        assert!(
+            why.starts_with("the device service isn't running on this computer"),
+            "{why}"
+        );
+        assert!(
+            why.contains(&dir.path().join("sockets/native.sock").display().to_string()),
+            "{why}"
+        );
+        assert!(matches!(
+            store.create_item(&system(), "default", new_item("a", &[], b"s"), true),
+            Err(StoreError::Locked(Locked::NotRunning(_)))
+        ));
+        assert!(matches!(
+            store.check_caller(&[1; 32], ":1.7", b"/usr/bin/tilo", &[2; 32]),
+            Err(Locked::NotRunning(_))
+        ));
+        assert!(!secrets.join("vault.tseal").exists(), "a locked store writes nothing");
+
+        // A vault already on disk stays as it is.
+        std::fs::write(secrets.join("vault.tseal"), b"sealed elsewhere").unwrap();
+        assert!(matches!(store.locked(), Some(Locked::NotRunning(_))));
+        assert_eq!(std::fs::read(secrets.join("vault.tseal")).unwrap(), b"sealed elsewhere");
+
+        // A salt that is present but damaged is never replaced, and is said
+        // before the daemon is asked.
+        std::fs::write(secrets.join("salt"), b"short").unwrap();
+        let damaged = Store::new(
+            secrets.join("vault.tseal"),
+            Box::new(DeviceDaemon::new(nobody, secrets.join("salt"), "1000")),
+        );
+        assert!(matches!(damaged.locked(), Some(Locked::Unreadable(_))));
+        assert_eq!(std::fs::read(secrets.join("salt")).unwrap(), b"short");
     }
 
     phase a_branched_machine_keeps_every_persons_secrets_under_its_new_key;
@@ -312,7 +370,7 @@ tilo_test_env::scenario! {
         let source_machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
         branch::record_machine(&paths, &source_machine).unwrap();
 
-        let (store, ada) = person_vault(&dir.path().join("home/ada"), &paths, "1000");
+        let (store, ada) = person_vault(&dir.path().join("home/ada"), &source, "1000");
         // The key of the accounts vault the passwords app keeps its entries in,
         // and a model provider's API key a provider profile refers to.
         let passwords = store
@@ -337,15 +395,14 @@ tilo_test_env::scenario! {
             .unwrap();
         drop(store);
 
-        let elsewhere = IdentityPaths::under(dir.path().join("elsewhere"));
-        load_or_create_device_key(&elsewhere).unwrap();
+        let elsewhere = SigningKey::from_bytes(&[5; 32]);
         let (stranger, bea) = person_vault(&dir.path().join("home/bea"), &elsewhere, "1001");
         stranger
             .create_item(&system(), "default", new_item("theirs", &[], b"s"), true)
             .unwrap();
         drop(stranger);
         let theirs = std::fs::read(&bea.vault).unwrap();
-        let (_, nobody) = person_vault(&dir.path().join("home/cy"), &paths, "1002");
+        let (_, nobody) = person_vault(&dir.path().join("home/cy"), &source, "1002");
 
         let settled = branch::settle(
             &paths,
@@ -374,7 +431,7 @@ tilo_test_env::scenario! {
         let device = read_device_key(&paths.device_privkey).unwrap();
         assert_ne!(device.to_bytes(), source.to_bytes());
 
-        let (store, _) = person_vault(&dir.path().join("home/ada"), &paths, "1000");
+        let (store, _) = person_vault(&dir.path().join("home/ada"), &device, "1000");
         assert_eq!(store.locked(), None);
         let (secret, _) = store.read_secret(&system(), &passwords).unwrap();
         assert_eq!(secret.expose(), b"vault key");
@@ -396,7 +453,7 @@ tilo_test_env::scenario! {
         // D-Bus interface: tests/dbus.rs,
         // `applications_are_attributed_isolated_and_revocable`.
         let dir = tempfile::tempdir().unwrap();
-        let store = store_at(dir.path(), &Switch::new(7));
+        let store = store_at(dir.path(), &TestDaemon::seeded(dir.path(), Some(7)));
         let legacy = LegacyItem {
             label: "Chrome Safe Storage".into(),
             attributes: attributes(&[("application", "chrome")]),
@@ -422,7 +479,7 @@ tilo_test_env::scenario! {
     phase every_application_is_recorded_counted_and_kept_across_a_restart;
     {
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(7);
+        let keys = TestDaemon::seeded(dir.path(), Some(7));
         let store = store_at(dir.path(), &keys);
         store
             .create_item(
@@ -458,7 +515,7 @@ tilo_test_env::scenario! {
         // An import runs once and never again (tests/migrate.rs); this is the
         // old keyring's own duplicates.
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(7);
+        let keys = TestDaemon::seeded(dir.path(), Some(7));
         let store = store_at(dir.path(), &keys);
         let legacy = |secret: &[u8]| LegacyItem {
             label: "Wi-Fi".into(),
@@ -507,23 +564,19 @@ tilo_test_env::scenario! {
         // tests/dbus.rs,
         // `the_portal_host_gets_sandbox_secrets_from_the_same_store`.
         let dir = tempfile::tempdir().unwrap();
-        let store = store_at(dir.path(), &Switch::new(7));
+        let store = store_at(dir.path(), &TestDaemon::seeded(dir.path(), Some(7)));
         assert!(store.sandbox_secret("").is_err());
         assert!(store.sandbox_secret("a/b").is_err());
     }
 }
 
-/// A person's vault in `home` under the device key `paths` holds, and the
-/// same vault as a branched machine's re-key sees it.
-fn person_vault(home: &Path, paths: &IdentityPaths, account: &str) -> (Store, DeviceVault) {
+/// A person's vault in `home`, sealed by a daemon keeping the device key
+/// `key`, and the same vault as a branched machine's re-key sees it.
+fn person_vault(home: &Path, key: &SigningKey, account: &str) -> (Store, DeviceVault) {
     let secrets = home.join(".local/share/tilo/secrets");
     let store = Store::new(
         secrets.join("vault.tseal"),
-        Box::new(DeviceIdentityKey::new(
-            paths.clone(),
-            secrets.join("salt"),
-            account,
-        )),
+        Box::new(TestDaemon::new(&secrets, Some(key.clone()), account)),
     );
     let vault = DeviceVault {
         vault: secrets.join("vault.tseal"),

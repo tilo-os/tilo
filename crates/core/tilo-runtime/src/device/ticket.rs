@@ -34,10 +34,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND,
-    IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
-    RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
-    TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
+    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction,
+    ENDORSE_IMAGE, ENROL_BOOT, FOUND, IDENTITIES, ISSUE, LOG_IN, OPEN_VAULT, PENDING,
+    PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME,
+    REPORTED, RESOURCE, RESTORE, REVOKE, Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -101,6 +101,7 @@ pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
     catalogue_of(query, |action| {
         matches!(action, INFO | LOG_IN | FOUND | RESTORE)
             || matches!(action, super::records::SET | super::records::REMOVE)
+            || super::key_use::FOR_THE_SYSTEM.contains(&action)
     })
 }
 
@@ -320,6 +321,12 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         tilo_actions::remote::device_tickets::HANDED_ON
             .into_iter()
             .map(|action| row(tilo_actions::remote::device_tickets::descriptor(action))),
+    );
+    // What the daemon does with the device key for the other programs of this computer.
+    rows.extend(
+        super::key_use::descriptors()
+            .into_iter()
+            .map(|descriptor| row(Some(descriptor))),
     );
     // The device's own settings: what it keeps before anyone claims it, read through the record
     // API and changed here.
@@ -688,7 +695,7 @@ pub(crate) fn descriptor(
 
 /// The device actions whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): handed to
 /// the person once, and kept nowhere here.
-const SECRET_ANSWERS: [&str; 3] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF];
+const SECRET_ANSWERS: [&str; 4] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF, OPEN_VAULT];
 
 /// The device actions the root of the account calling them signs: each account's root signs its
 /// own calls and no other's.
@@ -1015,6 +1022,11 @@ impl Tickets {
         self
     }
 
+    /// The device's one endpoint: what it dials the person's other devices from.
+    pub(crate) fn endpoint(&self) -> &Endpoint {
+        &self.0.endpoint
+    }
+
     /// Whether `request` is one of the device actions.
     pub(crate) fn answers(request: &InvokeRequest) -> bool {
         request.target.provider == PROVIDER
@@ -1040,7 +1052,10 @@ impl Tickets {
                         | USE_IDENTITY
                         | REMOVE_IDENTITY
                         | PROTECT_IDENTITY
-                ))
+                ) || super::key_use::FOR_A_PERSON
+                    .contains(&request.target.address.action.as_str())
+                    || super::key_use::FOR_THE_SYSTEM
+                        .contains(&request.target.address.action.as_str()))
                 || (request.target.address.resource == UPDATES
                     && matches!(
                         request.target.address.action.as_str(),
@@ -1057,6 +1072,25 @@ impl Tickets {
         request.target.provider == PROVIDER
             && request.target.address.resource == RESOURCE
             && matches!(request.target.address.action.as_str(), FOUND | RESTORE)
+    }
+
+    /// Whether `request` is one the Secret Service asks of the device key
+    /// ([`super::key_use::FOR_A_PERSON`]): answered at once, and kept in no invocation record,
+    /// since what an opened vault says is a secret and these are a program's steps, never acts the
+    /// person's history shows.
+    pub(crate) fn seals_or_proves(request: &InvokeRequest) -> bool {
+        request.target.provider == PROVIDER
+            && request.target.address.resource == RESOURCE
+            && super::key_use::FOR_A_PERSON.contains(&request.target.address.action.as_str())
+    }
+
+    /// Whether `request` asks what the daemon does with the device key ([`super::key_use`]).
+    pub(crate) fn uses_the_device_key(request: &InvokeRequest) -> bool {
+        let action = request.target.address.action.as_str();
+        request.target.provider == PROVIDER
+            && request.target.address.resource == RESOURCE
+            && (super::key_use::FOR_A_PERSON.contains(&action)
+                || super::key_use::FOR_THE_SYSTEM.contains(&action))
     }
 
     /// Whether `request` only reads what the device is ([`INFO`]) or which identities it keeps,
@@ -1103,9 +1137,17 @@ impl Tickets {
         // endpoint reached one of its relays, it would name only the network this device stands
         // in. It waits for the relay first, as an invitation does.
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
+        // What the daemon does with the device key, it does for the device's own system and the
+        // person's own programs on this computer ([`super::services`] admits which reach it).
+        if Self::uses_the_device_key(request) && !caller.is_system() && acting_person(caller).is_none()
+        {
+            return Pending::ready(Err(refused(
+                "only this device's system and its person ask what the device key does",
+            )));
+        }
         let waiting = matches!(
             action.as_str(),
-            ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
+            ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE | ENROL_BOOT
         );
         if !waiting {
             let answer = match action.as_str() {
@@ -1141,19 +1183,32 @@ impl Tickets {
                     super::signing::answer_sign_in(self.0.place.keys(), &args, root)
                         .map_err(Into::into)
                 }
+                key_use if super::key_use::FOR_A_PERSON.contains(&key_use)
+                    || key_use == ENDORSE_IMAGE =>
+                {
+                    super::key_use::answer(key_use, &args, &self.0.key).map_err(Into::into)
+                }
                 _ => super::services::identity_step(&action, &args).map_err(Into::into),
             };
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),
-                Err(error) => failed(invocation, &format!("{error:#}")),
+                Err(error) => match error.downcast_ref::<super::key_use::Refusal>() {
+                    Some(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+                    None => failed(invocation, &format!("{error:#}")),
+                },
             };
             let state = InvocationState::new(invocation, update);
             let receipt = state.receipt();
+            let succeeded_now = matches!(state.update, InvocationUpdate::Succeeded { .. });
+            // What the Secret Service asks of the device key is answered in the receipt alone, a
+            // refusal too, and kept nowhere: an opened vault is a secret, and a sealed one is the
+            // person's to keep.
+            if super::key_use::FOR_A_PERSON.contains(&action.as_str()) {
+                return Pending::ready(Ok(receipt));
+            }
             // A secret is handed over in the receipt alone: what is kept of the call says only
             // that it was given.
-            let kept = if SECRET_ANSWERS.contains(&action.as_str())
-                && matches!(state.update, InvocationUpdate::Succeeded { .. })
-            {
+            let kept = if SECRET_ANSWERS.contains(&action.as_str()) && succeeded_now {
                 InvocationState::new(invocation, succeeded(invocation, json!({ "given": true })))
             } else {
                 state
@@ -1181,6 +1236,9 @@ impl Tickets {
                     APPROVE => served.approve(&args).await,
                     REPORTED => served.report(&args).await,
                     RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
+                    ENROL_BOOT => super::key_use::enrol_boot(&served.0.endpoint, &args)
+                        .await
+                        .map_err(Into::into),
                     _ if wait => served.waited().await,
                     _ => {
                         if unreached {

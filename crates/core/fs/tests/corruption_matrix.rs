@@ -9,7 +9,7 @@ use std::fs as stdfs;
 use tempfile::tempdir;
 use tilo_device_identity::IdentityPaths;
 use tilo_fs::eviction::EvictionQueue;
-use tilo_fs::{AvailabilityRegistry, Namespace, load_mount_identity};
+use tilo_fs::{AvailabilityRegistry, Namespace};
 
 fn truncated(bytes: &[u8]) -> Vec<u8> {
     let midpoint = bytes.len().div_ceil(2);
@@ -123,31 +123,44 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
 
 #[cfg(unix)]
 #[test]
-fn truncated_device_identity_is_not_replaced_with_a_new_actor() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_damaged_device_certificate_is_preserved_and_fails_closed() {
+    use tilo_device_identity::persist::write_device_cert;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     let dir = tempdir().unwrap();
     let paths = IdentityPaths::under(dir.path());
-    let first = load_mount_identity(&paths).unwrap();
-    let original_actor = first.public;
-    drop(first);
+    let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+    let device_public_key = device.verifying_key().to_bytes();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key,
+        device_label: "fixture".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    write_device_cert(&paths.device_cert, &cert).unwrap();
 
-    let good = stdfs::read(&paths.device_privkey).unwrap();
+    let good = stdfs::read(&paths.device_cert).unwrap();
     let damaged = truncated(&good);
-    stdfs::write(&paths.device_privkey, &damaged).unwrap();
-    stdfs::set_permissions(&paths.device_privkey, stdfs::Permissions::from_mode(0o600)).unwrap();
+    stdfs::write(&paths.device_cert, &damaged).unwrap();
 
-    assert!(load_mount_identity(&paths).is_err());
+    let now = tilo_clock::unix_now_ns();
+    assert!(
+        tilo_fs::load_certified_mount_identity(&paths, device_public_key, now).is_err(),
+        "a present but damaged identity must fail startup"
+    );
     assert_eq!(
-        stdfs::read(&paths.device_privkey).unwrap(),
+        stdfs::read(&paths.device_cert).unwrap(),
         damaged,
-        "identity startup must preserve damaged evidence rather than rotate identity"
+        "identity startup must preserve damaged evidence rather than mint a new identity"
     );
 
-    stdfs::write(&paths.device_privkey, good).unwrap();
-    let restored = load_mount_identity(&paths).unwrap();
-    assert_eq!(
-        restored.public, original_actor,
-        "restoring a known-good key is an exact actor rollback"
-    );
+    stdfs::write(&paths.device_cert, good).unwrap();
+    let restored = tilo_fs::load_certified_mount_identity(&paths, device_public_key, now).unwrap();
+    assert_eq!(restored.device_public_key(), device_public_key);
 }

@@ -156,8 +156,7 @@ impl Records {
         }
         let request = workspace_documents::Request::new(
             (!self.is_primary()).then_some(self.workspace.as_str()),
-        )
-        .proved(crate::mcp_server::holder_proof(workspace_documents::OP));
+        );
         let command = serde_json::to_vec(command).map_err(|e| RecordError::Store(e.to_string()))?;
         let reply = workspace_documents::ask(&self.documents, &request, &command).map_err(
             |error| match error.kind() {

@@ -5,12 +5,13 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_device_identity::persist::IdentityPaths;
 use tilo_secret_service::migrate::{self, GnomeKeyring, Outcome};
 use tilo_secret_service::service::{
     AppRow, BUS_NAME, BusResolver, Core, MANAGEMENT_PATH, Managers, publish,
 };
-use tilo_secret_service::store::{DeviceIdentityKey, DeviceVault, Store};
+use tilo_secret_service::store::{DeviceDaemon, DeviceVault, Store};
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -80,42 +81,31 @@ fn uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-/// The device identity the store is sealed under and checks callers'
-/// proofs against: the machine's one.
+/// The device's daemon the store asks to seal, open and check proofs with
+/// the device key, which no other process reads: this computer's own, the
+/// one this account reaches (`tilo_device_identity::login::daemon::sockets`).
 ///
-/// A build with developer overrides follows `TILO_IDENTITY_ROOT` instead, where
-/// the person's session reads its device key when it names one (a
-/// development account's private test identity), and creates the device key
-/// there when absent. The session proves the key it read from that root
-/// (`tilo_secrets::arm_device_proof`); a store on the machine's identity
-/// would refuse every proof of it, and with them the session's own keys.
-#[cfg_attr(
-    not(any(debug_assertions, feature = "dev-overrides")),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "only a build with developer overrides creates an identity, which can fail"
-    )
-)]
-fn device_identity() -> Result<IdentityPaths, String> {
+/// A build with developer overrides names the daemon by the identity root
+/// `TILO_IDENTITY_ROOT` says, where a development account's daemon keeps its
+/// private test identity. It only chooses the daemon: nothing here reads or
+/// makes a key.
+fn device_daemon() -> Result<DeviceActions, String> {
     #[cfg(any(debug_assertions, feature = "dev-overrides"))]
     if let Some(root) = std::env::var_os("TILO_IDENTITY_ROOT").filter(|root| !root.is_empty()) {
-        let paths = IdentityPaths::under(root);
-        tilo_device_identity::persist::load_or_create_device_key(&paths)
-            .map_err(|e| format!("development identity: {e}"))?;
-        return Ok(paths);
+        return DeviceActions::here(IdentityPaths::under(root));
     }
-    Ok(IdentityPaths::default_system())
+    DeviceActions::here(IdentityPaths::default_system())
 }
 
 async fn serve() -> Result<(), String> {
     let dir = tilo_secret_service::data_dir().ok_or("no home directory")?;
     let uid = uid();
-    let paths = device_identity()?;
-    let keys = DeviceIdentityKey::new(paths, dir.join("salt"), &uid.to_string());
+    let daemon = device_daemon().map_err(|e| format!("the device service: {e}"))?;
+    let keys = DeviceDaemon::new(daemon, dir.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(dir.join("vault.tseal"), Box::new(keys)));
     match store.locked() {
         None => info!("the store is open"),
-        Some(why) => info!("the store is locked until the device identity is available: {why}"),
+        Some(why) => info!("the store is locked until the device service can open it: {why}"),
     }
 
     let connection = zbus::Connection::session()

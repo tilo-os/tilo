@@ -69,13 +69,10 @@ package-store = { package = "tilo-package-store", path = "../../core/package-sto
 tilo-oci-images = { path = "../oci-images" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
 semver.workspace = true
-# This device's key signs the tool images its builder makes; the user's
-# fleet says which other devices' images are trusted.
+# This device's certificate names the key its tool images are trusted by; the
+# user's fleet says which other devices' images are trusted.
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 hex.workspace = true
-# Holding that key is what the session's MCP server, which cannot look at this
-# non-dumpable process, is shown instead (`mcp_server::holder_proof`).
-tilo-secrets.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }

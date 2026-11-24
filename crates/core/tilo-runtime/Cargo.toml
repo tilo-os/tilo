@@ -47,6 +47,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
 tilo-paths.workspace = true
 # The secret stores a moved device's keys are read from and forgotten in once moved.
+tilo-seal = { path = "../tilo-seal" }
 tilo-secrets.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }

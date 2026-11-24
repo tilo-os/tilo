@@ -391,15 +391,20 @@ fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> 
     key.update(&uid.to_le_bytes());
     key.update(b"account secret\0");
     key.update(&account_own_secret(identity_dir)?);
-    let device = fs::read(crate::provisioning::collaboration_identity_paths().device_privkey)
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("this computer's device key cannot be read: {error}"),
-            )
-        })?;
+    // Read as every read of the device key is: inside the device's daemon, the key it took.
+    let device = tilo_device_identity::persist::load_device_key(
+        &crate::provisioning::collaboration_identity_paths(),
+    )
+    .map_err(|error| {
+        io::Error::new(
+            error
+                .io()
+                .map_or(io::ErrorKind::InvalidData, io::Error::kind),
+            format!("this computer's device key cannot be read: {error}"),
+        )
+    })?;
     key.update(b"device\0");
-    key.update(&device);
+    key.update(zeroize::Zeroizing::new(device.to_bytes()).as_ref());
     tilo_seal::SymmetricKey::from_slice(key.finalize().as_bytes())
         .map_err(|error| io::Error::other(error.to_string()))
 }
@@ -527,9 +532,13 @@ mod sealed_files {
         let mut environment = tilo_test_env::ScopedEnv::new();
         let home = tempfile::tempdir().unwrap();
         let identity_root = home.path().join("identity");
-        let device_key = identity_root.join("device-private/keypair.bin");
-        std::fs::create_dir_all(device_key.parent().unwrap()).unwrap();
-        std::fs::write(&device_key, [9_u8; 32]).unwrap();
+        let paths = tilo_device_identity::IdentityPaths::under(identity_root.clone());
+        paths.ensure_directories().unwrap();
+        tilo_device_identity::persist::write_device_key(
+            &paths.device_privkey,
+            &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+        )
+        .unwrap();
         environment.set("TILO_IDENTITY_ROOT", &identity_root);
         let dir = identity_root.join("accounts").join("1000");
         std::fs::create_dir_all(&dir).unwrap();

@@ -108,10 +108,10 @@ tilo-ask-password = { path = "../ask-password", optional = true }
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 # The client binds the service socket through the safe path, with or without the service.
 tilo-files = { path = "../../platform/tilo-files" }
-# This device's fleet of the person's devices, and the device's own key:
-# whom to ask for an enrolment when this device holds no root.
+# Where this device's identity is kept, as the session reads it.
 tilo-identity = { path = "../../core/tilo-identity", optional = true }
-# The daemon that keeps the person's devices record: whom an enrolment asks for them.
+# This computer's daemon, which keeps the device key and the person's devices record: an
+# enrolment asks it whom to ask, and it asks them as the device.
 tilo-api = { path = "../../core/tilo-api", optional = true }
 # The record of the person's devices as the daemon's record API answers it.
 tilo-server-protocol = { path = "../../core/tilo-server-protocol", optional = true }
@@ -138,6 +138,12 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 # A loopback relay for the endpoints these tests start.
 tilo-test-relay = { path = "../../../tools/test-relay" }
+# The device's daemon, started in a test's process as the enrolling machine's.
+tilo-runtime = { path = "../../core/tilo-runtime" }
+# The worker process the daemon's documents are opened in, served by the test binary.
+tilo-automerge-isolate.workspace = true
+# The daemon's log, written to the test's own output, which says why a step it took failed.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true
