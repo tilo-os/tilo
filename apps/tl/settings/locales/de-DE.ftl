@@ -1295,6 +1295,32 @@ d-ofmlxj3n = Continuity pane
     .w-a-screen-nearby-becomes-this-one = Ein Bildschirm in der Nähe wird zur Eingabe dieses Geräts
     .w-this-device-uses-the-screen-and = Dieses Gerät nutzt Bildschirm und Tastatur eines daneben eingetragenen Geräts, ohne jedes Mal zu fragen
 
+d-fsl77gs3 = Problembericht
+    .doc = Ein Problembericht, wie Chat ihn ablegt: die Worte, die er trägt.
+    .noun = { $count ->
+        [one] Problembericht
+       *[other] Problemberichte
+    }
+
+d-kb2c7b7e = Text
+
+d-jv7cixf2 = Einen Bericht senden
+    .doc = Legt den Bericht dieses Computers über ein Problem als Problembericht im Feedback-Kanal des Arbeitsbereichs ab, in dem die Leute, die Tilo machen, lesen, was schiefging, mit den Worten des Berichts.
+
+d-jv7cixf2-body = Text
+
+d-v4nrmplh = Worte der Fehlerart
+    .w-the-desktop-stopped-responding = Der Desktop reagierte nicht mehr
+    .w-the-desktop-stopped-unexpectedly = Der Desktop wurde unerwartet beendet
+    .w-part-of-the-desktop-restarted = Ein Teil des Desktops wurde neu gestartet
+    .w-the-computer-stopped = Der Computer wurde angehalten
+    .w-the-system-ran-into-a-fault = Das System stieß auf einen Fehler und lief weiter
+
+d-fkn7ssf4 = Worte des Grundes
+    .w-the-system-met-an-error-it = Das System stieß auf einen Fehler, von dem es sich nicht erholen konnte
+    .w-a-fault-in-the-system-s = Ein Fehler im Kern des Systems
+    .w-the-system-restarted-itself-at-once = Das System startete sich sofort neu
+
 d-juhocpyw = About pane
     .w-tilo = Tilo
     .w-tilo-is-your-workspace-one-set = Tilo ist dein Arbeitsbereich: eine Menge Dinge, geteilt von den Personen und Agenten, mit denen du arbeitest, auf den Geräten, an denen du angemeldet bist.
@@ -1316,6 +1342,23 @@ d-juhocpyw = About pane
     .w-processor = Prozessor
     .w-memory = Speicher
     .w-some-of-this-device-s-facts = Einige Angaben dieses Geräts konnten nicht gelesen werden.
+    .w-what-happened = Was geschah
+    .w-back = Zurück
+    .w-problem = Problem
+    .w-when = Wann
+    .w-why = Warum
+    .w-build = Build
+    .w-record = Bericht
+    .w-the-record-goes-on-beyond-what = Der Bericht geht über das Gezeigte hinaus.
+    .w-this-record-is-no-longer-on = Dieser Bericht ist nicht mehr auf diesem Computer.
+    .w-what-you-can-do = Was du tun kannst
+    .w-a-record-stays-on-this-computer = Ein Bericht bleibt auf diesem Computer, bis du ihn sendest oder entfernst.
+    .w-send-a-report = Einen Bericht senden
+    .w-it-is-filed-in-the-feedback = Er landet im Feedback-Kanal des Arbeitsbereichs, in dem dieses Fenster ist, wo die Leute, die Tilo machen, lesen, was schiefging.
+    .w-remove-it-from-this-computer = Ihn von diesem Computer entfernen
+    .w-problems = Probleme
+    .w-no-problems-recorded = Keine Probleme aufgezeichnet
+    .w-these-reports-stay-on-this-computer = Diese Berichte bleiben auf diesem Computer.
 
 d-ozpkxud5 = Themes pane
     .w-shown = Gezeigt

@@ -100,6 +100,7 @@ pub fn summarize(name: &str, head: &str) -> Option<CrashReport> {
     Some(CrashReport {
         id: name.to_owned(),
         at,
+        when: String::new(),
         kind,
         reason,
         version: field(head, "version").map(str::to_owned),
@@ -162,6 +163,21 @@ pub fn read(dir: &Path, id: &str) -> Result<CrashReportText, String> {
         report,
         text,
         truncated,
+    })
+}
+
+/// Delete the report `id` from `dir`: the person's own file, once they no longer want it kept.
+///
+/// # Errors
+///
+/// No report is called `id`, or it could not be removed.
+pub fn remove(dir: &Path, id: &str) -> Result<(), String> {
+    if !is_report_name(id) {
+        return Err(format!("no report is called {id}"));
+    }
+    std::fs::remove_file(dir.join(id)).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => format!("no report is called {id}"),
+        _ => format!("the report {id} could not be removed: {error}"),
     })
 }
 

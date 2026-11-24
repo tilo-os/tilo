@@ -1,0 +1,161 @@
+{
+  "resources": [
+    {
+      "kind": "crash-reports",
+      "label": "Crash reports",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "remove",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "report",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "reports",
+          "title": "Every report, newest first.",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "CrashReport"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "CrashReport",
+          "doc": "One report, without its text.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text",
+              "title": "The report's name."
+            },
+            {
+              "name": "at",
+              "type": "int",
+              "title": "When it happened, in seconds since the Unix epoch."
+            },
+            {
+              "name": "when",
+              "type": "text",
+              "title": "When it happened, as this computer reads a clock."
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "CrashKind"
+              },
+              "title": "What happened."
+            },
+            {
+              "name": "reason",
+              "type": {
+                "option": {
+                  "named": "StopReason"
+                }
+              },
+              "title": "What the kernel met, when known."
+            },
+            {
+              "name": "version",
+              "type": {
+                "option": "text"
+              },
+              "title": "The version that wrote the report."
+            },
+            {
+              "name": "build",
+              "type": {
+                "option": "text"
+              },
+              "title": "The exact build that wrote it."
+            }
+          ]
+        },
+        {
+          "name": "CrashKind",
+          "doc": "What happened.",
+          "cases": [
+            {
+              "name": "froze",
+              "label": "The desktop stopped responding"
+            },
+            {
+              "name": "crashed",
+              "label": "The desktop stopped unexpectedly"
+            },
+            {
+              "name": "part-restarted",
+              "label": "Part of the desktop restarted"
+            },
+            {
+              "name": "computer-stopped",
+              "label": "The computer stopped"
+            },
+            {
+              "name": "system-fault",
+              "label": "The system ran into a fault and kept running"
+            }
+          ]
+        },
+        {
+          "name": "StopReason",
+          "doc": "What the system met.",
+          "cases": [
+            {
+              "name": "panic",
+              "label": "The system met an error it could not recover from"
+            },
+            {
+              "name": "oops",
+              "label": "A fault in the system's core"
+            },
+            {
+              "name": "emergency",
+              "label": "The system restarted itself at once"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "crash-report-text",
+      "label": "Crash report",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "report",
+          "title": "The report's facts.",
+          "stored": "value",
+          "type": "any",
+          "readonly": true
+        },
+        {
+          "path": "text",
+          "title": "The report as it was written, its stacks included.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "truncated",
+          "title": "Whether the text is the start of a longer report.",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        }
+      ]
+    }
+  ]
+}

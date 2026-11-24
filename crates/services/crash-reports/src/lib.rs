@@ -29,6 +29,8 @@ pub mod news;
 pub mod reports;
 pub mod service;
 pub mod stopped;
+#[cfg(test)]
+mod surface;
 
 use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom};
@@ -36,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use news::{Ended, NOTICED, News, take_news};
-pub use reports::{STOPPED_SUFFIX, list, read, summarize};
+pub use reports::{STOPPED_SUFFIX, list, read, remove, summarize};
 pub use service::{CRASH_REPORT_KIND, CRASH_REPORTS_KIND, CrashReports};
 
 /// The heading of a report of a session that panicked.

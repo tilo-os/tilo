@@ -3,7 +3,8 @@
 //! (every section of the person's settings and the device's, each set field by field through
 //! its setters), Contacts (the workspace's contact directory), the image model
 //! (the device's vision actions and the library analysis run), Files, a workspace's connected
-//! accounts, its model providers, the person's account with their host, and its own actions (its
+//! accounts, its model providers, the person's account with their host, the problems this
+//! computer recorded, and its own actions (its
 //! members, roles, invitations and permissions).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
@@ -44,13 +45,11 @@ pub const MODELS_APP: &str = "tilo.models";
 /// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
 /// and connects, signs in again and removes them through the resource's verbs.
 pub const ACCOUNTS_APP: &str = "tilo.accounts";
-/// The app the host account is published as: `use tilo.host-account as billing`. The
-/// desktop session on the host this person's workspaces run on publishes it as
-/// `billing.account`: the plan their account is on, the payment method on file, what its
-/// Linux machines used, the invoices the provider issued and the page where they
-/// manage all of it. Only Settings reads it.
-pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
-
+/// The app this computer's crash reports are published as: `use tilo.crash-reports as crashes`.
+/// The reports are files the host keeps in the person's private crash directory; a window reads
+/// them as `crashes.reports`, each with what happened and when, and one report's text as
+/// `resource("crash-report:<id>", of: crashes.CrashReportText)`. Nothing changes a report.
+pub const CRASH_REPORTS_APP: &str = "tilo.crash-reports";
 /// The app the workspace's vault is published as to Passwords' own window: `use tilo.vault`. The
 /// device's daemon answers it for Passwords alone, and every other app is refused.
 pub const VAULT_APP: &str = "tilo.vault";
@@ -247,6 +246,8 @@ const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accoun
 /// The host account's root, the one resource its plan, card, usage and invoices are
 /// read from.
 const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
+/// The reports' root, every report this computer recorded.
+const CRASH_REPORT_ROOTS: &[(&str, &str, &str)] = &[("reports", "CrashReports", "crash-reports")];
 /// The vault's root, the one resource its entries are read from and its verbs are asked of.
 const VAULT_ROOTS: &[(&str, &str, &str)] = &[("vault", "Vault", "vault")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
@@ -434,6 +435,18 @@ const PUBLISHED: &[Published] = &[
         // that answers it.
         files: &[include_str!(
             "../../../desktop/session/host-account-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: CRASH_REPORTS_APP,
+        title: "Crash reports",
+        kinds: &[],
+        roots: CRASH_REPORT_ROOTS,
+        // What this computer's reports read as, written beside the service that keeps them.
+        files: &[include_str!(
+            "../../../services/crash-reports/crash-reports-surface.json"
         )],
         described: false,
         listed: &[],
