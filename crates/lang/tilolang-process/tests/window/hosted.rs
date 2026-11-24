@@ -354,6 +354,43 @@ impl Window {
         }
     }
 
+    /// The key chord `spec` pressed and released: `"ctrl+Enter"`, or a character such as `"r"`.
+    fn key(&mut self, spec: &str) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
+        match self {
+            Self::Harness(window) => window.key(spec),
+            Self::Live(app) => {
+                let mut held = ModifiersState::empty();
+                let mut rest = spec;
+                while let Some((name, after)) = rest.split_once('+') {
+                    let modifier = match name.to_ascii_lowercase().as_str() {
+                        "ctrl" | "control" => ModifiersState::CONTROL,
+                        "shift" => ModifiersState::SHIFT,
+                        "alt" => ModifiersState::ALT,
+                        "logo" | "super" | "meta" | "command" => ModifiersState::SUPER,
+                        _ => break,
+                    };
+                    held |= modifier;
+                    rest = after;
+                }
+                let key = match rest {
+                    "Enter" => Key::Named(NamedKey::Enter),
+                    "Tab" => Key::Named(NamedKey::Tab),
+                    "Escape" => Key::Named(NamedKey::Escape),
+                    other => Key::Character(other.into()),
+                };
+                app.set_surface_modifiers(held.into());
+                Self::live_input(app, ui::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::key_input(&key, ElementState::Released),
+                );
+                app.set_surface_modifiers(ModifiersState::empty().into());
+            }
+        }
+    }
+
     /// The pointer moved to `(x, y)` without pressing anything: where a person hovers.
     fn move_to(&mut self, x: f64, y: f64) {
         match self {
@@ -882,7 +919,9 @@ impl Session {
     /// anything was told the instance.
     fn dispatch(&mut self) -> bool {
         use collaboration::CollabEvent;
-        use ui::tilo_actions::remote::{InvocationState, RemoteActionMessage, application_provider};
+        use ui::tilo_actions::remote::{
+            InvocationState, RemoteActionMessage, application_provider,
+        };
         let Some((inbox, _)) = self.broker.downcast_ref::<(Inbox, Routed)>() else {
             return false;
         };

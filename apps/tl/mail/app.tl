@@ -1641,6 +1641,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 /// account's next mail, and the server's Drafts are read like its other folders.
 action save_to_drafts(m: Mail, d: Draft) (icon: .cloud, label: "Save in Drafts") {
     require not d.sent or d.recalled "This message is on its way"
+    require within_bounds(d) "Its addresses, subject or words are longer than one message carries"
     require has_account(m, d.from) "Add a mail account in Settings first"
     outside(
         "imap.save_draft",
@@ -1702,6 +1703,16 @@ trigger new_mail(t: Thread) at t.arrived: announce(t)
 
 /// Why a message cannot go from where it stands, as the window says it: where an account is
 /// added when the workspace has none, and which account a message written before one picks.
+/// Whether a message being written fits in one message: addresses of 8 KiB each, a subject of 998
+/// characters and a body of 256 KiB, as mail programs bound them.
+fn within_bounds(d: Draft) -> Bool {
+    d.to.len() <= 8192
+        and d.cc.len() <= 8192
+        and d.bcc.len() <= 8192
+        and d.subject.len() <= 998
+        and d.body.len() <= 262144
+}
+
 fn send_refusal(m: Mail) -> Text {
     if m.accounts.is_empty() {
         "Add a mail account in Settings first"
@@ -1715,9 +1726,11 @@ fn send_refusal(m: Mail) -> Text {
 /// goes to and what it says.
 primary action send(d: Draft) uses time proposal compose(d) (
     icon: .send,
+    key: "Ctrl+Enter",
     shows: [(d.to, .addresses), (d.cc, .addresses), (d.bcc, .addresses), d.subject, (d.body, .long)],
 ) {
     require not d.sent or d.recalled "This message went already"
+    require within_bounds(d) "Its addresses, subject or words are longer than one message carries"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require d.from != "" "Pick the account it goes from"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
@@ -2945,6 +2958,9 @@ view editor(d: Draft) {
     state format_ask: Option<Text> = .none
     state link_open: Bool = false
     state link_target: Text = ""
+    // Whether the Cc and Bcc fields show: a draft that came with addresses in them shows them at
+    // once, and a message to a few people grows them at the press that asks.
+    state headers_open: Bool = false
     std.document(d) {
         if d.sent or d.recalled {
             field("Status") {
@@ -3031,34 +3047,43 @@ view editor(d: Draft) {
                 }
             }
         }
-        field("Cc") {
-            ui.Autocomplete(bind: d.cc, open_list: true, filter: false, max_visible: 6) {
-                for person in offered_recipients(people, d.cc) {
-                    ui.Suggestion(
-                        recipient_taken(d.cc, sender_name(person), sender_address(person)),
-                        label: sender_name(person),
-                        detail: sender_address(person),
-                        icon: .user,
-                    )
+        if headers_open or d.cc != "" or d.bcc != "" {
+            field("Cc") {
+                ui.Autocomplete(bind: d.cc, open_list: true, filter: false, max_visible: 6) {
+                    for person in offered_recipients(people, d.cc) {
+                        ui.Suggestion(
+                            recipient_taken(d.cc, sender_name(person), sender_address(person)),
+                            label: sender_name(person),
+                            detail: sender_address(person),
+                            icon: .user,
+                        )
+                    }
                 }
             }
-        }
-        field("Bcc") {
-            ui.Autocomplete(
-                bind: d.bcc,
-                placeholder: "name@example.org",
-                open_list: true,
-                filter: false,
-                max_visible: 6,
-            ) {
-                for person in offered_recipients(people, d.bcc) {
-                    ui.Suggestion(
-                        recipient_taken(d.bcc, sender_name(person), sender_address(person)),
-                        label: sender_name(person),
-                        detail: sender_address(person),
-                        icon: .user,
-                    )
+            field("Bcc") {
+                ui.Autocomplete(
+                    bind: d.bcc,
+                    placeholder: "name@example.org",
+                    open_list: true,
+                    filter: false,
+                    max_visible: 6,
+                ) {
+                    for person in offered_recipients(people, d.bcc) {
+                        ui.Suggestion(
+                            recipient_taken(d.bcc, sender_name(person), sender_address(person)),
+                            label: sender_name(person),
+                            detail: sender_address(person),
+                            icon: .user,
+                        )
+                    }
                 }
+            }
+        } else {
+            row(gap: .tight) {
+                ui.Button("Cc/Bcc", icon: .plus, role: .plain, size: .small) {
+                    on press: set(headers_open, true)
+                }
+                spacer()
             }
         }
         input(bind: d.subject, placeholder: "Subject")
@@ -3077,6 +3102,15 @@ view editor(d: Draft) {
             }
             ui.Button("Bulleted list", icon: .list, icon_only: true) {
                 on press: set(formats, formats + 1).then(set(format_ask, "bullets:{formats}"))
+            }
+            ui.Button("Numbered list", icon: .list_ordered, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "numbers:{formats}"))
+            }
+            ui.Button("Heading", icon: .heading_2, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "heading:2:{formats}"))
+            }
+            ui.Button("Quote", icon: .quote, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "style:quote:{formats}"))
             }
             ui.Button("Link", icon: .link, icon_only: true) {
                 on press: set(link_open, not link_open)

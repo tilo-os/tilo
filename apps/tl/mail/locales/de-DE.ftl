@@ -502,6 +502,7 @@ d-qcfc2rhb = Senden
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
     .w-pick-the-account-it-goes-from = Wähle das Konto, von dem sie geht
+    .w-its-addresses-subject-or-words-are = Ihre Adressen, ihr Betreff oder ihre Worte sind länger, als eine Nachricht trägt
 
 d-twebu5cb = Senden rückgängig
     .doc = Holt eine Nachricht zurück, die gesendet ist und noch nicht rausging: sie geht nie raus und die Nachricht ist wieder ein Entwurf, wie sie war.
@@ -709,6 +710,10 @@ d-oqpazwvc = Schreiben
     .w-italic = Kursiv
     .w-underline = Unterstrichen
     .w-bulleted-list = Aufzählung
+    .w-numbered-list = Nummerierte Liste
+    .w-heading = Überschrift
+    .w-quote = Zitat
+    .w-cc-bcc = Cc/Bcc
     .w-link = Link
     .w-https-example-org = https://example.org
     .w-add-link = Link hinzufügen
@@ -787,6 +792,7 @@ d-hxawl5lh = Papierkorb leeren
 d-3opocmel = In Entwürfen speichern
     .doc = Hält die Nachricht im Entwürfe-Ordner des Servers des Kontos, so wie sie gerade geschrieben ist, damit ein anderes Mailprogramm des Kontos sie dort auch sieht.
     .w-this-message-is-on-its-way = Diese Nachricht ist unterwegs
+    .w-its-addresses-subject-or-words-are = Ihre Adressen, ihr Betreff oder ihre Worte sind länger, als eine Nachricht trägt
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hlefh2br = Erneut versuchen

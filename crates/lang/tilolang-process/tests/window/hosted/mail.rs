@@ -3856,6 +3856,83 @@ fn a_conversation_offers_its_actions_at_its_window() {
     );
 }
 
+// USER REQUIREMENT: a message longer than one message carries is refused before it leaves, in
+// the words that say why.
+#[test]
+fn a_message_too_long_to_send_is_refused() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let draft = session.made(
+        "draft_message",
+        &root,
+        &json!({ "to": "bo@chen.example", "subject": "a".repeat(999) }),
+    );
+    let refused = session
+        .try_call("send", &draft, &json!({}))
+        .expect_err("a subject past 998 characters is not sent");
+    assert!(
+        refused.contains("longer than one message carries"),
+        "the refusal says why: {refused}"
+    );
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "nothing left for the server"
+    );
+}
+
+// USER REQUIREMENT: the composer hides Cc and Bcc until a person asks for them, writes headings,
+// numbered lists and quotes, and sends on Ctrl+Enter without leaving the words.
+#[test]
+fn the_composer_offers_more_headers_and_formatting_and_sends_on_the_chord() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let root = session.mail_root();
+    let draft = session.made(
+        "draft_message",
+        &root,
+        &json!({ "to": "bo@chen.example", "subject": "Friday", "body": "See you then." }),
+    );
+    let mut view = session
+        .instance_host()
+        .open_resource(&draft, None)
+        .expect("the draft opens");
+    let mut shown = Vec::new();
+    texts_in(view.tree(), &mut shown);
+    for offered in ["Cc/Bcc", "Heading", "Numbered list", "Quote"] {
+        assert!(
+            shown.iter().any(|text| text == offered),
+            "the composer offers {offered}: {shown:?}"
+        );
+    }
+    assert!(
+        !shown.iter().any(|text| text == "Bcc"),
+        "and keeps the blind recipients folded until asked: {shown:?}"
+    );
+    let more = find_kind(view.tree(), "ui.Button", "label", "Cc/Bcc")
+        .expect("the press is there")
+        .key
+        .clone();
+    view.fire(&more, "press").expect("the press opens them");
+    view.poll_patches().expect("the window shows");
+    let mut opened = Vec::new();
+    texts_in(view.tree(), &mut opened);
+    assert!(
+        opened.iter().any(|text| text == "Bcc"),
+        "the blind recipients show once asked for: {opened:?}"
+    );
+
+    // Ctrl+Enter sends from the window, without the press.
+    session.window.key("ctrl+Enter");
+    session.until("the message to go", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("bo@chen.example"), "{sent}");
+    assert!(sent.contains("See you then."), "{sent}");
+}
+
 // USER REQUIREMENT: a conversation's row offers what a person does with it without opening it:
 // the everyday presses on hover, the whole set in its menu, and a swipe that files it.
 #[test]
