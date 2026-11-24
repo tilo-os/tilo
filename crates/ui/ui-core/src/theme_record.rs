@@ -168,6 +168,12 @@ pub struct ThemeRecord {
     pub rim_span: f64,
     pub rim_alpha: f64,
     pub hover_alpha: f64,
+    /// How far the glass bends what lies behind floating chrome at its rim, logical pixels: the
+    /// finish's `refraction`, which the Glass and Liquid sets and a material stage read. Windows and
+    /// bars bend in the same proportion to it as the theme had them. `0` bends nothing.
+    #[model(default = 0.0)]
+    #[serde(default)]
+    pub refraction: f64,
     /// The document the theme was made from, as JSON: the roles no field names.
     #[model(readonly)]
     #[model(default = None)]
@@ -221,6 +227,13 @@ impl ThemeRecord {
             rim_span: f64::from(document.material.selector.rim_span),
             rim_alpha: f64::from(document.material.selector.rim_alpha),
             hover_alpha: f64::from(document.material.selector.hover_alpha),
+            refraction: f64::from(
+                document
+                    .material
+                    .floating
+                    .param("refraction")
+                    .unwrap_or(0.0),
+            ),
             origin: serde_json::to_string(document).ok(),
         }
     }
@@ -357,7 +370,8 @@ impl ThemeRecord {
                     hover_alpha: narrow(self.hover_alpha),
                 },
                 ..origin.map_or_else(ThemeMaterial::stock, |origin| origin.material.clone())
-            },
+            }
+            .refracting(narrow(self.refraction)),
             depth: origin.map_or(crate::tokens::Depth::STOCK, |origin| origin.depth),
             response: origin.and_then(|origin| origin.response),
         }
@@ -422,6 +436,7 @@ impl ThemeRecord {
             self.rim_span,
             self.rim_alpha,
             self.hover_alpha,
+            self.refraction,
         ];
         if numbers
             .into_iter()
@@ -475,4 +490,46 @@ fn legible(document: &ThemeDocument) -> Result<(), Refusal> {
 )]
 fn narrow(value: f64) -> f32 {
     value as f32
+}
+
+impl ThemeMaterial {
+    /// This material with floating chrome bending what lies behind it by `refraction`, and windows
+    /// and bars in the proportion to it the material had them (each at `refraction` where floating
+    /// chrome bent nothing). A finish whose set takes no refraction keeps its look.
+    fn refracting(mut self, refraction: f32) -> Self {
+        let before = self.floating.param("refraction").unwrap_or(0.0);
+        // Unchanged, the material is the theme's own, windows that bend while floating chrome
+        // does not included.
+        if refraction.to_bits() == before.to_bits() {
+            return self;
+        }
+        let scaled = |finish: &crate::tokens::Finish| -> crate::tokens::Finish {
+            // A finish that states no refraction takes one where its set declares it, and
+            // keeps its look where it does not (`Finish::new` refuses the parameter).
+            let own = finish.param("refraction").unwrap_or(0.0);
+            let value = if before > 0.0 {
+                own * refraction / before
+            } else {
+                refraction
+            };
+            if value.to_bits() == own.to_bits() {
+                return finish.clone();
+            }
+            let mut params = finish
+                .params()
+                .iter()
+                .filter(|param| param.name != "refraction")
+                .map(|param| (param.name.clone(), param.value))
+                .collect::<Vec<_>>();
+            params.push(("refraction".to_owned(), value));
+            crate::tokens::Finish::new(finish.set().clone(), params).map_or_else(
+                |_| finish.clone(),
+                |edited| edited.with_shader(finish.shader().clone()),
+            )
+        };
+        self.window = scaled(&self.window);
+        self.floating = scaled(&self.floating);
+        self.bar = self.bar.as_ref().map(scaled);
+        self
+    }
 }

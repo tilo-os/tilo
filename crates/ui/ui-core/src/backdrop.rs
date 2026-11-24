@@ -167,7 +167,12 @@ impl Stage {
             inputs.light,
             inputs.params,
             [inputs.size[0], inputs.size[1], inputs.radius, inputs.time],
-            [inputs.pointer[0], inputs.pointer[1], inputs.pointer[2], 0.0],
+            [
+                inputs.pointer[0],
+                inputs.pointer[1],
+                inputs.pointer[2],
+                inputs.refraction,
+            ],
             [
                 inputs.light_dir[0],
                 inputs.light_dir[1],

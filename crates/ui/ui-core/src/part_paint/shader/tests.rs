@@ -235,7 +235,7 @@ fn fs_surface(s: Surface) -> vec4<f32> {
         glass.light = Color::WHITE;
         glass.params = vec![
             crate::part_paint::Param { name: "tint".into(), value: 0.0 },
-            crate::part_paint::Param { name: "scale".into(), value: 12.0 },
+            crate::part_paint::Param { name: "refraction".into(), value: 12.0 },
         ]
         .into();
         let behind = crate::raster::rgba8([60, 90, 140, 255].repeat(64 * 64), 64, 64);

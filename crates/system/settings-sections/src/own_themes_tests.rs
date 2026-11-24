@@ -203,3 +203,49 @@ fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
             .is_err()
     );
 }
+
+/// The refraction a person sets bends floating chrome by that much, and windows and bars in the
+/// proportion the theme had them, for the built-in Liquid set and a theme's own glass stage alike;
+/// it is refused outside the band a finish admits.
+#[test]
+fn refraction_bends_every_glass_role_in_proportion() {
+    for (json, painter) in [
+        (
+            include_str!("../../../ui/ui-core/tests/fixtures/finishes/liquid-glass.json"),
+            "liquid",
+        ),
+        (
+            include_str!("../../../ui/themes/liquid-glass/theme.json"),
+            "shader",
+        ),
+    ] {
+        let document: ThemeDocument = serde_json::from_str(json).unwrap();
+        let floating = document.material.floating.param("refraction").unwrap();
+        let window = document.material.window.param("refraction").unwrap();
+        let mut theme = ThemeRecord::from_document(&document);
+        assert!((theme.refraction - f64::from(floating)).abs() < 1e-6);
+        theme.refraction = f64::from(floating) * 2.0;
+        let edited = theme.document("mine");
+        assert_eq!(edited.material.floating.painter(), painter);
+        assert_eq!(
+            edited.material.floating.param("refraction"),
+            Some(floating * 2.0)
+        );
+        assert_eq!(
+            edited.material.window.param("refraction"),
+            Some(window * 2.0),
+            "{painter}: the window bends in proportion"
+        );
+        assert_eq!(
+            edited.material.floating.shader(),
+            document.material.floating.shader(),
+            "the glass keeps its stage"
+        );
+    }
+    let (mut appearance, id) = appearance_with("tilo-dark");
+    let paths = AppearancePrefs::paths().themes.item(&id);
+    assert!(
+        edit(&mut appearance, &paths.refraction.set(f64::NAN)).is_err(),
+        "a refraction is a number"
+    );
+}

@@ -156,6 +156,7 @@ pub(crate) struct Inputs {
     pub accent: [f32; 4],
     pub params: [f32; 4],
     pub time: f32,
+    pub refraction: f32,
 }
 
 /// An sRGB-encoded channel, linear.
@@ -202,6 +203,7 @@ impl Inputs {
             accent: linear_color(tokens.accent),
             params: [param(0, 0.0), param(1, 1.0), param(2, 1.0), param(3, 0.0)],
             time: float(time_centis) / 100.0,
+            refraction: tokens.param("refraction", 0.0),
         }
     }
 }
@@ -277,6 +279,7 @@ impl Texel {
             14 => Value::Vec4(inputs.accent),
             15 => Value::Vec4(inputs.params),
             16 => Value::Scalar(inputs.time),
+            17 => Value::Scalar(inputs.refraction),
             _ => return None,
         })
     }

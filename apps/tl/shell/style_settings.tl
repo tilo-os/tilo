@@ -180,6 +180,14 @@ view theme_settings() {
                     step: 1.0,
                     shows_value: true,
                 )
+                ui.Slider(
+                    bind: t.refraction,
+                    label: "Refraction",
+                    min: 0.0,
+                    max: 32.0,
+                    step: 0.5,
+                    shows_value: true,
+                )
             }
         }
     }

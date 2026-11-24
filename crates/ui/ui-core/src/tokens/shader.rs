@@ -91,6 +91,11 @@ pub const FIELDS: &[(&str, &str, &str)] = &[
         "f32",
         "seconds: the static value the theme states, never a running clock",
     ),
+    (
+        "refraction",
+        "f32",
+        "how far the theme bends what lies behind the surface at its rim (the finish's `refraction`, the slider people set)",
+    ),
 ];
 
 /// The finish parameters a stage may read, as `params.xyzw`.
@@ -341,7 +346,8 @@ struct Stage {{
     params: vec4<f32>,
     // Logical size, corner radius, time.
     size_radius_time: vec4<f32>,
-    // Pointer in part coordinates and whether there is one; then the light's direction.
+    // Pointer in part coordinates, whether there is one, and the refraction; then the light's
+    // direction.
     pointer: vec4<f32>,
     light_dir: vec4<f32>,
 }}
@@ -427,6 +433,7 @@ fn stage_main(in: VOut) -> @location(0) vec4<f32> {{
     s.accent = stage.accent;
     s.params = stage.params;
     s.time = stage.size_radius_time.w;
+    s.refraction = stage.pointer.w;
     // The scene clips the image to the part's outline, antialiased; the stage paints its box.
     return to_encoded(fs_surface(s));
 }}

@@ -167,7 +167,9 @@ outline's outward normal), `normal` (the normal of a slab whose rim curves
 down to the outline), `pointer` (`xy` in the part, `z` 1 while there is one),
 `light_dir` and `light` (the finish's `light_angle` and the theme's light),
 `fill`, `ink`, `ground`, `raised`, `accent` (linear sRGB), `params` (the
-finish's `tint`, `saturation`, `scale`, `phase`) and `time` (the static
+finish's `tint`, `saturation`, `scale`, `phase`), `refraction` (the
+finish's `refraction`: how far the theme bends what lies behind at the rim,
+the slider a person sets in Settings and the style panel) and `time` (the static
 seconds the finish states, never a clock). One lookup,
 `backdrop(offset: vec2<f32>) -> vec4<f32>`, returns what lies behind the
 surface, blurred by the finish's `blur`, `offset` logical pixels from the

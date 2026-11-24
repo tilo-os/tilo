@@ -183,6 +183,11 @@ template view theme_editor(t: settings.ThemeRecord) {
             ui.Slider(bind: t.blur, label: "Blur", min: 0.0, max: 48.0, step: 1.0, shows_value: true),
         )
         setting(
+            "Refraction",
+            "How far glass bends what lies behind it at its edge",
+            ui.Slider(bind: t.refraction, label: "Refraction", min: 0.0, max: 32.0, step: 0.5, shows_value: true),
+        )
+        setting(
             "Tint",
             "How much of the panel's own colour covers what shows through",
             ui.Slider(bind: t.tint_opacity, label: "Tint", min: 0.0, max: 1.0, step: 0.01, shows_value: true),

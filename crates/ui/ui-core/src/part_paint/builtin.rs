@@ -443,6 +443,8 @@ impl PartPainter for Shader {
             ParamSpec::new(saturation, Some(1.0), SATURATION_ADMITTED),
             ParamSpec::new(scale, Some(1.0), SHADER_SCALE_ADMITTED),
             ParamSpec::new(phase, Some(0.0), SHADER_PHASE_ADMITTED),
+            // How far the rim bends what lies behind, as Glass and Liquid read it: `Surface::refraction`.
+            ParamSpec::new("refraction", Some(0.0), REFRACTION_ADMITTED),
             // What `backdrop(offset)` reads is blurred by this much, logical pixels.
             ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED),
             // Where `Surface::light_dir` comes from, as the Liquid set's light does.
