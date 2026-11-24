@@ -590,6 +590,7 @@ impl Activity {
             uuid::Uuid::new_v4(),
             run.to_owned(),
             steps,
+            None,
             move || ask_for_frame(&woken, wake.as_ref()),
         )
     }
@@ -1142,6 +1143,7 @@ impl ActivityHost for Host {
                 undo.invocation,
                 undo.task_id,
                 undo.steps,
+                undo.step,
                 move || ask_for_frame(&woken, wake.as_ref()),
             )
         }
@@ -2005,6 +2007,7 @@ mod run_undo {
         caller: Caller,
         run: &str,
         steps: &[(String, String)],
+        step: Option<&str>,
         timeout: Duration,
     ) -> Result<Vec<TaskRunDocument>, String> {
         let now = Instant::now();
@@ -2023,6 +2026,7 @@ mod run_undo {
                     &at,
                     root.as_deref(),
                     run,
+                    step,
                 );
                 match pending.wait_timeout(left.max(ANSWER)) {
                     Ok(Some(Ok(()))) => {
@@ -2087,6 +2091,7 @@ mod run_undo {
             invocation: uuid::Uuid,
             run: String,
             steps: Vec<(String, String)>,
+            step: Option<String>,
             done: impl FnOnce() + Send + 'static,
         ) -> Result<(), String> {
             self.running.lock_recover().insert(invocation, None);
@@ -2099,7 +2104,8 @@ mod run_undo {
                     let caller = Caller::local_person(person)
                         .in_workspace(workspace)
                         .in_new_execution();
-                    let outcome = undo_run(api, caller, &run, &steps, UNDO_TIMEOUT);
+                    let outcome =
+                        undo_run(api, caller, &run, &steps, step.as_deref(), UNDO_TIMEOUT);
                     running.lock_recover().insert(invocation, Some(outcome));
                     done();
                 })

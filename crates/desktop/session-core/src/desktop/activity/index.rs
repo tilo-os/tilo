@@ -307,6 +307,13 @@ pub struct WorkspaceHistoryIndex {
     /// What each record's history read of its document, by origin: a refresh reads only the
     /// changes made since, however large the record grew.
     logs: HashMap<String, HistoryLog>,
+    /// The changes each document's history has taken back, by origin: what a reader leaves out
+    /// when it lists the changes still in effect. Kept beside the rows, since only the document
+    /// itself says whether a change still stands.
+    undone: HashMap<String, HashSet<HistoryEntryId>>,
+    /// Moves whenever what a document's history has taken back moves: what a reader following
+    /// the changes still in effect watches.
+    undone_revision: u64,
 }
 
 impl Default for WorkspaceHistoryIndex {
@@ -356,7 +363,34 @@ impl WorkspaceHistoryIndex {
             query: None,
             document_heads: BTreeMap::new(),
             logs: HashMap::new(),
+            undone: HashMap::new(),
+            undone_revision: 0,
         }
+    }
+
+    /// Moves whenever what a document's history has taken back moves: some change stopped
+    /// standing, or an undo was brought back.
+    #[must_use]
+    pub const fn undone_revision(&self) -> u64 {
+        self.undone_revision
+    }
+
+    /// Whether the change `id` still stands: no document's history has taken it back. A change
+    /// of a document this index has not read reads as standing, as nothing here says otherwise.
+    #[must_use]
+    pub fn in_effect(&self, id: &WorkspaceHistoryId) -> bool {
+        !self
+            .undone
+            .get(&id.origin.key())
+            .is_some_and(|undone| undone.contains(&id.change))
+    }
+
+    /// The changes `doc`'s history has taken back, by the id a history row is named by.
+    fn undone_in(doc: &AutoCommit) -> HashSet<HistoryEntryId> {
+        ui::history_source::steps::undone(doc)
+            .iter()
+            .filter_map(|change| ui::history_source::entry_id_from_hash(change))
+            .collect()
     }
 
     pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
@@ -438,8 +472,11 @@ impl WorkspaceHistoryIndex {
             ..Default::default()
         };
         let mut documents = BTreeMap::new();
+        let mut undone: HashMap<String, HashSet<HistoryEntryId>> = HashMap::new();
+        let tree_key = HistoryOrigin::Layout.key();
+        undone.insert(tree_key.clone(), Self::undone_in(tree.document()));
         insert_rows(&mut by_id, &HistoryOrigin::Layout, tree_rows.to_vec());
-        documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
+        documents.insert(tree_key, tree.document_mut().get_heads());
         let mut ordered = records.iter_mut().collect::<Vec<_>>();
         ordered.compact_sort_by_key(|record| record.origin());
         let mut logs = HashMap::with_capacity(ordered.len().min(MAX_INDEXED_RECORDS));
@@ -466,11 +503,16 @@ impl WorkspaceHistoryIndex {
                     if let Some(log) = self.logs.remove(&origin.key()) {
                         logs.insert(origin.key(), log);
                     }
+                    // What its history last said was taken back stays, as its rows do.
+                    if let Some(kept) = self.undone.get(&origin.key()) {
+                        undone.insert(origin.key(), kept.clone());
+                    }
                     continue;
                 }
             };
             let key = origin.key();
             documents.insert(key.clone(), doc.get_heads());
+            undone.insert(key.clone(), Self::undone_in(doc));
             let mut log = self.logs.remove(&key).unwrap_or_default();
             // A folder's files are not actions: a record's own steps say
             // nothing of them. Their changes are the versions it holds, one
@@ -500,6 +542,10 @@ impl WorkspaceHistoryIndex {
             coverage.indexed_resources = coverage.indexed_resources.saturating_add(1);
         }
         self.logs = logs;
+        if self.undone != undone {
+            self.undone_revision = self.undone_revision.wrapping_add(1);
+            self.undone = undone;
+        }
         // Each document's changes in its own causal order, merged by when they were made: a
         // change's clock is whole seconds and may run behind what it builds on, so the clock only
         // orders documents against each other ([`insert_rows`]).

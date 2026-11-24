@@ -120,13 +120,22 @@ impl WorkspaceActivityPane {
         let mut covered: HashSet<HistoryEntryId> = HashSet::new();
         let mut sessions = Vec::new();
         for indexed in &self.agent_sessions {
-            if let Some(session) =
-                self.marker_session(indexed, entries, workspace.as_deref(), &mut covered)
-            {
+            if let Some(session) = self.marker_session(
+                indexed,
+                entries,
+                workspace.as_deref(),
+                query.changes_page(),
+                &mut covered,
+            ) {
                 sessions.push(session);
             }
         }
-        sessions.extend(self.group_sessions(entries, workspace.as_deref(), &covered));
+        sessions.extend(self.group_sessions(
+            entries,
+            workspace.as_deref(),
+            query.changes_page(),
+            &covered,
+        ));
         sessions.compact_sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
         let total = sessions.len();
         sessions.truncate(query.page());
@@ -145,9 +154,11 @@ impl WorkspaceActivityPane {
         indexed: &IndexedAgentSession,
         entries: &[HistoryEntry],
         workspace: Option<&str>,
+        page: usize,
         covered: &mut HashSet<HistoryEntryId>,
     ) -> Option<wire::AgentSession> {
         let mut actions = Vec::new();
+        let mut segments = Vec::new();
         let mut first: Option<&HistoryEntry> = None;
         let mut last: Option<&HistoryEntry> = None;
         for step in &indexed.session.steps {
@@ -178,8 +189,10 @@ impl WorkspaceActivityPane {
                 label: t("activity-detail-undo-step"),
             });
             actions.extend(self.segment_actions(&segment, workspace, Some(&summary), undo));
+            segments.push(segment);
         }
         let (first, last) = (first?, last?);
+        let (in_effect, changes_total) = self.changes_in_effect(&segments, page);
         let session = &indexed.session;
         let undoable = self.host.mutations_available()
             && session.steps.iter().all(|step| self.record_is_open(step));
@@ -208,6 +221,8 @@ impl WorkspaceActivityPane {
             },
             now: now(&actions),
             actions,
+            in_effect,
+            changes_total,
             undo_blocked: (!undoable).then(|| t("activity-undo-task-needs-open")),
         })
     }
@@ -219,6 +234,7 @@ impl WorkspaceActivityPane {
         &self,
         entries: &[HistoryEntry],
         workspace: Option<&str>,
+        page: usize,
         covered: &HashSet<HistoryEntryId>,
     ) -> Vec<wire::AgentSession> {
         let mut groups: Vec<(&tilo_actions::WorkGroup, Vec<&HistoryEntry>)> = Vec::new();
@@ -260,6 +276,7 @@ impl WorkspaceActivityPane {
                 let undo = self.segment_undo(segment);
                 actions.extend(self.segment_actions(segment, workspace, None, undo));
             }
+            let (in_effect, changes_total) = self.changes_in_effect(&segments, page);
             let mut agent = author(&first.author);
             agent.relation = wire::Relation::Software;
             let instruction = group
@@ -290,6 +307,8 @@ impl WorkspaceActivityPane {
                 },
                 now: now(&actions),
                 actions,
+                in_effect,
+                changes_total,
                 undo_blocked: self.undo_blocked(&self.run_steps(&members)),
             });
         }
@@ -332,6 +351,65 @@ impl WorkspaceActivityPane {
                 action: wire::DetailAction::UndoEntry,
                 label: t("activity-detail-undo-step"),
             })
+    }
+
+    /// Whether the change `entry` still stands: no document's history has taken it back.
+    fn entry_in_effect(&self, entry: &HistoryEntry) -> bool {
+        self.projected_origins
+            .get(&entry.id)
+            .is_none_or(|id| self.history_index.in_effect(id))
+    }
+
+    /// The change in its record's own history, which its undo names as the step: the timeline
+    /// names a foreign record's changes by a projection of the record's own ids.
+    fn change_step(&self, entry: &HistoryEntry) -> String {
+        self.projected_origins
+            .get(&entry.id)
+            .map_or_else(|| entry.id.hex(), |id| id.change.hex())
+    }
+
+    /// One change still in effect as its row reads it: what it changed, where, and how to open it
+    /// and take it back.
+    fn segment_change(&self, segment: &Segment<'_>, entry: &HistoryEntry) -> wire::SessionChange {
+        wire::SessionChange {
+            range: wire::Range::one(&hex(&entry.id)),
+            step: self.change_step(entry),
+            at_ms: millis(entry.timestamp),
+            summary: entry.summary.clone(),
+            app_id: segment.app.clone(),
+            record: segment.record.clone(),
+            target: self.segment_target(segment, entry),
+            undo: self.segment_undo(segment),
+        }
+    }
+
+    /// A session's changes still in effect, newest first, at most `page` of them, and how many
+    /// there are: what its card lists, a page at a time, however long the session ran. Only the
+    /// page is built, so a session that ran for thousands of changes reads as a page does.
+    fn changes_in_effect(
+        &self,
+        segments: &[Segment<'_>],
+        page: usize,
+    ) -> (Vec<wire::SessionChange>, usize) {
+        let mut changes: Vec<(&Segment<'_>, &HistoryEntry)> = segments
+            .iter()
+            .flat_map(|segment| {
+                segment
+                    .entries
+                    .iter()
+                    .filter(|entry| self.entry_in_effect(entry))
+                    .map(move |entry| (segment, *entry))
+            })
+            .collect();
+        changes.compact_sort_by_key(|(_, entry)| entry.timestamp);
+        let total = changes.len();
+        let shown = total.saturating_sub(page);
+        let shown = changes
+            .drain(shown..)
+            .rev()
+            .map(|(segment, entry)| self.segment_change(segment, entry))
+            .collect();
+        (shown, total)
     }
 
     /// The documents `entries` are changes of, as the steps undoing a session asks each history for:

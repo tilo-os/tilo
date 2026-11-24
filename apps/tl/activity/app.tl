@@ -342,6 +342,10 @@ view detail_card(first: State<Text>, last: State<Text>) {
     // The comparison is read only while the person asks for it: what changed either side of the
     // range, and the fields it changed.
     state compare: Bool = false
+    // How many of a session's changes still in effect its card holds: a page, and more at each
+    // "Show more".
+    state more: Int = 0
+    let pages = if more < 20 { 20 } else { more }
     let shown = resource("workspace.activity/range~{first}~{last}", of: history.RangeDetail)
     if let d = shown.detail {
         ui.Section("Details") {
@@ -423,8 +427,11 @@ view detail_card(first: State<Text>, last: State<Text>) {
         if compare {
             compare_card(first, last)
         }
-        if let s = session_in(history.history.sessions, d.group, first, last) {
-            session_card(s)
+        // The session the changes are, and how many of its changes still in effect this window
+        // shows: its own page, so another window showing another page reads its own.
+        let sessions = resource("workspace.activity/sessions~this~{pages}", of: history.Sessions)
+        if let s = session_in(sessions.sessions, d.group, first, last) {
+            session_card(s, more, pages, first, last)
         }
     }
 }
@@ -453,8 +460,15 @@ view compare_card(first: State<Text>, last: State<Text>) {
 }
 
 /// The agent session the selected changes are: why the work was asked for, how it was decided,
-/// whether it can be undone, and each record it changed with its own undo.
-view session_card(s: history.AgentSession) {
+/// whether it can be undone, and every change it still leaves in place, each with where it landed,
+/// a link to it, and the system's undo on its own.
+view session_card(
+    s: history.AgentSession,
+    more: State<Int>,
+    pages: Int,
+    first: State<Text>,
+    last: State<Text>,
+) {
     ui.Section("Agent task") {
         ui.Text("Why this work", role: .caption, secondary: true)
         ui.Text(s.instruction)
@@ -469,36 +483,63 @@ view session_card(s: history.AgentSession) {
             ui.Text(blocked, role: .caption, secondary: true)
         }
     }
-    if not s.actions.is_empty() {
-        ui.Section("Affected resources") {
-            for a in s.actions {
-                row(gap: .related, align: .center) {
-                    ui.Text(
-                        if a.target.label != "" { a.target.label } else { a.place },
-                        role: .body,
-                    )
-                    ui.Text(a.summary, role: .caption, secondary: true)
-                    if let label = a.undo_label {
-                        ui.Button(label, role: .plain) {
-                            on press: if a.undo_verb == .some("undo-entry") {
-                                history.undo_record(
-                                    history.history,
-                                    range: history.Span(from: a.range.from, to: a.range.to),
-                                    app_id: a.app_id,
-                                    id: a.record,
-                                )
-                            } else {
-                                history.undo_change(
-                                    history.history,
-                                    from: a.range.from,
-                                    to: a.range.to,
-                                )
-                            }
+    ui.Section("Changes still in effect") {
+        if s.in_effect.is_empty() {
+            ui.Text(
+                "This session leaves nothing in place: every change it made was undone.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for c in s.in_effect {
+            ui.ListRow(title: c.summary, secondary: changed_where(c), icon: .clock) {
+                trailing: {
+                    if c.target.id != "" {
+                        ui.Button(c.target.label, icon: .arrow_up_right, size: .small, role: .plain) {
+                            on press: history.open_change(
+                                history.history,
+                                id: c.target.id,
+                                kind: c.target.kind,
+                                label: c.target.label,
+                            )
+                        }
+                    }
+                    if let label = c.undo_label {
+                        ui.Button(label, size: .small, role: .plain) {
+                            on press: history.undo_record(
+                                history.history,
+                                range: history.Span(from: c.range.from, to: c.range.to),
+                                app_id: c.app_id,
+                                id: c.record,
+                                step: c.step,
+                            )
                         }
                     }
                 }
+                // The change is the row: pressing it selects it, so the range's detail above
+                // shows what it did and where.
+                on activate: set(first, c.range.from).then(set(last, c.range.from))
             }
         }
+        // A session can run for thousands of changes: the card holds a page and grows toward the
+        // oldest of them.
+        if s.changes_total > s.in_effect.count() {
+            ui.Button("Show more", icon: .chevron_down) {
+                on press: set(more, pages + 20)
+            }
+        }
+    }
+}
+
+/// Where a session's change landed, as its row says it: the app, and the thing it changed.
+fn changed_where(c: history.SessionChange) -> Text {
+    let app = c.target.app_label ?? ""
+    if app == "" {
+        c.target.label
+    } else if c.target.label == "" {
+        app
+    } else {
+        "{app} · {c.target.label}"
     }
 }
 
@@ -588,18 +629,16 @@ fn started_by(a: history.Author) -> Text {
 /// The agent session the selected changes are, when they are one: the session whose range they
 /// are, the work group the history named them, or one whose action they belong to.
 fn session_in(
-    sessions: Option<history.Sessions>,
+    sessions: List<history.AgentSession>,
     group: Option<Text>,
     first: Text,
     last: Text,
 ) -> Option<history.AgentSession> {
-    if let all = sessions {
-        all.sessions.find(
-            s -> s.range.from == first and s.range.to == last
-                or group == .some(s.id)
-                or s.actions.any(a -> a.range.from == first or a.range.to == last),
-        )
-    } else { .none }
+    sessions.find(
+        s -> s.range.from == first and s.range.to == last
+            or group == .some(s.id)
+            or s.in_effect.any(c -> c.range.from == first or c.range.to == last),
+    )
 }
 
 /// The changes the page keeps of the person's filters: the scope, period and lens are the

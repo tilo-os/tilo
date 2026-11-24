@@ -131,7 +131,12 @@ fn one_record_of_a_run_is_undone_alone() {
     doc.commit();
     pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
-    assert!(pane.undo_task_record("task:1", "so.tilo.sheets", "file:/sheets/budget.tilo-sheet"));
+    assert!(pane.undo_task_record(
+        "task:1",
+        "so.tilo.sheets",
+        "file:/sheets/budget.tilo-sheet",
+        None
+    ));
     let undo = host.undos.borrow().last().cloned().unwrap();
     assert_eq!(undo.task_id, "task:1");
     assert_eq!(

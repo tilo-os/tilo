@@ -286,6 +286,7 @@ impl WorkspaceActivityPane {
             .hash(&mut hasher);
         self.replay_unavailable.hash(&mut hasher);
         self.agent_sessions.len().hash(&mut hasher);
+        self.history_index.undone_revision().hash(&mut hasher);
         self.agent_undo_notice.hash(&mut hasher);
         self.unreverted.hash(&mut hasher);
         self.undo_pending.is_some().hash(&mut hasher);
@@ -1044,7 +1045,8 @@ impl WorkspaceActivityPane {
             else {
                 return Err(t("activity-undo-task-unavailable"));
             };
-            let asked = self.undo_task_record(&task, &query.app_id, &query.id);
+            let asked =
+                self.undo_task_record(&task, &query.app_id, &query.id, query.step.as_deref());
             return Ok(if asked {
                 handled_outcome()
             } else {
@@ -1060,9 +1062,9 @@ impl WorkspaceActivityPane {
             .selected_agent_session()
             .and_then(|indexed| indexed.session.task.clone())
         {
-            self.undo_task_record(&task, &query.app_id, &query.id)
+            self.undo_task_record(&task, &query.app_id, &query.id, query.step.as_deref())
         } else if let Some(group) = self.selected_group_session() {
-            self.undo_group_record(&group, &query.app_id, &query.id)
+            self.undo_group_record(&group, &query.app_id, &query.id, query.step.as_deref())
         } else {
             return Err(t("activity-undo-task-unavailable"));
         };

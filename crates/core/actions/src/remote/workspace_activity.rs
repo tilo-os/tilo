@@ -644,6 +644,10 @@ pub struct ResourceQuery {
     /// The record inside that session.
     pub app_id: String,
     pub id: String,
+    /// The one change inside that record to take back, as its own history names it; absent to
+    /// take back the session's whole share of the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 /// What comparing the workspace before and after a session found.
@@ -704,10 +708,16 @@ pub struct SessionsQuery {
     pub scope: Scope,
     /// The newest this many sessions; `0` for the first page.
     pub limit: usize,
+    /// The newest this many of each session's changes still in effect; `0` for the first page.
+    pub changes: usize,
 }
 
 /// How many sessions a [`SESSIONS`] read answers when its query asks for no number.
 pub const SESSIONS_PAGE: usize = 50;
+
+/// How many of a session's changes still in effect a [`SESSIONS`] read answers when its query
+/// asks for no number.
+pub const SESSION_CHANGES_PAGE: usize = 20;
 
 impl SessionsQuery {
     /// How many sessions the read answers.
@@ -717,6 +727,16 @@ impl SessionsQuery {
             SESSIONS_PAGE
         } else {
             self.limit
+        }
+    }
+
+    /// How many of each session's changes still in effect the read answers.
+    #[must_use]
+    pub const fn changes_page(&self) -> usize {
+        if self.changes == 0 {
+            SESSION_CHANGES_PAGE
+        } else {
+            self.changes
         }
     }
 }
@@ -841,6 +861,28 @@ pub struct SessionAction {
     pub undo: Option<Offer>,
 }
 
+/// One of a session's changes still in effect: what it changed, where, and how to open it and
+/// take it back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionChange {
+    /// The change, as a range of one in the history.
+    pub range: Range,
+    /// The change in its record's own history, which its undo names as the step.
+    pub step: String,
+    pub at_ms: i64,
+    /// What it changed, as a sentence.
+    pub summary: String,
+    /// The app and record it changed.
+    pub app_id: String,
+    pub record: String,
+    /// The resource it touched, where it opens.
+    pub target: Target,
+    /// The action that undoes this change alone, when it can be undone on its own here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
 /// One agent session: an instruction it worked, and the actions it took for
 /// it, oldest first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -863,6 +905,11 @@ pub struct AgentSession {
     /// Every change it made, which [`UNDO_SESSION`] takes back.
     pub range: Range,
     pub actions: Vec<SessionAction>,
+    /// Its changes still in effect, newest first: what the session still leaves in place, each
+    /// undone on its own. A page of [`Self::changes_total`].
+    pub in_effect: Vec<SessionChange>,
+    /// How many of its changes are still in effect.
+    pub changes_total: usize,
     /// Why it cannot be undone from here, when it cannot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_blocked: Option<String>,

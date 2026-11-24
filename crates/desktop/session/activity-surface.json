@@ -317,6 +317,19 @@
                 "type": "string"
               },
               "type": "text"
+            },
+            {
+              "name": "step",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -541,6 +554,18 @@
                   "named": "SessionAction"
                 }
               }
+            },
+            {
+              "name": "in_effect",
+              "type": {
+                "list": {
+                  "named": "SessionChange"
+                }
+              }
+            },
+            {
+              "name": "changes_total",
+              "type": "int"
             },
             {
               "name": "undo_blocked",
@@ -1178,6 +1203,56 @@
                 "option": {
                   "named": "Execution"
                 }
+              }
+            },
+            {
+              "name": "undo_label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "undo_verb",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SessionChange",
+          "doc": "One of a session's changes still in effect: what it changed, where, and how to open it and take it back on its own.",
+          "fields": [
+            {
+              "name": "range",
+              "type": {
+                "named": "Span"
+              }
+            },
+            {
+              "name": "step",
+              "type": "text"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "app_id",
+              "type": "text"
+            },
+            {
+              "name": "record",
+              "type": "text"
+            },
+            {
+              "name": "target",
+              "type": {
+                "named": "Target"
               }
             },
             {
