@@ -496,7 +496,11 @@ There are seven ways to add a device:
   authority whatever its class. A foreign device without the root hands a
   capped call on to a root holder through the one dispatch, as an
   invocation record; the root holder asks once and makes the change under
-  its own key, and the record waits while none is reachable. A Tilo OS device a
+  its own key, and the record waits while none is reachable. The person's
+  devices record marks which devices hold the root, root-signed; an action
+  that needs the root says so on its surface, as one that asks does. An
+  action whose answer is a secret (recovery words, a backup) says so too,
+  and its record keeps neither its arguments nor its answer. A Tilo OS device a
   root holder adds is certified native.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
@@ -672,7 +676,8 @@ and screen share only, never documents, and stays as it is.
   change things, and a list is a read of the records the caller may see.
   One check decides every read, apps' included: only grants the record's own
   workspace issued count, and a call made for someone gets the smaller of
-  the caller's grant and theirs.
+  the caller's grant and theirs. An app acting for a person never reads or
+  does more than its manifest declares.
 - **One way to ask**: whenever a person is asked for a yes, a choice or a
   secret, the question is an asked invocation record answered through
   `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
