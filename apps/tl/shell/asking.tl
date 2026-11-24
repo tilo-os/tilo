@@ -104,17 +104,27 @@ fn key_of(q: invocations.Invocation) -> Text {
     return q.id
 }
 
-/// The questions a press in the window `w` made, over its lower edge where the person pressed.
-/// The newest stands first; more than two wait in the notification centre.
+/// The questions a press in the window `w` made, over it where the person pressed: the newest
+/// takes Escape, or a press on the window outside it, as its way out, declining it, as the
+/// system's questions always have; the older ones wait behind it. More than two wait in the
+/// notification centre.
 view asked_over(w: device.Window) {
     let asked = asked_in(w)
     if not asked.is_empty() {
-        stack(at: .bottom, fill, align: .center, gap: .related, padding: .group) {
-            for q in asked.take(2) {
-                asked_card(q)
-            }
-            if asked.len() > 2 {
-                more_asked(asked.len() - 2)
+        if let q = asked.at(0) {
+            if let a = q.asked {
+                ui.ModalDialog(
+                    title: if a.words != "" { a.words } else { a.name },
+                    open: true,
+                    destructive: a.destructive,
+                    icon: .triangle_alert,
+                ) {
+                    on dismiss: decline(key_of(q))
+                    question_body(key_of(q), answered_here(q), a, "")
+                    if asked.len() > 1 {
+                        more_asked(asked.len() - 1)
+                    }
+                }
             }
         }
     }
@@ -171,6 +181,20 @@ view asked_card(q: invocations.Invocation) {
 
 /// The question `a`, answered at `key`, and here or on the device that asked it.
 view question(key: Text, here: Bool, a: invocations.Asked) {
+    ui.Card {
+        question_body(
+            key,
+            here,
+            a,
+            if a.words != "" { a.words } else { a.name },
+        )
+    }
+}
+
+/// What the question says: who asks, what it would do and to what, what the asker shows, what
+/// the person types, picks or chooses, and the answers it offers. `headline` is its own line at
+/// the top, empty where the surface drawing it names the action itself.
+view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) {
     let lines = a.facts.filter(f -> f.label == "")
     let labelled = a.facts.filter(f -> f.label != "")
     // What the person types and picks until they answer: the card's own, never kept.
@@ -192,140 +216,140 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
         and a.verb != ""
         and a.plural != .none
         and not a.destructive
-    ui.Card {
-        stack(gap: .related) {
-            asker(a)
-            ui.Text(if a.words != "" { a.words } else { a.name }, role: .subheading)
-            if let on = a.on {
-                ui.Text(on, secondary: true)
-            }
-            for f in lines {
-                ui.Text(f.value, secondary: true)
-            }
-            if changing and here {
-                // The call's arguments the person may change, each in its field: a flag turns,
-                // every other field is written in.
-                for f in a.form {
-                    let i = a.form.index_of(f) ?? 0
-                    if let _ = f.value.on {
-                        ui.Toggle(f.label, shown: (written.at(i) ?? asked_value(f)) == "yes") {
-                            on check(on: Bool): set(
-                                written,
-                                written_at(a.form, written, i, flag_text(on)),
-                            )
-                        }
-                    } else {
-                        field(f.label) {
-                            ui.TextInput(
-                                bind: written.at(i),
-                                placeholder: f.shows ?? asked_value(f),
-                                lines: if f.multiline { 4 } else { 1 },
-                            )
-                        }
+    stack(gap: .related) {
+        asker(a)
+        if headline != "" {
+            ui.Text(headline, role: .subheading)
+        }
+        if let on = a.on {
+            ui.Text(on, secondary: true)
+        }
+        for f in lines {
+            ui.Text(f.value, secondary: true)
+        }
+        if changing and here {
+            // The call's arguments the person may change, each in its field: a flag turns,
+            // every other field is written in.
+            for f in a.form {
+                let i = a.form.index_of(f) ?? 0
+                if let _ = f.value.on {
+                    ui.Toggle(f.label, shown: (written.at(i) ?? asked_value(f)) == "yes") {
+                        on check(on: Bool): set(
+                            written,
+                            written_at(a.form, written, i, flag_text(on)),
+                        )
                     }
-                }
-            } else if not labelled.is_empty() {
-                ui.PropertyList {
-                    for f in labelled {
-                        ui.Property(f.label, f.value)
-                    }
-                }
-            }
-            if a.destructive {
-                ui.Text("Undo can't bring this back", secondary: true)
-            }
-            if let why = a.retry {
-                ui.Banner(why, kind: .warning)
-            }
-            if not here {
-                ui.Text("This is answered on the device that asked it", secondary: true)
-            } else {
-                for t in a.takes {
-                    field(t.label) {
+                } else {
+                    field(f.label) {
                         ui.TextInput(
-                            bind: typed.at(a.takes.index_of(t) ?? 0),
-                            placeholder: t.label,
-                            secret: t.secret and not t.shown,
+                            bind: written.at(i),
+                            placeholder: f.shows ?? asked_value(f),
+                            lines: if f.multiline { 4 } else { 1 },
                         )
                     }
                 }
-                if a.many {
+            }
+        } else if not labelled.is_empty() {
+            ui.PropertyList {
+                for f in labelled {
+                    ui.Property(f.label, f.value)
+                }
+            }
+        }
+        if a.destructive {
+            ui.Text("Undo can't bring this back", secondary: true)
+        }
+        if let why = a.retry {
+            ui.Banner(why, kind: .warning)
+        }
+        if not here {
+            ui.Text("This is answered on the device that asked it", secondary: true)
+        } else {
+            for t in a.takes {
+                field(t.label) {
+                    ui.TextInput(
+                        bind: typed.at(a.takes.index_of(t) ?? 0),
+                        placeholder: t.label,
+                        secret: t.secret and not t.shown,
+                    )
+                }
+            }
+            if a.many {
+                for c in a.choices {
+                    let i = a.choices.index_of(c) ?? 0
+                    ui.Button(c, size: .small, toggled: picked.contains(i)) {
+                        on press: set(
+                            picked,
+                            if picked.contains(i) {
+                                picked.filter(p -> p != i)
+                            } else { [picked, [i]].flat_map(p -> p) },
+                        )
+                    }
+                }
+            }
+            if let files = a.files {
+                files_asked(key, files, typed)
+            }
+        }
+        if a.files == .none or not here {
+            row(gap: .related, align: .center, wrap: true) {
+                if here and not a.choices.is_empty() and not a.many {
                     for c in a.choices {
-                        let i = a.choices.index_of(c) ?? 0
-                        ui.Button(c, size: .small, toggled: picked.contains(i)) {
-                            on press: set(
-                                picked,
-                                if picked.contains(i) {
-                                    picked.filter(p -> p != i)
-                                } else { [picked, [i]].flat_map(p -> p) },
+                        ui.Button(
+                            c,
+                            size: .small,
+                            enabled: not unfilled,
+                            description: "Fill in what it asks for first",
+                        ) {
+                            on press: host.resolve(
+                                resource(key, of: host.Invocation),
+                                resolution: "approve",
+                                choice: a.choices.index_of(c),
+                                typed: .some(typed),
                             )
                         }
                     }
-                }
-                if let files = a.files {
-                    files_asked(key, files, typed)
-                }
-            }
-            if a.files == .none or not here {
-                row(gap: .related, align: .center, wrap: true) {
-                    if here and not a.choices.is_empty() and not a.many {
-                        for c in a.choices {
-                            ui.Button(
-                                c,
-                                size: .small,
-                                enabled: not unfilled,
-                                description: "Fill in what it asks for first",
-                            ) {
-                                on press: host.resolve(
-                                    resource(key, of: host.Invocation),
-                                    resolution: "approve",
-                                    choice: a.choices.index_of(c),
-                                    typed: .some(typed),
-                                )
-                            }
+                    spacer
+                    ui.Button("Don't answer", size: .small, role: .plain) {
+                        on press: decline(key)
+                    }
+                } else {
+                    if here and can_always {
+                        ui.Button(
+                            "Always let {asker_name(a)} {a.verb} {a.plural ?? ""}",
+                            size: .small,
+                            role: .plain,
+                        ) {
+                            on press: host.resolve(
+                                resource(key, of: host.Invocation),
+                                resolution: "approve_and_grant",
+                            )
                         }
-                        spacer
-                        ui.Button("Don't answer", size: .small, role: .plain) {
-                            on press: decline(key)
+                    }
+                    spacer
+                    if here and not a.form.is_empty() and not changing {
+                        ui.Button("Change", icon: .pencil, size: .small, role: .plain) {
+                            on press: set(changing, true)
                         }
-                    } else {
-                        if here and can_always {
-                            ui.Button(
-                                "Always let {asker_name(a)} {a.verb} {a.plural ?? ""}",
-                                size: .small,
-                                role: .plain,
-                            ) {
-                                on press: host.resolve(
-                                    resource(key, of: host.Invocation),
-                                    resolution: "approve_and_grant",
-                                )
-                            }
-                        }
-                        spacer
-                        if here and not a.form.is_empty() and not changing {
-                            ui.Button("Change", icon: .pencil, size: .small, role: .plain) {
-                                on press: set(changing, true)
-                            }
-                        }
-                        ui.Button("Don't allow", size: .small, role: .secondary) {
-                            on press: decline(key)
-                        }
-                        if here {
-                            ui.Button(
-                                a.name,
-                                size: .small,
-                                enabled: not unfilled,
-                                description: "Fill in what it asks for first",
-                                role: if a.destructive { .destructive } else { .primary },
-                            ) {
-                                on press: host.resolve(
-                                    resource(key, of: host.Invocation),
-                                    resolution: "approve",
-                                    chosen: .some(picked),
-                                    typed: .some(typed),
-                                    edits: changes_of(a.form, written),
-                                )
-                            }
+                    }
+                    ui.Button("Don't allow", size: .small, role: .secondary) {
+                        on press: decline(key)
+                    }
+                    if here {
+                        ui.Button(
+                            a.name,
+                            size: .small,
+                            enabled: not unfilled,
+                            description: "Fill in what it asks for first",
+                            role: if a.destructive { .destructive } else { .primary },
+                        ) {
+                            on press: host.resolve(
+                                resource(key, of: host.Invocation),
+                                resolution: "approve",
+                                chosen: .some(picked),
+                                typed: .some(typed),
+                                edits: changes_of(a.form, written),
+                            )
                         }
                     }
                 }
