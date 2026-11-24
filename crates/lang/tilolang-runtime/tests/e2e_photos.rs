@@ -425,6 +425,14 @@ mod cases {
                 Value::Bool(false),
                 "an unnamed face has not been sent to the workspace"
             );
+            // Until a name is approved the face is the scanner's alone: another member neither
+            // lists nor opens it.
+            let other = tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("bo"));
+            assert!(g.rt.readers_admit(&me(), suggestion));
+            assert!(
+                !g.rt.readers_admit(&other, suggestion),
+                "another member does not read a face nobody named"
+            );
             assert_eq!(g.ids_of(suggestion, "photos").len(), 2);
             // A scan again finds the same face, and does not suggest it twice.
             g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
@@ -442,6 +450,10 @@ mod cases {
                 g.rt.read(suggestion, "sent").unwrap(),
                 Value::Bool(true),
                 "an approved face is the workspace's"
+            );
+            assert!(
+                g.rt.readers_admit(&other, suggestion),
+                "the workspace reads a face whose name it approved"
             );
             let people = g.records("people");
             assert_eq!(people.len(), 1, "the name made a person");
