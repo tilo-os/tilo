@@ -1172,6 +1172,14 @@ impl AppWindow {
 
     fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
         let text = say(words);
+        // What the app says nothing of takes the one up down: the app's own way to take back a
+        // notice it no longer means. A part has none of its own, and says nothing.
+        if text.is_empty() {
+            if let Some(shell) = self.shell() {
+                shell.dismiss_toast();
+            }
+            return;
+        }
         if self.shape == Shape::Part {
             // A part has no window to toast in: its embedder says it where the shell says things
             // ([`Self::take_notices`]).
@@ -1186,6 +1194,8 @@ impl AppWindow {
                 shell.toast_with_action(text, ToastKind::Info, "undo-2", t("tilolang-undo"));
             }
             (wire::NoticeKind::Error, false) => shell.toast(text, ToastKind::Error),
+            (wire::NoticeKind::Warning, false) => shell.toast(text, ToastKind::Warning),
+            (wire::NoticeKind::Success, false) => shell.toast(text, ToastKind::Success),
             (wire::NoticeKind::Info, false) => shell.toast(text, ToastKind::Info),
         }
     }

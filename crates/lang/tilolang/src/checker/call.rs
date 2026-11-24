@@ -270,6 +270,7 @@ impl Checker<'_> {
             "set" => return self.builtin_set(args, span),
             "open" => return self.builtin_open(args, span),
             "notify" => return self.builtin_notify(args, span),
+            "notice" => return self.builtin_notice(args, span),
             "resource" => return self.builtin_resource(args, span),
             "zones" => return self.builtin_zones(args, span),
             "person" => return self.builtin_person(args, span),
@@ -2014,6 +2015,80 @@ impl Checker<'_> {
                 opens.unwrap_or_else(Ex::error),
                 device,
                 actions,
+            ],
+            Ty::Unit,
+        )
+    }
+
+    /// `notice(text, kind: .success, undo: true)`: what the app says in passing in the window the
+    /// action runs from. The window's bar shows it for a few seconds where its location stands,
+    /// with the person's undo as its one button while `undo` says so, and a newer one replaces
+    /// it; saying nothing (`text` empty) takes it down. Code that runs says it, and a view does
+    /// not: a notice is nothing a view reads, and a view shows what it reads.
+    fn builtin_notice(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx == Ctx::View {
+            self.err(
+                "E066",
+                span,
+                "`notice` says something in the window an action runs from; a view shows what it reads",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let mut text = None;
+        let mut kind = None;
+        let mut undo = None;
+        for arg in args {
+            let Some(named) = &arg.name else {
+                if text.is_some() {
+                    self.err(
+                        "E022",
+                        arg.value.span,
+                        "`notice` says one thing: `notice(\"Copied\", kind: .success)`",
+                    );
+                    let _ = self.expr(&arg.value, None);
+                    continue;
+                }
+                // What the notice shows is words a person reads: its literal is a message of
+                // the action, as the text of a component is one of the view.
+                self.mark_shown(&arg.value);
+                text = Some(self.expr_as(&arg.value, &Ty::Text));
+                continue;
+            };
+            match named.name.as_str() {
+                "kind" => {
+                    let said = self.expr_as(&arg.value, &Ty::Choice("notice_kind"));
+                    if !said.ty.is_error() {
+                        kind = Some(self.choice_text("notice_kind", said));
+                    }
+                }
+                // Whether it offers the person's undo while it shows.
+                "undo" => undo = Some(self.expr_as(&arg.value, &Ty::Bool)),
+                other => {
+                    self.err(
+                        "E022",
+                        arg.value.span,
+                        format!("`notice` says `kind:` and `undo:` by name; not `{other}:`"),
+                    );
+                    let _ = self.expr(&arg.value, None);
+                }
+            }
+        }
+        if text.is_none() {
+            self.err(
+                "E022",
+                span,
+                "`notice` says what happened: `notice(\"Copied\", kind: .success)`",
+            );
+        }
+        Ex::host(
+            Imp::Notice,
+            vec![
+                text.unwrap_or_else(Ex::error),
+                kind.unwrap_or_else(|| Ex::str("info")),
+                undo.unwrap_or_else(|| Ex::new(Ek::Bool(false), Ty::Bool)),
             ],
             Ty::Unit,
         )

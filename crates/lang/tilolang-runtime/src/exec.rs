@@ -3070,6 +3070,22 @@ impl Core {
         Ok(None)
     }
 
+    /// `notice(text, kind, undo)`: what the app says in passing in the window the running action
+    /// was invoked from. The window's bar shows it for a few seconds, with the person's undo as
+    /// its one button when `undo` says so; a newer one replaces it, and saying nothing
+    /// (`text` empty) takes it down. Nothing is written to the workspace and no device is told:
+    /// a run nothing looks through says it to nobody.
+    fn notice_import(&self, text_h: i32, kind_h: i32, undo_h: i32) -> HResult<Option<Wasm>> {
+        let text = self.text(text_h)?;
+        let kind = crate::notice::Kind::parse(&self.text(kind_h)?);
+        self.said.borrow_mut().push(crate::notice::Said {
+            text,
+            kind,
+            undo: undo_h != 0,
+        });
+        Ok(None)
+    }
+
     /// `notify(to, title, body, opens)`: tell the person `to` something, once. The notice is a
     /// record written in this action's own change ([`crate::notify`]), so every device of theirs
     /// reads it. The run's journal answers a run that replays, so it tells them no more than the
@@ -3277,6 +3293,7 @@ impl Core {
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?, a.h(5)?),
+            Imp::Notice => self.notice_import(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::WindowState => self.window_state(a.h(0)?, a.h(1)?, a.h(2)?),
             // Who invokes the action running, or the person a view is shown to: who would
             // invoke its actions.

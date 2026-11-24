@@ -773,7 +773,11 @@ sync, a copy with Undo) is the window bar's notice
 (`window_toolbar::notify`, through `Transient::publish` or
 `Notice::publish`): it stands in the bar's location slot, icon and text, for a
 while, with its one action as a bar action while it shows; a newer one
-replaces it, and nothing stacks. No window widget paints a transient card. An
+replaces it, nothing stacks, and the app that said it takes it down early by
+saying nothing more. An app asks for one through the toolkit's
+own call — `NavShell::toast` in Rust (`toast_with_action` for its one button),
+`notice(text, kind:, undo:)` in tilolang — never by painting a card: no window
+widget paints a transient card. An
 error the person must act on is a `Banner` (persistent, in the flow) or a
 notice held until it is resolved. A document's save state is
 `SaveStatusSurface`, said in the same slot: autosave is the system's job, so

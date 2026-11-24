@@ -48,27 +48,27 @@ use Imp::{
     ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey,
     ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut,
     MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me,
-    Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType,
-    Outside, OutsideAt, PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages,
-    PdfPicture, PdfSave, PdfText, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query,
-    QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText,
-    ReadWith, RecNew, RecOwn, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
-    ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-    RichAppended, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked,
-    RichNew, RichPart, RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd,
-    SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges,
-    SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-    StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-    StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice,
-    StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
-    TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
-    ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState,
-    UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
-    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet,
-    WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState,
-    Withdraw, Word, Zones,
+    Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notice, Notify, Now, Occurrences,
+    OfType, Outside, OutsideAt, PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline,
+    PdfPages, PdfPicture, PdfSave, PdfText, PersonNamed, Phrase, Print, PrintRows, ProposalNote,
+    Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, Reach,
+    ReadText, ReadWith, RecNew, RecOwn, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
+    ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+    ResourceRef, RichAppended, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown,
+    RichMarked, RichNew, RichPart, RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy,
+    SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
+    SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
+    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace,
+    StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
+    StrUrlEncode, StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay,
+    TimeParse, TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext,
+    ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
+    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WallClock, WebBody,
+    WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText,
+    WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -199,6 +199,9 @@ pub struct Core {
     /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
     /// a test's record. Until the host sets one, a notice is only the record the run wrote.
     pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
+    /// What the code said in passing (`notice(...)`) since the host last took it
+    /// ([`crate::Runtime::take_said`]): the window the action ran from shows it in its bar.
+    pub said: RefCell<Vec<crate::notice::Said>>,
     /// The device's own work (`Runtime::set_engine`): what it answers an app that asks for a
     /// decode, a render or a raster it cannot do itself.
     pub engine_work: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
@@ -419,6 +422,7 @@ impl Core {
             files: RefCell::new(None),
             clipboard: RefCell::new(None),
             notices: RefCell::new(None),
+            said: RefCell::new(Vec::new()),
             engine_work: RefCell::new(None),
             live_frames: std::sync::Arc::new(crate::host_work::LiveFrames::default()),
             names: RefCell::new(None),
@@ -658,9 +662,9 @@ impl Core {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | WindowState | Invoker | MadeFrom
-            | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
-            | InvocationPush | InvocationPop => self.effect_import(imp, a),
+            | OutsideAt | Withdraw | ModelCall | Notify | Notice | WindowState | Invoker
+            | MadeFrom | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed
+            | AgentNamed | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebPostBytes | WebOk | WebStatus | WebDurationMs | WebStatusText
             | WebHeaders | WebBody | WebText | BytesLength | Base64Decode => {
                 self.web_import(imp, a)

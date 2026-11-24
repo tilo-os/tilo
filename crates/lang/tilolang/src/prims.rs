@@ -212,6 +212,11 @@ pub const CHOICES: &[Choice] = &[
         variants: &["person", "agent"],
     },
     Choice {
+        kind: "notice_kind",
+        name: "NoticeKind",
+        variants: &["info", "success", "warning", "error"],
+    },
+    Choice {
         kind: "weekday",
         name: "Weekday",
         variants: &[

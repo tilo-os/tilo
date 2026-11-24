@@ -1306,7 +1306,9 @@ impl ShellPart {
                     tracing::warn!(text, "the shell refused what was asked of it");
                     self.refusals.push(text);
                 }
-                tilo_render_protocol::patch::NoticeKind::Info => {
+                tilo_render_protocol::patch::NoticeKind::Info
+                | tilo_render_protocol::patch::NoticeKind::Success
+                | tilo_render_protocol::patch::NoticeKind::Warning => {
                     tracing::info!(text, "the shell says");
                 }
             }

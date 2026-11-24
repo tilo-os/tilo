@@ -1307,6 +1307,12 @@ impl Runtime {
         *self.core.notices.borrow_mut() = Some(Box::new(host));
     }
 
+    /// What the code said in passing (`notice(...)`) since last asked, for the window the actions
+    /// ran from to show in its bar, oldest first.
+    pub fn take_said(&self) -> Vec<crate::notice::Said> {
+        std::mem::take(&mut *self.core.said.borrow_mut())
+    }
+
     /// The device's PDF engine ([`crate::pdf`]): what `pdf.*` asks of a PDF's bytes. Until it is
     /// set, every call says this device reads no PDFs.
     pub fn set_pdf(&self, host: impl crate::pdf::PdfHost + 'static) {

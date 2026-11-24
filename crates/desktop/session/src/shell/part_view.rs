@@ -277,7 +277,9 @@ impl Open {
                         "a part's view refused what it was asked"
                     );
                 }
-                tilo_render_protocol::patch::NoticeKind::Info => {
+                tilo_render_protocol::patch::NoticeKind::Info
+                | tilo_render_protocol::patch::NoticeKind::Success
+                | tilo_render_protocol::patch::NoticeKind::Warning => {
                     tracing::info!(text, part = self.part, "a part's view says");
                 }
             }

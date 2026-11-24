@@ -46,6 +46,7 @@ mod live;
 mod marks;
 pub mod members;
 pub mod meta;
+pub mod notice;
 pub mod notify;
 mod num;
 pub mod origin;

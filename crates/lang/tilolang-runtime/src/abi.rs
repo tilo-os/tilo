@@ -228,6 +228,7 @@ imports! {
     (Withdraw, "withdraw", "ii", "i"),
     (ModelCall, "model_call", "ii", "i"),
     (Notify, "notify", "iiiiii", ""),
+    (Notice, "notice", "iii", ""),
     (QueueBlock, "queue_block", "iii", ""),
     (Print, "print", "ii", ""),
     (Find, "find", "ii", "i"),

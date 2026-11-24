@@ -60,6 +60,7 @@ mod native_mail;
 mod native_notes;
 mod native_tube;
 mod note_import;
+mod notice;
 mod notebook_order;
 mod notes;
 mod notes_checklist;

@@ -491,11 +491,13 @@ impl Words {
     }
 }
 
-/// What kind of notice the window shows.
+/// What kind of notice the window shows: the tone its icon and colour take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoticeKind {
     Info,
     Error,
+    Success,
+    Warning,
 }
 
 /// What brings the window's content column to the front of a narrow window.

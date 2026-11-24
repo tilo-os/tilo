@@ -2980,3 +2980,138 @@ fn a_players_sound_reaches_the_host_that_plays_it() {
     assert_eq!(page.take_audio(), [17_i16, -17, 42, 0]);
     assert!(page.take_audio().is_empty(), "the sound is taken once");
 }
+
+/// What a tilolang app says in passing (`notice`) is the window bar's notice: the bar shows its
+/// words where its location stands, assistive technology hears it without being interrupted, it
+/// leaves by itself after its time or when the app takes it down, and the undo it offers reaches
+/// the app as the person's undo.
+#[test]
+fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_the_app() {
+    use ui::time::{Duration, testing::with_monotonic_time};
+    let words = "Copied work@example.com code";
+    let (mut app, mut said_window) = window();
+    said_window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(said_window), (900, 700));
+    harness.present_in_window_bar();
+    let start = ui::time::now();
+    with_monotonic_time(start, || {
+        send(
+            &mut app,
+            &[ToUi::Notice {
+                words: Words::Plain(words.to_owned()),
+                kind: wire::NoticeKind::Success,
+                undo: false,
+            }],
+        );
+        drawn_window(&mut harness).receive();
+        harness.relayout();
+    });
+    assert_eq!(
+        ui::window_toolbar::notice().map(|notice| notice.text),
+        Some(words.to_owned()),
+        "the bar shows what the app said"
+    );
+    let shown = harness
+        .window_bar_notice(900.0)
+        .expect("the notice stands in the bar");
+    assert_eq!(shown.text, words, "with the app's words whole");
+    // Assistive technology hears it, without being interrupted: the bar's notice is a polite
+    // live region.
+    let heard = harness
+        .window_bar_accessibility(900.0)
+        .into_iter()
+        .find(|node| node.name.as_deref() == Some(words))
+        .expect("the bar tells assistive technology what it says");
+    assert_eq!(
+        heard.live,
+        Some(ui::a11y::Politeness::Polite),
+        "a passing notice waits for a pause to be read"
+    );
+
+    // Its time runs out and the bar lets it go, without the app saying anything more.
+    let gone = start + Duration::from_secs(5);
+    with_monotonic_time(gone, || harness.relayout());
+    assert_eq!(
+        ui::window_toolbar::notice(),
+        None,
+        "a notice leaves by itself after a few seconds"
+    );
+
+    // The app takes one down early by saying nothing: a copy that finished is no longer news.
+    with_monotonic_time(gone, || {
+        send(
+            &mut app,
+            &[ToUi::Notice {
+                words: Words::Plain("Copying the folder…".to_owned()),
+                kind: wire::NoticeKind::Info,
+                undo: false,
+            }],
+        );
+        drawn_window(&mut harness).receive();
+        harness.relayout();
+    });
+    assert!(
+        ui::window_toolbar::notice().is_some(),
+        "the app says what is under way"
+    );
+    with_monotonic_time(gone, || {
+        send(
+            &mut app,
+            &[ToUi::Notice {
+                words: Words::Plain(String::new()),
+                kind: wire::NoticeKind::Info,
+                undo: false,
+            }],
+        );
+        drawn_window(&mut harness).receive();
+        harness.relayout();
+    });
+    assert_eq!(
+        ui::window_toolbar::notice(),
+        None,
+        "and takes it down early by saying nothing"
+    );
+
+    // A notice with the undo it offers carries the button beside it, and the press is the app's
+    // undo: what the window sends is the same undo the person's Ctrl+Z is.
+    let (mut undo_app, mut undo_window) = window();
+    undo_window.receive();
+    let mut undo_harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(undo_window), (900, 700));
+    undo_harness.present_in_window_bar();
+    let start = ui::time::now();
+    with_monotonic_time(start, || {
+        send(
+            &mut undo_app,
+            &[ToUi::Notice {
+                words: Words::Plain("Removed Piranesi".to_owned()),
+                kind: wire::NoticeKind::Info,
+                undo: true,
+            }],
+        );
+        drawn_window(&mut undo_harness).receive();
+        undo_harness.relayout();
+    });
+    let shown = undo_harness
+        .window_bar_notice(900.0)
+        .expect("the notice offers the undo");
+    assert_eq!(
+        shown
+            .buttons
+            .iter()
+            .map(|button| button.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Undo"],
+        "its one button is the undo: {shown:?}"
+    );
+    undo_harness
+        .click_window_notice_action(900.0, 0)
+        .expect("the undo takes the press");
+    undo_harness.relayout();
+    drawn_window(&mut undo_harness).flush();
+    assert!(
+        sent(&mut undo_app).contains(&ToApp::Undo),
+        "pressing it is the app's undo"
+    );
+}

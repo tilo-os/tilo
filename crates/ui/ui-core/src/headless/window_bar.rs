@@ -684,6 +684,13 @@ impl FrameHarness {
         Self::shown_notice(&self.painted_window_bar(width))
     }
 
+    /// What the window's bar, as the shell draws it across a window `width` wide, tells assistive
+    /// technology it shows: the app's parts, and the notice where the location stands.
+    #[must_use]
+    pub fn window_bar_accessibility(&mut self, width: f64) -> Vec<crate::a11y::AccessNode> {
+        self.painted_window_bar(width).toolbar_row().accessibility()
+    }
+
     fn shown_notice(bar: &TabBar) -> Option<WindowBarNotice> {
         let bar_height = bar.bar_height();
         let row = bar.toolbar_row();

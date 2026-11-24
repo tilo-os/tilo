@@ -546,6 +546,18 @@ impl Checker<'_> {
                     }
                 } else if let Some(v) = self.own_callable(name).cloned() {
                     self.view_call(&v, c, args, span)
+                } else if name == "notice" {
+                    // A notice is the window's, said by code that runs: a view shows what it
+                    // reads, and says nothing of its own.
+                    self.err(
+                        "E066",
+                        span,
+                        "`notice` says something in the window an action runs from; a view shows what it reads",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    self.dead_node()
                 } else {
                     let mut views: Vec<&str> = env
                         .callables

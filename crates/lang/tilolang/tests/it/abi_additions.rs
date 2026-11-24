@@ -132,6 +132,28 @@ view v(nb: Notebook) {\n    if let shown = first(nb.id()) {\n        text(meta(s
         );
     }
 
+    phase a_notice_is_said_in_the_windows_bar_with_its_kind_and_undo;
+    {
+        let c = compile_body(
+            "type T {\n    title: Text\n}\naction say(t: T) {\n    notice(\"Copied {t.title}\", kind: .success, undo: true)\n}\naction quiet(t: T) {\n    notice(\"Copied\")\n}",
+        );
+        validate(&c.wasm);
+        let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+        assert!(has("notice"), "the notice reaches the window as its own call");
+        assert_eq!(
+            codes(
+                "type T {\n    title: Text\n}\naction say(t: T) {\n    notice(\"Copied\", kind: .shouting)\n}"
+            ),
+            vec!["E036"],
+            "the kind is one of the four the bar reads"
+        );
+        assert_eq!(
+            codes("type T {\n    title: Text\n}\nview v(t: T) {\n    notice(\"Copied\")\n}"),
+            vec!["E066"],
+            "a view says no notice: a notice is no state"
+        );
+    }
+
     phase another_packages_fn_is_called_where_it_is_written;
     {
         let lib = compile_with(

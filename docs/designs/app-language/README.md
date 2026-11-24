@@ -188,6 +188,16 @@ replayed writes no second one.
 What a notice says is words a person reads: its `title` and `body` are messages of the action,
 translated in the package's catalogues like the text of a view (`d-<action>.w-<word>`).
 
+`notice(text, kind: .success, undo: true)` is what the app says in passing in the window the
+action runs from: "Copied", "QR code read", or why a copy failed. The window's bar shows it where
+its location stands for a few seconds, with the person's undo as its one button when `undo:` says
+so, and a newer notice replaces it; saying nothing (`notice("")`) takes the one up down.
+Nothing is written to the workspace and no other device is
+told, unlike `notify`: it is what the person looking at the window hears, once. Its `kind:` is
+`.info` unless said, or `.success`, `.warning` or `.error`, the tone the bar reads it in; its
+`text` is words a person reads and is translated like the text of a view. A view says no notice —
+a notice is no state, and a view shows what it reads.
+
 `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
 `clipboard.paste_image()` are the person's clipboard. A copy is theirs: it reaches their device
 and stays there as a copy of theirs, kept in their history and on their other devices like one

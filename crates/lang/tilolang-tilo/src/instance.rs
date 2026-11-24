@@ -2710,8 +2710,29 @@ impl Instance {
         }
     }
 
+    /// What the app's actions said in passing since the window was last sent
+    /// (`notice(...)`): each is the window's bar's notice, shown there for a few seconds.
+    fn take_said(&mut self) {
+        let Some(host) = self.host.borrow().clone() else {
+            return;
+        };
+        for said in host.runtime().take_said() {
+            self.out.push(ToUi::Notice {
+                words: Words::Plain(said.text),
+                kind: match said.kind {
+                    crate::runtime::notice::Kind::Info => ui::NoticeKind::Info,
+                    crate::runtime::notice::Kind::Success => ui::NoticeKind::Success,
+                    crate::runtime::notice::Kind::Warning => ui::NoticeKind::Warning,
+                    crate::runtime::notice::Kind::Error => ui::NoticeKind::Error,
+                },
+                undo: said.undo,
+            });
+        }
+    }
+
     /// Send what waits as this frame's batch.
     pub fn flush(&mut self) {
+        self.take_said();
         if self.out.is_empty() {
             return;
         }
