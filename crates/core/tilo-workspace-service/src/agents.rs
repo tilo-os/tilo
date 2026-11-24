@@ -77,16 +77,14 @@ pub mod triggered;
 
 mod across;
 mod asking;
-mod calendar_connect;
-mod calendars;
 mod carried;
 #[cfg(test)]
 mod device_turn_tests;
 mod engine_actions;
 mod going;
 mod instructions;
+mod kept;
 mod learned;
-mod mail;
 #[cfg(feature = "agents")]
 mod moderation_history;
 #[cfg(test)]
@@ -101,8 +99,6 @@ mod turn_provider;
 mod vault_uses;
 pub mod web_search;
 
-// What a turn reaches of the services its person connected.
-mod connections;
 // A turn's open of Browser, where this server places the window.
 mod turn_browser;
 // What a turn does at the page in that window.
@@ -1519,24 +1515,12 @@ impl ServerAgents {
         team::join(&self.workspaces, turn, &mut scope).await;
         across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the
-        // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
-        // Beside that, the services its person connected, by this server's own entry for a turn.
-        let own = connections::of(self, turn, &scope.reply(turn), workspace_id).await;
-        scope.provider = scope.provider.answering(own);
-        let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
-        let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
-        // What its person's calendars hold, to read, under the bound their mail is under.
-        let calendars = calendars::TurnCalendars::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope
-            .provider
-            .answering(uses)
-            .answering(mail)
-            .answering(calendars);
-        // What connects a calendar or a mail account its person tells it of: they are asked
-        // for its password where no agent reads it.
-        let connects =
-            calendar_connect::TurnConnects::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(connects);
+        // turn's own ([`TurnProvider`]): what its workspace keeps for the person who asked it
+        // (their vault's uses by reference, mail, calendars, the services they connected), asked
+        // of the device's dispatch, and a page's field filled from their vault.
+        let kept = kept::TurnKept::for_turn(self, &scope.reply(turn)).await;
+        let uses = vault_uses::TurnUses::for_turn(self, &scope.reply(turn)).await;
+        scope.provider = scope.provider.answering(kept).answering(uses);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));

@@ -239,7 +239,10 @@ impl Workspaces {
     /// The connecting of a calendar `turn` is offered, as a catalogue lists
     /// it: none for a turn this server does not carry out, and none for a
     /// narrowed agent no rule of which names it.
-    pub async fn calendar_connect_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn calendar_connect_offered(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Vec<CatalogueRow> {
         let row = Self::calendar_connect_row();
         let Some(action) = &row.action else {
             return Vec::new();
@@ -267,7 +270,7 @@ impl Workspaces {
     /// carries a sign-in or is not on the public internet; the account is
     /// connected already; it waits for the person; their vault keeps no login for it; or the
     /// calendar server did not take the sign-in, in its own words.
-    pub async fn connect_calendar_for_turn(
+    pub(crate) async fn connect_calendar_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,

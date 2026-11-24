@@ -9,7 +9,7 @@
 //! Whom it answers, decided again at every call:
 //!
 //! - a turn this server carries out ([`Workspaces::asked_turn`]): never a sub-agent's,
-//!   and an agent its entry narrows only where a rule of its own names the action ([`HostedTurn::may_take`]);
+//!   and an agent its entry narrows only where a rule of its own names the action ([`bound_allows`]);
 //! - in a workspace that is its person's own: one this server keeps as theirs
 //!   ([`Workspaces::owns`]), or, on a server that keeps none for people, one they are the
 //!   owner of;
@@ -57,7 +57,7 @@ use super::turn_provider::{Ending, Rows};
 use super::{Turn, TurnProvider, TurnScope, WorkspaceId};
 use crate::environment::EnvironmentRegistry;
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::HostedTurn;
+use crate::workspaces::hosted_use::bound_allows;
 
 /// The provider a turn's tools find its person's other workspaces under.
 const PROVIDER: &str = "tilo.other-workspaces";
@@ -151,19 +151,20 @@ impl TurnElsewhere {
             .agent
             .bound_rules()
             .map(|_| self.agent.turn_rules(&self.workspace));
-        let turn = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: bound.as_deref(),
-        };
-        let Ok(asked) = self.workspaces.asked_turn(&turn).await else {
+        let Ok(asked) = self
+            .workspaces
+            .asked_turn_of(self.workspace_id, caller)
+            .await
+        else {
             return Err(Refusal::Unknown);
         };
         let target = RemoteActionTarget {
             provider: PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(MINE, action),
         };
-        if asked.agent != self.agent.id.0 || !turn.may_take(&self.workspace, &target) {
+        if asked.agent != self.agent.id.0
+            || !bound_allows(bound.as_deref(), &self.workspace, &target)
+        {
             return Err(Refusal::Unknown);
         }
         let person = hex::encode(asked.person);

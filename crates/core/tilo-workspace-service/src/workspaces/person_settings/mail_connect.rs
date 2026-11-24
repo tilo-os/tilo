@@ -264,7 +264,7 @@ impl Workspaces {
     /// The signing in of a mail account `turn` is offered, as a catalogue
     /// lists it: none for a turn this server does not carry out, and none for
     /// a narrowed agent no rule of which names it.
-    pub async fn mail_connect_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn mail_connect_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let target = person_accounts::target(CONNECT);
         if self.mail_connecting(turn, &target).await.is_ok() {
             vec![Self::mail_connect_row()]
@@ -338,7 +338,7 @@ impl Workspaces {
     /// already; its provider signs in on a page of its own; no server this
     /// server may ask was found for it; their vault keeps no login for those
     /// servers; or the sign-in failed, in its own words.
-    pub async fn connect_mail_for_turn(
+    pub(crate) async fn connect_mail_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,

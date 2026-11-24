@@ -3,7 +3,7 @@
 //! An agent this server runs works with every device of whoever asked it off, so no transport
 //! certified a device behind what it asks, and the check a device's request passes
 //! ([`Workspaces::calendars_asked`]) has nothing to compare. This is the server's own entry for
-//! such a turn, bounded as the workspace's mail is ([`crate::workspaces::hosted_use::TurnMail`]):
+//! such a turn, bounded as the workspace's mail is ([`Workspaces::mail_for_turn`]):
 //! the turn is one this server carries out ([`Workspaces::asked_turn`]), and the workspace's policy
 //! lets that agent read its calendars. An agent that anything narrows also holds a rule that names
 //! the very action ([`HostedTurn::may_take`]). Unknown and forbidden are the same answer.
@@ -78,7 +78,7 @@ impl Workspaces {
     /// lists them: each one it would not be refused. None for a turn this server does not carry out
     /// and for an agent that may not read the workspace's calendars; a narrowed agent is offered the
     /// ones a rule of its names.
-    pub async fn calendars_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn calendars_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let Ok((using, ..)) = self.calendars_of_turn(turn).await else {
             return Vec::new();
         };
@@ -108,7 +108,7 @@ impl Workspaces {
     /// of [`READS`] ([`ActionError::UnknownAction`]); its agent is narrowed
     /// and holds no rule for the action ([`ActionError::NotPermitted`]); or
     /// the arguments do not read.
-    pub async fn calendars_for_turn(
+    pub(crate) async fn calendars_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,

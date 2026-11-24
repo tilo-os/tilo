@@ -42,13 +42,12 @@ use tilo_actions::{
     ActionAddress, ActionFailure, ActionOutput, ActionParam, InvocationId, InvocationUpdate,
     ParamType,
 };
-use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
 use super::windows::{PAGE_RESOURCE, Windows, page_action};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{HostedTurn, bound_allows};
+use crate::workspaces::hosted_use::bound_allows;
 use tilo_app_id::apps::BROWSER as APP;
 
 /// The Browser's page action that sends its page to an address.
@@ -153,7 +152,6 @@ pub(super) struct TurnPages {
     /// The workspace the turn works in: its window is reached, and no other.
     workspace: String,
     workspace_id: WorkspaceId,
-    agent: Agent,
     /// What narrows the turn's agent, where anything does: the rules a page operation must name
     /// to be granted.
     bound: Option<Vec<tilo_action_policy::Rule>>,
@@ -173,20 +171,17 @@ impl TurnPages {
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
         let narrowed = turn.agent.bound_rules();
-        let asked_as = HostedTurn {
-            workspace: workspace_id,
-            caller: &reply.caller,
-            bound: narrowed.as_deref(),
-        };
         let offered = browsers.is_some()
-            && asked_as.may_take(&reply.workspace, &on_browser(NAVIGATE))
-            && workspaces.asked_turn(&asked_as).await.is_ok();
+            && bound_allows(narrowed.as_deref(), &reply.workspace, &on_browser(NAVIGATE))
+            && workspaces
+                .asked_turn_of(workspace_id, &reply.caller)
+                .await
+                .is_ok();
         Arc::new(Self {
             browsers,
             workspaces: workspaces.clone(),
             workspace: reply.workspace.clone(),
             workspace_id,
-            agent: turn.agent.clone(),
             bound: narrowed,
             offered,
         })
@@ -216,15 +211,12 @@ impl TurnPages {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = self.agent.bound_rules();
-        let asked_as = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
         // The turn is one this server carries out, as the workspace admits them now: nothing else is a
         // turn this server reaches a window for.
-        let theirs = self.workspaces.asked_turn(&asked_as).await?;
+        let theirs = self
+            .workspaces
+            .asked_turn_of(self.workspace_id, caller)
+            .await?;
         let action = request.target.address.action.as_str();
         let navigating = action == NAVIGATE;
         let reading = reads_of(action);
@@ -234,7 +226,7 @@ impl TurnPages {
         if !navigating && reading.is_none() && operating.is_none() {
             return Err(ActionCallError::UnknownAction);
         }
-        if !asked_as.may_take(&self.workspace, &on_browser(action)) {
+        if !bound_allows(self.bound.as_deref(), &self.workspace, &on_browser(action)) {
             return Err(ActionCallError::refused(NOT_YOURS));
         }
         let Some(browsers) = &self.browsers else {

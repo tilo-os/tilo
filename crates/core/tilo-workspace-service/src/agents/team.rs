@@ -52,7 +52,6 @@ use tilo_workspace_agent::{Agent, KIND, NewSubAgent, OWNER, WorkspaceAgents, sub
 use super::turn_provider::{Ending, Rows};
 use super::{Turn, TurnProvider, TurnScope, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::HostedTurn;
 
 /// The provider a turn's tools find its team under.
 const PROVIDER: &str = "tilo.sub-agents";
@@ -167,12 +166,10 @@ impl TurnTeam {
     /// That `caller` is on a turn of this agent, whichever member asked it: the first check of
     /// everything here. Every other caller is answered what an unknown action is.
     async fn on_turn(&self, caller: &Caller) -> Result<(), NotTaken> {
-        let turn = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: None,
-        };
-        let asked = self.workspaces.asked_turn(&turn).await?;
+        let asked = self
+            .workspaces
+            .asked_turn_of(self.workspace_id, caller)
+            .await?;
         if asked.agent == self.agent.id.0 {
             Ok(())
         } else {

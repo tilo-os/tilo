@@ -1,31 +1,13 @@
-//! What a turn on this server uses of its person's vault, by reference.
+//! A field of a web page filled from its person's vault by a turn.
 //!
-//! An agent's tools act on the workspace's action service, which knows the
-//! workspace's resources and nothing of a person's own vault. The uses of a
-//! vault item by reference (adding a mail account whose password the vault
-//! keeps, keeping a provider's key from it) are the device's own to answer:
-//! the turn asks them of the device's dispatch, signed with its agent's key,
-//! which decides them for the turn ([`crate::workspaces::hosted_use`]).
-//! [`TurnUses`] is that entry as one
-//! turn's tools reach it, a provider of the turn's own ([`TurnProvider`]): it
-//! lists the uses the turn is offered beside the workspace's resources, and
-//! takes them.
-//!
-//! No device of the person's is on, so a use no grant covers waits for their
-//! yes: the entry refuses it for want of it, and the call waits as its asked
-//! record until their approve admits it again.
+//! Every other use of the vault by reference, and the ask for a secret the vault does not hold
+//! yet, the turn asks of the device's dispatch ([`super::kept`]).
 //!
 //! A field of a web page is the one use whose secret leaves this server: the page is in the
 //! workspace's Browser window, and only its engine writes into it. The turn names the field and
 //! the item ([`person_vault::fill_row`]); the window is handed the fill and says which site its
 //! page is at ([`super::windows::Windows::fill_for_turn`]); the entry decides for
 //! that site ([`TurnUses::release`]), waiting for the person's yes as for every use.
-//!
-//! A secret the agent has no item for yet is asked for through the vault's own ask
-//! ([`person_vault::ASK`]), the one way an agent comes by one: the call waits for the person,
-//! whose asking view opens the vault's own add, in the system's protected password field and in
-//! the system's words ([`person_vault::AskForItem::words`]). What they type goes into their
-//! vault, and the call answers the item's reference.
 //!
 //! Nothing here keeps a secret, and nothing here shows one. The arguments name the item by
 //! its reference, and the entry answers what the person would be answered: the account, the
@@ -45,83 +27,51 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
 use super::windows::{Release, Releasing, TurnFill};
-use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
-use crate::workspaces::hosted_use::HostedTurn;
+use super::{Reply, ServerAgents, TurnProvider, WorkspaceId};
 
 /// What an agent is told of a page fill that waits for its person: nothing was filled yet.
 const ASKED_PAGE: &str = "Your person is asked whether you may fill this vault item into this \
      site's page. Nothing was filled yet.";
 
-/// What one turn uses of its person's vault. A turn's caller changes when
-/// its person writes again while it works, so each use is taken as the caller
-/// of the tool call that asked for it.
+/// What one turn fills of a page from its person's vault. A turn's caller changes when its
+/// person writes again while it works, so each fill is taken as the caller of the tool call that
+/// asked for it.
 pub(super) struct TurnUses {
     agents: ServerAgents,
     workspace: String,
     workspace_id: WorkspaceId,
-    agent: Agent,
-    /// The uses this turn is offered: none for a turn the entry refuses.
+    /// The fill this turn is offered: none where this server places no Browser window, or for a
+    /// turn the entry refuses.
     offered: Vec<CatalogueRow>,
 }
 
 impl TurnUses {
-    /// What `turn` uses of its person's vault, where `reply` holds what its
-    /// tools begin as and act through.
-    pub(super) async fn for_turn(agents: &ServerAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
-        let workspace_id = reply.provider.workspace;
-        let narrowed = turn.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: workspace_id,
-            caller: &reply.caller,
-            bound: narrowed.as_deref(),
-        };
-        let mut offered = agents.workspaces.uses_offered(&hosted).await;
-        offered.extend(agents.workspaces.calls_offered(&hosted).await);
-        if agents.workspaces.secret_ask_for_turn(&hosted).await.is_ok() {
-            offered.push(person_vault::ask_row());
-        }
+    /// What the turn `reply` begins fills of a page, where `reply` holds what its tools begin
+    /// as and act through.
+    pub(super) async fn for_turn(agents: &ServerAgents, reply: &Reply) -> Arc<Self> {
         // A page's field is offered where this server places Browser windows, to a turn the
         // entry would not refuse before the vault is opened.
-        if agents.browsers.is_some() && agents.workspaces.may_fill_pages(&hosted).await.is_ok() {
-            offered.push(person_vault::fill_row());
-        }
+        let offered = if agents.browsers.is_some()
+            && agents
+                .workspaces
+                .may_fill_pages_for(&reply.caller)
+                .await
+                .is_ok()
+        {
+            vec![person_vault::fill_row()]
+        } else {
+            Vec::new()
+        };
         Arc::new(Self {
             agents: agents.clone(),
             workspace: reply.workspace.clone(),
-            workspace_id,
-            agent: turn.agent.clone(),
+            workspace_id: reply.provider.workspace,
             offered,
         })
-    }
-
-    /// The turn as the entry knows it, for `caller`.
-    fn hosted<'a>(
-        &self,
-        caller: &'a Caller,
-        narrowed: Option<&'a [tilo_action_policy::Rule]>,
-    ) -> HostedTurn<'a> {
-        HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed,
-        }
-    }
-
-    /// Take the use `request` asks for as `caller`: how it ended, or the
-    /// server's refusal.
-    async fn take(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationUpdate, ActionCallError> {
-        self.agents
-            .ask_device(self.workspace_id, caller, request)
-            .await
     }
 
     /// Have the field `request` names filled, in the page of this workspace's Browser window,
@@ -156,11 +106,7 @@ impl TurnUses {
             });
         };
         // Refused before any window is asked, as before the vault is opened.
-        let narrowed = self.agent.bound_rules();
-        self.agents
-            .workspaces
-            .may_fill_pages(&self.hosted(caller, narrowed.as_deref()))
-            .await?;
+        self.agents.workspaces.may_fill_pages_for(caller).await?;
         let fill = TurnFill {
             invocation: request.invocation,
             element: wanted.element.clone(),
@@ -201,7 +147,6 @@ impl TurnUses {
         origin: String,
         asks: &Mutex<Option<AskedFacts>>,
     ) -> Release {
-        let narrowed = self.agent.bound_rules();
         let fill = FillPage {
             site: origin,
             item: wanted.item,
@@ -210,7 +155,7 @@ impl TurnUses {
         let released = self
             .agents
             .workspaces
-            .release_for_turn(&self.hosted(caller, narrowed.as_deref()), &fill, request)
+            .release_for(caller, &fill, request)
             .await;
         match released {
             Ok(text) => Release::Text {
@@ -228,25 +173,19 @@ impl TurnUses {
 }
 
 impl TurnProvider for TurnUses {
-    /// The providers of the uses this turn is offered, as a listing of
-    /// everything names them beside the workspace's resources.
+    /// The vault's provider, as a listing of everything names it beside the workspace's
+    /// resources, where this turn is offered a page's fill.
     fn providers(&self, _caller: &Caller) -> Vec<CatalogueProvider> {
-        let mut named: Vec<&str> = self
-            .offered
-            .iter()
-            .map(|row| row.provider.as_str())
-            .collect();
-        named.dedup();
-        named
-            .into_iter()
-            .map(|provider| CatalogueProvider {
-                provider: provider.to_owned(),
-                app_id: provider.to_owned(),
-                workspace: self.workspace.clone(),
-                document_id: String::new(),
-                browsable: true,
-            })
-            .collect()
+        if self.offered.is_empty() {
+            return Vec::new();
+        }
+        vec![CatalogueProvider {
+            provider: person_vault::PROVIDER.to_owned(),
+            app_id: person_vault::PROVIDER.to_owned(),
+            workspace: self.workspace.clone(),
+            document_id: String::new(),
+            browsable: true,
+        }]
     }
 
     /// The rows `query` asks for, when it asks one of those providers.
@@ -261,20 +200,15 @@ impl TurnProvider for TurnUses {
         (!rows.is_empty()).then(|| Pending::ready(Ok(rows)))
     }
 
-    /// A use by reference and the ask for a secret are this server's entry's to answer, also
-    /// for a turn it offers none, which the entry then refuses.
+    /// A page's fill is carried out here, also for a turn it is not offered to, which the
+    /// entry then refuses.
     fn takes(&self, target: &RemoteActionTarget) -> bool {
-        person_vault::described_use(target).is_some() || *target == person_vault::ask_target()
+        *target == person_vault::page_target()
     }
 
     /// A turn's caller changes when its person writes again while it works,
     /// so the use is taken as the caller of the tool call that asked for it.
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
-        Box::pin(async move {
-            if request.target == person_vault::page_target() {
-                return self.fill_page(&caller, &request).await;
-            }
-            self.take(&caller, &request).await
-        })
+        Box::pin(async move { self.fill_page(&caller, &request).await })
     }
 }

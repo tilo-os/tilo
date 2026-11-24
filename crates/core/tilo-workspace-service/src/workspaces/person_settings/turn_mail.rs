@@ -190,7 +190,7 @@ impl Workspaces {
     /// one it would not be refused. None for a turn this server does not carry out, for an agent
     /// that does not reach the workspace's mail and in a workspace that keeps no mail account; a
     /// narrowed agent is offered the ones a rule of its names.
-    pub async fn mail_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn mail_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let Ok((using, ..)) = self.mail_of_turn(turn).await else {
             return Vec::new();
         };
@@ -223,7 +223,7 @@ impl Workspaces {
     /// rule for the action ([`ActionCallError::NotPermitted`]), the arguments do
     /// not read, the mail server refused, or a message to send cannot be
     /// shown whole to its person.
-    pub async fn mail_for_turn(
+    pub(crate) async fn mail_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,

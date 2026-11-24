@@ -106,16 +106,16 @@ pub use tilo_account_probe::stand_in as mail_stand_in;
 /// A turn this server carries out for the person who asked it, as the code that carries it
 /// out knows it.
 #[derive(Clone, Copy, Debug)]
-pub struct HostedTurn<'a> {
+pub(crate) struct HostedTurn<'a> {
     /// The workspace the turn works in.
-    pub workspace: WorkspaceId,
+    pub(crate) workspace: WorkspaceId,
     /// The caller the turn's tools act as: the asking person's session,
     /// handed to the agent on this turn.
-    pub caller: &'a Caller,
+    pub(crate) caller: &'a Caller,
     /// The rules the turn is decided by, where anything narrows its agent:
     /// what its entry bounds it to and, for a sub-agent, what keeps it from
     /// whoever started it. `None` for an agent nothing narrows.
-    pub bound: Option<&'a [Rule]>,
+    pub(crate) bound: Option<&'a [Rule]>,
 }
 
 impl HostedTurn<'_> {
@@ -123,7 +123,7 @@ impl HostedTurn<'_> {
     /// in `workspace`: an agent nothing narrows may, a narrowed one only
     /// where a rule names this very action and does not deny it.
     #[must_use]
-    pub fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
+    pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
         bound_allows(self.bound, workspace, target)
     }
 }
@@ -213,10 +213,61 @@ impl TurnCall {
 /// decided for it.
 #[must_use]
 pub fn answers(caller: &Caller, target: &RemoteActionTarget) -> bool {
-    caller.acting().is_agent() && caller.turn().is_some() && TurnCall::of(target).is_some()
+    on_turn(caller) && takes(target)
+}
+
+/// Whether a call of `target` is one an agent's turn asks the device's dispatch for, of what
+/// its workspace keeps for the person who asked it.
+#[must_use]
+pub fn takes(target: &RemoteActionTarget) -> bool {
+    TurnCall::of(target).is_some()
+}
+
+/// The providers whose actions an agent's turn is offered of what its workspace keeps for the
+/// person who asked it ([`Workspaces::turn_rows`]).
+pub const TURN_PROVIDERS: [&str; 4] = [
+    person_vault::PROVIDER,
+    person_accounts::PROVIDER,
+    person_models::PROVIDER,
+    person_connections::PROVIDER,
+];
+
+/// Whether `caller` is an agent working a turn.
+fn on_turn(caller: &Caller) -> bool {
+    caller.acting().is_agent() && caller.turn().is_some()
+}
+
+/// The turn an agent works as the workspace's list of its agents keeps it: the workspace and
+/// the rules that narrow the agent now, `None` for an agent nothing narrows.
+struct KeptTurn {
+    workspace: WorkspaceId,
+    bound: Option<Vec<Rule>>,
+}
+
+impl KeptTurn {
+    /// The turn as `caller` works it.
+    fn of<'a>(&'a self, caller: &'a Caller) -> HostedTurn<'a> {
+        HostedTurn {
+            workspace: self.workspace,
+            caller,
+            bound: self.bound.as_deref(),
+        }
+    }
 }
 
 impl Workspaces {
+    /// The turn `caller` works, as its workspace's list of its agents keeps the agent; `None`
+    /// for a caller that is no agent in that list.
+    async fn kept_turn(&self, caller: &Caller) -> Option<KeptTurn> {
+        let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
+        let agent = caller.acting().agent_id()?;
+        let bound = self.kept_bound(&workspace.to_string(), agent, true).await?;
+        Some(KeptTurn {
+            workspace,
+            bound: Some(bound).filter(|bound| !bound.is_empty()),
+        })
+    }
+
     /// Answer `request`, what an agent's turn asks of what its workspace keeps for the person
     /// who asked it, for `caller`, the agent on that turn. What narrows the agent is what the
     /// workspace's list of its agents keeps for it now; an agent the list does not name reaches
@@ -231,22 +282,13 @@ impl Workspaces {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-        let (Some(call), Some(workspace), Some(agent)) = (
-            TurnCall::of(&request.target),
-            caller.workspace().and_then(WorkspaceId::parse),
-            caller.acting().agent_id(),
-        ) else {
+        let Some(call) = TurnCall::of(&request.target) else {
             return Err(UnknownAction);
         };
-        let Some(bound) = self.kept_bound(&workspace.to_string(), agent, true).await else {
+        let Some(kept) = self.kept_turn(caller).await else {
             return Err(UnknownAction);
         };
-        let bound = Some(bound).filter(|bound| !bound.is_empty());
-        let turn = HostedTurn {
-            workspace,
-            caller,
-            bound: bound.as_deref(),
-        };
+        let turn = kept.of(caller);
         let value = match call {
             TurnCall::Use => self.use_for_turn(&turn, request).await?,
             TurnCall::AskForSecret => self.secret_for_turn(&turn, request).await?,
@@ -270,6 +312,61 @@ impl Workspaces {
                 },
             },
         })
+    }
+
+    /// The actions of `provider` that `caller`'s turn is offered of what its workspace keeps
+    /// for the person who asked it: each one it would not be refused before anything is opened,
+    /// read anew at every listing, so a connection its person added a moment ago is in it. A
+    /// caller that is no agent in its workspace's list is offered nothing.
+    pub(crate) async fn turn_rows(&self, caller: &Caller, provider: &str) -> Vec<CatalogueRow> {
+        let Some(kept) = self.kept_turn(caller).await else {
+            return Vec::new();
+        };
+        let turn = kept.of(caller);
+        let mut rows = self.uses_offered(&turn).await;
+        rows.extend(self.calls_offered(&turn).await);
+        if self.secret_ask_for_turn(&turn).await.is_ok() {
+            rows.push(person_vault::ask_row());
+        }
+        rows.extend(self.mail_offered(&turn).await);
+        #[cfg(feature = "agents")]
+        {
+            rows.extend(self.mail_connect_offered(&turn).await);
+            rows.extend(self.calendars_offered(&turn).await);
+            rows.extend(self.calendar_connect_offered(&turn).await);
+        }
+        rows.extend(self.connection_rows_for_turn(&turn).await);
+        rows.retain(|row| row.provider == provider);
+        rows
+    }
+
+    /// Whether `caller`'s turn may ask for a page's field to be filled from its workspace's
+    /// vault at all: what [`Self::release_for`] refuses before the vault is opened, asked before
+    /// any window is.
+    ///
+    /// # Errors
+    /// As [`Self::may_fill_pages`], and [`UnknownAction`] for a caller that is no agent in its
+    /// workspace's list.
+    pub(crate) async fn may_fill_pages_for(&self, caller: &Caller) -> Result<(), ActionCallError> {
+        let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
+        self.may_fill_pages(&kept.of(caller)).await
+    }
+
+    /// Release what the item `fill` names keeps for the page at its site, for `caller`'s turn,
+    /// which `request` asked, as [`Self::release_for_turn`] decides it for the turn the
+    /// workspace's list of its agents keeps.
+    ///
+    /// # Errors
+    /// As [`Self::release_for_turn`], and [`UnknownAction`] for a caller that is no agent in
+    /// its workspace's list.
+    pub(crate) async fn release_for(
+        &self,
+        caller: &Caller,
+        fill: &FillPage,
+        request: &InvokeRequest,
+    ) -> Result<PageText, ActionCallError> {
+        let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
+        self.release_for_turn(&kept.of(caller), fill, request).await
     }
 }
 
@@ -674,6 +771,24 @@ fn use_asked(
 }
 
 impl Workspaces {
+    /// Who asked the turn `caller` works in `workspace`, where it is one this server carries
+    /// out ([`Self::asked_turn`]): what a provider of the turn's own checks first.
+    ///
+    /// # Errors
+    /// [`UnknownAction`] for every other caller.
+    pub(crate) async fn asked_turn_of(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<AskedTurn, ActionCallError> {
+        self.asked_turn(&HostedTurn {
+            workspace,
+            caller,
+            bound: None,
+        })
+        .await
+    }
+
     /// Who asked `turn`, where it is one this server carries out: the first
     /// check of everything of the workspace's that such a turn reaches.
     /// Unknown and forbidden are the same answer.
@@ -686,7 +801,10 @@ impl Workspaces {
     ///
     /// # Errors
     /// [`UnknownAction`] for every other caller.
-    pub async fn asked_turn(&self, turn: &HostedTurn<'_>) -> Result<AskedTurn, ActionCallError> {
+    pub(crate) async fn asked_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Result<AskedTurn, ActionCallError> {
         let caller = turn.caller;
         let acting = caller.acting();
         // This server's own agent, inside a turn: nothing else is a turn
@@ -726,7 +844,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::asked_turn`], and [`NotPermitted`] for a narrowed agent without that rule.
-    pub async fn secret_ask_for_turn(
+    pub(crate) async fn secret_ask_for_turn(
         &self,
         turn: &HostedTurn<'_>,
     ) -> Result<AskedTurn, ActionCallError> {
@@ -806,7 +924,7 @@ impl Workspaces {
 
     /// The uses by reference `turn` is offered, as a catalogue lists them:
     /// each one it would not be refused before the vault is opened.
-    pub async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
         for row in person_vault::use_rows() {
             let Some(action) = &row.action else {
@@ -828,7 +946,7 @@ impl Workspaces {
     /// them: each one it would not be refused before the vault is opened.
     /// They are listed apart from [`Self::uses_offered`]: no "Always"
     /// stands for one.
-    pub async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
         for row in person_vault::call_rows() {
             let Some(action) = &row.action else {
@@ -855,7 +973,7 @@ impl Workspaces {
     /// refuses the use (no such item in the workspace's vault, another kind, a place it does
     /// not belong to), or it waits for the person's yes
     /// ([`ActionCallError::ConfirmationRequired`]).
-    pub async fn use_for_turn(
+    pub(crate) async fn use_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
@@ -1014,7 +1132,10 @@ impl Workspaces {
     /// # Errors
     /// As [`Self::asked_turn`], and [`NotPermitted`] for a narrowed agent that holds no
     /// rule for this use.
-    pub async fn may_fill_pages(&self, turn: &HostedTurn<'_>) -> Result<(), ActionCallError> {
+    pub(crate) async fn may_fill_pages(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Result<(), ActionCallError> {
         self.turn_uses_for(turn, &person_vault::page_target())
             .await
             .map(drop)
@@ -1030,7 +1151,7 @@ impl Workspaces {
     /// As [`Self::use_for_turn`], and the vault's own refusals: no such item in the
     /// workspace's vault, a site it does not belong to or that did not arrive over https, an
     /// item that is no login, code generator or value.
-    pub async fn release_for_turn(
+    pub(crate) async fn release_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         fill: &FillPage,

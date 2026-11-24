@@ -284,7 +284,7 @@ impl Workspaces {
     /// agent is narrowed and holds no rule for the connection or the action
     /// ([`Refused::NotPermitted`]); the arguments do not read; or the
     /// connections refuse it, in their own words.
-    pub async fn connections_for_turn(
+    pub(crate) async fn connections_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
@@ -489,7 +489,10 @@ impl Workspaces {
     /// agent does with them, and each command of each connection it
     /// reaches, with whether it asks first. Read anew at every listing.
     /// Nothing for a turn this server does not carry out.
-    pub async fn connection_rows_for_turn(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub(crate) async fn connection_rows_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Vec<CatalogueRow> {
         let Ok(using) = self.asked_turn(turn).await else {
             return Vec::new();
         };
