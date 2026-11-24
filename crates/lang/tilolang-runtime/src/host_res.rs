@@ -1331,6 +1331,43 @@ impl Core {
             }
             Imp::ResAddI => self.res_add(a.h(0)?, a.h(1)?, Ok(a.long(2)?)),
             Imp::ResAddF => self.res_add(a.h(0)?, a.h(1)?, Err(a.float(2)?)),
+            Imp::CollInsert
+            | Imp::CollInsertAs
+            | Imp::CollInsertKeyed
+            | Imp::Earlier
+            | Imp::CollRemove
+            | Imp::CollMove
+            | Imp::CollMoveTo
+            | Imp::CollMoveAmong
+            | Imp::CollPlace => self.collection_access(imp, a),
+            Imp::SetAdd
+            | Imp::SetRemove
+            | Imp::MapPut
+            | Imp::MapRemove
+            | Imp::MapSetAdd
+            | Imp::MapSetRemove => self.set_map_import(imp, a),
+            Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
+            Imp::MapNew
+            | Imp::MapPutValue
+            | Imp::MapRemoveValue
+            | Imp::MapGetValue
+            | Imp::MapKeysValue => self.map_value_import(imp, a),
+            Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
+            Imp::RecOwn
+            | Imp::RefLit
+            | Imp::RefEq
+            | Imp::RefIs
+            | Imp::RefId
+            | Imp::RowKey => self.reference_access(imp, a),
+            Imp::ResourceRef => self.resource_by_id(a.h(0)?),
+            _ => trap("not a resource import"),
+        }
+    }
+
+    /// [`resource_access`] for the collections: inserting, moving and removing an item, and the
+    /// item this runtime read before.
+    fn collection_access(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::CollInsert | Imp::CollInsertAs | Imp::CollInsertKeyed => self.coll_insert(imp, a),
             Imp::Earlier => self.ret_h(self.earlier_import(a)?),
             Imp::CollRemove => {
@@ -1371,19 +1408,14 @@ impl Core {
             }
             Imp::CollMoveAmong => self.coll_move_among(a),
             Imp::CollPlace => self.coll_place(a),
-            Imp::SetAdd
-            | Imp::SetRemove
-            | Imp::MapPut
-            | Imp::MapRemove
-            | Imp::MapSetAdd
-            | Imp::MapSetRemove => self.set_map_import(imp, a),
-            Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
-            Imp::MapNew
-            | Imp::MapPutValue
-            | Imp::MapRemoveValue
-            | Imp::MapGetValue
-            | Imp::MapKeysValue => self.map_value_import(imp, a),
-            Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
+            _ => trap("not a collection import"),
+        }
+    }
+
+    /// [`resource_access`] for records and references: what a reference is and names, and how a
+    /// list row is called between builds.
+    fn reference_access(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::RecOwn => {
                 let h = a.h(0)?;
                 let copied = self.with_val(h, |v| match v {
@@ -1439,8 +1471,7 @@ impl Core {
             // A place names what it shows by the id alone (`LayoutPlace.resource`), so a
             // shell reads the place's resource — its actions, its title — without knowing the
             // type ahead; a view that reads it runs again when it changes.
-            Imp::ResourceRef => self.resource_by_id(a.h(0)?),
-            _ => trap("not a resource import"),
+            _ => trap("not a reference import"),
         }
     }
 
