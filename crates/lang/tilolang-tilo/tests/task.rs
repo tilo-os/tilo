@@ -328,17 +328,23 @@ fn a_flag_argument_is_sent_as_a_flag() {
 fn a_resource_argument_is_the_catalogues_reference() {
     let task = seeded();
     let answer = task.step(
-        "for t in tasks.tasks.items.take(1) {\n    tasks.remove(t)\n}",
+        "let parent = tasks.tasks.items.filter(t -> t.title == \"milk\").single()\n\
+         let child = tasks.tasks.items.filter(t -> t.title == \"bins\").single()\n\
+         tasks.move_to(child, .some(parent), .none)",
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
-    let remove = task.api.invoked.borrow().last().cloned().unwrap();
+    let move_to = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
-        remove["arguments"]["t"]["kind"],
+        move_to["arguments"]["parent"]["kind"],
         json!("tl.so.tilo.tasks.Task"),
-        "{remove:#}"
+        "{move_to:#}"
     );
-    assert_eq!(task.said("tasks.tasks.items.len()"), "1");
+    assert_eq!(
+        task.said("tasks.tasks.items.filter(t -> t.parent != .none).len()"),
+        "1",
+        "the task the reference named went under the one it gave"
+    );
 }
 
 /// Every argument travels in the shape the action's published parameter declares, which the
