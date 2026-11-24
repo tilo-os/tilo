@@ -37,10 +37,11 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py",
             "os/usr/share/tilo/system-interfaces.toml",
             "tools/apps/pack-runtime-package.sh", "tools/apps/language_packs.py",
+            "tools/apps/runtime_packages.sh",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
-            "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "apps/calculator/surface.toml",
+            "apps/totp/Cargo.toml", "apps/totp/tilo-app.toml",
+            "apps/totp/surface.toml",
             "crates/core/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
@@ -108,19 +109,19 @@ elif object.name != 'libc.so.6':
 """)
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
-[[ "$BUILD_PACKAGES" == calculator ]]
-[[ " $INCLUDE_PACKAGES " == *" calculator "* ]]
-cargo build --locked --profile thin-app -p runtime-dylib -p calculator
+[[ "$BUILD_PACKAGES" == totp ]]
+[[ " $INCLUDE_PACKAGES " == *" totp "* ]]
+cargo build --locked --profile thin-app -p runtime-dylib -p totp
 mkdir -p target/thin-app
 python3 - <<'ELF'
 import os, pathlib
 header = bytearray(64)
 header[:6] = bytes([127, 69, 76, 70, 2, 1])
 header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes(2, 'little')
-pathlib.Path('target/thin-app/calculator').write_bytes(header)
+pathlib.Path('target/thin-app/totp').write_bytes(header)
 ELF
-chmod +x target/thin-app/calculator
-cp target/thin-app/calculator target/thin-app/tilo-runtime-account-capability
+chmod +x target/thin-app/totp
+cp target/thin-app/totp target/thin-app/tilo-runtime-account-capability
 printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 printf '\\177ELF fixture typst engine' > target/thin-app/libtilo_typst_engine.so
 printf 'libtilo_typst_engine.so\\n' > target/thin-app/runtime-engines
@@ -176,7 +177,7 @@ if a[0] == 'pack':
         assert manifest['sandbox']['services']['identity'] == 'optional@{}'.format(tomllib.loads(pathlib.Path('os/usr/share/tilo/system-interfaces.toml').read_text())['interfaces']['runtime']), manifest
         payload = pathlib.Path(a[a.index('--payload')+1])
         output = pathlib.Path(a[a.index('--output')+1])
-        output.write_bytes((payload/'bin/calculator').read_bytes())
+        output.write_bytes((payload/'bin/totp').read_bytes())
         # The surface the payload root carries, kept for the test to read.
         surface = payload/'surface.toml'
         if surface.is_file():
@@ -197,7 +198,7 @@ else:
 """)
         self.env = dict(os.environ, PATH=str(self.root / "bin") + os.pathsep + os.environ["PATH"],
                         FIXTURE_CARGO_LOG=str(self.root / "cargo.log"),
-                        FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="calculator",
+                        FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="totp",
                         FIXTURE_SURFACES=str(self.root / "packed-surfaces"),
                         TILO_APP_MODELS=str(self.root / "models"),
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
@@ -234,16 +235,16 @@ exit 99
                                 cwd=self.root, env=self.env, text=True,
                                 capture_output=True, timeout=HANG_BOUND)
         self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
-        self.assertIn("packing app=calculator binary=", result.stdout)
+        self.assertIn("packing app=totp binary=", result.stdout)
         self.assertIn("application tapp is too large", result.stderr)
-        self.assertIn("pack failed: app=calculator output=", result.stderr)
-        self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
+        self.assertIn("pack failed: app=totp output=", result.stderr)
+        self.assertIn("totp-0.1.0-x86_64.tapp", result.stderr)
         self.assertIn("exit_status=37 binary_bytes=64 limit=8388608", result.stderr)
         self.assertNotIn("verify must not run", result.stderr)
         self.assertNotIn("packed app=", result.stdout)
 
     def test_a_missing_source_isa_is_staged_before_pack_on_both_architectures(self):
-        manifest = self.root / "apps/calculator/tilo-app.toml"
+        manifest = self.root / "apps/totp/tilo-app.toml"
         manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
                                    '', manifest.read_text()))
         for architecture in ("x86_64", "aarch64"):
@@ -292,10 +293,10 @@ exit 99
     def test_a_release_tapp_carries_the_apps_committed_surface(self):
         self.env["FIXTURE_ARCH"] = "x86_64"
         self.command("bash", "dist/apps/package-apps.sh")
-        packed = list((self.root / "packed-surfaces").glob("calculator-*-x86_64.tapp.surface"))
-        self.assertEqual(len(packed), 1, "the calculator tapp's payload has a surface.toml")
+        packed = list((self.root / "packed-surfaces").glob("totp-*-x86_64.tapp.surface"))
+        self.assertEqual(len(packed), 1, "the totp tapp's payload has a surface.toml")
         self.assertEqual(packed[0].read_bytes(),
-                         (ROOT / "apps/calculator/surface.toml").read_bytes())
+                         (ROOT / "apps/totp/surface.toml").read_bytes())
 
     def test_native_outputs_keep_audited_flags_through_upload_and_assembly(self):
         with self.subTest(phase='encoded output retains every audited target flag'):
@@ -319,9 +320,9 @@ exit 99
                 with self.subTest(architecture=architecture):
                     self.env["FIXTURE_ARCH"] = architecture
                     result = self.command("bash", "dist/apps/package-apps.sh")
-                    self.assertIn("packing app=calculator binary=", result.stdout)
+                    self.assertIn("packing app=totp binary=", result.stdout)
                     self.assertIn("binary_bytes=64", result.stdout)
-                    self.assertIn("packed app=calculator output=", result.stdout)
+                    self.assertIn("packed app=totp output=", result.stdout)
                     self.assertIn("tapp_bytes=64 limit=8388608", result.stdout)
                     calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
                     # The packing tools build in the release profile.
@@ -354,9 +355,9 @@ exit 99
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "bundle.toml").is_file(),
                                     "workflow did not transport the produced runtime")
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libxkbcommon.so.0").is_file(),
-                                    "a partial calculator release omitted the default SDK keyboard dependency")
+                                    "a partial totp release omitted the default SDK keyboard dependency")
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libtilo_typst_engine.so").is_file(),
-                                    "a partial calculator release omitted a runtime engine")
+                                    "a partial totp release omitted a runtime engine")
                     self.assertTrue((artifact / f"runtime-package/runtime-0.1.0-{architecture}.tapp").is_file(),
                                     "workflow did not transport the runtime package")
                     self.assertTrue(list((artifact / "runtime-package").glob("*.blob")),
