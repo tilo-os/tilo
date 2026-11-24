@@ -301,7 +301,7 @@ impl OriginalInvocationData {
     /// Where the original action sits in `workspace`'s tree.
     fn node(&self, workspace: &tilo_desktop_model::Workspace) -> tilo_action_policy::TreePath {
         tilo_actions::action_node(
-            &workspace.node(),
+            &workspace.policy.node(),
             &self.route.app_id,
             &self.resource_kind,
             &self.request.address.resource,

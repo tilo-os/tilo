@@ -29,7 +29,7 @@ pub const CONTENT_PUT_REFUSED: &str = "not allowed to add content to this worksp
 /// The node a put into `workspace` is decided at.
 fn put_node(workspace: &Workspace) -> TreePath {
     tilo_actions::action_node(
-        &workspace.node(),
+        &workspace.policy.node(),
         CONTENT_PUT_SCOPE,
         CONTENT_PUT_SCOPE,
         "content",

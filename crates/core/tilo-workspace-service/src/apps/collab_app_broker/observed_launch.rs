@@ -564,7 +564,7 @@ pub(super) fn launch_author(
         .filter(|_| {
             actor.may_in(
                 workspace,
-                &workspace.node(),
+                &workspace.policy.node(),
                 tilo_action_policy::ActionKind::Undoable,
                 now,
             )

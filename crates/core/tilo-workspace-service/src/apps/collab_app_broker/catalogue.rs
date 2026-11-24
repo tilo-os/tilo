@@ -1,9 +1,9 @@
+use super::*;
 #[allow(
     clippy::wildcard_imports,
     reason = "one part of the broker module: the shared state, its imports and the other parts reach this through the parent glob"
 )]
 use crate::workspaces::providers::Reach;
-use super::*;
 
 /// The catalogue one audience may see, each surface's actions shared by its
 /// followers.

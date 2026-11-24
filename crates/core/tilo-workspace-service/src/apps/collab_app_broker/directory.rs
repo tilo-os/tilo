@@ -1398,7 +1398,7 @@ impl AppBrokerState {
                         .iter()
                         .map(|question| {
                             let node = tilo_actions::action_node(
-                                &workspace.node(),
+                                &workspace.policy.node(),
                                 app_id,
                                 question.resource_kind,
                                 question.resource,

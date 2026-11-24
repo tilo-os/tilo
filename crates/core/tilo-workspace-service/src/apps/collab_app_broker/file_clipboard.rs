@@ -109,7 +109,7 @@ impl JoinedChannel {
                 .decide_in_workspace(&route.cluster_id, |space| {
                     let space = space.ok_or("clipboard workspace ended")?;
                     let node = tilo_actions::action_node(
-                        &space.node(),
+                        &space.policy.node(),
                         &route.app_id,
                         kind,
                         resource,

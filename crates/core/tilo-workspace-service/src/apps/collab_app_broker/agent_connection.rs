@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 
 use super::AppBrokerState;
@@ -336,5 +336,4 @@ impl ActionProvider for AgentConnection {
         }
         self.0.provider.cancel(&self.0.caller, id)
     }
-
 }

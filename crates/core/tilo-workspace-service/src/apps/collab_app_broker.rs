@@ -196,7 +196,7 @@ use agent_cert::admit_listed_agent;
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
 pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
-    workspace.node().app(app)
+    workspace.policy.node().app(app)
 }
 
 /// What an invocation of `descriptor` would run with, as the person reviews it: the draft the
@@ -276,13 +276,13 @@ mod approval;
 mod cancel_tests;
 mod foreign_ask;
 mod host_action_admission;
-mod provided;
 mod invocation_update;
 mod launchable;
 mod live_views;
 mod local_action_provider;
 mod person_answer;
 mod person_ask;
+mod provided;
 mod remaining_workspace_actions;
 #[cfg(all(test, feature = "agents"))]
 mod web_search_tests;

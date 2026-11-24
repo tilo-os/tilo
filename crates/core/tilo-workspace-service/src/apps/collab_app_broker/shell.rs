@@ -8,8 +8,7 @@ use runtime_collab::wire::shell::{
     DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
 };
 use tilo_actions::remote::{
-    Caller, InvokeArgument, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    ResourceReadRequest, ResourceReads as _, resource_parts,
+    Caller, InvokeArgument, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
 };
 use tilo_peer_state::workspace_documents::DocumentWriting;
 
@@ -149,6 +148,7 @@ pub(super) async fn vouched(
         continuation_instance: vouch.window,
         launch_ticket: None,
         windowless: vouch.windowless,
+        opened_for: None,
     };
     let local_media = super::native_media::LocalAppConnection::attested_keeping(
         vouch.app,
@@ -267,7 +267,11 @@ async fn dispatch(
             {
                 return RemoteActionFrame::new(RemoteActionMessage::ResourceReading {
                     correlation,
-                    result: published_read(published, &read, revision).await,
+                    result: published_read(published, &read, revision)
+                        .await
+                        .map_err(
+                            |reason| tilo_actions::remote::ActionCallError::Unavailable { reason },
+                        ),
                 })
                 .encode()
                 .map_err(|error| error.to_string());
@@ -313,8 +317,12 @@ async fn dispatch(
                     InvokeArgument::Json(arguments) => serde_json::to_vec(arguments)
                         .map_err(|error| format!("the arguments do not encode: {error}"))?,
                     InvokeArgument::None => br"{}".to_vec(),
+                    InvokeArgument::Text(_) => {
+                        return Err("a published resource's action takes named arguments".into());
+                    }
                 };
-                return RemoteActionFrame::new(RemoteActionMessage::Receipt(
+                return RemoteActionFrame::new(RemoteActionMessage::Receipt(receipt_of(
+                    request.invocation,
                     published_action(
                         published,
                         &ServiceCaller {
@@ -326,7 +334,7 @@ async fn dispatch(
                         arguments,
                     )
                     .await,
-                ))
+                )))
                 .encode()
                 .map_err(|error| error.to_string());
             }
@@ -503,6 +511,33 @@ async fn published_action(
             }
         }
     }
+}
+
+/// `receipt`, what the device's services answered for `invocation`, as the action wire says it.
+fn receipt_of(
+    invocation: tilo_actions::InvocationId,
+    receipt: runtime_collab::wire::Receipt,
+) -> tilo_actions::remote::InvocationReceipt {
+    use tilo_actions::remote::ActionCallError;
+    let status = match receipt {
+        runtime_collab::wire::Receipt::Accepted => ReceiptStatus::Accepted,
+        runtime_collab::wire::Receipt::Done(output) => match serde_json::from_slice(&output) {
+            Ok(output) => ReceiptStatus::Completed { output },
+            Err(error) => ReceiptStatus::Rejected {
+                error: ActionCallError::Unavailable {
+                    reason: format!("the device's action answered what does not read: {error}"),
+                },
+            },
+        },
+        runtime_collab::wire::Receipt::Refused { code, message } => ReceiptStatus::Rejected {
+            error: if code == "unknown_action" {
+                ActionCallError::UnknownAction
+            } else {
+                ActionCallError::Refused { reason: message }
+            },
+        },
+    };
+    tilo_actions::remote::InvocationReceipt { invocation, status }
 }
 
 /// A [`ShellCall::Write`], written as the device.

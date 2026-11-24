@@ -78,7 +78,7 @@ impl AppBrokerState {
             tracing::warn!(
                 %app_id,
                 caller = %policy.member(),
-                owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                owner = workspace.policy.owner().unwrap_or("none"),
                 direct = policy.direct(),
                 answer = ?policy.answer_in(&workspace, &node, tilo_action_policy::ActionKind::Undoable, now),
                 "opening an app was refused: the workspace does not let the caller open it"
@@ -93,7 +93,7 @@ impl AppBrokerState {
         let author = caller.acting().person_id().filter(|_| {
             policy.may_in(
                 &workspace,
-                &workspace.node(),
+                &workspace.policy.node(),
                 tilo_action_policy::ActionKind::Undoable,
                 now,
             )

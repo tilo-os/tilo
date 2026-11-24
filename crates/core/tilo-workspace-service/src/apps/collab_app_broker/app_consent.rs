@@ -189,7 +189,7 @@ impl AppBrokerState {
             .decide_in_workspace(workspace, |held| {
                 let held = held?;
                 let node = tilo_actions::action_node(
-                    &held.node(),
+                    &held.policy.node(),
                     target_app,
                     &action.resource_kind,
                     &action.address.resource,

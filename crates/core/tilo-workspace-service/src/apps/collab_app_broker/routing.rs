@@ -735,10 +735,11 @@ impl AppBrokerState {
                 let workspace = workspace?;
                 let agents = workspace.policy.agent_members_at(now);
                 let people: Vec<(String, String)> = workspace
-                    .roster()
+                    .policy
+                    .people()
                     .into_iter()
                     .map(|(person, _)| person)
-                    .filter(|person| !workspace.is_blocked(person))
+                    .filter(|person| !workspace.policy.is_blocked(person))
                     .map(|person| {
                         let wanted = collab_types::MemberId::person(person.clone());
                         let name = workspace
@@ -843,9 +844,10 @@ impl AppBrokerState {
         workspace: &tilo_desktop_model::Workspace,
     ) -> Vec<collab_types::Member> {
         let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
-            .roster()
+            .policy
+            .people()
             .into_iter()
-            .filter(|(person, _)| !workspace.is_blocked(person))
+            .filter(|(person, _)| !workspace.policy.is_blocked(person))
             .collect();
         people.sort_by(|left, right| left.0.cmp(&right.0));
         let mut listed: Vec<collab_types::Member> = people

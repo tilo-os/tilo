@@ -165,7 +165,7 @@ impl AppBrokerState {
         if let tilo_actions::Availability::Unavailable { reason, .. } =
             &offered.1.contract.availability
         {
-            return Err(format!("the application action is unavailable: {reason}"));
+            return Err(format!("the application action is unavailable: {reason}").into());
         }
         // What the person allowed an agent session for every later step like
         // one it asked about: decided with the workspace's grants, as an

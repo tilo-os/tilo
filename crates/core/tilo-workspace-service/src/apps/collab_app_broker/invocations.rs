@@ -179,8 +179,12 @@ impl AppBrokerState {
         }
         let app = self.origin_app(&origin.kind);
         self.decide_for(caller, workspace, |workspace, actor, now| {
-            let node =
-                tilo_actions::resource_node(&workspace.node(), &app, &origin.kind, &origin.id);
+            let node = tilo_actions::resource_node(
+                &workspace.policy.node(),
+                &app,
+                &origin.kind,
+                &origin.id,
+            );
             actor.may_in(workspace, &node, ActionKind::Undoable, now)
         })
         .unwrap_or(false)
@@ -317,6 +321,9 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         undoable: false,
         undo_blocked: None,
         recorded: false,
+        // A broker invocation's ask waits in the person's asked record, not in this listing.
+        person: None,
+        asked: None,
         remembered: true,
     }
 }

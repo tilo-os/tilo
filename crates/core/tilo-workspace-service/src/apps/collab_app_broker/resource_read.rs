@@ -175,7 +175,7 @@ impl AppBrokerState {
     ) -> Result<(), ActionCallError> {
         super::action_provider::check_execution(caller)?;
         match self.decide_for(caller, workspace, |workspace, actor, now| {
-            let node = tilo_actions::resource_node(&workspace.node(), app, kind, resource);
+            let node = tilo_actions::resource_node(&workspace.policy.node(), app, kind, resource);
             actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
         }) {
             Some(true) => Ok(()),
@@ -226,7 +226,7 @@ impl ResourceChanges for BrokerDocumentChanges {
         let answer = state
             .decide_for(caller, workspace, |workspace, actor, now| {
                 let node = tilo_actions::action_node(
-                    &workspace.node(),
+                    &workspace.policy.node(),
                     &change.app,
                     "",
                     &change.resource,

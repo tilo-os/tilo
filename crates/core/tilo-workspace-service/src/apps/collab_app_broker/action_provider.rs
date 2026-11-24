@@ -172,7 +172,6 @@ impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
         }
         self.state.action_cancel(caller, id)
     }
-
 }
 
 /// The broker's own api, as the [`ActionProvider`](tilo_actions::remote::ActionProvider)
@@ -277,7 +276,6 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         self.state.action_cancel(caller, id)
     }
-
 }
 
 /// The provider runs the action wherever its app lives; a published surface
@@ -1850,14 +1848,19 @@ impl AppBrokerState {
             .services
             .providers
             .as_ref()
-            .filter(|_| tilo_actions::remote::application_provider(&request.target.provider).is_some())
+            .filter(|_| {
+                tilo_actions::remote::application_provider(&request.target.provider).is_some()
+            })
             .and_then(|providers| {
-                providers.published(&request.target, crate::workspaces::providers::Reach::ThisDevice)
+                providers.published(
+                    &request.target,
+                    crate::workspaces::providers::Reach::ThisDevice,
+                )
             })
         {
             let mut request = request.clone();
-            registered.provider.clone_into(&mut request.target.provider);
-            return Pending::ready(self.invoke_registered(caller, origin, &registered, &request));
+            request.target.provider = registered.provider.to_string();
+            return self.invoke_registered(caller, origin, &registered, &request);
         }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
@@ -2301,7 +2304,7 @@ impl AppBrokerState {
                 tracing::warn!(
                     %app_id,
                     caller = %policy.member(),
-                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    owner = workspace.policy.owner().unwrap_or("none"),
                     "an app's launch was refused: the workspace does not let the caller open it"
                 );
                 Err(ActionCallError::NotPermitted)
@@ -2778,7 +2781,7 @@ impl AppBrokerState {
                 tracing::warn!(
                     app,
                     caller = %policy.member(),
-                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    owner = workspace.policy.owner().unwrap_or("none"),
                     action = %descriptor.address.action,
                     "an action was refused: the workspace does not grant it to the caller"
                 );

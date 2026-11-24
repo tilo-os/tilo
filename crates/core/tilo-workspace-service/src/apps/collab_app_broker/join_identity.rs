@@ -305,7 +305,10 @@ pub(super) fn admit_verified_join_at(
     if !BrokerActor::person(actor_key.clone()).reads_in(workspace, now) {
         return Err("certified collaboration identity is not a workspace member".into());
     }
-    let role = workspace.role_of(&actor_key).unwrap_or(CapRole::Viewer);
+    let role = workspace
+        .policy
+        .role_of(&actor_key)
+        .unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
         worker_registration: None,
         certificate: None,
