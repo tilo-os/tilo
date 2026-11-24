@@ -15,26 +15,43 @@ import {
   SELF,
 } from "./src/plan.js";
 import {
+  API,
+  ORIGIN,
+  SENT_IN,
+  channelsOf,
+  guildChannels,
+  serversOf,
   webhookSend,
   webhookEdit,
   webhookDelete,
   react,
+  whyRefused,
 } from "./src/rest.js";
 
 /// The bridge's record path: its own app's root, the accounts it bridges.
 export const ACCOUNTS = `${SELF}/accounts`;
 
-/// A procedure the process runs once: the bridge starts, reads its account, and holds the
-/// gateway until the connection ends.
-export async function run({ tilo, makeClient, log = () => {} }) {
+/// How long to wait before asking again for a vault item whose person is being asked whether the
+/// app may read it, and how many times.
+export const RELEASE_RETRY_MS = 2_000;
+export const RELEASE_TRIES = 90;
+
+/// A procedure the process runs once: the bridge starts, answers the setup its person asks for,
+/// and holds the gateway of the server it bridges until the connection ends.
+export async function run({ tilo, makeClient, fetch = globalThis.fetch, wait, log = () => {} }) {
   const calls = new Calls(tilo.workspace ? tilo.workspace() : tilo);
+  // The setup is answered beside whatever the bridge carries: a press reaches this process
+  // through the record, and nothing else does.
+  const setup = serveSetup({ calls, fetch, wait, log }).catch((error) =>
+    log(`the setup stopped: ${error?.message ?? error}`),
+  );
   const accounts = await calls.state(ACCOUNTS);
   const account = accounts?.accounts?.[0] ?? accounts;
   if (!account?.guild_id) {
     log("no Discord server is connected");
-    return;
+    return setup;
   }
-  const token = await calls.release(account.token_item);
+  const token = await released(calls, account.token_item, { wait });
   const client = await import("./src/gateway.js").then(({ connect }) =>
     connect({
       make: makeClient,
@@ -45,6 +62,150 @@ export async function run({ tilo, makeClient, log = () => {} }) {
   );
   await carryFromWorkspace({ calls, account, log });
   return client;
+}
+
+/// The bot's token, released from the workspace's vault into this process: the one place a
+/// secret is a value here, and it is the app's held connection the vault answers it to. The
+/// person is asked once whether the app may read the item, so a refusal saying so is waited on
+/// and the call is made again.
+export async function released(
+  calls,
+  item,
+  {
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    tries = RELEASE_TRIES,
+    retryMs = RELEASE_RETRY_MS,
+  } = {},
+) {
+  if (!item) {
+    throw new Error("this bridge keeps no bot's token in the workspace's vault");
+  }
+  for (let left = tries; left > 0; left -= 1) {
+    try {
+      return await calls.release(item);
+    } catch (error) {
+      if (!askedFirst(error)) throw error;
+      await wait(retryMs);
+    }
+  }
+  throw new Error(
+    "the person was asked whether the bridge may read the bot's token, and did not answer in time",
+  );
+}
+
+/// Whether `error` says the vault is waiting for the person to allow the app to read the item,
+/// which a later call answers once they did.
+function askedFirst(error) {
+  return String(error?.message ?? error).includes("may not read this vault item yet");
+}
+
+/// Answer the setup presses this bridge's record names, one each: what the person asked for, and
+/// the id of the press that asked, so nothing is answered twice.
+export async function serveSetup({ calls, fetch = globalThis.fetch, wait, log = () => {} }) {
+  const answered = new Set();
+  for await (const _ of calls.watch(SELF)) {
+    const accounts = await calls.state(ACCOUNTS);
+    const account = accounts?.accounts?.[0] ?? accounts;
+    if (!account?.setup_wants || !account.setup_ask) continue;
+    const press = `${account.setup_wants}:${account.setup_ask}`;
+    if (answered.has(press)) continue;
+    answered.add(press);
+    await answerSetup({ calls, account, fetch, wait, log });
+  }
+}
+
+/// What one setup press asks this process for: the token put in the person's vault, the bot's
+/// servers, a server's channels, or where to sign in with Discord. Every answer goes back through
+/// the app's own action, matched to the press.
+export async function answerSetup({ calls, account, fetch = globalThis.fetch, wait, log = () => {} }) {
+  const ask = account.setup_ask;
+  const want = account.setup_wants;
+  const did = (action, args) => calls.do({ app: SELF, action, args: { ask, ...args } });
+  const failed = async (problem) => {
+    log(`the setup did not work: ${problem}`);
+    return did("setup_failed", { problem });
+  };
+  try {
+    if (want === "token") {
+      const item = await calls.ask({
+        kind: "key",
+        belongsTo: [ORIGIN],
+        username: "Discord bot token",
+        sentIn: SENT_IN,
+      });
+      if (!item) {
+        return await failed("No token was kept, so there is nothing to bridge with.");
+      }
+      return await did("keep_token", { item });
+    }
+    const token = await released(calls, account.token_item, { wait });
+    if (want === "find") {
+      const answer = await discord(fetch, token, "/users/@me/guilds");
+      return await did("found_servers", { servers: serversOf(answer) });
+    }
+    if (want === "channels") {
+      if (!account.setup_server) {
+        return await failed("No server was chosen, so there are no channels to read.");
+      }
+      const answer = await discord(fetch, token, guildChannels(account.setup_server));
+      return await did("found_channels", { channels: channelsOf(answer) });
+    }
+    if (want === "sign-in") {
+      if (!account.sign_in_page) {
+        return await failed("This device does not offer signing in with Discord.");
+      }
+      return await did("start_sign_in", await signInStart(account.sign_in_page));
+    }
+    return await failed("This bridge does not know that step of the setup.");
+  } catch (error) {
+    return await failed(String(error?.message ?? error));
+  }
+}
+
+/// One request to Discord as the bot whose token this process holds: its answer, whose bodies
+/// only carry what a list of servers or channels needs.
+async function discord(fetch, token, path, init = {}) {
+  let answer;
+  try {
+    answer = await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        authorization: `Bot ${token}`,
+        "user-agent": "DiscordBot (https://tilo.so, 0.1)",
+        ...(init.headers ?? {}),
+      },
+    });
+  } catch {
+    throw new Error(whyRefused({ status: 0 }));
+  }
+  const status = Number(answer?.status ?? 0);
+  if (status < 200 || status > 299) {
+    throw new Error(whyRefused({ status }));
+  }
+  const body = await answer.text();
+  return { status, body };
+}
+
+/// Where the person goes to sign in with Discord, and the digest of the state that binds what
+/// comes back to them: the page's own state when it names one, else a fresh one the page is
+/// given.
+export async function signInStart(page) {
+  const named = /[?&]state=([^&]+)/.exec(page);
+  const state = named ? decodeURIComponent(named[1]) : hex(crypto.getRandomValues(new Uint8Array(16)));
+  const url = named ? page : `${page}&state=${state}`;
+  return { url, sha256: await sha256Hex(state) };
+}
+
+/// `bytes` as lowercase hexadecimal.
+function hex(bytes) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/// The SHA-256 digest of `text`, in lowercase hexadecimal: the state a sign-in comes back with
+/// binds the person by it, and only it is kept.
+export async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text);
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
 /// What one Discord event means, done on the workspace's side.

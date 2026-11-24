@@ -1,0 +1,268 @@
+//! Setting a Discord server up from the app: the setup's presses reach the bridge's program
+//! through the account record, the program answers them through the app's own actions, the bot's
+//! token is the vault's item alone, and only the workspace's moderators set a server up.
+
+use crate::fixtures::{Replica, Workspace};
+use tilolang_runtime::value::ResourceRef;
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
+
+const DISCORD: &str = include_str!("../../../../apps/tl/discord/app.tl");
+const DISCORD_IDS: &str = include_str!("../../../../apps/tl/discord/app.ids");
+const APP: &str = "so.tilo.discord.preview";
+/// The item the person's token was put in, as the vault addresses it: 32 hexadecimal digits.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+/// The bridge as the workspace sees it: the app's own program, which alone answers the setup.
+fn bridge() -> Actor {
+    Actor::App(tilo_app_id::AppId::new(APP))
+}
+
+fn person(name: &str) -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
+}
+
+/// The field `name` of `at`, as the app declares it.
+fn read(host: &tilolang_tilo::host::Host, at: &ResourceRef, name: &str) -> Value {
+    let package = host.package(APP).expect("the Discord package");
+    let declared = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == at.ty)
+        .expect("the type");
+    let field = declared
+        .fields
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("the type declares {name}"));
+    host.runtime().read(at, &field.id).expect("the field")
+}
+
+fn text(host: &tilolang_tilo::host::Host, at: &ResourceRef, name: &str) -> String {
+    match read(host, at, name) {
+        Value::Text(text) => text,
+        other => panic!("{name} is text: {other:?}"),
+    }
+}
+
+/// The action `name`'s id, as the package publishes it.
+fn action(replica: &Replica, name: &str) -> String {
+    crate::fixtures::action_id(&replica.host.package(APP).expect("the package").meta, name)
+}
+
+/// Run `name` as `who`, answering what it returned or why it was refused.
+fn run(
+    replica: &Replica,
+    who: &Actor,
+    name: &str,
+    args: Vec<Value>,
+) -> Result<InvokeOutcome, String> {
+    let action = action(replica, name);
+    replica
+        .host
+        .runtime()
+        .invoke_action(who, (action.as_str(), args))
+        .map_err(|error| format!("{error:?}"))
+}
+
+/// A workspace with Ada its owner and Bo an editor, the app's record started, and that account.
+fn workspace() -> (Replica, ResourceRef) {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person(
+                "ada",
+                tilo_actions::policy::Role::Owner,
+            ),
+            tilolang_runtime::members::Member::person(
+                "bo",
+                tilo_actions::policy::Role::Editor,
+            ),
+        ],
+        None,
+    );
+    let _ = ada.view(APP);
+    let root = ada
+        .host
+        .root_of(APP)
+        .expect("the app's own root");
+    ada.commit();
+    match run(&ada, &person("ada"), "begin_setup", vec![Value::resource(&root)]) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the setup starts: {other:?}"),
+    }
+    let accounts = match read(&ada.host, &root, "accounts") {
+        Value::List(items) => items,
+        other => panic!("accounts is a collection: {other:?}"),
+    };
+    assert_eq!(accounts.len(), 1, "one account");
+    let account = match accounts.into_iter().next().expect("the account") {
+        Value::Ref(reference) => (*reference.target).clone(),
+        other => panic!("an account is a record: {other:?}"),
+    };
+    ada.commit();
+    (ada, account)
+}
+
+/// A press of `find_servers` asks the bridge's program for the bot's servers and says nothing
+/// else happened yet; only the program's answer to that press writes them, and only the bridge
+/// answers.
+#[test]
+fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
+    let (ada, account) = workspace();
+    // The token is the vault's first: nothing finds servers without it.
+    let refused = run(&ada, &person("ada"), "find_servers", vec![Value::resource(&account)]);
+    assert!(
+        matches!(&refused, Err(why) if why.contains("Add the bot's token first")),
+        "{refused:?}"
+    );
+
+    match run(
+        &ada,
+        &bridge(),
+        "keep_token",
+        vec![
+            Value::resource(&account),
+            Value::text("press-token"),
+            Value::text(ITEM),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge keeps the token's item: {other:?}"),
+    }
+    // A person never writes the item.
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "keep_token",
+        vec![
+            Value::resource(&account),
+            Value::text("press-token"),
+            Value::text(ITEM),
+        ],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("Only the bridge keeps the bot's token")),
+        "{refused:?}"
+    );
+    assert_eq!(text(&ada.host, &account, "token_item"), ITEM, "the item kept");
+
+    // Ada presses: the record names the step and the press, and waits.
+    match run(&ada, &person("ada"), "find_servers", vec![Value::resource(&account)]) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada finds the servers: {other:?}"),
+    }
+    ada.commit();
+    assert_eq!(text(&ada.host, &account, "setup_wants"), "find");
+    let press = text(&ada.host, &account, "setup_ask");
+    assert!(!press.is_empty(), "the press has its own id");
+    assert_eq!(text(&ada.host, &account, "setup_person"), "ada");
+
+    // An answer to an older press changes nothing, and the person is never the one who answers.
+    let refused = run(
+        &ada,
+        &bridge(),
+        "setup_failed",
+        vec![
+            Value::resource(&account),
+            Value::text("another-press"),
+            Value::text("Discord could not be reached."),
+        ],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("no press this setup waits on")),
+        "{refused:?}"
+    );
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "setup_failed",
+        vec![
+            Value::resource(&account),
+            Value::text(press.as_str()),
+            Value::text("Discord could not be reached."),
+        ],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("Only the bridge")),
+        "{refused:?}"
+    );
+
+    // The bridge answers the press that waits: a bot in no server is said, and nothing waits.
+    match run(
+        &ada,
+        &bridge(),
+        "found_servers",
+        vec![Value::resource(&account), Value::text(press.as_str()), Value::List(vec![])],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge answers the press: {other:?}"),
+    }
+    ada.commit();
+    assert_eq!(
+        text(&ada.host, &account, "setup_problem"),
+        "The bot is in no server. Add it to one in Discord first."
+    );
+    assert_eq!(text(&ada.host, &account, "setup_wants"), "", "nothing waits");
+}
+
+/// A member who does not moderate the workspace is refused every step of the setup, with the
+/// reason, and nothing of theirs is written; the owner's stands.
+#[test]
+fn only_the_workspaces_moderators_set_a_server_up() {
+    let (ada, account) = workspace();
+    for step in ["ask_token", "find_servers", "bridge_server", "back_to_servers"] {
+        let refused = run(&ada, &person("bo"), step, vec![Value::resource(&account)]);
+        assert!(
+            matches!(
+                &refused,
+                Err(why) if why.contains("Only the workspace's moderators")
+            ),
+            "{step}: {refused:?}"
+        );
+    }
+    refused_bridge_steps(&ada, &account);
+    assert_eq!(text(&ada.host, &account, "token_item"), "", "nothing kept");
+    assert_eq!(text(&ada.host, &account, "setup_wants"), "", "nothing asked");
+
+    // The owner's press asks, and the program it waits on is the only one that answers it.
+    match run(&ada, &person("ada"), "ask_token", vec![Value::resource(&account)]) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the owner asks for the token: {other:?}"),
+    }
+    ada.commit();
+    assert_eq!(text(&ada.host, &account, "setup_wants"), "token");
+
+    // A token's item that is no item is refused: what the record keeps is the vault's address.
+    let press = text(&ada.host, &account, "setup_ask");
+    let refused = run(
+        &ada,
+        &bridge(),
+        "keep_token",
+        vec![
+            Value::resource(&account),
+            Value::text(press.as_str()),
+            Value::text("the token itself"),
+        ],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("A vault item is named by its address")),
+        "{refused:?}"
+    );
+}
+
+/// Every setup answer is the bridge's alone: a person's call of one is refused with the reason.
+fn refused_bridge_steps(ada: &Replica, account: &ResourceRef) {
+    for step in ["keep_token", "found_servers", "found_channels", "setup_failed", "start_sign_in"] {
+        let refused = run(
+            ada,
+            &person("ada"),
+            step,
+            vec![Value::resource(account), Value::text("press")],
+        );
+        assert!(
+            matches!(&refused, Err(why) if why.contains("Only the bridge")),
+            "{step}: {refused:?}"
+        );
+    }
+}

@@ -7,16 +7,6 @@
 
 export const API = "https://discord.com/api/v10";
 
-/// The Discord method paths the bridge uses, as the service names them.
-export function userGuilds(tokenItem, reason) {
-  return {
-    url: `${API}/users/@me/guilds`,
-    key: tokenItem,
-    method: "GET",
-    reason,
-  };
-}
-
 /// Sends a message through a webhook, answering the message it made there.
 export function webhookSend({ webhook, tokenItem }, op) {
   const query = "?wait=true";
@@ -80,4 +70,93 @@ export function looksLikeToken(token) {
     parts.length === 3 &&
     parts.every((part) => part.length > 0 && /^[A-Za-z0-9_-]+$/.test(part))
   );
+}
+
+/// The place a bot's token belongs: what the vault keeps it for, and where it is sent.
+export const ORIGIN = "https://discord.com";
+
+/// How the vault sends a bot's token: Discord reads `Authorization: Bot <token>`.
+export const SENT_IN = "header:Authorization:Bot";
+
+/// Discord's path for a server's channels: what the bridge reads to choose the ones it brings
+/// in.
+export function guildChannels(guild) {
+  return `/guilds/${guild}/channels`;
+}
+
+/// The servers the bot is in, from Discord's answer to `users/@me/guilds`: each one's id and
+/// name, by name. A server the answer names with no id a server has is left out.
+export function serversOf(answer) {
+  return listed(answer, (guild) => ({
+    id: String(guild?.id ?? ""),
+    name: String(guild?.name ?? ""),
+  })).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+}
+
+/// The channels of a server, from Discord's answer to `guilds/<id>/channels`, as the app's
+/// record keeps them: text, voice, category and thread channels sit in their order.
+export function channelsOf(answer) {
+  return listed(answer, (channel) => ({
+    id: String(channel?.id ?? ""),
+    kind: kindOf(channel),
+    name: String(channel?.name ?? ""),
+    parent: channel?.parentId ? String(channel.parentId) : null,
+    position: Number(channel?.position ?? 0),
+    topic: String(channel?.topic ?? ""),
+    overwrites: [],
+  }));
+}
+
+/// What kind of place `channel` is, as the app's record names it: Discord numbers categories 4,
+/// voice channels 2 and threads 10 to 12.
+function kindOf(channel) {
+  if (channel?.type === 4) return "category";
+  if (channel?.type === 2) return "voice";
+  if (channel?.type === 10 || channel?.type === 11 || channel?.type === 12) return "thread";
+  return "text";
+}
+
+/// The list Discord answered, each entry read by `read`; a refusal or an answer that is no list
+/// is said in words a person reads.
+function listed(answer, read) {
+  const body = bodyOf(answer);
+  if (!Array.isArray(body)) {
+    throw new Error(whyRefused(answer));
+  }
+  return body.filter((entry) => entry && String(entry.id ?? "") !== "").map(read);
+}
+
+/// What Discord answered, as its JSON.
+function bodyOf(answer) {
+  if (!answer) return null;
+  let body = answer.body ?? answer;
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+  return body;
+}
+
+/// Why Discord did not answer a list: what its status says, in words a person reads.
+export function whyRefused(answer) {
+  const status = Number(answer?.status ?? 0);
+  if (status === 401) {
+    return "Discord did not accept the bot's token. Check it in your vault and paste the right one.";
+  }
+  if (status === 403) {
+    return "The bot may not read this server. Give it the permission in Discord first.";
+  }
+  if (status === 404) {
+    return "Discord found no such server for this bot.";
+  }
+  if (status === 429) {
+    return "Discord is asking the bridge to slow down. Try again in a moment.";
+  }
+  if (status === 0) {
+    return "Discord could not be reached. Check this device's network.";
+  }
+  return `Discord answered ${status}, so nothing was read.`;
 }

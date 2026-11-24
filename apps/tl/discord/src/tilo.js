@@ -48,6 +48,13 @@ export class Calls {
     return this.ws.vault.release(item);
   }
 
+  /// Ask the person for a secret: they type it into the system's own protected field on a device
+  /// of theirs, and the vault keeps it for the place asked for, answering where. `null` when
+  /// they declined.
+  async ask(question) {
+    return this.ws.vault.ask(question);
+  }
+
   /// One request with a vault item added server-side: REST calls never hold the secret.
   async webCall(request) {
     return this.ws.vault.webCall(request);

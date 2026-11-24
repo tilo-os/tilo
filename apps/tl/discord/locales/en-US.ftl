@@ -90,11 +90,38 @@ d-flkdculv = Emoji problem
 d-2vnxydnl = Setup open
     .doc = Whether the setup dialog is open.
 
+d-xezmxd63 = Setup wants
+    .doc = What the setup waits for the bridge's program to answer: `token`, `find`, `channels` or `sign-in`; empty when nothing waits.
+
+d-idxrloj3 = Setup ask
+    .doc = The id of the press the program answers, so an answer to a press the person made before the last one changes nothing.
+
+d-alwcte5y = Setup person
+    .doc = The person whose press the program answers: a sign-in is bound to them, not to the program that answered it.
+
 d-6fcfq4y6 = Setup servers
     .doc = The servers the bot is in, as finding them answered.
 
+d-gsce46aw = Setup server
+    .doc = The server chosen to bring in, by its Discord id; empty until one is chosen.
+
+d-ewopezjx = Setup server name
+    .doc = The name of the server chosen, as Discord shows it.
+
+d-vwt52f57 = Setup channels
+    .doc = The channels the server chosen holds, as the program read them, to choose the ones brought in.
+
+d-wuvfepf6 = Setup channel
+    .doc = The one channel of the server chosen brought in, by its Discord id; empty for the whole server.
+
+d-xeugfqli = Setup mirror
+    .doc = Whether channels made here after the server is brought in are made in Discord too.
+
+d-w2b5pndu = Setup roles
+    .doc = Whether the workspace's roles are kept as roles the bridge owns in Discord.
+
 d-pasjy4ku = Setup problem
-    .doc = Why finding them did not work, in words the person reads.
+    .doc = Why the setup's last step did not work, in words the person reads.
 
 d-dxitdnte-filter-mirror_channels = Mirror channels
 
@@ -111,6 +138,10 @@ d-dxitdnte-filter-tilo_only = Tilo only
 d-dxitdnte-filter-discord_only = Discord only
 
 d-dxitdnte-filter-setup_open = Setup open
+
+d-dxitdnte-filter-setup_mirror = Setup mirror
+
+d-dxitdnte-filter-setup_roles = Setup roles
 
 d-dszavpot = D channel
     .doc = A Discord channel, thread or category as the bridge last observed it.
@@ -315,15 +346,6 @@ d-rgyetce5 = Server choice
 d-ymsxjog2 = Id
 
 d-tafgiv6q = Name
-
-d-qscyns5j = Server list
-    .doc = The servers finding them answered.
-    .noun = { $count ->
-        [one] server list
-       *[other] server lists
-    }
-
-d-hj7lfaq7 = Servers
 
 d-datx3ypp = Send op
     .doc = A message through a channel's webhook, under the person's Discord name.
@@ -700,26 +722,6 @@ d-5fgcd6rc = Accounts
 
 d-z7et5ezu = Accounts
 
-d-la6jji56 = Start
-    .doc = What connecting the person's account offers: where to sign in, and the digest of the state that binds what comes back to them.
-    .noun = { $count ->
-        [one] start
-       *[other] starts
-    }
-
-d-7mzd42ga = Url
-
-d-fpyoqcfm = Sha256
-
-d-qiv5g4oe = Sign in ask
-    .doc = What starting a sign-in asks: where Discord's consent page is, without its state.
-    .noun = { $count ->
-        [one] sign in ask
-       *[other] sign in asks
-    }
-
-d-tqkp4iq7 = Page
-
 d-hvcyj2m7 = Voice pair
     .doc = A Discord voice channel and the voice channel here it is carried to: one call, heard on both sides.
     .noun = { $count ->
@@ -785,30 +787,85 @@ d-zl6ascoy = Connect Discord
     .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
 
 d-tneakrwi = Connect Discord
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
 
 d-rpivsg2u = Closes it
     .doc = Closes it.
 
 d-pc7v5xfq = Clear problem
-    .doc = Forgets what the setup last said went wrong, as choosing a channel does.
+    .doc = Forgets what the setup last said went wrong.
 
-d-3y5zwmly = Bring it in
-    .doc = Binds this account to one server, with the token its bot uses.
+d-zkt35fy7 = Add the bot's token
+    .doc = Asks the bridge's program to have the bot's token put in the person's vault: the person types it once on the system's own card, and the vault keeps it.
     .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
-    .w-the-bot-s-token-is-needed = The bot's token is needed
+    .w-this-account-already-has-the-bot = This account already has the bot's token
+
+d-movwri4g = Keep token
+    .doc = Keeps the vault item the person's token was put in: the program's answer to `ask_token`.
+    .w-only-the-bridge-keeps-the-bot = Only the bridge keeps the bot's token where the vault put it
+    .w-that-is-no-press-this-setup = That is no press this setup waits on
+    .w-a-vault-item-is-named-by = A vault item is named by its address, as vault.item:<id>
+
+d-movwri4g-ask = Ask
+
+d-movwri4g-item = Item
+
+d-qcsgm6nh = Find
+    .doc = Finds the servers the bot is in, so one can be chosen: the bridge's program asks Discord with the token the vault keeps.
+    .w-only-the-workspace-s-moderators-find = Only the workspace's moderators find the bot's servers
+    .w-add-the-bot-s-token-first = Add the bot's token first
+
+d-msbrp3cr = Found servers
+    .doc = The servers finding the bot's servers answered: the program's answer to `find_servers`.
+    .w-only-the-bridge-answers-what-finding = Only the bridge answers what finding the bot's servers found
+    .w-that-is-no-press-this-setup = That is no press this setup waits on
+
+d-msbrp3cr-ask = Ask
+
+d-msbrp3cr-servers = Servers
+
+d-bkp77mea = Choose server
+    .doc = The server the person chose to bring in: the program reads its channels so one of them can be brought in alone.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
     .w-this-account-is-already-connected-to = This account is already connected to a server
     .w-a-server-or-channel-id-is = A server or channel id is a number
 
-d-3y5zwmly-s = S
+d-bkp77mea-s = S
 
-d-3y5zwmly-token = Token
+d-whofvy5h = Found channels
+    .doc = The server's channels as the program read them: the program's answer to `choose_server`.
+    .w-only-the-bridge-answers-what-the = Only the bridge answers what the server's channels are
+    .w-that-is-no-press-this-setup = That is no press this setup waits on
 
-d-qcsgm6nh = Find
-    .doc = Finds the servers the bot is in, so one can be chosen.
-    .w-only-the-workspace-s-moderators-find = Only the workspace's moderators find the bot's servers
-    .w-the-bot-s-token-is-needed = The bot's token is needed
+d-whofvy5h-ask = Ask
 
-d-qcsgm6nh-token = Token
+d-whofvy5h-channels = Channels
+
+d-on4tojk2 = Choose channel
+    .doc = Chooses the one channel of the server to bring in, or none for the whole server.
+    .w-only-the-workspace-s-moderators-choose = Only the workspace's moderators choose the channels
+    .w-a-server-or-channel-id-is = A server or channel id is a number
+
+d-on4tojk2-channel = Channel
+
+d-3kbxljv2 = Back to servers
+    .doc = Goes back from the channels to the servers, choosing again.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
+
+d-bh74uc6c = Setup failed
+    .doc = Why the setup step `ask` did not work: the program's answer, in words the person reads.
+    .w-only-the-bridge-says-why-the = Only the bridge says why the setup's step did not work
+    .w-that-is-no-press-this-setup = That is no press this setup waits on
+
+d-bh74uc6c-ask = Ask
+
+d-bh74uc6c-problem = Problem
+
+d-3y5zwmly = Bring it in
+    .doc = Binds this account to the server and channels the setup chose.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
+    .w-this-account-is-already-connected-to = This account is already connected to a server
+    .w-choose-the-server-to-bring-in = Choose the server to bring in first
 
 d-k73mzujn = Connect
     .doc = Binds this account to one server.
@@ -865,16 +922,23 @@ d-ifm75o6j-tilo = Tilo
 
 d-ifm75o6j-keep_apart = Keep apart
 
-d-5fapw762 = Begin connect
-    .w-this-workspace-is-not-bridged-to = This workspace is not bridged to a Discord server
-    .w-a-digest-is-64-hex-digits = A digest is 64 hex digits
-
-d-5fapw762-state_sha256 = State sha256
-
 d-r6ym2m7o = Connect
-    .doc = Starts signing in with Discord, as the person looking: answers where to go.
+    .doc = Starts signing in with Discord, as the person looking: the bridge's program builds the consent page and the state that binds what comes back to them.
     .w-this-workspace-is-not-bridged-to = This workspace is not bridged to a Discord server
     .w-this-device-does-not-offer-signing = This device does not offer signing in with Discord
+
+d-tyngolsv = Start sign in
+    .doc = Where the person goes to sign in with Discord, and the digest of the state that binds what comes back to them: the program's answer to `connect_account`.
+    .w-only-the-bridge-starts-a-sign = Only the bridge starts a sign-in with Discord
+    .w-that-is-no-press-this-setup = That is no press this setup waits on
+    .w-a-consent-page-is-an-https = A consent page is an https address
+    .w-a-digest-is-64-hex-digits = A digest is 64 hex digits
+
+d-tyngolsv-ask = Ask
+
+d-tyngolsv-url = Url
+
+d-tyngolsv-sha256 = Sha256
 
 d-zxwz5hgy = Offer link
     .doc = Offers a Discord account for linking, from the server: `/link` answered with a one-time token, whose check this is.
@@ -1224,6 +1288,7 @@ d-3bzkicj7 = Account
     .w-unlink-your-discord-account = Unlink your Discord account
     .w-link-your-discord-account = Link your Discord account
     .w-what-you-say-there-then-shows = What you say there then shows as you.
+    .w-continue-signing-in-with-discord = Continue signing in with Discord
     .w-link-your-discord-account-from-the = Link your Discord account from the server with /link
     .w-linked = Linked
     .w-the-server = The server
@@ -1231,14 +1296,45 @@ d-3bzkicj7 = Account
 d-ogaewyqt = Setup dialog
     .w-connect-a-discord-server = Connect a Discord server
     .w-cancel = Cancel
-    .w-choose-the-server-to-bring-in = Choose the server to bring in.
-    .w-the-bot-s-token-is-kept = The bot's token is kept on this device, never in the workspace's records.
-    .w-the-bot-s-token = The bot's token
     .w-find-the-bot-s-servers = Find the bot's servers
+    .w-choose-the-server-to-bring-in = Choose the server to bring in.
 
-d-zdsjcfdz = Bridge server~present
+d-nwypke43 = Token step
+    .w-the-bot-s-token-is-pasted = The bot's token is pasted into your vault, never into this workspace's records: you type it once on the card that asks you for it, and this account keeps only where the vault put it.
+    .w-add-the-bot-s-token = Add the bot's token
+    .w-the-bot-s-token-is-kept = The bot's token is kept
+    .w-in-your-vault-on-this-device = In your vault, on this device's side of the workspace.
+
+d-5lmjieja = Channel step
+    .w-this-server-holds-no-channel-to = This server holds no channel to bring in.
+    .w-choose-the-one-channel-to-bring = Choose the one channel to bring in, or none for the whole server.
+    .w-call = Call
+    .w-channels-made-here-are-made-in = Channels made here are made in Discord too
+    .w-the-workspace-s-roles-are-kept = The workspace's roles are kept as this server's
+    .w-back = Back
+    .w-bring-it-in = Bring it in
+
+d-eqrl7f23 = Open setup~present
+
+d-evqpxh3x = Ask token~present
+
+d-rran2vmo = Keep token~present
 
 d-zv3haunw = Find servers~present
+
+d-b2pe4evc = Found servers~present
+
+d-qb3uanfd = Choose server~present
+
+d-4whvn4se = Found channels~present
+
+d-ypq6z5ao = Choose channel~present
+
+d-4peaolpo = Back to servers~present
+
+d-rhzifqce = Setup failed~present
+
+d-zdsjcfdz = Bridge server~present
 
 d-zuoxo3lk = Connect~present
 
@@ -1248,9 +1344,9 @@ d-quzk7plq = Map~present
 
 d-dh6uikuf = Unmap~present
 
-d-bqddgsyz = Begin connect~present
-
 d-cd5gzjfe = Connect account~present
+
+d-hy7asmwn = Start sign in~present
 
 d-b32fs3at = Offer link~present
 

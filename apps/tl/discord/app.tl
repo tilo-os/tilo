@@ -72,9 +72,32 @@ type Discord (origin: discord.account) {
     emoji_problem: Text = ""
     /// Whether the setup dialog is open.
     setup_open: Bool = false
+    /// What the setup waits for the bridge's program to answer: `token`, `find`, `channels` or
+    /// `sign-in`; empty when nothing waits.
+    setup_wants: Text = ""
+    /// The id of the press the program answers, so an answer to a press the person made before
+    /// the last one changes nothing.
+    setup_ask: Text = ""
+    /// The person whose press the program answers: a sign-in is bound to them, not to the
+    /// program that answered it.
+    setup_person: Text = ""
     /// The servers the bot is in, as finding them answered.
     setup_servers: Collection<ServerChoice>
-    /// Why finding them did not work, in words the person reads.
+    /// The server chosen to bring in, by its Discord id; empty until one is chosen.
+    setup_server: Text = ""
+    /// The name of the server chosen, as Discord shows it.
+    setup_server_name: Text = ""
+    /// The channels the server chosen holds, as the program read them, to choose the ones
+    /// brought in.
+    setup_channels: Collection<DChannel>
+    /// The one channel of the server chosen brought in, by its Discord id; empty for the whole
+    /// server.
+    setup_channel: Text = ""
+    /// Whether channels made here after the server is brought in are made in Discord too.
+    setup_mirror: Bool = false
+    /// Whether the workspace's roles are kept as roles the bridge owns in Discord.
+    setup_roles: Bool = false
+    /// Why the setup's last step did not work, in words the person reads.
     setup_problem: Text = ""
 }
 
@@ -215,11 +238,6 @@ type Connect {
 type ServerChoice {
     id: Text
     name: Text
-}
-
-/// The servers finding them answered.
-type ServerList {
-    servers: List<ServerChoice>
 }
 
 /// A message through a channel's webhook, under the person's Discord name.
@@ -555,6 +573,13 @@ view account(d: Discord) {
                                     button(connect_account(d))
                                 }
                             }
+                            let mine = d.connects.any(c -> c.person == invoker.id())
+                            if mine and d.sign_in_url != "" {
+                                ui.Link(
+                                    d.sign_in_url,
+                                    label: "Continue signing in with Discord",
+                                )
+                            }
                         } else {
                             ui.ListRow(
                                 "Link your Discord account from the server with /link",
@@ -583,50 +608,126 @@ view account(d: Discord) {
             }
         }
     }
-    if d.setup_open {
+    if d.setup_open and moderates(invoker) {
         setup_dialog(d)
     }
 }
 
-/// The setup dialog: the bot's token, the servers it is in, and the one to bring in.
+/// The setup dialog: the bot's token kept in the person's vault, the servers it is in, the one
+/// to bring in and its channels.
 view setup_dialog(d: Discord) {
-    state token: Text = ""
     ui.ModalDialog(title: "Connect a Discord server", open: true, secondary: "Cancel") {
         body: {
-            if not d.setup_servers.is_empty() {
-                ui.Text("Choose the server to bring in.", role: .body)
-                for s in d.setup_servers {
-                    ui.ListRow(s.name, secondary: s.id) {
+            if d.setup_server == "" {
+                token_step(d)
+                if d.token_item != "" {
+                    ui.ListRow("Find the bot's servers", icon: .search) {
                         trailing: {
-                            button(bridge_server(d, s, token))
+                            button(find_servers(d))
+                        }
+                    }
+                }
+                if not d.setup_servers.is_empty() {
+                    ui.Text("Choose the server to bring in.", role: .body)
+                    for s in d.setup_servers {
+                        ui.ListRow(s.name, secondary: s.id) {
+                            trailing: {
+                                button(choose_server(d, s))
+                            }
                         }
                     }
                 }
             } else {
-                ui.Text(
-                    "The bot's token is kept on this device, never in the workspace's records.",
-                    role: .caption,
-                    secondary: true,
-                )
-                ui.TextInput(
-                    bind: token,
-                    placeholder: "The bot's token",
-                    secret: true,
-                    autofocus: true,
-                )
-                if d.setup_problem != "" {
-                    ui.Text(d.setup_problem, role: .body)
-                }
-                ui.ListRow("Find the bot's servers") {
-                    trailing: {
-                        button(find_servers(d, token))
-                    }
-                }
+                channel_step(d)
+            }
+            if waiting(d) {
+                ui.StatusLine(step_words(d), status: .active)
+            }
+            if d.setup_problem != "" {
+                ui.StatusLine(d.setup_problem, status: .error)
             }
         }
         on act_secondary: close_setup(d)
         on dismiss: close_setup(d)
     }
+}
+
+/// The token, as the setup stands on it: kept in the person's vault, or a button that asks the
+/// bridge's program to have it put there.
+view token_step(d: Discord) {
+    if d.token_item == "" {
+        ui.Text(
+            "The bot's token is pasted into your vault, never into this workspace's records: you type it once on the card that asks you for it, and this account keeps only where the vault put it.",
+            role: .caption,
+            secondary: true,
+        )
+        ui.ListRow("Add the bot's token", icon: .key) {
+            trailing: {
+                button(ask_token(d))
+            }
+        }
+    } else {
+        ui.ListRow(
+            "The bot's token is kept",
+            secondary: "In your vault, on this device's side of the workspace.",
+            icon: .circle_check,
+        )
+    }
+}
+
+/// The server chosen and the channels to bring in of it.
+view channel_step(d: Discord) {
+    ui.Text(d.setup_server_name, role: .subheading)
+    if d.setup_channels.is_empty() {
+        ui.Text("This server holds no channel to bring in.", role: .caption, secondary: true)
+    } else {
+        ui.Text(
+            "Choose the one channel to bring in, or none for the whole server.",
+            role: .body,
+        )
+        for ch in d.setup_channels {
+            if ch.kind != .category {
+                ui.ListRow(
+                    ch.name,
+                    secondary: if ch.kind == .voice { "Call" } else { ch.topic },
+                    selected: d.setup_channel == ch.id,
+                    icon: if ch.kind == .voice { .volume_2 } else { .hash },
+                ) {
+                    on activate: choose_channel(d, ch.id)
+                }
+            }
+        }
+    }
+    ui.Toggle(
+        bind: d.setup_mirror,
+        label: "Channels made here are made in Discord too",
+    )
+    ui.Toggle(
+        bind: d.setup_roles,
+        label: "The workspace's roles are kept as this server's",
+    )
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Button("Back", role: .plain) {
+            on press: back_to_servers(d)
+        }
+        spacer
+        ui.Button("Bring it in", icon: .plug, role: .primary) {
+            on press: bridge_server(d)
+        }
+    }
+}
+
+/// The setup step waiting on the person to read, when one does.
+fn step_words(d: Discord) -> Text {
+    if d.setup_wants == "token" {
+        "Type the token on the card that asks you for it."
+    } else if d.setup_wants == "find" {
+        "Asking Discord which servers the bot is in."
+    } else if d.setup_wants == "channels" {
+        "Reading the server's channels from Discord."
+    } else if d.setup_wants == "sign-in" {
+        "Starting the sign-in with Discord."
+    } else { "" }
 }
 
 /// What the account calls a linked account: the name it shows, else its Discord user name.
@@ -735,6 +836,12 @@ fn is_content_address(t: Text) -> Bool {
     t.len() == 64 and hex_at(t, 0)
 }
 
+/// Whether `t` is a vault item's address: `vault.item:` and the 32 hexadecimal digits the vault
+/// keeps the item under.
+fn is_item_reference(t: Text) -> Bool {
+    t.len() == 43 and t.starts_with("vault.item:") and hex_at(t.slice(11, 43), 0)
+}
+
 /// Whether `t` is a SHA-256 digest in hex.
 fn is_digest(t: Text) -> Bool {
     t.len() == 64 and hex_at(t, 0)
@@ -747,6 +854,7 @@ fn stands(expires: Text, at: Time) -> Bool {
 
 // ---- connecting the account -------------------------------------------------------------
 action open_setup(d: Discord) (icon: .plug, label: "Connect Discord") {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
     d.setup_open = true
     d.setup_problem = ""
 }
@@ -756,56 +864,146 @@ action close_setup(d: Discord) {
     d.setup_open = false
 }
 
-/// Forgets what the setup last said went wrong, as choosing a channel does.
+/// Forgets what the setup last said went wrong.
 action clear_problem(d: Discord) {
     d.setup_problem = ""
 }
 
-/// Binds this account to one server, with the token its bot uses. The server's layout stays
-/// Discord's until the import ran.
-action bridge_server(d: Discord, s: ServerChoice, token: Text) (icon: .plug, label: "Bring it in") {
+/// Asks the bridge's program to have the bot's token put in the person's vault: the person types
+/// it once on the system's own card, and the vault keeps it. This account keeps the item's
+/// address, never the token.
+action ask_token(d: Discord) uses random (icon: .key, label: "Add the bot's token") {
     require moderates(invoker) "Only the workspace's moderators connect a Discord server"
-    require token.trim() != "" "The bot's token is needed"
-    require d.guild_id == "" "This account is already connected to a server"
-    require is_snowflake(s.id) "A server or channel id is a number"
-    match engine.call("set-token", token.trim()) {
-        .err(why) => {
-            d.setup_problem = why
-        }
-        .ok(_) => {
-            connect(d, s.id, s.name)
-            d.setup_open = false
-            d.setup_servers.remove_where(s -> true)
-            d.setup_problem = ""
-        }
-    }
+    require d.token_item == "" "This account already has the bot's token"
+    d.setup_wants = "token"
+    d.setup_ask = random.id()
+    d.setup_person = invoker.id()
+    d.setup_problem = ""
 }
 
-/// Finds the servers the bot is in, so one can be chosen.
-action find_servers(d: Discord, token: Text) (icon: .search, label: "Find") {
+/// Whether the setup waits for the bridge's program to answer.
+fn waiting(d: Discord) -> Bool {
+    d.setup_wants != ""
+}
+
+/// Whether the answer `ask` is the one the press waiting now asks for.
+fn answers_now(d: Discord, ask: Text) -> Bool {
+    ask != "" and ask == d.setup_ask
+}
+
+/// Keeps the vault item the person's token was put in: the program's answer to `ask_token`. The
+/// item's address is all this record keeps.
+action keep_token(d: Discord, ask: Text, item: Text) {
+    require the_bridge(invoker) "Only the bridge keeps the bot's token where the vault put it"
+    require answers_now(d, ask) "That is no press this setup waits on"
+    require is_item_reference(item) "A vault item is named by its address, as vault.item:<id>"
+    d.token_item = item
+    d.setup_wants = ""
+}
+
+/// Finds the servers the bot is in, so one can be chosen: the bridge's program asks Discord with
+/// the token the vault keeps.
+action find_servers(d: Discord) uses random (icon: .search, label: "Find") {
     require moderates(invoker) "Only the workspace's moderators find the bot's servers"
-    require token.trim() != "" "The bot's token is needed"
-    match engine.call("find-servers", token.trim()) {
-        .err(why) => {
-            d.setup_problem = why
+    require d.token_item != "" "Add the bot's token first"
+    d.setup_servers.remove_where(s -> true)
+    d.setup_wants = "find"
+    d.setup_ask = random.id()
+    d.setup_person = invoker.id()
+    d.setup_problem = ""
+}
+
+/// The servers finding the bot's servers answered: the program's answer to `find_servers`.
+action found_servers(d: Discord, ask: Text, servers: List<ServerChoice>) {
+    require the_bridge(invoker) "Only the bridge answers what finding the bot's servers found"
+    require answers_now(d, ask) "That is no press this setup waits on"
+    d.setup_servers.remove_where(s -> true)
+    if servers.is_empty() {
+        d.setup_problem = "The bot is in no server. Add it to one in Discord first."
+    } else {
+        d.setup_problem = ""
+        for s in servers {
+            d.setup_servers.insert(s)
         }
-        .ok(answer) => match json.decode<ServerList>(answer) {
-            .err(why) => {
-                d.setup_problem = why
-            }
-            .ok(list) => {
-                if list.servers.is_empty() {
-                    d.setup_problem = "The bot is in no server. Add it to one in Discord first."
-                } else {
-                    d.setup_problem = ""
-                    d.setup_servers.remove_where(s -> true)
-                    for s in list.servers {
-                        d.setup_servers.insert(s)
-                    }
-                }
-            }
-        },
     }
+    d.setup_wants = ""
+}
+
+/// The server the person chose to bring in: the program reads its channels so one of them can be
+/// brought in alone.
+action choose_server(d: Discord, s: ServerChoice) uses random {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
+    require d.guild_id == "" "This account is already connected to a server"
+    require is_snowflake(s.id) "A server or channel id is a number"
+    d.setup_server = s.id
+    d.setup_server_name = s.name
+    d.setup_channel = ""
+    d.setup_channels.remove_where(c -> true)
+    d.setup_wants = "channels"
+    d.setup_ask = random.id()
+    d.setup_person = invoker.id()
+    d.setup_problem = ""
+}
+
+/// The server's channels as the program read them: the program's answer to `choose_server`.
+action found_channels(d: Discord, ask: Text, channels: List<DChannel>) {
+    require the_bridge(invoker) "Only the bridge answers what the server's channels are"
+    require answers_now(d, ask) "That is no press this setup waits on"
+    d.setup_channels.remove_where(c -> true)
+    for ch in channels {
+        if ch.kind != .category {
+            d.setup_channels.insert(ch)
+        }
+    }
+    let chosen = d.setup_channel
+    d.setup_channel = if d.setup_channels.any(c -> c.id == chosen) { chosen } else { "" }
+    d.setup_wants = ""
+}
+
+/// Chooses the one channel of the server to bring in, or none for the whole server.
+action choose_channel(d: Discord, channel: Text) {
+    require moderates(invoker) "Only the workspace's moderators choose the channels"
+    require channel == "" or is_snowflake(channel) "A server or channel id is a number"
+    d.setup_channel = if d.setup_channel == channel { "" } else { channel }
+}
+
+/// Goes back from the channels to the servers, choosing again.
+action back_to_servers(d: Discord) {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
+    d.setup_server = ""
+    d.setup_server_name = ""
+    d.setup_channel = ""
+    d.setup_channels.remove_where(c -> true)
+    d.setup_wants = ""
+}
+
+/// Why the setup step `ask` did not work: the program's answer, in words the person reads.
+action setup_failed(d: Discord, ask: Text, problem: Text) {
+    require the_bridge(invoker) "Only the bridge says why the setup's step did not work"
+    require answers_now(d, ask) "That is no press this setup waits on"
+    d.setup_problem = problem
+    d.setup_wants = ""
+}
+
+/// Binds this account to the server and channels the setup chose. The server's layout stays
+/// Discord's until the import ran.
+action bridge_server(d: Discord) (icon: .plug, label: "Bring it in") {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
+    require d.guild_id == "" "This account is already connected to a server"
+    require is_snowflake(d.setup_server) "Choose the server to bring in first"
+    connect(
+        d,
+        d.setup_server,
+        d.setup_server_name,
+        only_channel: d.setup_channel,
+        mirror_channels: d.setup_mirror,
+        map_roles: d.setup_roles,
+    )
+    d.setup_open = false
+    d.setup_servers.remove_where(s -> true)
+    d.setup_channels.remove_where(c -> true)
+    d.setup_wants = ""
+    d.setup_problem = ""
 }
 
 /// Binds this account to one server. The server's layout stays Discord's until the import ran.
@@ -943,57 +1141,34 @@ action unmap(d: Discord, kind: MappedKind, tilo: Text, keep_apart: Bool = false)
 }
 
 // ---- linking accounts -------------------------------------------------------------------
-action begin_connect(d: Discord, state_sha256: Text) uses time {
+/// Starts signing in with Discord, as the person looking: the bridge's program builds the
+/// consent page and the state that binds what comes back to them.
+action connect_account(d: Discord) uses random (icon: .link, label: "Connect") {
     require d.guild_id != "" "This workspace is not bridged to a Discord server"
-    require is_digest(state_sha256) "A digest is 64 hex digits"
-    for c in d.connects.filter(c -> c.person == invoker.id()) {
+    require d.sign_in_page != "" "This device does not offer signing in with Discord"
+    d.setup_wants = "sign-in"
+    d.setup_ask = random.id()
+    d.setup_person = invoker.id()
+    d.setup_problem = ""
+}
+
+/// Where the person goes to sign in with Discord, and the digest of the state that binds what
+/// comes back to them: the program's answer to `connect_account`.
+action start_sign_in(d: Discord, ask: Text, url: Text, sha256: Text) uses time {
+    require the_bridge(invoker) "Only the bridge starts a sign-in with Discord"
+    require answers_now(d, ask) "That is no press this setup waits on"
+    require url.starts_with("https://") "A consent page is an https address"
+    require is_digest(sha256) "A digest is 64 hex digits"
+    let person = d.setup_person
+    for c in d.connects.filter(c -> c.person == person) {
         d.connects.remove(c)
     }
     d.connects.insert(
-        Connect(person: invoker.id(), state_sha256: state_sha256, expires: "{now + 10m}"),
+        Connect(person: person, state_sha256: sha256, expires: "{now + 10m}"),
     )
-}
-
-/// What connecting the person's account offers: where to sign in, and the digest of the state
-/// that binds what comes back to them.
-type Start {
-    url: Text
-    sha256: Text = ""
-}
-
-/// Starts signing in with Discord, as the person looking: answers where to go.
-action connect_account(d: Discord) (icon: .link, label: "Connect") {
-    require d.guild_id != "" "This workspace is not bridged to a Discord server"
-    require d.sign_in_page != "" "This device does not offer signing in with Discord"
-    let asked = json.encode(SignInAsk(page: d.sign_in_page))
-    let start = Start(url: "", sha256: "")
-    match engine.call("sign-in", asked) {
-        .err(why) => {
-            start.sha256 = why
-        }
-        .ok(answer) => {
-            match json.decode<Start>(answer) {
-                .err(why) => {
-                    start.sha256 = why
-                }
-                .ok(found) => {
-                    start = found
-                }
-            }
-        }
-    }
-    if start.url != "" {
-        begin_connect(d, start.sha256)
-        d.sign_in_url = start.url
-        d.setup_problem = ""
-    } else {
-        d.setup_problem = start.sha256
-    }
-}
-
-/// What starting a sign-in asks: where Discord's consent page is, without its state.
-type SignInAsk {
-    page: Text
+    d.sign_in_url = url
+    d.setup_wants = ""
+    d.setup_problem = ""
 }
 
 /// Offers a Discord account for linking, from the server: `/link` answered with a one-time
