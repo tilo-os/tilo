@@ -260,6 +260,9 @@ d-jelhifn2 = Wiedergabeproblem
 
 d-bw27kdqh = Stelle
 
+d-x6v7yq2x = Erneut angefragt
+    .doc = Der Song, dessen Stream nach einem Abbruch mittendrin von selbst neu angefragt wurde: ein zweiter Abbruch wird der Person gesagt, statt endlos neu anzufragen.
+
 d-fkvdcomi = Online
 
 d-aymfw7yu-filter-taste = Geschmack
