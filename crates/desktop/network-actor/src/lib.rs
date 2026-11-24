@@ -105,10 +105,6 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
-    /// Retired: Nearby Send's bytes and offers are the device daemon's, carried
-    /// over its action service, so no build sends this. Kept in its place so a
-    /// frame an earlier build wrote still reads as itself and is dropped.
-    RetiredNearbyTransfer(RetiredNearbyTransferFrame),
     /// One signed mutation of a record in the person's own store. Its scope is
     /// implied by the route: the fabric only ever joins one person's devices.
     /// `document_id` is the sealed wire name, as on a workspace topic.
@@ -131,27 +127,6 @@ pub enum PersonalFabricPayload {
     /// Word to the device that asked ([`Self::DocumentContentWant`]) that this
     /// one keeps none of that content.
     DocumentContentLacks { app_id: String, hash: String },
-}
-
-/// Retired with [`PersonalFabricPayload::RetiredNearbyTransfer`]: the frames
-/// that worker carried, kept so a frame an earlier build wrote still reads.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum RetiredNearbyTransferFrame {
-    Chunk {
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        offset: u64,
-        bytes: Vec<u8>,
-    },
-    Finish {
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        content_hash: [u8; 32],
-    },
-    Abort {
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

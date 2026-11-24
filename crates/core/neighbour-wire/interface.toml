@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake to a host and the peer-sync
 # messages two devices and their hosts exchange.
 name = "peer"
-version = 70
+version = 71
 version_const = "crates/core/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false

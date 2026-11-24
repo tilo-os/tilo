@@ -395,7 +395,7 @@ reason = "renames RecordsArrived to ResourcesArrived in place: the runtime inter
 [[break]]
 file = "crates/desktop/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
-reason = "frames between two of one person's devices are never kept and both speak one build's format: the RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
+reason = "frames between two of one person's devices are never kept, and the sibling link's ALPN moved to tilo-server-sibling/2 (the peer protocol to 71) when the retired nearby-transfer payload left it: the payloads after it number one lower, so a device of the old protocol is not answered rather than reading a document payload as that transfer. The RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
 
 [[break]]
 file = "crates/core/actions/src/remote/workspace_activity.rs"

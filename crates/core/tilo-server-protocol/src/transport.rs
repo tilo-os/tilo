@@ -28,8 +28,11 @@ pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/4";
 /// proves its person's certificates (the endpoint id proves the device key),
 /// then the two exchange what is for the person's own devices alone. The
 /// device with the lower endpoint id dials it, the other only when it is not
-/// dialled; of two dialled at once, both keep the lower id's.
-pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/1";
+/// dialled; of two dialled at once, both keep the lower id's. `/2` is the
+/// second version: the personal fabric's payload no longer numbers a retired
+/// transfer variant, so a device of the first version is not answered rather
+/// than reading its other payloads as that one.
+pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/2";
 /// ALPN of one device asking another of its workspace to list, call or watch
 /// an action, on a link of the device's own.
 pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";

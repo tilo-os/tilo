@@ -294,6 +294,40 @@ async fn a_device_of_another_person_is_no_sibling() {
     }
 }
 
+/// The sibling link answers only its current protocol. A device still speaking
+/// the first one is refused there instead of having its frames read: the
+/// personal fabric's payloads after the retired nearby transfer moved down a
+/// number, so the old layout's frames would be taken as another kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_speaking_the_old_personal_fabric_protocol_is_refused() {
+    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let a = device_of(
+        &key(),
+        key(),
+        WorkspaceId::from_u128(49),
+        HEARTBEAT_INTERVAL,
+    )
+    .await;
+    let (probe, _) = endpoint().await;
+    let refused = probe
+        .connect(a.addr.clone(), b"tilo-server-sibling/1")
+        .await;
+    assert!(
+        refused.is_err(),
+        "the sibling link's first protocol was answered: {refused:?}"
+    );
+    let answered = probe
+        .connect(
+            a.addr.clone(),
+            tilo_server_protocol::transport::SIBLING_ALPN,
+        )
+        .await;
+    assert!(
+        answered.is_ok(),
+        "the sibling link's current protocol was not answered: {answered:?}"
+    );
+}
+
 /// A device on a runtime of its own, on a thread of its own, that a test
 /// freezes whole, as a laptop with its lid closed: its endpoint, its
 /// connections' timers and its actor all stand still, and on waking each

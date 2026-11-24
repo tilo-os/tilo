@@ -246,7 +246,7 @@ impl SessionFabric {
     }
 
     /// Take one frame a device sent on its session, at the moment the transport took it: what it
-    /// says of itself, the copies it offers, an action for this device, or the bytes of a transfer.
+    /// says of itself, the copies it offers, or an action for this device.
     pub(crate) fn arrived(
         &self,
         peer: EndpointId,
@@ -284,11 +284,6 @@ impl SessionFabric {
                         tracing::warn!(%error, %peer, "a device sent an action this session does not take");
                     }
                 }
-            }
-            // A Nearby Send is the device daemon's now: a frame an earlier build wrote arrives
-            // here and is dropped.
-            PersonalFabricPayload::RetiredNearbyTransfer(_frame) => {
-                tracing::debug!(%peer, "a nearby spool frame is dropped");
             }
             // What the person's devices carry for each other of their records belongs to their
             // own store's links; this session routes none of it and drops it rather than

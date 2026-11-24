@@ -86,7 +86,7 @@ row = "home peer, home-peer registry, home server"
 idents = ["home peer", "home server"]
 
 [[word]]
-row = "tilo-server-sibling/1, sibling"
+row = "tilo-server-sibling/2, sibling"
 idents = ["sibling"]
 
 [[word]]

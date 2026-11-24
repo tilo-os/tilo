@@ -702,7 +702,7 @@ The copies:
 |---|---|
 | Frame and document stores | `tilo-peer-state` `Store` (one frame file per write); the host's retained store (`tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`) and `tilo-server-store` (1,298); `fs` `kept_documents` |
 | Compaction | `tilo-workspace-service` `compaction.rs` and `store/compaction.rs`; `tilo-peer-state` `sealed_compaction`; `tilo-workspace-service` `sealed_documents` and `repaired_documents` |
-| Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/1` |
+| Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/2` |
 | Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
 | Settings | the host's `person_settings` (the person's and the device's sections are resources of the workspace, read through `settings-store`'s typed readers) |
@@ -818,7 +818,7 @@ and screen share only, never documents, and stays as it is.
 | `Envelope::Delta`, co-edit and anti-entropy (`tilo-server-session`, `tilo-server-client` co-edit, delta coding in `tilo-delivery-protocol`) | ~3,500 |
 | The host retained store: `tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`, and `tilo-server-store` | ~17,500 |
 | `link_follow.rs` and the two-carrier path | ~1,500 |
-| `tilo-personal-store/1` and `tilo-server-sibling/1` | ~1,500 |
+| `tilo-personal-store/1` and `tilo-server-sibling/2` | ~1,500 |
 | The tilolang redb index and the `TiloStore` mirror, keeping the pager | ~15,000 |
 | The overlap in `collab_app_broker` | ~30,000 |
 | `tilo_fs::sync` and the fs ALPNs | ~2,000 |
@@ -1241,7 +1241,7 @@ any of them is added.
 | held, holder, `HeldWorkspace`, member copy, replica | names for a device having a workspace | a device that holds the workspace (no type of its own) |
 | listing workspace, governed/member/held/own workspace kinds | kinds of workspace by who governs or keeps them | one kind of workspace |
 | home peer, home-peer registry, home server | a separate registry and name for a person's server | a device of the person |
-| `tilo-server-sibling/1`, sibling | a link between one person's devices outside workspaces | the device link of the person's own workspace |
+| `tilo-server-sibling/2`, sibling | a link between one person's devices outside workspaces | the device link of the person's own workspace |
 | `WorkspaceRuntime`, `Membership { devices }` | a device allowlist for a relay | the member list |
 | retained store, lineage, `CURRENT` generations, `tilo-server-store` | a host's second store of changes | the one change store |
 | `Envelope::Delta`, `EnvelopeV2`, co-edit, anti-entropy | a second way to move changes through a host | the one device link |
