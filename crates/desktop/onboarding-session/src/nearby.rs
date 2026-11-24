@@ -251,10 +251,7 @@ pub const STAGED_TICKET: &str = "/etc/tilo/ticket";
 ///
 /// # Errors
 /// The ticket was not redeemed; it stays for a later boot to try again.
-pub fn redeem_staged_ticket(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-) -> Result<bool, String> {
+pub fn redeem_staged_ticket(identity_dir: &Path, paths: &IdentityPaths) -> Result<bool, String> {
     let Ok(text) = std::fs::read_to_string(STAGED_TICKET) else {
         return Ok(false);
     };
@@ -348,8 +345,9 @@ fn ensure_daemon() -> Result<(), NearbyFailure> {
 pub(crate) mod testing {
     //! A stand-in for this computer's daemon at the one place setup reaches
     //! it: its native endpoint. It answers who this account is to it
-    //! (`account#who`) and the `devices#logIn` call `tilo login` makes, and
-    //! files the certificate a real daemon would.
+    //! (`account#who`), the `devices#found` a person's own computer that no
+    //! person's certificate names yet asks first, and the `devices#logIn` call
+    //! `tilo login` makes, and files the certificate a real daemon would.
 
     use std::io::{BufRead as _, Write as _};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -456,6 +454,16 @@ pub(crate) mod testing {
                     who["home"] = tilo_api::daemon::who::home_answer(device);
                 }
                 who
+            } else if asked
+                .pointer("/params/arguments/path")
+                .and_then(Value::as_str)
+                == Some("devices#found")
+            {
+                // The computer's own person, whom the login then replaces.
+                *home.lock().expect("the home") = Some(found(paths));
+                let id = asked.get("id").cloned().unwrap_or(Value::Null);
+                json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{"type": "text", "text": "ok"}], "isError": false}})
             } else {
                 let id = asked.get("id").cloned().unwrap_or(Value::Null);
                 let args = asked
@@ -518,6 +526,24 @@ pub(crate) mod testing {
             agent: "Tilo".into(),
             cert,
             server_cert,
+            server_address: None,
+        }
+    }
+
+    /// What a real daemon makes of a computer that is nobody's device yet: a person of its
+    /// own, whose root certifies its key. It is not filed: the login that follows files the
+    /// certificate this computer keeps.
+    fn found(paths: &IdentityPaths) -> Device {
+        let root = SigningKey::from_bytes(&[0x17; 32]);
+        let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
+        Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://tilo.test".into(),
+            workspace: "a5b4c3d2-e1f0-4b5a-8796-0f1e2d3c6978".into(),
+            workspace_name: None,
+            agent: "Tilo".into(),
+            cert: cert_for(&root, &key, "this computer"),
+            server_cert: cert_for(&root, &root, "this computer's person"),
             server_address: None,
         }
     }
