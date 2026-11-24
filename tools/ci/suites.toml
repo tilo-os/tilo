@@ -1539,19 +1539,12 @@ readers = [
 [[cargo]]
 package = "tilo-workspace-service"
 # The web-search tests answer from the pages a real answer was saved as, the
-# nearby-send test runs the sender script the image ships, and the record and
-# task tests compile the built-in packages from their sources.
+# nearby-send test runs the sender script the image ships, and the vault tests
+# read the app's own manifest and surface.
 inputs = [
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "tools/protocols/airdrop_sender.py",
-  "apps/tl/chat/",
-  "apps/tl/discord/",
-  "apps/tl/discussion/",
-  "apps/tl/mail/",
-  "apps/tl/notes/",
-  "apps/tl/contacts/",
-  "apps/tl/tasks/",
   "apps/tl/vault/tilo-app.toml",
   "apps/tl/vault/surface.toml",
 ]
@@ -1559,9 +1552,6 @@ readers = [
   "crates/core/tilo-workspace-service/src/vault_actions.rs",
   "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
   "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
-  "crates/core/tilo-workspace-service/src/apps/triggers_tests.rs",
-  "crates/core/tilo-workspace-service/src/agents/task_work.rs",
-  "crates/core/tilo-workspace-service/src/tl_records.rs",
 ]
 
 [[cargo]]
@@ -1569,6 +1559,37 @@ package = "discord"
 # The fixture writes the legacy record the migration test reads back.
 inputs = ["crates/lang/tilolang-tilo/tests/legacy/rust_discord.hex"]
 readers = ["apps/discord/tests/native_discord_fixture.rs"]
+
+[[cargo]]
+package = "tilolang-workspace"
+# The records of the apps built into the build compile from their sources here, as the daemon
+# that serves workspaces reads them.
+inputs = [
+  "apps/tl/chat/",
+  "apps/tl/discord/",
+  "apps/tl/discussion/",
+  "apps/tl/notes/",
+  "apps/tl/contacts/",
+  "apps/tl/tasks/",
+]
+readers = ["crates/lang/tilolang-workspace/src/records.rs"]
+
+[[cargo]]
+package = "tilo-daemon"
+# The agents' and triggers' tests run Chat, Tasks and Mail from their sources, through the
+# language runtime the daemon links and mounts.
+inputs = [
+  "apps/tl/chat/",
+  "apps/tl/contacts/",
+  "apps/tl/discussion/",
+  "apps/tl/mail/",
+  "apps/tl/notes/",
+  "apps/tl/tasks/",
+]
+readers = [
+  "crates/os/daemon/tests/language/task_work_tests.rs",
+  "crates/os/daemon/tests/language/triggers_tests.rs",
+]
 
 [[cargo]]
 package = "tilo-collab-types"

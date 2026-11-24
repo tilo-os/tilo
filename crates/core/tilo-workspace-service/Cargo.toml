@@ -18,7 +18,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]). Their turns write tilolang records through the store an app's window
 # writes through, so they serve apps too.
-agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -35,7 +35,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # What a Bluetooth address is, for the record of the person's accessories.
@@ -96,8 +96,6 @@ key-group = { package = "tilo-key-group", path = "../key-group" }
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 sha2.workspace = true
 tilo-agent-session = { path = "../agent-session", optional = true }
-# A tilolang app's record read and changed through its own package on this device ([`tl_records`]).
-tilolang-tilo = { path = "../../lang/tilolang-tilo", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
@@ -111,7 +109,6 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
-runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal", optional = true }
 tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"], optional = true }
 tilo-app-package = { path = "../tilo-app-package", optional = true }
@@ -158,6 +155,8 @@ tokio = { workspace = true, features = ["full"] }
 rustls = { workspace = true, optional = true }
 # An installed app's model, run from the package's WebAssembly module.
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
+# The module a device installed, which a record's search reads the app through.
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The model runtime a package's module links against, fetched from the
 # registry that offers the runtime bundle the package names when this host's
@@ -236,9 +235,6 @@ tilo-mcp = { path = "../tilo-mcp" }
 # A dispatcher that answers as an app's own host: what a device's action service asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../actions", features = ["test-support"] }
-# Tasks, Notes and Discussion run as a device runs them in the engine's tests of a task's
-# sessions: a tilolang host on a thread of a test's own.
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }

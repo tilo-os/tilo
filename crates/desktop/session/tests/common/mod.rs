@@ -571,7 +571,7 @@ pub fn canvas_shown(session: &Session) -> bool {
 fn style_label(session: &Session, style: &str) -> Option<String> {
     let listed = styles(session);
     let found = if listed.is_empty() {
-        tilo_workspace_service::styles::installed(&[])
+        tilolang_workspace::styles::installed(&[])
     } else {
         listed
     }

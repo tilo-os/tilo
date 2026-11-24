@@ -558,6 +558,9 @@ tilo-audio-service = { path = "../../os/audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The tilolang shell's parts are tested over the instance's test support.
 tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
+# The styles the shell's switch lists when no daemon serves a session: the language reads the
+# store's packages, and the shell names its own styles as a daemon would offer them.
+tilolang-workspace = { path = "../../lang/tilolang-workspace" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.

@@ -1154,7 +1154,7 @@ impl super::Workspaces {
 
     /// The agent engine this device runs, which takes the turns of agents'
     /// turns; `None` where it runs none.
-    pub(crate) fn agent_keys(&self) -> Option<Arc<dyn crate::work::AgentEngine>> {
+    pub fn agent_keys(&self) -> Option<Arc<dyn crate::work::AgentEngine>> {
         self.inner.jobs.agents.read_recover().clone()
     }
 
@@ -1171,7 +1171,7 @@ impl super::Workspaces {
 
     /// This device runs `engine` from now on.
     #[cfg(any(test, all(feature = "agents", not(target_arch = "wasm32"))))]
-    pub(crate) fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {
+    pub fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {
         *self.inner.jobs.agents.write_recover() = Some(engine);
     }
 

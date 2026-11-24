@@ -83,8 +83,6 @@ mod learned;
 #[cfg(feature = "agents")]
 mod moderation_history;
 #[cfg(test)]
-mod moderation_history_tests;
-#[cfg(test)]
 mod moderation_turn_tests;
 mod shares;
 mod steps;
@@ -471,7 +469,13 @@ pub async fn run_on_device(
     telling::start(&workspaces);
     // The records of the tilolang apps built in (tl Chat, Tasks) answer here where no window of
     // their app is open: what an agent's reply and its tools write through.
-    crate::tl_records::provided::register(&workspaces);
+    match workspaces.tilolang() {
+        Some(tilolang) => tilolang.records.serve(&workspaces),
+        None => tracing::warn!(
+            "this daemon runs no tilolang runtime: no built-in app's record is served, and an \
+             agent's reply reaches none"
+        ),
+    }
     // The vault's own actions (the code of the moment, keeping a seed and forgetting it) are
     // what an app that shows one-time codes calls: served here, where the vault is.
     crate::vault_actions::register(&workspaces);
@@ -1309,6 +1313,10 @@ impl ServerAgents {
             agent,
             workspace: workspace.to_owned(),
             workspace_id,
+            rich_text: self
+                .workspaces
+                .tilolang()
+                .map(|tilolang| tilolang.rich_text),
         };
         team::join(&self.workspaces, turn, &mut scope).await;
         across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
@@ -1766,6 +1774,9 @@ struct TurnScope {
     agent: Caller,
     workspace: String,
     workspace_id: WorkspaceId,
+    /// What writes the rich text its record's actions take, where the program mounted a
+    /// language runtime.
+    rich_text: Option<Arc<dyn crate::tl_records::RichText>>,
 }
 
 impl TurnScope {
@@ -1803,6 +1814,7 @@ impl TurnScope {
             message: Arc::default(),
             written: Written::default(),
             claim: None,
+            rich_text: self.rich_text.clone(),
         }
     }
 
@@ -1920,6 +1932,9 @@ struct Reply {
     /// This device's claim on the turn, with the turn's stop: renewed with each write, and the
     /// turn stops once another device has it ([`Self::kept`]).
     claim: Option<(Arc<crate::work::Claim>, Arc<std::sync::atomic::AtomicBool>)>,
+    /// What writes the rich text its record's actions take, where the program mounted a
+    /// language runtime.
+    rich_text: Option<Arc<dyn crate::tl_records::RichText>>,
 }
 
 /// What a model wrote into a reply while its turn went on: what it wrote in the rounds that
@@ -2228,15 +2243,15 @@ impl Reply {
     /// # Errors
     /// The turn answers in no conversation, or Chat refused it.
     async fn show(&self, label: &str, to: &tilo_reference::Embed) -> Result<(), String> {
-        use tilolang_tilo::runtime::rich::RichValue;
         let Some(place) = self.ask.message() else {
             return Err("only an answer in a conversation shows a document".to_owned());
         };
+        let rich_text = self
+            .rich_text
+            .as_ref()
+            .ok_or("this daemon runs no tilolang runtime: it writes no rich text")?;
         self.kept().await?;
-        let mut body = RichValue::default();
-        body.push_reference(label, to);
-        let body =
-            tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::Value::Rich(body))?;
+        let body = rich_text.reference(label, to)?;
         let mut arguments = Map::new();
         arguments.insert("body".into(), body);
         arguments.insert(

@@ -1,63 +1,15 @@
-//! The notices an app raises on a device with no desktop session, carried into the record of the
-//! person's devices ([`ServedNotices`]).
-//!
-//! An app tells its person something in a `host-notice` document of its own record; a desktop
-//! session shows those as notifications, and what it shows of this device's its session keeps in
-//! the record of the person's devices. A device that serves pages runs the app with no session,
-//! so nothing kept its notices there: this device reads the notices its apps wrote
-//! ([`Workspaces::app_notices`]) and shows each in the record under an id of its own
-//! ([`shared_id`]), from which every device of the person's and every page of theirs raises it.
-//!
-//! What the person answers there — dismissing the notice, or choosing one of the actions the app
-//! offered — is carried out on the device the notice was sent on: dismissing marks the app's
-//! notice seen in its record, choosing runs that action of the app on what the notice opens, and
-//! either takes the notice out of the record of their devices
-//! ([`Devices::retiring_notice`]), which takes every copy away. A notice whose time in the record
-//! runs out, which its app withdraws, or which leaves the record elsewhere is taken off the app's
-//! record too, so no device raises it again.
+//! The notices an app raises on a device with no desktop session: what the app's record says,
+//! what the person answered in the record of their devices, and how that answer reaches the app.
+//! What the record itself holds is read through the language ([`crate::tl_records::Package`]).
 
 use std::collections::BTreeMap;
 
-use tilolang_tilo::action::EDIT_FLAG_ACTION;
-use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
-use tilolang_tilo::tilolang::{
-    NOTICE_ACTIONS, NOTICE_BODY, NOTICE_DEVICE, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO,
-    NOTICE_TYPE,
-};
-
-use crate::tl_records::Opened;
+use crate::tl_records::{Package, Raised};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_workspace::{
     self,
     devices::{DEVICES, Devices, MAX_NOTICE_SHOWN_MS, NoticeAction, SharedNotice},
 };
-
-/// The package an app's record is read through here: the one this build carries for it, the one
-/// this device installed, or one compiled here (a test's).
-#[derive(Clone)]
-pub enum Package {
-    /// The package this build carries ([`crate::tl_records::built_in`]).
-    BuiltIn,
-    /// The package this device installed, verified as a launch of it verifies it.
-    Installed(runtime_portal::process_link::Module),
-    /// A package compiled here, as a test's app is.
-    #[cfg(any(test, feature = "test-support"))]
-    Compiled(crate::tl_records::Packages),
-}
-
-/// A notice an app wrote in its record, as this device reads it: what it says, what a person may
-/// choose on it, and the device the app addressed it to (empty for every device of the person's).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Raised {
-    /// The id the notice document keeps in the app's record.
-    pub doc: String,
-    pub title: String,
-    pub body: String,
-    /// The actions it offers, each its key and the words of its label.
-    pub actions: Vec<(String, String)>,
-    /// The device it is for, empty for every device of the person's.
-    pub device: String,
-}
 
 /// What this device carried out of an answer to one of its notices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,143 +36,6 @@ pub fn shared_id(device: &[u8; 32], workspace: &str, app: &str, doc: &str) -> St
     hasher.update(b"\0");
     hasher.update(doc.as_bytes());
     hasher.finalize().to_hex().to_string()
-}
-
-/// The notices `opened`, an app's record, holds for `person` that they have not seen: the
-/// documents a device of theirs shows.
-///
-/// # Errors
-/// The record's notices cannot be read.
-pub fn raised(opened: &Opened, person: &str) -> Result<Vec<Raised>, String> {
-    let runtime = opened.host().runtime();
-    let mut out = Vec::new();
-    for doc in opened
-        .host()
-        .store()
-        .resources_of(NOTICE_TYPE)
-        .map_err(|error| error.to_string())?
-    {
-        let at = ResourceRef::root(doc.clone(), NOTICE_TYPE.to_owned());
-        let to = match runtime.read(&at, NOTICE_TO) {
-            Ok(Value::Actor(actor)) => actor
-                .member_id()
-                .and_then(|member| member.person_id())
-                .map(str::to_owned),
-            _ => None,
-        };
-        if to.as_deref() != Some(person) {
-            continue;
-        }
-        if matches!(runtime.read(&at, NOTICE_SEEN), Ok(Value::Bool(true))) {
-            continue;
-        }
-        let text = |field: &str| match runtime.read(&at, field) {
-            Ok(Value::Text(text)) => text,
-            _ => String::new(),
-        };
-        let names: Vec<String> = match runtime.read(&at, NOTICE_ACTIONS) {
-            Ok(Value::List(items)) => items
-                .iter()
-                .filter_map(|item| match item {
-                    Value::Text(name) => Some(name.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        out.push(Raised {
-            actions: labelled(opened, &at, &names),
-            device: text(NOTICE_DEVICE),
-            title: text(NOTICE_TITLE),
-            body: text(NOTICE_BODY),
-            doc,
-        });
-    }
-    Ok(out)
-}
-
-/// The actions `names` the notice `at` offers, each with the words the app that keeps what it
-/// opens labels it by: one the app does not declare keeps the name it was offered by.
-fn labelled(opened: &Opened, at: &ResourceRef, names: &[String]) -> Vec<(String, String)> {
-    let package = match opened.host().runtime().read(at, NOTICE_OPENS) {
-        Ok(Value::Ref(reference)) => tilolang_tilo::schema::lookup(&reference.target.ty)
-            .and_then(|schema| opened.host().package(&schema.app)),
-        _ => None,
-    };
-    names
-        .iter()
-        .map(|name| {
-            let label = package
-                .as_ref()
-                .and_then(|package| {
-                    package
-                        .meta
-                        .actions
-                        .iter()
-                        .find(|action| action.name == *name)
-                })
-                .map_or_else(String::new, |action| action.label.clone());
-            let label = if label.is_empty() {
-                name.clone()
-            } else {
-                label
-            };
-            (name.clone(), label)
-        })
-        .collect()
-}
-
-/// `person` saw the notice `doc` — they dismissed it, chose on it, or its time there ran out — so
-/// it is marked seen in the app's record and no device of theirs raises it again.
-///
-/// # Errors
-/// The record refused the write.
-pub fn seen(opened: &Opened, person: &str, doc: &str) -> Result<(), String> {
-    let at = ResourceRef::root(doc.to_owned(), NOTICE_TYPE.to_owned());
-    let by = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
-    opened
-        .host()
-        .store()
-        .set_register(
-            &at,
-            NOTICE_SEEN,
-            tilolang_tilo::runtime::store::Scalar::Bool(true),
-            EDIT_FLAG_ACTION,
-            &by,
-        )
-        .map_err(|error| error.to_string())
-}
-
-/// Run `action`, one of the app's actions by the name the notice `doc` offered it by, on what the
-/// notice opens, as `person`.
-///
-/// # Errors
-/// The notice opens nothing, the app does not declare the action, or the action was refused.
-pub fn choose(opened: &Opened, person: &str, doc: &str, action: &str) -> Result<(), String> {
-    let at = ResourceRef::root(doc.to_owned(), NOTICE_TYPE.to_owned());
-    let opens = match opened.host().runtime().read(&at, NOTICE_OPENS) {
-        Ok(Value::Ref(reference)) => ResourceRef::clone(&reference.target),
-        other => return Err(format!("the notice opens nothing it can run: {other:?}")),
-    };
-    let schema = tilolang_tilo::schema::lookup(&opens.ty)
-        .ok_or_else(|| format!("no app keeps `{}`", opens.ty))?;
-    let package = opened
-        .host()
-        .package(&schema.app)
-        .ok_or_else(|| format!("{} is not loaded", schema.app))?;
-    let named = package
-        .meta
-        .actions
-        .iter()
-        .find(|declared| declared.name == action)
-        .ok_or_else(|| format!("{} declares no action `{action}`", schema.app))?;
-    let by = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
-    opened
-        .host()
-        .runtime()
-        .invoke_action(&by, (named.id.as_str(), vec![Value::resource(&opens)]))
-        .map(drop)
-        .map_err(|error| error.to_string())
 }
 
 /// The notices this device's apps raise, kept in the record of the person's devices while they

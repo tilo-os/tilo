@@ -13,7 +13,7 @@ use super::super::PreAdmitRequest;
 use super::super::WorkspaceContent;
 use super::super::WorkspaceSummary;
 use super::super::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
+    TestGroupKeys, TestHost, device_cert, governor, invited, signed_pre_admission, test_host,
     test_host_holding,
 };
 use super::MemberDevice;
@@ -63,48 +63,6 @@ pub(super) async fn shared_with(
     let (serving_key, serving_cert) = governor();
     let serving = test_host_holding(serving_state, &serving_key, &serving_cert, group_keys()).await;
     invited(serving, &serving_cert, name, seed, device).await
-}
-
-/// `serving` creates the workspace `name` and invites `device` into it: the serving device, the
-/// device it invites, the workspace and the invitation's text.
-pub(super) async fn invited(
-    serving: TestHost,
-    serving_cert: &DeviceCert,
-    name: &str,
-    seed: u8,
-    device: (SigningKey, DeviceCert),
-) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
-    let created = serving
-        .workspaces()
-        .create(name)
-        .await
-        .expect("a workspace is created");
-    let invitation = invitation(&serving, serving_cert, &created.workspace, seed, &device.1).await;
-    (serving, device, created, invitation)
-}
-
-/// The text of the invitation `serving` issues for `recipient`'s person into `workspace`.
-pub(super) async fn invitation(
-    serving: &TestHost,
-    serving_cert: &DeviceCert,
-    workspace: &str,
-    seed: u8,
-    recipient: &DeviceCert,
-) -> String {
-    let issued = serving
-        .workspaces()
-        .pre_admit(
-            serving_cert,
-            PreAdmitRequest {
-                request_id: [seed; 32],
-                grant: signed_pre_admission(workspace, &[seed; 8]),
-                recipient_user_public_key: Some(recipient.user_public_key),
-                inviter_name: None,
-            },
-        )
-        .await
-        .expect("the serving device issues an invitation");
-    tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
 
 /// A service on `state`, serving the member copies of `(key, cert)`.

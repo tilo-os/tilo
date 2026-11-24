@@ -212,10 +212,8 @@ mod document_format;
 pub mod profile_import;
 mod record_authority;
 mod resources;
-#[cfg(feature = "agents")]
 pub use resources::RecordFailure;
-#[cfg(feature = "apps")]
-pub(crate) use resources::person_reading;
+pub use resources::person_reading;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
@@ -1182,6 +1180,11 @@ struct WorkspacesInner {
     /// What this device opened of the sealed resources its own roles read
     /// ([`Workspaces::own_read`]).
     own_opened: reads::OwnOpened,
+    /// The language runtime the daemon's program mounted, where it mounted one
+    /// ([`Workspaces::provide_tilolang`]): what reads and changes the records of the tilolang
+    /// apps built into the build.
+    #[cfg(not(target_arch = "wasm32"))]
+    tilolang: std::sync::OnceLock<crate::tl_records::Tilolang>,
     /// The action service the workspaces answer their members' devices on, as this
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
@@ -1628,6 +1631,8 @@ impl Workspaces {
                 workspaces,
                 readings: readings::Readings::default(),
                 own_opened: reads::OwnOpened::default(),
+                #[cfg(not(target_arch = "wasm32"))]
+                tilolang: std::sync::OnceLock::new(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 reached: tokio::sync::broadcast::Sender::new(64),
@@ -2091,6 +2096,23 @@ impl Workspaces {
     #[must_use]
     pub fn providers(&self) -> providers::Providers {
         self.inner.jobs.providers.clone()
+    }
+
+    /// Hand this service the language runtime the daemon's program mounted
+    /// ([`crate::workspaces::WorkspaceServices`]): from now on its own roles read and change
+    /// the records of the tilolang apps built into the build, offer the styles the device's
+    /// installed packages declare, and write rich text through it. Called once, as the service
+    /// is configured.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn provide_tilolang(&self, tilolang: crate::tl_records::Tilolang) {
+        let _ = self.inner.tilolang.set(tilolang);
+    }
+
+    /// The language runtime this service's program mounted, where one did.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn tilolang(&self) -> Option<crate::tl_records::Tilolang> {
+        self.inner.tilolang.get().cloned()
     }
 
     /// Answer the workspaces' governance actions their member devices ask on the device action

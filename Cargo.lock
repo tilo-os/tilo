@@ -16597,7 +16597,10 @@ name = "tilo-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "ed25519-dalek 3.0.0",
  "hex",
+ "jiff",
  "libc",
  "os-actions",
  "rand 0.10.3",
@@ -16608,13 +16611,22 @@ dependencies = [
  "tilo-accounts",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-agent-session",
  "tilo-app-id",
+ "tilo-automation",
  "tilo-automerge-isolate",
+ "tilo-clock",
+ "tilo-collab-types",
+ "tilo-device-identity",
  "tilo-failure",
  "tilo-files",
  "tilo-identity",
+ "tilo-model-gateway",
  "tilo-paths",
+ "tilo-peer-state",
  "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-resource-store",
  "tilo-rt",
  "tilo-runtime",
  "tilo-runtime-bundle",
@@ -16624,10 +16636,14 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-user-identity",
  "tilo-vision-service",
+ "tilo-workspace-agent",
  "tilo-workspace-service",
+ "tilolang-workspace",
  "tokio",
  "tracing",
+ "uuid",
  "workspace-hack",
  "zbus",
  "zeroize",
@@ -19585,6 +19601,7 @@ dependencies = [
  "tilo-workspace-keys",
  "tilo-workspace-service",
  "tilolang-cli",
+ "tilolang-records",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -20297,6 +20314,7 @@ dependencies = [
  "tilolang-process",
  "tilolang-service",
  "tilolang-tilo",
+ "tilolang-workspace",
  "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -21903,7 +21921,6 @@ dependencies = [
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
  "tilolang-calendar",
- "tilolang-tilo",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
@@ -22207,6 +22224,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-records"
+version = "0.1.0"
+dependencies = [
+ "tilolang-workspace",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
@@ -22354,6 +22379,31 @@ dependencies = [
  "tilo-ui",
  "tilolang-runtime",
  "tilolang-tilo",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-workspace"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "serde_json",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-isolate",
+ "tilo-failure",
+ "tilo-lock",
+ "tilo-peer-state",
+ "tilo-reference",
+ "tilo-resource",
+ "tilo-runtime-portal",
+ "tilo-user-identity",
+ "tilo-workspace-service",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
  "workspace-hack",
 ]
 

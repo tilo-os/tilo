@@ -83,6 +83,12 @@ pub struct ServiceConfig {
     /// their own, which the workspaces they belong to take in once they are held here: a
     /// person's device names them ([`crate::own_device::open`]), a server has none.
     pub app_files: Vec<PathBuf>,
+    /// The language runtime this service's program mounts, where it links one
+    /// ([`crate::tl_records::Tilolang`]): what reads and changes the records of the tilolang
+    /// apps built into the build, and the styles the device's installed packages declare. A
+    /// program that mounts nothing runs the core alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub tilolang: Option<crate::tl_records::Tilolang>,
 }
 
 impl ServiceConfig {
@@ -105,6 +111,8 @@ impl ServiceConfig {
             member: None,
             surfaces: Arc::clone(collab_types::app_surface::Surfaces::process()),
             app_files: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tilolang: None,
         }
     }
 }
@@ -285,6 +293,13 @@ impl ServiceSessions {
         ))
         .await
         .map_err(ServiceError::Workspaces)?;
+        // The language runtime the program mounted, on the workspaces it opened: their own roles
+        // read and change the records of the tilolang apps built into the build through it, and
+        // offer the styles the device's installed packages declare.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(tilolang) = &cfg.tilolang {
+            workspaces.provide_tilolang(tilolang.clone());
+        }
         // The typed actions of the workspaces' built-in records (their agents, emoji, contacts,
         // the person's list), applied here for whichever device of a workspace asks.
         #[cfg(feature = "agents")]
@@ -396,8 +411,13 @@ impl ServiceSessions {
                 );
                 // A built-in tilolang app's record is written with no package installed, so its
                 // types and verbs are named here as an installed app's surface names them.
-                #[cfg(feature = "agents")]
-                crate::tl_records::declare_built_in(&cfg.surfaces);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(tilolang) = &cfg.tilolang {
+                    let surfaces = Arc::clone(&cfg.surfaces);
+                    for (app, bytes) in tilolang.records.surfaces() {
+                        crate::workspaces::keep_surface(&surfaces, &app, &bytes);
+                    }
+                }
                 Arc::clone(&cfg.surfaces)
             },
             apps,

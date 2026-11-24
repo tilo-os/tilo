@@ -30,15 +30,19 @@ use tilo_resource_store::{Cell, Resource, Stamp, Value};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 
-use super::super::fixtures::{TestGroupKeys, device_cert, governor, test_host_holding};
-use super::super::{MemberDevice, Workspaces};
-use super::tests::invited;
-use crate::agents::agent_keys::AgentKeys;
-use crate::agents::triggered::{self, CHAT, MESSAGE};
-use crate::agents::{Model, ServerAgents};
-use crate::apps::triggers::{Firing, Runner, StartRun};
-use crate::service::local_caller;
-use crate::work::Order;
+use tilo_workspace_service::agents::agent_keys::AgentKeys;
+use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE};
+use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_workspace_service::apps::triggers::{Firing, Runner, StartRun};
+use tilo_workspace_service::service::local_caller;
+use tilo_workspace_service::work::Order;
+use tilo_workspace_service::workspaces::fixtures::invited;
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, device_cert, governor, test_host_holding,
+};
+use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
+
+use super::mount;
 
 /// Bea's agent.
 pub(super) const SCOUT: &str = "scout";
@@ -173,7 +177,7 @@ pub(super) async fn chat_writes(
 ) -> Result<(), String> {
     let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
     // A change records the id Chat's declaration keeps for `send`, as its schema declares it.
-    let send = crate::tl_records::built_in(CHAT)
+    let send = tilolang_workspace::records::built_in(CHAT)
         .unwrap()
         .expect("Chat is built in")
         .action_id("send")
@@ -210,7 +214,7 @@ pub(super) async fn chat_writes(
             stamp,
         });
     }
-    let context = crate::apps::services::ResourceRequestContext::authenticated(
+    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
         CHAT,
         workspace,
         caller.clone(),
@@ -349,14 +353,20 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     // Chat, built into this build, answers for its record on Bea's device, as the daemon serves
     // it: its own package runs each action over the device's store. Bea opens it and makes a
     // channel with it.
-    crate::tl_records::provided::register(beas);
-    let chat = crate::tl_records::built_in(CHAT)
+    mount(beas);
+    let chat = tilolang_workspace::records::built_in(CHAT)
         .unwrap()
         .expect("Chat is built in");
-    let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(bea_person.clone()));
-    beas.with_tl_record(&workspace, &chat, (as_bea, &bea_person), |opened| {
-        opened.open_root().map(drop)
-    })
+    let as_bea = tilo_workspace_service::tl_records::member(tilo_actions::MemberId::person(
+        bea_person.clone(),
+    ));
+    tilolang_workspace::records::with_tl_record(
+        beas,
+        &workspace,
+        &chat,
+        (as_bea, &bea_person),
+        |opened| opened.open_root().map(drop),
+    )
     .await
     .expect("Bea opens Chat");
     let chat_provider = format!("{}:{CHAT}:", tilo_actions::remote::RESOURCE_PROVIDER);
@@ -468,7 +478,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .await
         .expect("the turn starts");
     assert!(
-        matches!(taken, crate::work::Started::Taken(_)),
+        matches!(taken, tilo_workspace_service::work::Started::Taken(_)),
         "Bea's device takes her agent's turn: {taken:?}"
     );
 
@@ -528,8 +538,9 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
 
     // Its reply is Chat's own write: a message of the channel, to her message, stamped as Scout's
     // `send` for Bea.
-    let context =
-        crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller_bea);
+    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+        CHAT, &workspace, caller_bea,
+    );
     let deadline = tilo_test_env::hang_deadline();
     let (reply_id, reply) = loop {
         let page = beas
@@ -574,7 +585,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .first()
         .and_then(|version| version.stamp.clone())
         .expect("the reply names the action that made it");
-    let send = crate::tl_records::built_in(CHAT)
+    let send = tilolang_workspace::records::built_in(CHAT)
         .unwrap()
         .expect("Chat is built in")
         .action_id("send");

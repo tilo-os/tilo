@@ -20,6 +20,9 @@ pub(crate) struct StylesShown {
 /// else the person's own store) in their own workspace, from now on.
 pub(crate) fn publish(workspaces: &Arc<ServiceWorkspaces>) -> StylesShown {
     let styles = Styles::default();
+    // The language runtime the program mounted reads the store's packages: without one this
+    // device offers the styles a store already carries, and reads no package for more.
+    let tilolang = workspaces.copies().tilolang();
     workspaces.copies().publish_own(
         STYLES_APP,
         tilo_workspace_service::workspaces::OwnReaders::Workspace,
@@ -30,12 +33,12 @@ pub(crate) fn publish(workspaces: &Arc<ServiceWorkspaces>) -> StylesShown {
         Err(error) => {
             // No store: the styles of the shell this build carries are what the device offers.
             tracing::warn!(%error, "this device keeps no app store; its shell's own styles stand");
-            read_again(None, &styles);
+            read_again(None, &styles, tilolang);
             return StylesShown { _watch: None };
         }
     };
     let registry = catalog.user().registry();
-    read_again(Some(catalog.clone()), &styles);
+    read_again(Some(catalog.clone()), &styles, tilolang.clone());
     let watch = registry.parent().map(PathBuf::from).and_then(|root| {
         // A store nothing was installed in yet has no directory: it is watched from the start,
         // so the first install is read like every other.
@@ -48,7 +51,7 @@ pub(crate) fn publish(workspaces: &Arc<ServiceWorkspaces>) -> StylesShown {
         tilo_files::native::watch_changes(
             &root,
             move |path| path == named,
-            move || read_again(Some(catalog.clone()), &styles),
+            move || read_again(Some(catalog.clone()), &styles, tilolang.clone()),
         )
         .map_err(|error| {
             tracing::warn!(%error, root = %root.display(), "the app store is not watched");
@@ -60,7 +63,11 @@ pub(crate) fn publish(workspaces: &Arc<ServiceWorkspaces>) -> StylesShown {
 
 /// Read the styles `catalog` offers on a blocking thread, and offer them in `styles`. One read at
 /// a time: the last to start reads the store as the last change left it, and offers last.
-fn read_again(catalog: Option<package_store::Catalog>, styles: &Styles) {
+fn read_again(
+    catalog: Option<package_store::Catalog>,
+    styles: &Styles,
+    tilolang: Option<tilo_workspace_service::tl_records::Tilolang>,
+) {
     static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let styles = styles.clone();
     tilo_rt::app().spawn_blocking(move || {
@@ -80,6 +87,11 @@ fn read_again(catalog: Option<package_store::Catalog>, styles: &Styles) {
             }
             None => Vec::new(),
         };
-        styles.offer(tilo_workspace_service::styles::installed(&apps));
+        match tilolang {
+            Some(tilolang) => styles.offer(tilolang.styles.installed(&apps)),
+            None => tracing::warn!(
+                "this daemon links no tilolang runtime: it reads no installed package's styles"
+            ),
+        }
     });
 }

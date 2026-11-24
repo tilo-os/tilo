@@ -5400,7 +5400,7 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
     let cert = workspaces.device_cert().clone();
     let apps = Arc::clone(apps);
     tilo_rt::app().handle().spawn(async move {
-        use tilo_workspace_service::apps::served_notices::Package;
+        use tilo_workspace_service::tl_records::Package;
         let mut notices = tilo_workspace_service::apps::served_notices::ServedNotices::new(
             copies.clone(),
             cert.device_public_key,
@@ -5416,7 +5416,7 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
         // and kept, since an app's install does not change under a running daemon.
         let mut packages: std::collections::BTreeMap<
             (String, String),
-            tilo_workspace_service::apps::served_notices::Package,
+            tilo_workspace_service::tl_records::Package,
         > = std::collections::BTreeMap::new();
         // What one pass looks at: every app record written since the last, and the ones the
         // workspaces hold the first time. A pass runs on the tick, so a burst of writes to one
@@ -5465,8 +5465,9 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
                 // An app this device neither installed nor carries runs nowhere here, so its
                 // record holds no notice this device could read.
                 let readable = !matches!(package, Package::BuiltIn)
-                    || tilo_workspace_service::tl_records::built_in(&app)
-                        .is_ok_and(|packages| packages.is_some());
+                    || copies
+                        .tilolang()
+                        .is_some_and(|tilolang| tilolang.records.built_in(&app));
                 if !readable {
                     continue;
                 }

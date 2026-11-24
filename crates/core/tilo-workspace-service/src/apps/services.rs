@@ -475,7 +475,7 @@ pub struct ResourceRequestContext {
 }
 
 impl ResourceRequestContext {
-    pub(crate) fn authenticated(
+    pub fn authenticated(
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,
         caller: tilo_actions::remote::Caller,
@@ -552,7 +552,7 @@ impl ResourceRequestContext {
         Self::authenticated(app_id, workspace_id, caller)
     }
 
-    pub(crate) fn serving(
+    pub fn serving(
         mut self,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
     ) -> Self {

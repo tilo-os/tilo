@@ -14,6 +14,7 @@ use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, Receipt
 use tilo_peer_state::join::Role;
 use tilo_workspace_service::tl_records;
 use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+use tilolang_records as tl;
 
 use crate::host;
 use crate::host::Host;
@@ -92,21 +93,25 @@ async fn invoke(
 /// What Chat's record holds of the workspace, as `person` reads it through Chat's own package.
 async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
     use tilo_actions::MemberId;
-    use tl_records::runtime::Actor;
-    let packages = tl_records::built_in(CHAT)
+    use tl::runtime::Actor;
+    let packages = tl::records::built_in(CHAT)
         .expect("the built-in package compiles")
         .expect("this build carries Chat's package");
     let viewer = Actor::Member(MemberId::person(person.to_owned()));
     let reader = viewer.clone();
-    host.daemon()
-        .workspaces()
-        .with_tl_record(workspace, &packages, (viewer, person), move |opened| {
+    tl::records::with_tl_record(
+        host.daemon().workspaces(),
+        workspace,
+        &packages,
+        (viewer, person),
+        move |opened| {
             opened
                 .host()
                 .answer_read(&json!({"item": CONVERSATIONS}), &reader)
-        })
-        .await
-        .unwrap_or_else(|error| panic!("Chat's record reads: {error}"))
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("Chat's record reads: {error}"))
 }
 
 /// Add the person `Bo` as a viewer of the daemon's workspace, with a device of theirs, and
@@ -205,9 +210,8 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
             .await
             .expect("a second workspace")
             .workspace;
-        let viewer = tl_records::runtime::Actor::Member(tilo_actions::MemberId::person(
-            host.person().to_owned(),
-        ));
+        let viewer =
+            tl::runtime::Actor::Member(tilo_actions::MemberId::person(host.person().to_owned()));
         let acting = tilo_action_policy::Acting::person(host.person().to_owned());
         let invoker = tilo_actions::ActionInvoker::admitted(&acting);
         let context = tilo_actions::ActionContext::default();

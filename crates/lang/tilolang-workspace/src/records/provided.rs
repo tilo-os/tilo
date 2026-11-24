@@ -25,9 +25,9 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionContext, ActionFailure, ActionInvoker, OperationKind};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{RecordCall, built_in_apps};
-use crate::workspaces::Workspaces;
-use crate::workspaces::providers::Reach;
+use super::{RecordCall, built_in, built_in_apps, member, runs_elsewhere, with_tl_record};
+use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::providers::Reach;
 
 /// One built-in app's records, as this device serves them.
 #[derive(Clone)]
@@ -168,7 +168,7 @@ impl BuiltInRecords {
                 workspace,
                 RecordCall {
                     app: self.app,
-                    viewer: super::member(tilo_actions::MemberId::person(person.to_owned())),
+                    viewer: member(tilo_actions::MemberId::person(person.to_owned())),
                     invoker,
                     caller,
                     context,
@@ -191,7 +191,7 @@ impl BuiltInRecords {
         if self.rooted.lock_recover().contains(workspace) {
             return Ok(());
         }
-        let packages = super::built_in(self.app)?.ok_or_else(|| super::runs_elsewhere(self.app))?;
+        let packages = built_in(self.app)?.ok_or_else(|| runs_elsewhere(self.app))?;
         let app = self.app;
         // A record no device wrote yet has no channel to seal its first write for: this device
         // founds it, as a window opening the record would. One it may not found is founded
@@ -203,16 +203,21 @@ impl BuiltInRecords {
         {
             tracing::debug!(%error, app, "the record's channel is not founded here");
         }
-        let viewer = super::member(tilo_actions::MemberId::person(person.to_owned()));
-        self.workspaces
-            .with_tl_record(workspace, &packages, (viewer, person), move |opened| {
+        let viewer = member(tilo_actions::MemberId::person(person.to_owned()));
+        with_tl_record(
+            &self.workspaces,
+            workspace,
+            &packages,
+            (viewer, person),
+            move |opened| {
                 opened
                     .host()
                     .root_of(app)
                     .map(drop)
                     .map_err(|error| format!("{app}'s root is not made: {error}"))
-            })
-            .await?;
+            },
+        )
+        .await?;
         self.rooted.lock_recover().insert(workspace.to_owned());
         Ok(())
     }
@@ -251,9 +256,12 @@ impl ActionProvider for BuiltInRecords {
             if let Err(error) = records.rooted(&workspace, &person).await {
                 tracing::warn!(app = records.app, %workspace, %error, "a built-in app's record has no root");
             }
-            let page = records
-                .workspaces
-                .record_page(&workspace, &records.route(&workspace), &person, &query);
+            let page = records.workspaces.record_page(
+                &workspace,
+                &records.route(&workspace),
+                &person,
+                &query,
+            );
             done.complete(Ok(page.unwrap_or_else(nothing)));
         });
         page
@@ -295,8 +303,7 @@ impl ActionProvider for BuiltInRecords {
 
 /// Calling a built-in app's actions the way a person's `tilo do` or an agent's turn does, for
 /// the tests of what reads the record afterwards.
-#[cfg(test)]
-pub(crate) mod calls {
+pub mod calls {
     #![allow(clippy::expect_used, reason = "a fixture failing is its test failing")]
 
     use super::{
@@ -309,7 +316,7 @@ pub(crate) mod calls {
     ///
     /// # Panics
     /// The record offers `caller` no such action, or the app's records are not served here.
-    pub(crate) async fn call(
+    pub async fn call(
         workspaces: &Workspaces,
         caller: &Caller,
         app: &'static str,
@@ -385,9 +392,9 @@ mod tests {
     )]
 
     use super::*;
-    use crate::workspaces::tests::{governor, test_host};
     use tilo_action_policy::{Answer, KindSet, TreePath};
     use tilo_actions::remote::ReceiptStatus;
+    use tilo_workspace_service::workspaces::fixtures::{governor, test_host};
 
     const CHAT: &str = "so.tilo.chat";
 
@@ -499,9 +506,7 @@ mod tests {
         // History keeps the id Chat's declaration gives each action that wrote, which a rename
         // leaves alone: `write_to` writes through the actions it runs, finding the conversation
         // with the person and sending to it.
-        let chat = crate::tl_records::built_in(CHAT)
-            .unwrap()
-            .expect("Chat is built in");
+        let chat = built_in(CHAT).unwrap().expect("Chat is built in");
         workspaces
             .record_changes(workspace, &route, person)
             .unwrap_or_default()
@@ -531,6 +536,7 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
+        workspaces.provide_tilolang(crate::host());
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -574,6 +580,7 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
+        workspaces.provide_tilolang(crate::host());
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -596,7 +603,7 @@ mod tests {
             .expect("Chat's root is made");
 
         // Outside its delegation: the workspace denies it everything.
-        crate::workspaces::fixtures::record_grants(
+        tilo_workspace_service::workspaces::fixtures::record_grants(
             &workspaces,
             &workspace,
             &[tilo_action_policy::Grant::new(
@@ -628,13 +635,13 @@ mod tests {
 
         // Within it, once the workspace takes its deny back and grants the agent its person's
         // undoable writes, the write lands as the agent's.
-        crate::workspaces::fixtures::revoke_grants(
+        tilo_workspace_service::workspaces::fixtures::revoke_grants(
             &workspaces,
             &workspace,
             &[tilo_action_policy::GrantId::new("scout-denied")],
         )
         .await;
-        crate::workspaces::fixtures::record_grants(
+        tilo_workspace_service::workspaces::fixtures::record_grants(
             &workspaces,
             &workspace,
             &[tilo_action_policy::Grant::new(
@@ -668,14 +675,9 @@ mod tests {
                 .map(|version| (version["action"].clone(), version["who"].clone()))
                 .collect::<Vec<_>>()
         );
-        let agent = serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::agent(
-            "scout",
-        )))
-        .unwrap();
-        let device_person = serde_json::to_value(crate::tl_records::member(
-            tilo_actions::MemberId::person(person),
-        ))
-        .unwrap();
+        let agent = serde_json::to_value(member(tilo_actions::MemberId::agent("scout"))).unwrap();
+        let device_person =
+            serde_json::to_value(member(tilo_actions::MemberId::person(person))).unwrap();
         for version in &versions {
             assert_eq!(
                 version["who"], agent,
@@ -697,6 +699,7 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
+        workspaces.provide_tilolang(crate::host());
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -707,10 +710,12 @@ mod tests {
             .add_member(
                 &workspace,
                 &owner,
-                crate::workspaces::AddMemberRequest {
+                tilo_workspace_service::workspaces::AddMemberRequest {
                     request_id: [9; 32],
                     user_public_key: cy_root.verifying_key().to_bytes(),
-                    place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
+                    place: tilo_workspace_service::workspaces::MemberPlace::Role(
+                        tilo_action_policy::Role::Viewer,
+                    ),
                     name: Some("Cy".into()),
                 },
             )
@@ -801,17 +806,16 @@ mod tests {
     /// never as the person whose device serves it.
     #[tokio::test]
     async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
-        use crate::tl_records::runtime::Value;
+        use tilolang_tilo::runtime::Value;
         const TASKS: &str = "so.tilo.tasks";
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
+        workspaces.provide_tilolang(crate::host());
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let ada_person = hex::encode(owner.user_public_key);
-        let tasks = crate::tl_records::built_in(TASKS)
-            .unwrap()
-            .expect("Tasks is built in");
+        let tasks = built_in(TASKS).unwrap().expect("Tasks is built in");
         // The record's channel is founded here, as a window opening it first would.
         let tasks_records = BuiltInRecords {
             workspaces: workspaces.clone(),
@@ -823,10 +827,14 @@ mod tests {
             .rooted(&workspace, &ada_person)
             .await
             .expect("Tasks' record has its root");
-        let ada = crate::tl_records::member(tilo_actions::MemberId::person(ada_person.clone()));
+        let ada = member(tilo_actions::MemberId::person(ada_person.clone()));
         let who = ada.clone();
-        workspaces
-            .with_tl_record(&workspace, &tasks, (ada, &ada_person), move |opened| {
+        with_tl_record(
+            &workspaces,
+            &workspace,
+            &tasks,
+            (ada, &ada_person),
+            move |opened| {
                 opened.open_root()?;
                 opened
                     .invoke(
@@ -839,9 +847,10 @@ mod tests {
                         None,
                     )
                     .map(drop)
-            })
-            .await
-            .expect("Ada writes a task");
+            },
+        )
+        .await
+        .expect("Ada writes a task");
 
         let found = |person: &str| {
             let found = workspaces
@@ -870,10 +879,12 @@ mod tests {
             .add_member(
                 &workspace,
                 &owner,
-                crate::workspaces::AddMemberRequest {
+                tilo_workspace_service::workspaces::AddMemberRequest {
                     request_id: [9; 32],
                     user_public_key: cy_root.verifying_key().to_bytes(),
-                    place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
+                    place: tilo_workspace_service::workspaces::MemberPlace::Role(
+                        tilo_action_policy::Role::Viewer,
+                    ),
                     name: Some("Cy".into()),
                 },
             )

@@ -35,6 +35,9 @@ path = "tests/it.rs"
 tilo-runtime = { path = "../../core/tilo-runtime" }
 tilo-actions = { path = "../../core/actions" }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
+# The language runtime the workspace service reads and changes tilolang apps' records through,
+# and the styles it offers: the core names no language, and this program mounts this one.
+tilolang-workspace = { path = "../../lang/tilolang-workspace" }
 # The device's image model, registered on the daemon's dispatch.
 tilo-vision-service = { path = "../../services/vision" }
 # The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
@@ -67,8 +70,27 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support"] }
+# The workspace service with the agents that read and change the built-in apps' records. Those
+# records are the language runtime's, so the tests that drive them run here, beside the daemon
+# that links the runtime and mounts it.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support", "agents"] }
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+tilo-agent-session = { path = "../../core/agent-session" }
+tilo-automation = { path = "../../core/automation" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-device-identity = { path = "../../core/tilo-device-identity" }
+tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"] }
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-resource-store = { path = "../../core/resource-store" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
+tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+jiff.workspace = true
+uuid.workspace = true
 tilo-action-policy = { path = "../../core/action-policy" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-automerge-isolate.workspace = true
 tilo-paths.workspace = true

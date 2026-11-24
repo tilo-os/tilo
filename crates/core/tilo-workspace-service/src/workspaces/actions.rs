@@ -5013,14 +5013,14 @@ mod surface_tests {
                     "verbs": verbs,
                 });
                 // The members read as everyone in the workspace now: what every host is handed
-                // from the member list it decides by (`tilolang_tilo`'s `Host::follow_members`).
+                // from the member list it decides by (the language runtime's `Host::follow_members`).
                 if *kind == "members" {
                     resource["fields"] = json!([
                         { "path": "people", "type": { "list": "actor" }, "readonly": true },
                     ]);
                 }
                 // The content reads as its owners' limits and the content a limit refused: what
-                // every host is handed as `workspace.content` (`tilolang_tilo`'s
+                // every host is handed as `workspace.content` (the language runtime's
                 // `Host::give_content`), each refusal only to whoever reads it.
                 // The workspace's grants read as what its apps, people and agents were given
                 // beyond their own documents: what the session publishes as `workspace/access`,

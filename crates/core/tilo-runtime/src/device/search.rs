@@ -131,10 +131,10 @@ impl StoreReader for InstalledPackages {
     /// workspace with no package of it installed.
     fn reads(&self, app: &str) -> bool {
         super::package_runs::runs_in_process(app)
-            || matches!(
-                tilo_workspace_service::tl_records::built_in(app),
-                Ok(Some(_))
-            )
+            || self
+                .copies
+                .tilolang()
+                .is_some_and(|tilolang| tilolang.records.built_in(app))
     }
 
     fn entries(

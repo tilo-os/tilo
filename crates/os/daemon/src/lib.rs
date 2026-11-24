@@ -4,6 +4,8 @@
 //! ([`tilo_runtime::device::capabilities`]):
 //!
 //! - the device's image model, a provider on the daemon's dispatch;
+//! - the language runtime, whose records, styles and rich text the workspace service reads and
+//!   changes the built-in apps through;
 //! - the account sign-ins a login's cloud service, model manager and origin connectors reach
 //!   ([`account_sign_ins`]);
 //! - on Linux, the hold on suspend a request from another of the person's devices takes, and
@@ -24,6 +26,9 @@ mod stay_awake;
 #[must_use]
 pub fn capabilities() -> Capabilities {
     Capabilities {
+        // The language runtime: the daemon's own roles read and change the records of the apps
+        // built into the build through it, and offer the styles the device's packages declare.
+        tilolang: Some(Box::new(tilolang_workspace::host)),
         providers: vec![Box::new(image_model)],
         #[cfg(target_os = "linux")]
         stay_awake: Some(Box::new(|| Box::pin(stay_awake::hold()))),
