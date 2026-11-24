@@ -63,7 +63,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let resource = match resolved.node.as_ref() {
             Some(node) => node.id.clone(),
             None => match self.publishing(resolved, action).await?.as_slice() {
-                [] => return Err(not_listed()),
+                [] => return Err(self.nothing_offered(resolved, action, not_listed()).await),
                 [(resource, _)] => resource.clone(),
                 several => {
                     let named: Vec<String> = several
@@ -112,10 +112,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Some(tilo_actions::remote::ActionCallError::UnknownAction)
                 ) =>
             {
-                Err(not_listed())
+                Err(self.nothing_offered(resolved, action, not_listed()).await)
             }
             Err(why) => Err(why),
         }
+    }
+
+    /// The refusal of `action`, which nothing in `resolved`'s app offers this caller: that it
+    /// is not offered to it, where the app declares it and the caller may list the app, else
+    /// `otherwise`, as for an action that does not exist, coded as one.
+    async fn nothing_offered(
+        &self,
+        resolved: &Resolved,
+        action: &str,
+        mut otherwise: Failure,
+    ) -> Failure {
+        if let Some(refusal) = self.not_offered_here(&resolved.app_id, action).await {
+            return refusal.into();
+        }
+        if otherwise.host.is_none() && super::answer::coded(&otherwise.message).0 == "failed" {
+            otherwise.message = format!("unknown_action: {}", otherwise.message);
+        }
+        otherwise
     }
 
     /// The resources of `resolved`'s app that publish `action` for this caller, each with its

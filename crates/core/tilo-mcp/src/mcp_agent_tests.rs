@@ -3058,6 +3058,8 @@ mod listed;
 mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
+#[path = "mcp_agent_offered_tests.rs"]
+mod offered;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_agent_outside_tests.rs"]

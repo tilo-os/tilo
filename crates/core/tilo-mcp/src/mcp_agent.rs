@@ -746,7 +746,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let listed_app = resolved.app_id.clone();
         let called = |action: &ActionDescriptor| forms.called(action, &listed_app);
         if let Some(action) = &parsed.action {
-            let (named_at, found) = self.pick_action_in(action, &resolved).await?;
+            let (named_at, found) = match self.pick_action_in(action, &resolved).await {
+                Ok(found) => found,
+                Err(error) if error.contains(&format!(" has no action {action}")) => {
+                    return Err(self
+                        .not_offered_here(&resolved.app_id, action)
+                        .await
+                        .unwrap_or_else(|| format!("unknown_action: {error}"))
+                        .into());
+                }
+                Err(error) => return Err(error.into()),
+            };
             let mut reply = Reply::ok(action_page(&named_at, &found, called(&found)));
             if structured {
                 reply.structured = Some(json!({
@@ -1048,35 +1058,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// ([`collab_types::surface::canonical`]): the one this process runs it
     /// with, or the signed package the workspace has installed.
     async fn surface_bytes(&self, app_id: &str) -> Option<Vec<u8>> {
-        if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
-            return Some(bytes.to_vec());
+        match crate::offered::published_surface(&self.tree, app_id).await {
+            Some(surface) => Some(surface),
+            None => self.host.installed_surface(app_id).await.flatten(),
         }
-        if let Ok(installed) = self.tree.installed().await
-            && let Some(surface) = installed
-                .iter()
-                .find(|app| app.app_id == app_id)
-                .and_then(|app| app.surface.as_deref())
-                .and_then(collab_types::surface::canonical_json)
-        {
-            return Some(surface.into_bytes());
-        }
-        // An app of the fleet answers what its signed package publishes even
-        // when this computer has neither started it nor kept its package: the
-        // fleet compiles each app's surface in, so every installed app's types
-        // are readable on a fresh workspace.
-        if let Some(surface) = app_fleet::surface(app_id)
-            && let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
-        {
-            return Some(kept.into_bytes());
-        }
-        // The workspace publishes its own actions: its catalogue root carries the surface, and
-        // no installed application names it.
-        if let Some(surface) = self.tree.surface_of(app_id).await
-            && let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
-        {
-            return Some(kept.into_bytes());
-        }
-        self.host.installed_surface(app_id).await.flatten()
+    }
+
+    /// The refusal of `name` in `app_id` when the app declares it and this caller, which may
+    /// list the app, is not offered it ([`crate::offered::not_offered`]); `None` when the
+    /// refusal is the one for an action that does not exist.
+    pub(crate) async fn not_offered_here(&self, app_id: &str, name: &str) -> Option<String> {
+        let session = self.group().and_then(|group| group.session);
+        let caller = crate::offered::caller_named(&self.caller, session.as_deref());
+        crate::offered::not_offered(
+            &self.tree,
+            app_id,
+            name,
+            &caller,
+            self.surface_bytes(app_id),
+        )
+        .await
     }
 
     /// What a typed read of an app answers when no resource is named: the

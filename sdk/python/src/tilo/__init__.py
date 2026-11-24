@@ -27,9 +27,11 @@ from ._errors import (
     KeyExpired,
     KeyRefused,
     KeyRevoked,
+    NOT_OFFERED,
     ProtocolError,
     Refused,
     SurfaceChanged,
+    UNKNOWN_ACTION,
     Unreachable,
 )
 from ._models import (
@@ -88,6 +90,7 @@ __all__ = [
     "Member",
     "Members",
     "MintedKey",
+    "NOT_OFFERED",
     "Person",
     "ProgramAnswer",
     "ProtocolError",
@@ -100,6 +103,7 @@ __all__ = [
     "InvocationList",
     "InvocationOpening",
     "SurfaceChanged",
+    "UNKNOWN_ACTION",
     "Tilo",
     "Unreachable",
     "Usage",

@@ -7,6 +7,7 @@ pub mod agent_tools;
 pub mod devices;
 mod images;
 pub mod lines;
+pub mod offered;
 mod session;
 pub mod session_api;
 pub mod task_runs;
@@ -1191,8 +1192,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// actions its resource has, or the resources there are. Only what the
     /// caller's own directory lists is named.
     /// The workspace's answer that it offers nothing by `target`'s address, told as
-    /// [`Self::not_offered`] tells it and kept typed as the workspace gave it.
-    async fn unknown_action(&self, target: &RemoteActionTarget) -> Result<Failure, String> {
+    /// [`Self::not_offered`] tells it and kept typed as the workspace gave it; or, where
+    /// `app_id` declares the action and this caller may list the app, that it is not offered
+    /// to this caller.
+    async fn unknown_action(
+        &self,
+        target: &RemoteActionTarget,
+        app_id: Option<&str>,
+    ) -> Result<Failure, String> {
+        if let Some(app_id) = app_id
+            && let Some(refusal) = self.not_offered_here(app_id, &target.address.action).await
+        {
+            return Ok(refusal.into());
+        }
         let mut unknown = Failure::from(tilo_actions::remote::ActionCallError::UnknownAction);
         unknown.message = self.not_offered(target).await?;
         Ok(unknown)
@@ -2097,7 +2109,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     self.addressed(Some(peer), None, false).await?;
                 }
                 let Some(named) = self.named_resource(&target).await? else {
-                    return Err(self.unknown_action(&target).await?);
+                    return Err(self.unknown_action(&target, app_id.as_deref()).await?);
                 };
                 target.address.resource = named;
                 match self
@@ -2114,7 +2126,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Err(BridgeError::Host(
                         tilo_actions::remote::ActionCallError::UnknownAction,
                     )) => {
-                        return Err(self.unknown_action(&target).await?);
+                        return Err(self.unknown_action(&target, app_id.as_deref()).await?);
                     }
                     ran => ran?,
                 }

@@ -163,9 +163,10 @@ pub(super) fn refused_under(failure: &Failure, id: &str, retry_safe: bool) -> Va
 /// The codes a refusal is documented with (`docs/tilo-sh/errors.md`), and the two a caller
 /// waits on and asks again after (`not_ready`, `unanswered`): a lookup refused with one of those
 /// keeps its code, rather than reading as a path that names nothing.
-const CODES: [&str; 15] = [
+const CODES: [&str; 16] = [
     "invalid_arguments",
     "unknown_action",
+    "not_offered",
     "unknown_resource",
     "unknown_app",
     "not_found",

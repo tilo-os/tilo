@@ -60,7 +60,7 @@ when there are any. The HTTP status follows the code:
 |---|---|
 | 400 | `invalid_request`, `invalid_arguments`, `api_version_unsupported` |
 | 401 | `invalid_token`, `key_revoked`, `key_expired` (with `revoked_at_ms`/`expired_at_ms`) |
-| 403 | `not_permitted`, `beyond_scope` |
+| 403 | `not_permitted`, `not_offered`, `beyond_scope` |
 | 404 | `not_found`, `unknown_action`, `unknown_resource` |
 | 409 | `idempotency_conflict`, `surface_changed` |
 | 422 | `failed`, `refused`, `branch_incomplete`, `action_confirmation_required` and every other code an app gives |

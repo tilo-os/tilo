@@ -82,8 +82,22 @@ async fn in_person(
         (Err(why), Ok(_)) => bail!("{path}: {why}"),
         (Err(why), Err(not_started)) => bail!("{path}: {why} ({not_started})"),
     };
-    let descriptor =
-        pick_action(action, &resolved.actions, &resolved.path).map_err(|why| anyhow!("{why}"))?;
+    let descriptor = match pick_action(action, &resolved.actions, &resolved.path) {
+        Ok(descriptor) => descriptor,
+        // An action the app declares that the person is not offered is told so, as every
+        // surface tells it; a name the app does not declare is no action of it.
+        Err(why) => {
+            let surface = tilo_mcp::offered::published_surface(&tree, &resolved.app_id);
+            let caller = tilo_mcp::offered::caller_named(&device.caller(), None);
+            let refusal =
+                tilo_mcp::offered::not_offered(&tree, &resolved.app_id, action, &caller, surface)
+                    .await;
+            bail!(
+                "{}",
+                refusal.unwrap_or_else(|| format!("unknown_action: {why}"))
+            );
+        }
+    };
     let target = RemoteActionTarget {
         provider: resolved.provider.clone(),
         address: descriptor.address.clone(),
