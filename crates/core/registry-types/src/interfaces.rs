@@ -1,10 +1,11 @@
 //! System interfaces: the versioned contracts between an app and the OS services it calls.
 //!
 //! An app names each service in its manifest's `[sandbox.services]` as `required@N` or `optional@N`,
-//! `N` being the version it was built against. The image serves exactly one version of each interface
-//! and an app speaks only at that version, with no negotiation (docs/architecture/compatibility.md),
-//! so a device can tell before installing and before running whether a build fits, and which side is
-//! behind. Most services belong to the runtime interface; `shell-ui` and `system` are their own.
+//! `N` being the version it was built against. Most services belong to the runtime interface; the
+//! image serves a range of it, from the oldest version whose wire it still reads to the current one,
+//! so an app built against either version runs (docs/architecture/compatibility.md). `shell-ui` and
+//! `system` are interfaces of their own and the image serves one version of each. A device can tell
+//! before installing and before running whether a build fits, and which side is behind.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -85,18 +86,22 @@ impl FromStr for InterfaceRequirement {
 pub const RUNTIME_INTERFACE: &str = "runtime";
 
 /// The one version this OS serves of each interface, as its `system-interfaces.toml` declares them,
-/// and the services that speak the runtime interface:
+/// the oldest version it still serves of the runtime interface, and the services that speak the
+/// runtime interface:
 ///
 /// ```toml
 /// [interfaces]
 /// system = 1
-/// runtime = 1
+/// runtime = 3
 ///
 /// [runtime]
 /// services = ["collab", "tilo-fs"]
+/// oldest = 2
 /// ```
 ///
-/// An interface or service the declaration does not name is not provided.
+/// An interface or service the declaration does not name is not provided. A runtime service is
+/// served at every version from `oldest` to the runtime interface's current one; without `oldest`
+/// only the current one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProvidedInterfaces {
@@ -111,6 +116,10 @@ pub struct ProvidedInterfaces {
 pub struct RuntimeServices {
     #[serde(default)]
     pub services: BTreeSet<String>,
+    /// The oldest runtime interface version still served: an app built against any version from it
+    /// to the runtime interface's current one runs. `None` when only the current one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,9 +134,13 @@ pub enum Behind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unmet {
     pub requirement: String,
-    /// The version this OS serves of the requirement's interface; `None` when it serves none or the
-    /// requirement could not be read.
+    /// The current version this OS serves of the requirement's interface; `None` when it serves
+    /// none or the requirement could not be read.
     pub provided: Option<u32>,
+    /// The oldest version this OS serves of the requirement's interface; `None` when it serves
+    /// none or the requirement could not be read. Only a range wider than one says anything the
+    /// current version does not: the message names it then.
+    pub oldest: Option<u32>,
 }
 
 impl Unmet {
@@ -160,11 +173,18 @@ impl fmt::Display for Unmet {
                 "{} (this system has no {name} interface)",
                 self.requirement
             ),
-            Some(version) => write!(
-                f,
-                "{} (this system provides {name}@{version})",
-                self.requirement
-            ),
+            Some(version) => match self.oldest {
+                Some(oldest) if oldest < version => write!(
+                    f,
+                    "{} (this system provides {name}@{oldest} to {name}@{version})",
+                    self.requirement
+                ),
+                _ => write!(
+                    f,
+                    "{} (this system provides {name}@{version})",
+                    self.requirement
+                ),
+            },
         }
     }
 }
@@ -176,7 +196,7 @@ pub fn package_is_behind(unmet: &[Unmet]) -> bool {
 
 impl ProvidedInterfaces {
     /// A declaration serving exactly `interfaces`, with `runtime_services` speaking the runtime
-    /// interface's version.
+    /// interface's current version and no older one.
     pub fn new<'a>(
         interfaces: impl IntoIterator<Item = (&'a str, u32)>,
         runtime_services: impl IntoIterator<Item = &'a str>,
@@ -188,24 +208,55 @@ impl ProvidedInterfaces {
                 .collect(),
             runtime: RuntimeServices {
                 services: runtime_services.into_iter().map(str::to_owned).collect(),
+                oldest: None,
             },
         }
     }
 
-    /// The version this OS serves of `name`: an interface's own, or the runtime's for a service the
-    /// runtime interface includes.
+    /// Serve runtime services at every version from `oldest` to the runtime interface's current
+    /// one, as an image that keeps the previous version's wire does.
+    #[must_use]
+    pub fn with_runtime_oldest(mut self, oldest: u32) -> Self {
+        self.runtime.oldest = Some(oldest);
+        self
+    }
+
+    /// The versions this OS serves of `name`: the oldest it still speaks and the current one. An
+    /// interface of its own is served at one version; a service speaking the runtime interface at
+    /// the runtime's range.
+    pub fn served(&self, name: &str) -> Option<(u32, u32)> {
+        if let Some(version) = self.interfaces.get(name) {
+            return Some((*version, *version));
+        }
+        if !self.runtime.services.contains(name) {
+            return None;
+        }
+        let current = *self.interfaces.get(RUNTIME_INTERFACE)?;
+        Some((self.runtime.oldest.unwrap_or(current).min(current), current))
+    }
+
+    /// The current version this OS serves of `name`: an interface's own, or the runtime's for a
+    /// service the runtime interface includes.
     pub fn version(&self, name: &str) -> Option<u32> {
-        self.interfaces.get(name).copied().or_else(|| {
-            self.runtime
-                .services
-                .contains(name)
-                .then(|| self.interfaces.get(RUNTIME_INTERFACE).copied())
-                .flatten()
-        })
+        self.served(name).map(|(_, current)| current)
     }
 
     pub fn provides(&self, requirement: &InterfaceRequirement) -> bool {
-        self.version(&requirement.name) == Some(requirement.version)
+        self.served(&requirement.name)
+            .is_some_and(|(oldest, current)| (oldest..=current).contains(&requirement.version))
+    }
+
+    /// One requirement `self` does not serve, or `None` when it does.
+    fn unmet_for(&self, requirement: &InterfaceRequirement) -> Option<Unmet> {
+        if self.provides(requirement) {
+            return None;
+        }
+        let served = self.served(&requirement.name);
+        Some(Unmet {
+            requirement: requirement.to_string(),
+            provided: served.map(|(_, current)| current),
+            oldest: served.map(|(oldest, _)| oldest),
+        })
     }
 
     pub fn unmet<'a>(
@@ -214,11 +265,7 @@ impl ProvidedInterfaces {
     ) -> Vec<Unmet> {
         requirements
             .into_iter()
-            .filter(|requirement| !self.provides(requirement))
-            .map(|requirement| Unmet {
-                requirement: requirement.to_string(),
-                provided: self.version(&requirement.name),
-            })
+            .filter_map(|requirement| self.unmet_for(requirement))
             .collect()
     }
 
@@ -228,14 +275,11 @@ impl ProvidedInterfaces {
         requirements
             .into_iter()
             .filter_map(|raw| match raw.parse::<InterfaceRequirement>() {
-                Ok(requirement) if self.provides(&requirement) => None,
-                Ok(requirement) => Some(Unmet {
-                    requirement: requirement.to_string(),
-                    provided: self.version(&requirement.name),
-                }),
+                Ok(requirement) => self.unmet_for(&requirement),
                 Err(_) => Some(Unmet {
                     requirement: raw.clone(),
                     provided: None,
+                    oldest: None,
                 }),
             })
             .collect()
@@ -292,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn an_os_meets_exactly_the_one_version_it_serves() {
+    fn an_os_meets_the_versions_it_serves() {
         let os = ProvidedInterfaces::new([("system", 2), ("runtime", 3)], ["collab"]);
         assert!(os.provides(&req("system@2")));
         assert!(
@@ -319,15 +363,18 @@ mod tests {
             vec![
                 Unmet {
                     requirement: "system@1".into(),
-                    provided: Some(2)
+                    provided: Some(2),
+                    oldest: Some(2),
                 },
                 Unmet {
                     requirement: "system@3".into(),
-                    provided: Some(2)
+                    provided: Some(2),
+                    oldest: Some(2),
                 },
                 Unmet {
                     requirement: "displays@1".into(),
-                    provided: None
+                    provided: None,
+                    oldest: None,
                 },
             ]
         );
@@ -347,6 +394,35 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_range_serves_the_versions_within_it_and_no_other() {
+        let os = ProvidedInterfaces::new([("system", 2), ("runtime", 4)], ["collab"])
+            .with_runtime_oldest(3);
+        assert_eq!(os.served("collab"), Some((3, 4)));
+        assert_eq!(os.served("system"), Some((2, 2)));
+        assert_eq!(os.version("collab"), Some(4), "the current version is the one");
+        for version in [3, 4] {
+            assert!(os.provides(&req(&format!("collab@{version}"))), "{version}");
+        }
+        for version in [1, 2, 5] {
+            assert!(!os.provides(&req(&format!("collab@{version}"))), "{version}");
+        }
+        assert!(
+            !os.provides(&req("system@3")),
+            "an interface of its own keeps one version"
+        );
+
+        let unmet = os.unmet(&[req("collab@2")]);
+        assert_eq!(unmet[0].behind(), Behind::Package, "a newer build fits");
+        assert_eq!(
+            unmet[0].to_string(),
+            "collab@2 (this system provides collab@3 to collab@4)"
+        );
+
+        let current_only = ProvidedInterfaces::new([("runtime", 4)], ["collab"]);
+        assert_eq!(current_only.served("collab"), Some((4, 4)));
+    }
+
+    #[test]
     fn wire_requirements_that_do_not_parse_are_unmet() {
         let os = ProvidedInterfaces::new([("system", 1)], []);
         let ok = vec!["system@1".to_string()];
@@ -360,11 +436,13 @@ mod tests {
     #[test]
     fn the_declaration_reads_from_json_and_refuses_strays() {
         let os: ProvidedInterfaces = serde_json::from_str(
-            r#"{"interfaces":{"system":2,"runtime":1},"runtime":{"services":["collab"]}}"#,
+            r#"{"interfaces":{"system":2,"runtime":2},
+                "runtime":{"services":["collab"],"oldest":1}}"#,
         )
         .unwrap();
         assert_eq!(os.version("system"), Some(2));
-        assert_eq!(os.version("collab"), Some(1));
+        assert_eq!(os.version("collab"), Some(2));
+        assert_eq!(os.served("collab"), Some((1, 2)));
         assert!(serde_json::from_str::<ProvidedInterfaces>(r#"{"system":1}"#).is_err());
         assert!(
             serde_json::from_str::<ProvidedInterfaces>(r#"{"interfaces":{"system":[1,2]}}"#)

@@ -62,14 +62,33 @@ pub mod tools;
 #[cfg(unix)]
 pub mod workspace_terminal;
 
-/// The app ↔ runtime interface's one version: what an app and the session
-/// services the launcher connects it to (collaboration, the filesystem and
-/// its document media, the app host, the identity broker, shell-owned
-/// tools) speak. The launcher connects an app only when its manifest names
-/// this version (docs/architecture/compatibility.md); `interface.toml`
-/// holds the schema, and the repository policy fails a change to it that
-/// keeps the number.
+/// The app ↔ runtime interface's current version: what an app and the
+/// session services the launcher connects it to (collaboration, the
+/// filesystem and its document media, the app host, the identity broker,
+/// shell-owned tools) speak. An app's manifest names the version it was
+/// built against, and it runs where the image serves that version: the
+/// current one or any since [`OLDEST_RUNTIME_INTERFACE_VERSION`]
+/// (docs/architecture/compatibility.md). `interface.toml` holds the schema,
+/// and the repository policy fails a change to it that keeps the number.
 pub const RUNTIME_INTERFACE_VERSION: u32 = 40;
+
+/// The oldest runtime interface version this build still works with: the one
+/// before [`RUNTIME_INTERFACE_VERSION`] while this build reads the previous
+/// version's wire of its main flows, otherwise this one. An app built against
+/// any version from it to the current one runs. The image declares the two in
+/// `os/usr/share/tilo/system-interfaces.toml` (`[interfaces] runtime` and
+/// `[runtime] oldest`), and `tools/policy/check_interfaces.py` fails a change
+/// that moves one without the other.
+pub const OLDEST_RUNTIME_INTERFACE_VERSION: u32 = 39;
+
+// A version bump moves this in the same change: the window is one version
+// wide, so a bump that leaves it behind fails here, in the bumping crate's own
+// build (docs/architecture/compatibility.md, "One version per interface").
+const _: () = assert!(
+    OLDEST_RUNTIME_INTERFACE_VERSION + 1 >= RUNTIME_INTERFACE_VERSION
+        && OLDEST_RUNTIME_INTERFACE_VERSION <= RUNTIME_INTERFACE_VERSION,
+    "a runtime interface version bump also moves OLDEST_RUNTIME_INTERFACE_VERSION"
+);
 
 use std::env;
 use std::io;

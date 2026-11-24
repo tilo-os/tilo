@@ -287,7 +287,7 @@ pub fn resolve_identity_bind_for_contract(
     requirement: Option<&ServiceReq>,
 ) -> Result<Option<ResolvedService>, ServiceError> {
     let presentation = requirement.is_some_and(|requirement| {
-        requirement.version == tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
+        requirement.version >= tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
     });
     let Some(workspace_id) = workspace_id else {
         return Ok(None);

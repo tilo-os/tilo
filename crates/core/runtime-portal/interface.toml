@@ -4,10 +4,12 @@
 
 # App ↔ runtime: the session services the launcher connects an app to
 # (collaboration, the filesystem and its document media, the identity
-# broker, shell-owned tools), one number for all of them.
+# broker, shell-owned tools), one range for all of them: the image serves
+# every version from `oldest` to `version`.
 name = "runtime"
 version = 40
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
+oldest_const = "crates/core/runtime-portal/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
 sources = [

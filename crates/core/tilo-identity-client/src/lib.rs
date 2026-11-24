@@ -163,7 +163,11 @@ pub mod wire {
         version == 0
     }
     pub const PRESENTATION_VERSION: u16 = 1;
-    pub const PRESENTATION_SERVICE_VERSION: u32 = runtime_portal::RUNTIME_INTERFACE_VERSION;
+    /// The oldest runtime interface version whose app-side client reads the
+    /// presentation answer: it has been part of the interface since version 37,
+    /// so every version the image serves carries it. A build pinned lower never
+    /// reaches the broker, because the launcher refuses it first.
+    pub const PRESENTATION_SERVICE_VERSION: u32 = 37;
 
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {

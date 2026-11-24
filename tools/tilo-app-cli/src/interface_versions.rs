@@ -1,11 +1,12 @@
 //! The interface versions an app's manifest speaks, against the ones Tilo
 //! serves now.
 //!
-//! Tilo serves exactly one version of each interface and keeps no code for
-//! an older one (docs/architecture/compatibility.md): a build whose
-//! `[sandbox.services]` names another version of any service it uses does not
-//! run, and devices wait for its developer's next build. `tilo-app check`
-//! says so before publishing, with the line to write.
+//! The system serves one version of most interfaces and a range of the
+//! runtime interface, from the oldest whose wire it still reads to the current
+//! one (docs/architecture/compatibility.md). A build whose
+//! `[sandbox.services]` names a version outside what the system serves of any
+//! service it uses does not run, and devices wait for its developer's next
+//! build. `tilo-app check` says so before publishing, with the line to write.
 
 use registry_types::ProvidedInterfaces;
 use tilo_app_package::{Manifest, Requirement};
@@ -37,13 +38,14 @@ pub struct Mismatch {
     pub service: String,
     /// What the manifest says, e.g. `optional@1`.
     pub written: String,
-    /// The version Tilo serves of it, `None` when it serves no such service.
-    pub served: Option<u32>,
+    /// The versions Tilo serves of it, oldest and current; `None` when it
+    /// serves no such service.
+    pub served: Option<(u32, u32)>,
     pub fix: String,
 }
 
-/// Every service `manifest` names at another version than `provided` serves,
-/// in the manifest's order (by name).
+/// Every service `manifest` names at a version Tilo does not serve, in the
+/// manifest's order (by name).
 #[must_use]
 pub fn mismatches(manifest: &Manifest, provided: &ProvidedInterfaces) -> Vec<Mismatch> {
     manifest
@@ -51,8 +53,10 @@ pub fn mismatches(manifest: &Manifest, provided: &ProvidedInterfaces) -> Vec<Mis
         .services
         .iter()
         .filter_map(|(service, requirement)| {
-            let served = provided.version(service);
-            if served == Some(requirement.version) {
+            let served = provided.served(service);
+            if served.is_some_and(|(oldest, current)| {
+                (oldest..=current).contains(&requirement.version)
+            }) {
                 return None;
             }
             let need = match requirement.requirement {
@@ -61,8 +65,8 @@ pub fn mismatches(manifest: &Manifest, provided: &ProvidedInterfaces) -> Vec<Mis
             };
             let written = format!("{need}@{}", requirement.version);
             let fix = match served {
-                Some(version) => format!(
-                    "set `{service} = \"{need}@{version}\"` under [sandbox.services] in \
+                Some((_, current)) => format!(
+                    "set `{service} = \"{need}@{current}\"` under [sandbox.services] in \
                      tilo-app.toml, build against the current SDK and publish the build"
                 ),
                 None => format!(
@@ -96,17 +100,21 @@ fn check_against(
         checks.push(DoctorCheck {
             status: DoctorStatus::Pass,
             label: "interface versions",
-            detail: "every service in [sandbox.services] speaks the version Tilo serves".into(),
+            detail: "every service in [sandbox.services] speaks a version Tilo serves".into(),
         });
         return;
     }
     let lines = found
         .iter()
         .map(|mismatch| {
-            let served = mismatch.served.map_or_else(
-                || "Tilo serves none".to_owned(),
-                |version| format!("Tilo serves {}@{version}", mismatch.service),
-            );
+            let served = match mismatch.served {
+                Some((oldest, current)) if oldest < current => format!(
+                    "Tilo serves {}@{oldest} to {}@{current}",
+                    mismatch.service, mismatch.service
+                ),
+                Some((_, current)) => format!("Tilo serves {}@{current}", mismatch.service),
+                None => "Tilo serves none".to_owned(),
+            };
             format!(
                 "{} = \"{}\" ({served}): {}",
                 mismatch.service, mismatch.written, mismatch.fix
@@ -119,7 +127,8 @@ fn check_against(
         label: "interface versions",
         detail: format!(
             "this build does not run on current Tilo, which serves one version of each \
-             interface; devices show it as waiting for an update from you. {lines}"
+             interface and a range of the runtime interface; devices show it as waiting for an \
+             update from you. {lines}"
         ),
     });
 }
@@ -145,7 +154,8 @@ mod tests {
 
         phase a_manifest_at_another_service_version_is_told_the_exact_fix;
         {
-            let tilo = ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab", "tilo-fs"]);
+            let tilo =
+                ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab", "tilo-fs"]);
             let fits = manifest("collab = \"optional@3\"\ntilo-fs = \"required@3\"");
             assert!(mismatches(&fits, &tilo).is_empty());
             let mut checks = Vec::new();
@@ -161,9 +171,9 @@ mod tests {
                     .map(|m| (m.service.as_str(), m.written.as_str(), m.served))
                     .collect::<Vec<_>>(),
                 [
-                    ("collab", "optional@2", Some(3)),
+                    ("collab", "optional@2", Some((3, 3))),
                     ("retired", "optional@1", None),
-                    ("tilo-fs", "required@4", Some(3)),
+                    ("tilo-fs", "required@4", Some((3, 3))),
                 ]
             );
             assert!(
@@ -191,6 +201,33 @@ mod tests {
                 checks[0].detail.contains(
                     "collab = \"optional@2\" (Tilo serves collab@3): set `collab = \"optional@3\"`"
                 ),
+                "{}",
+                checks[0].detail
+            );
+        }
+
+        phase a_manifest_inside_the_runtime_range_fits;
+        {
+            let tilo = ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab"])
+                .with_runtime_oldest(2);
+            assert!(mismatches(&manifest("collab = \"optional@2\""), &tilo).is_empty());
+            assert!(mismatches(&manifest("collab = \"required@3\""), &tilo).is_empty());
+
+            let found = mismatches(&manifest("collab = \"optional@1\""), &tilo);
+            assert_eq!(found[0].served, Some((2, 3)));
+            assert!(
+                found[0]
+                    .fix
+                    .starts_with("set `collab = \"optional@3\"` under [sandbox.services]"),
+                "{}",
+                found[0].fix
+            );
+            let mut checks = Vec::new();
+            check_against(&manifest("collab = \"optional@1\""), &tilo, &mut checks);
+            assert!(
+                checks[0]
+                    .detail
+                    .contains("(Tilo serves collab@2 to collab@3)"),
                 "{}",
                 checks[0].detail
             );

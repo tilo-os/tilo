@@ -9768,8 +9768,8 @@ fn app_test(spec: &AppSpec) -> String {
 }
 
 fn app_manifest(spec: &AppSpec) -> Result<String> {
-    // An app runs only where every service it names is served at exactly that version, so a scaffold
-    // names the versions this Tilo serves rather than the ones that were current when this line was
+    // An app runs only where every service it names is served at a version Tilo serves, so a
+    // scaffold names the current versions rather than the ones that were current when this line was
     // written. A service the image does not serve is a broken image, not a scaffold: say so and stop.
     let served = interface_versions::current();
     let version = |service: &str| {

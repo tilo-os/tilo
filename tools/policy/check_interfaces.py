@@ -10,12 +10,16 @@ number in the code and a committed schema, ``interface.toml`` in the crate
 that owns the number, written from the code the way ``tilo-app surface``
 writes an app's ``surface.toml``. Two sides speak to each other only when
 their numbers are equal (docs/architecture/compatibility.md); there is no
-negotiation and no code for an older number.
+negotiation and no code for an older number, except the runtime interface,
+which the image serves from an ``oldest`` number to its current one so an app
+built against either runs.
 
 ``check`` (the pre-commit hook and the repository policy suite) fails when a
-committed schema differs from what the code declares, or when the version the
+committed schema differs from what the code declares, when the version the
 file records is not the one the code and the image's
-``system-interfaces.toml`` carry.
+``system-interfaces.toml`` carry, when the image serves an interface from
+another oldest version than the code declares, or when an app's manifest asks
+for a version the image does not serve.
 
 ``against BASE`` (the ``changes`` check, against main) fails when the schema
 the code declares changed incompatibly since BASE's code without a higher
@@ -542,6 +546,11 @@ class Spec:
     opaque: dict[str, str]
     serves: bool
     path: Path
+    # The constant of the oldest version the image still serves of this
+    # interface, when it serves a range rather than one version: an app built
+    # against any version from it to `version_const` runs
+    # (docs/architecture/compatibility.md).
+    oldest_const: str = ""
     # Roots this interface carries as JSON although `encoding` is a compact format: one
     # socket can carry two protocols (Settings' language packs and the shell's tools
     # speak length-prefixed JSON beside the postcard calls). The compatibility check
@@ -565,6 +574,7 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         opaque=dict(data.get("opaque", {})),
         serves=bool(data.get("served_to_apps", False)),
         path=path,
+        oldest_const=data.get("oldest_const", ""),
         json_roots=list(data.get("json_roots", [])),
         words=list(data.get("words", [])),
     )
@@ -587,7 +597,11 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
 
 
 def code_version(spec: Spec, root: Path = ROOT) -> int:
-    file, _, const = spec.version_const.partition(":")
+    return code_const(spec.version_const, root)
+
+
+def code_const(reference: str, root: Path = ROOT) -> int:
+    file, _, const = reference.partition(":")
     text = (root / file).read_text()
     found = re.search(rf"\bconst\s+{re.escape(const)}\s*:\s*\w+\s*=\s*([0-9_]+)\s*;", text)
     if not found:
@@ -876,6 +890,13 @@ def served_versions(root: Path = ROOT) -> dict[str, int]:
     return dict(data.get("interfaces", {}))
 
 
+def runtime_oldest(root: Path = ROOT, current: int = 0) -> int:
+    """The oldest runtime interface version the image still serves: `[runtime]
+    oldest`, or the current one when it serves only that."""
+    data = tomllib.loads((root / SYSTEM_INTERFACES).read_text())
+    return int(data.get("runtime", {}).get("oldest", current))
+
+
 def check(root: Path = ROOT) -> list[str]:
     problems = []
     served = served_versions(root)
@@ -887,6 +908,7 @@ def check(root: Path = ROOT) -> list[str]:
         try:
             spec, committed = load_spec(path)
             declared = code_version(spec, root)
+            oldest = code_const(spec.oldest_const, root) if spec.oldest_const else declared
             schema = schema_of(spec, root)
         except (InterfaceError, KeyError, OSError, tomllib.TOMLDecodeError) as error:
             problems.append(f"{rel}: {error}")
@@ -896,6 +918,18 @@ def check(root: Path = ROOT) -> list[str]:
                 f"{rel}: records version {spec.version}, the code declares {declared} "
                 f"({spec.version_const}); run `python3 tools/policy/check_interfaces.py write`"
             )
+        if not 1 <= oldest <= declared:
+            problems.append(
+                f"{rel}: declares oldest version {oldest} ({spec.oldest_const}), not one of "
+                f"the versions it serves (1 to {declared})"
+            )
+        elif spec.oldest_const:
+            declared_oldest = runtime_oldest(root, declared)
+            if declared_oldest != oldest:
+                problems.append(
+                    f"{SYSTEM_INTERFACES}: serves {spec.name} from {declared_oldest} "
+                    f"(`[runtime] oldest`), the code declares {oldest} ({spec.oldest_const})"
+                )
         if schema != committed:
             changed = sorted(set(schema.items()) ^ set(committed.items()))
             sample = ", ".join(f"`{key}`" for key, _ in changed[:5])
@@ -915,27 +949,34 @@ def check(root: Path = ROOT) -> list[str]:
     return problems
 
 
-def service_versions(root: Path = ROOT) -> dict[str, int]:
-    """The version this system serves each app-facing service at: ``shell-ui``
-    its own number, and each runtime service the runtime interface's."""
+def service_versions(root: Path = ROOT) -> dict[str, tuple[int, int]]:
+    """The versions this system serves each app-facing service at, oldest and
+    current: ``shell-ui`` and ``messaging`` their own one, and each runtime
+    service the runtime interface's range."""
     data = tomllib.loads((root / SYSTEM_INTERFACES).read_text())
     interfaces = data.get("interfaces", {})
-    versions = {
-        service: interfaces["runtime"]
-        for service in data.get("runtime", {}).get("services", [])
-    }
+    versions = {}
+    if "runtime" in interfaces and data.get("runtime", {}).get("services"):
+        current = interfaces["runtime"]
+        oldest = runtime_oldest(root, current)
+        versions = {
+            service: (min(oldest, current), current)
+            for service in data["runtime"]["services"]
+        }
     for name in ("shell-ui", "messaging"):
         if name in interfaces:
-            versions[name] = interfaces[name]
+            versions[name] = (interfaces[name], interfaces[name])
     return versions
 
 
 def app_service_versions(root: Path = ROOT) -> list[str]:
-    """Every committed app manifest asks for each service at the version the
-    system serves: two sides speak only when their numbers are equal, so an app
+    """Every committed app manifest asks for each service at a version the
+    system serves: an app runs only where every service it names is, so one
     asking for any other is refused at install on the system built beside it.
-    The examples are app manifests too: `tilo-app new --from-example` copies
-    one into a new app, scaffolded on the same image."""
+    A runtime service is served at every version from the image's oldest to its
+    current one; the others at one version. The examples are app manifests too:
+    `tilo-app new --from-example` copies one into a new app, scaffolded on the
+    same image."""
     served = service_versions(root)
     problems = []
     manifests = [
@@ -952,11 +993,16 @@ def app_service_versions(root: Path = ROOT) -> list[str]:
             continue
         for name, requirement in services.items():
             _, _, version = str(requirement).rpartition("@")
-            if name in served and version.isdigit() and int(version) != served[name]:
-                problems.append(
-                    f"{manifest.relative_to(root)}: asks for {name} {requirement}, "
-                    f"{SYSTEM_INTERFACES} serves {name} {served[name]}"
-                )
+            if name not in served or not version.isdigit():
+                continue
+            oldest, current = served[name]
+            if oldest <= int(version) <= current:
+                continue
+            serves = f"{oldest} to {current}" if oldest < current else str(current)
+            problems.append(
+                f"{manifest.relative_to(root)}: asks for {name} {requirement}, "
+                f"{SYSTEM_INTERFACES} serves {name} {serves}"
+            )
     return problems
 
 

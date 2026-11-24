@@ -33,3 +33,47 @@ fn a_build_speaking_another_interface_version_is_refused() {
     assert!(message.contains("system@2 (this system provides system@1)"));
     assert!(message.contains("app remove so.tilo.settings"));
 }
+
+#[test]
+fn a_build_speaking_the_previous_runtime_version_runs_and_one_before_it_is_refused() {
+    let current = runtime_portal::RUNTIME_INTERFACE_VERSION;
+    let oldest = runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION;
+    let pinned = |version: u32| {
+        let tail = format!(
+            "[entrypoint]\nbin = \"bin/notes\"\n[sandbox.services]\n\
+             collab = \"optional@{version}\"\n"
+        );
+        crate::manifest::test_manifest(
+            "id = \"so.tilo.notes\"\nversion = \"2\"\nkind = \"app\"",
+            &tail,
+        )
+    };
+    let os = |oldest: u32| {
+        ProvidedInterfaces::new([("runtime", current)], ["collab"]).with_runtime_oldest(oldest)
+    };
+
+    assert!(
+        interfaces_unmet(&pinned(oldest), Some(&os(oldest))).is_empty(),
+        "an app built against the oldest served runtime version runs"
+    );
+    assert!(
+        !interfaces_unmet(&pinned(oldest), Some(&os(current))).is_empty(),
+        "an image that serves only its current version refuses it"
+    );
+
+    let too_old = oldest.saturating_sub(1);
+    let unmet = interfaces_unmet(&pinned(too_old), Some(&os(oldest)));
+    assert_eq!(unmet.len(), 1);
+    let message = LaunchError::InterfacesUnmet {
+        package: "so.tilo.notes".into(),
+        unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
+    }
+    .to_string();
+    assert!(
+        message.contains(&format!(
+            "collab@{too_old} (this system provides collab@{oldest} to collab@{current})"
+        )),
+        "{message}"
+    );
+    assert!(message.contains("app remove so.tilo.notes"), "{message}");
+}

@@ -55,8 +55,8 @@ pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, Interf
 ///
 /// Returns the reason when `raw` is not a declaration, names a malformed
 /// interface, service or version, lists a runtime service under a name that
-/// is an interface of its own, or lists runtime services without serving
-/// the runtime interface.
+/// is an interface of its own, lists runtime services without serving the
+/// runtime interface, or names an oldest runtime version it does not serve.
 pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
     let provided: ProvidedInterfaces = toml::from_str(raw).map_err(|error| error.to_string())?;
     for (name, version) in &provided.interfaces {
@@ -78,6 +78,19 @@ pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
             .contains_key(tilo_app_package::interfaces::RUNTIME_INTERFACE)
     {
         return Err("runtime services are listed but the runtime interface is not".into());
+    }
+    if let Some(oldest) = provided.runtime.oldest {
+        let current = provided
+            .interfaces
+            .get(tilo_app_package::interfaces::RUNTIME_INTERFACE)
+            .copied();
+        if oldest == 0 || current.is_none_or(|current| oldest > current) {
+            return Err(format!(
+                "the runtime interface's oldest served version {oldest} is not a version this \
+                 system serves{}",
+                current.map_or_else(String::new, |current| format!(" (runtime = {current})"))
+            ));
+        }
     }
     Ok(provided)
 }
@@ -140,6 +153,7 @@ fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
     (!tilo_app_package::tapp::READABLE_FORMATS.contains(&format)).then(|| Unmet {
         requirement: format!("{PACKAGE_INTERFACE}@{format}"),
         provided: Some(tilo_app_package::TAPP_FORMAT_VERSION),
+        oldest: Some(tilo_app_package::TAPP_FORMAT_VERSION),
     })
 }
 
@@ -200,6 +214,22 @@ system = "required@2"
                 &runtime_moved
             ));
             assert!(unmet(None, &manifest).is_empty());
+
+            // A build against the runtime version before the current one runs
+            // where the image still serves it, and is behind where it does not.
+            let ranged = parse_interfaces(
+                "[interfaces]\nsystem = 2\nruntime = 2\n\n\
+                 [runtime]\nservices = [\"collab\"]\noldest = 1\n",
+            )
+            .unwrap();
+            assert!(
+                unmet(Some(&ranged), &manifest).is_empty(),
+                "the previous runtime version is served"
+            );
+            assert_eq!(
+                unmet(Some(&os(2, 2)), &manifest)[0].to_string(),
+                "collab@1 (this system provides collab@2)"
+            );
         }
 
         phase declarations_are_read_strictly_and_absence_is_not_an_error;
@@ -212,6 +242,14 @@ system = "required@2"
             let provided = read_interfaces(&path).unwrap().unwrap();
             assert_eq!(provided.version("system"), Some(1));
 
+            std::fs::write(
+                &path,
+                "[interfaces]\nruntime = 2\n\n[runtime]\nservices = [\"collab\"]\noldest = 1\n",
+            )
+            .unwrap();
+            let ranged = read_interfaces(&path).unwrap().unwrap();
+            assert_eq!(ranged.served("collab"), Some((1, 2)));
+
             for bad in [
                 "system = 1\n",
                 "[interfaces]\nsystem = [1]\n",
@@ -221,6 +259,9 @@ system = "required@2"
                 "[interfaces]\nsystem = \"1\"\n",
                 "[interfaces]\nsystem = 1\n[runtime]\nservices = [\"collab\"]\n",
                 "[interfaces]\nruntime = 1\nsystem = 1\n[runtime]\nservices = [\"system\"]\n",
+                "[interfaces]\nruntime = 2\n[runtime]\nservices = [\"collab\"]\noldest = 3\n",
+                "[interfaces]\nruntime = 2\n[runtime]\nservices = [\"collab\"]\noldest = 0\n",
+                "[interfaces]\nsystem = 1\n[runtime]\noldest = 1\n",
             ] {
                 std::fs::write(&path, bad).unwrap();
                 assert!(read_interfaces(&path).is_err(), "{bad:?} parsed");

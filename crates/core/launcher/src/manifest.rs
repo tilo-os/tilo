@@ -183,7 +183,9 @@ bin = "bin/app"
                         .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
                     assert!(
                         !requirement.is_required()
-                            && requirement.version == runtime_portal::RUNTIME_INTERFACE_VERSION,
+                            && (runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION
+                                ..=runtime_portal::RUNTIME_INTERFACE_VERSION)
+                                .contains(&requirement.version),
                         "Settings must open when {service} is not running"
                     );
                 }

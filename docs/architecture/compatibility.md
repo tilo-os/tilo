@@ -134,7 +134,7 @@ because it boots the staged deployment that holds them.
 | Interface | Version | Schema | Checked |
 |---|---|---|---|
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/ui/ui-core/interface.toml` | the app's first frame on the shell-ui connection the launcher gives every window |
-| App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/core/runtime-portal/interface.toml` | the launcher, before it connects any service |
+| App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION`, served at every version from `runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION` to it | `crates/core/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/core/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/desktop/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |
 | Session ↔ a tilolang process (the process link) | `runtime_portal::packet::VERSION` | the framing itself (`crates/core/runtime-portal/src/packet.rs`): there is no schema file, because the packet is the message | every packet, in its first bytes: a side built before the link carried a version, or at another one, refuses the packet naming both versions, so a message that changed is a build mismatch a person is told, never bytes read as another message |
@@ -163,11 +163,18 @@ because it boots the staged deployment that holds them.
   exact runtime build it links (`package.runtime`), and the store fetches that
   runtime with the app.
 - The image declares the versions it serves in
-  `os/usr/share/tilo/system-interfaces.toml`, one per interface; every service
-  an app can be handed belongs to the runtime interface unless it is one of its
+  `os/usr/share/tilo/system-interfaces.toml`, one per interface and, for the
+  runtime interface, the oldest one it still serves (`[runtime] oldest`, the
+  code's `runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION`); every service an
+  app can be handed belongs to the runtime interface unless it is one of its
   own. An app's manifest names the version it speaks of each service it uses
-  (`[sandbox.services]`, `required@N` or `optional@N`); it runs only where every
-  one is served exactly, optional ones included.
+  (`[sandbox.services]`, `required@N` or `optional@N`); it runs where every one
+  is served, a runtime service at any version from the oldest to the current
+  one, every other interface exactly, optional ones included. A version bump
+  keeps the window while the build reads the previous version's wire of its
+  main flows; a change it cannot read raises the oldest to the current version,
+  and the compile-time assert beside the constant fails a bump that leaves it
+  behind.
 - `interface.toml` is written from the code, the way `tilo-app surface` writes
   an app's `surface.toml`: every type the interface carries, read from its
   sources with the serde attributes that shape the wire.
@@ -185,8 +192,9 @@ because it boots the staged deployment that holds them.
 
 ## A mismatch is a state
 
-The launcher never runs a build that speaks another version than the system
-serves. The store judges each app against the interfaces the system declares
+The launcher never runs a build that speaks a version the system does not
+serve: a runtime service outside its range, or another interface at another
+version. The store judges each app against the interfaces the system declares
 (`package_store::interfaces::unmet_at`) and the session shows what that says of a
 place; a launch from a terminal (`tilo-launcher
 run-installed`, the PATH shims, `exec-installed`) does the same, saying so on
