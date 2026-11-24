@@ -9,6 +9,8 @@ use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 
 const NO_WINDOW_TEST: &str = "device::live_speaking::tests::an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_granted";
+const SHELL_ENDED_TEST: &str =
+    "device::live_speaking::tests::a_shell_that_ends_leaves_the_person_out_of_the_call";
 
 /// The call the app carries, and the outside one it carries it from.
 const CALL: &str = "voice-tl";
@@ -147,4 +149,82 @@ fn app_connection(
         frames.serve(served, &line, reader);
     });
     tilo_actions::remote::LineClient::of_stream(held).unwrap()
+}
+
+/// The person's shell ends the way a desktop quits: the word it said and the call it was in
+/// stop being said in the workspace, and the device says only what it is there. A person gone
+/// from their computer is in no call, as their roster row on everyone else's device shows.
+#[test]
+fn a_shell_that_ends_leaves_the_person_out_of_the_call() {
+    use collab_types::presence::CallPresence;
+    use tilo_live::presence::Call;
+    use tilo_workspace_service::apps::shell::ShellSpeaking as _;
+
+    let Some(root) = isolated_root(SHELL_ENDED_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().expect("the person's workspace");
+    let id = WorkspaceId::parse(&workspace).expect("a workspace id");
+    let live = Arc::clone(daemon.live().expect("the daemon runs its live session"));
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let session = loop {
+        if let Some(session) = live.call_session(id) {
+            break session;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon took no part in its workspace's live session"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(50));
+    };
+    let _entered = tilo_rt::app().handle().enter();
+
+    live.say(
+        &workspace,
+        Some(runtime_collab::wire::shell::ShellWord {
+            label: "Ada".into(),
+            device: "laptop".into(),
+            status: Some(("Writing the brief".into(), false)),
+            ..runtime_collab::wire::shell::ShellWord::default()
+        }),
+        Vec::new(),
+    )
+    .expect("the daemon takes the person's word");
+    session.speaker().set_joined(Some(Call {
+        call: CallPresence {
+            channel: CALL.into(),
+            name: "voice".into(),
+            bridge: None,
+        },
+        camera: false,
+        screen: false,
+        muted: false,
+        deafened: false,
+    }));
+    assert!(
+        session.speaker().word().status.is_some(),
+        "the person says what they are doing while their shell runs"
+    );
+    assert!(
+        session.speaker().call().is_some(),
+        "the person is in the call while their shell runs"
+    );
+
+    live.gone();
+    loop {
+        let word = session.speaker().word();
+        if word.status.is_none() && session.speaker().call().is_none() {
+            assert!(
+                !word.label.is_empty(),
+                "the device still says what it is after the shell ends"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the word or the call outlived the shell"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(20));
+    }
 }

@@ -82,6 +82,9 @@ pub(super) async fn serve(
     let followed = Arc::new(tokio::sync::Mutex::new((services.document_writes)()));
     let received = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED);
     let sending = runtime_portal::descriptors::DescriptorSender::new();
+    // Held across the connection: a shell that ends says nothing of its person any more, and is
+    // in no call.
+    let speaking = services.speaking.clone();
     let (connection, outgoing) = super::wire::WireConnection::shell(Shell {
         caller,
         services,
@@ -93,9 +96,11 @@ pub(super) async fn serve(
     let (reader, writer) = tokio::io::split(runtime_portal::descriptors::DescriptorStream::duplex(
         stream, sending, received,
     ));
-    super::wire::serve(connection, outgoing, reader, writer)
-        .await
-        .map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
+    let served = super::wire::serve(connection, outgoing, reader, writer).await;
+    if let Some(speaking) = &speaking {
+        speaking.gone();
+    }
+    served.map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
 }
 
 /// Hand the device's tilolang processes the packet socket `stream` carries, when it opened with

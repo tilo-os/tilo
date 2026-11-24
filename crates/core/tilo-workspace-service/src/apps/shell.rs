@@ -175,6 +175,10 @@ pub trait ShellSpeaking: Send + Sync {
         workspace: &str,
         call: Option<runtime_collab::wire::shell::ShellInCall>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
+
+    /// The shell's link ended: the person says nothing of themselves and is in no workspace's
+    /// call any more, and the device says only what it is there.
+    fn gone(&self);
 }
 
 /// What carries one admitted link of a shell's live session until it ends.

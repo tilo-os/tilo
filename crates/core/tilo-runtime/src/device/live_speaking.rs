@@ -206,9 +206,31 @@ impl Speaking {
             speaker.set_agents(agents);
         }
     }
+
+    /// The person's shell ended: forget the word it said in every workspace, and answer the
+    /// workspaces it said it in, so the device says only what it is there from now on.
+    fn forget_shell(&self) -> Vec<String> {
+        let said = std::mem::take(&mut *self.shell.lock_recover());
+        let speakers = self.speakers.lock_recover();
+        for workspace in said.keys() {
+            if let Some(speaker) = speakers.get(workspace).and_then(Weak::upgrade) {
+                speaker.set_shell(None);
+                speaker.set_agents(Vec::new());
+            }
+        }
+        said.into_keys().collect()
+    }
 }
 
 impl Live {
+    /// The person's shell ended: the word they said and the call they were in are no longer said
+    /// in any workspace, and the device says only what it is there.
+    async fn shell_gone(self: &Arc<Self>) {
+        for workspace in self.speaking.forget_shell() {
+            let _ = self.join_in(&workspace, None).await;
+        }
+    }
+
     /// Join `call` in `workspace`, or leave the call the device is in there (`None`).
     async fn join_in(
         &self,
@@ -258,6 +280,12 @@ impl ShellSpeaking for Live {
             let live = live.upgrade().ok_or("this device's daemon is stopping")?;
             live.join_in(&workspace, call.map(|call| call.call)).await
         })
+    }
+
+    fn gone(&self) {
+        if let Some(live) = self.weak().upgrade() {
+            tilo_rt::app().spawn(async move { live.shell_gone().await });
+        }
     }
 }
 

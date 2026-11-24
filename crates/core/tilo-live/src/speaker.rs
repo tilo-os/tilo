@@ -235,6 +235,12 @@ impl Speaker {
         self.state.lock_recover().own().call
     }
 
+    /// The whole word this device says in the workspace now, as everyone there reads it.
+    #[must_use]
+    pub fn word(&self) -> Own {
+        self.state.lock_recover().own()
+    }
+
     /// The people this device carries into its call from another service, each a member of it
     /// of their own.
     pub fn set_bridged(&self, bridged: Vec<BridgedMember>) {
