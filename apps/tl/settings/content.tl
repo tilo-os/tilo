@@ -3,7 +3,6 @@
 /// keeps to them; a limit changed once applies on every host, and the content it refused is no
 /// longer refused once it allows it.
 view content_pane() {
-    let c = workspace.content
     let owner = (invoker.role() ?? "") == "owner"
     state editing: Bool = false
     state file_mib: Float = 0.0
@@ -17,22 +16,22 @@ view content_pane() {
         )
         setting("Largest file", "A bigger file is not kept by the host") {
             row(gap: .related, align: .center) {
-                ui.Text(std.mib(c.file_bytes), role: .label)
+                ui.Text(std.mib(workspace.content.file_bytes), role: .label)
                 if owner {
                     ui.Button("Change") {
-                        on press: set(file_mib, c.file_bytes.to_float() / 1048576.0)
-                            .then(set(member_mib, c.member_bytes.to_float() / 1048576.0))
-                            .then(set(hourly_mib, c.hourly_bytes.to_float() / 1048576.0))
+                        on press: set(file_mib, workspace.content.file_bytes.to_float() / 1048576.0)
+                            .then(set(member_mib, workspace.content.member_bytes.to_float() / 1048576.0))
+                            .then(set(hourly_mib, workspace.content.hourly_bytes.to_float() / 1048576.0))
                             .then(set(editing, true))
                     }
                 }
             }
         }
         setting("One member's files", "What one member's files may take together") {
-            ui.Text(std.mib(c.member_bytes), role: .label)
+            ui.Text(std.mib(workspace.content.member_bytes), role: .label)
         }
         setting("One member an hour", "What one member may post in any hour") {
-            ui.Text(std.mib(c.hourly_bytes), role: .label)
+            ui.Text(std.mib(workspace.content.hourly_bytes), role: .label)
         }
         if not owner {
             ui.StatusLine("Only the workspace's owners can change these.", status: .idle)

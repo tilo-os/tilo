@@ -113,6 +113,7 @@ fn texts(view: &ViewInstance) -> Vec<String> {
         .flat_map(|node| node.props.values())
         .filter_map(|value| match value {
             Value::Text(text) => Some(text.clone()),
+            Value::Rich(rich) => Some(rich.written_text()),
             _ => None,
         })
         .collect()
@@ -126,6 +127,44 @@ fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String 
         .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
         .key
         .clone()
+}
+
+/// The content pane opened as its own view: the window's content area is laid out for its size,
+/// which a host without a window has none of, so what the pane draws is read from the pane.
+fn open_content_pane(host: &Host) -> ViewInstance {
+    let id = host
+        .package(APP)
+        .expect("the app is loaded")
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "content_pane")
+        .expect("the content pane is declared")
+        .id
+        .clone();
+    let mut view = host
+        .runtime()
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &id,
+            Vec::new(),
+        )
+        .expect("the pane opens");
+    view.poll_patches().expect("the pane draws");
+    view
+}
+
+/// What a person sets the limits to, past the default: a size in bytes, unset for a member.
+fn limits(host: &Host) {
+    use tilolang_tilo::content::WorkspaceContent;
+
+    host.give_content(&WorkspaceContent {
+        file_bytes: 25 * 1_048_576,
+        member_bytes: 250 * 1_048_576,
+        hourly_bytes: 250 * 1_048_576,
+        refusals: Vec::new(),
+        host_person: None,
+    });
 }
 
 /// One invocation as it was sent, with its arguments by name.
@@ -142,20 +181,11 @@ impl Invoker for Sent {
 /// limits in, and only an owner is offered to set them.
 #[test]
 fn the_content_pane_shows_what_the_host_keeps_in_mebibytes() {
-    use tilolang_tilo::content::WorkspaceContent;
-
     let (host, _) = settings();
-    host.give_content(&WorkspaceContent {
-        file_bytes: 25 * 1_048_576,
-        member_bytes: 250 * 1_048_576,
-        hourly_bytes: 250 * 1_048_576,
-        refusals: Vec::new(),
-        host_person: None,
-    });
+    limits(&host);
     invoke(&host, "open_pane", vec![Value::text("content")]);
     assert_eq!(pane(&host), "content");
-    let mut view = host.open_main(APP).expect("the window opens");
-    view.poll_patches().expect("the window draws");
+    let view = open_content_pane(&host);
     let shown = texts(&view);
     assert!(shown.contains(&"25 MiB".to_owned()), "{shown:?}");
     assert!(
@@ -180,21 +210,16 @@ fn the_content_pane_shows_what_the_host_keeps_in_mebibytes() {
 #[test]
 fn an_owner_sets_the_limits_the_pane_shows() {
     use tilo_action_policy::WorkspacePolicy;
-    use tilolang_tilo::content::WorkspaceContent;
 
     let owner = MemberAccess::person(WorkspacePolicy::new("team", "ada"), "ada");
     let (host, _) = settings_with(Some(owner));
-    host.give_content(&WorkspaceContent {
-        file_bytes: 25 * 1_048_576,
-        member_bytes: 250 * 1_048_576,
-        hourly_bytes: 250 * 1_048_576,
-        refusals: Vec::new(),
-        host_person: None,
-    });
-    tilolang_tilo::platform_apps::load(&host, &[tilolang_tilo::platform_apps::WORKSPACE_APP.to_owned()]);
+    limits(&host);
+    tilolang_tilo::platform_apps::load(
+        &host,
+        &[tilolang_tilo::platform_apps::WORKSPACE_APP.to_owned()],
+    );
     invoke(&host, "open_pane", vec![Value::text("content")]);
-    let mut view = host.open_main(APP).expect("the window opens");
-    view.poll_patches().expect("the window draws");
+    let mut view = open_content_pane(&host);
 
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
@@ -223,12 +248,17 @@ fn an_owner_sets_the_limits_the_pane_shows() {
         ("tilo.workspace", "set-policy"),
         "the workspace's own action, as its surface publishes it"
     );
+    // An unset limit is sent as the optional it is, holding the bytes.
     let arg = |wanted: &str| {
         args.iter()
             .find(|(named, _)| named == wanted)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| match value {
+                Value::Opt(Some(inner)) => (**inner).clone(),
+                other => other.clone(),
+            })
     };
     assert_eq!(arg("file_bytes"), Some(Value::Int(25 * 1_048_576)));
     assert_eq!(arg("member_bytes"), Some(Value::Int(250 * 1_048_576)));
     assert_eq!(arg("hourly_bytes"), Some(Value::Int(250 * 1_048_576)));
 }
+
