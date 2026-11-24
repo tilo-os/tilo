@@ -3337,6 +3337,7 @@ impl ResourceStore {
             // invoker it certifies: the app's own word for it is never taken.
             device: String::new(),
             device_name: String::new(),
+            context: None,
         }
     }
 

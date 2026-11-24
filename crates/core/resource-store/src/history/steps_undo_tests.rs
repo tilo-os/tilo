@@ -6,7 +6,7 @@ use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::ActionContext;
 
 use super::*;
-use crate::history_source::TestWords;
+use crate::history::TestWords;
 
 const GENESIS: &[u8] = b"genesis";
 const ALICE: &[u8] = b"alice";

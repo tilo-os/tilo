@@ -216,7 +216,7 @@ mod tests {
                 &records,
                 |at| self.0.get(at).map(|(revision, _)| *revision),
                 |at| self.0.get(at).map(|(_, bytes)| bytes.clone()),
-                &crate::history_source::TestWords,
+                &crate::history::TestWords,
             );
         }
     }
@@ -290,7 +290,7 @@ mod tests {
         let mut log = ChangeLog::new();
         let chat = route("chat");
         log.take_in_versions(&chat, vec![version("a", "m1")]);
-        log.take_in(&[], |_| None, |_| None, &crate::history_source::TestWords);
+        log.take_in(&[], |_| None, |_| None, &crate::history::TestWords);
         // What the record held when the follower started is no news.
         let start = log.page(None, None);
         assert!(start.changes.is_empty());

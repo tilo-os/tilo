@@ -25,9 +25,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, HistoryView, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_resource_store::history::verbs::{self, EDIT_TYPE, HistoryEdit, HistoryView, VIEW_TYPE};
 use tilo_service::{Service, Started};
 use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::store::{ChangeNote, Mutation, Scalar, Store as _, Version};

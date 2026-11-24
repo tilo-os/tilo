@@ -221,6 +221,8 @@ runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = ".
 # The collab client without the toolkit: record identities, the app surface,
 # the local identity boundary and local action reports, under their toolkit paths.
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
+# The workspace's one history: its steps, undo, and the words for who did what.
+tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
 # The typed id of the app a record set belongs to.

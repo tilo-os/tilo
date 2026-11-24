@@ -6,12 +6,12 @@
 //! conversation apart make one, and a conversation an earlier Chat kept with one person alone
 //! comes in with both of its people, or with that person alone when no person opened it.
 
-use collaboration::history_source::verbs::HistoryView;
 use tilo_action_policy::{
     AgentMember, Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath,
     WorkspacePolicy,
 };
 use tilo_actions::ResourceSpec;
+use tilo_resource_store::history::verbs::HistoryView;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 use tilolang_tilo::publish::{ActionTypes, Planner, publish_resource, resource_id};

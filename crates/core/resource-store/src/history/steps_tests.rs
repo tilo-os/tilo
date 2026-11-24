@@ -2,7 +2,7 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
 use super::*;
-use crate::history_source::TestWords;
+use crate::history::TestWords;
 
 // The verbs as the tests call them, in the tests' words.
 fn undo(

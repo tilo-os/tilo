@@ -441,7 +441,11 @@ impl StoredResource {
 
     fn step(
         &self,
-        step: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog, &MemberId) -> bool,
+        step: impl FnOnce(
+            &mut AutoCommit,
+            &mut tilo_resource_store::history::UndoLog,
+            &MemberId,
+        ) -> bool,
     ) -> bool {
         let stepped = self
             .store

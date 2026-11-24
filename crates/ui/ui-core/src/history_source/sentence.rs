@@ -270,13 +270,13 @@ fn actor_line(name: &str, for_person: Option<&str>, is_reader: bool, task: Optio
 /// verbs below the toolkit (`steps::undo`) speak in for an app.
 pub struct ThreadWords;
 
-impl collaboration::history_source::authors::ResolveAuthor for ThreadWords {
+impl tilo_resource_store::history::authors::ResolveAuthor for ThreadWords {
     fn resolve(&self, actor_hex: &str) -> crate::widget::history::HistoryAuthor {
         super::AuthorDirectory::default().resolve(actor_hex)
     }
 }
 
-impl collaboration::history_source::words::HistoryWords for ThreadWords {
+impl tilo_resource_store::history::words::HistoryWords for ThreadWords {
     fn sentence(&self, entry: &ActionContext) -> String {
         sentence(entry)
     }
@@ -285,7 +285,7 @@ impl collaboration::history_source::words::HistoryWords for ThreadWords {
 /// What a history row says about one change: what it did, else what its
 /// actor said they were doing. `None` when the entry says neither.
 pub fn step_summary(entry: &ActionContext) -> Option<String> {
-    collaboration::history_source::verbs::step_summary(entry, &ThreadWords)
+    tilo_resource_store::history::verbs::step_summary(entry, &ThreadWords)
 }
 
 /// The one thing a step acted on, apart from what it did, when its sentence says the two as

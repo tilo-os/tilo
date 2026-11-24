@@ -1,7 +1,7 @@
 //! Ctrl+Z over the document's own history.
 //!
 //! There is one undo engine: the document's history
-//! ([`steps`](crate::history_source::steps)). An undo marks what it took
+//! ([`steps`](crate::history::steps)). An undo marks what it took
 //! back as undone in the same forward change, a redo reverts that undo, and
 //! the changes of one gesture (the keystrokes of a word) share a step id so
 //! they are taken back as one step. Ctrl+Z, an agent's `undo` and a script's
@@ -22,8 +22,8 @@ use tilo_resource::history::Version;
 
 use collab_types::MemberId;
 
-use crate::history_source::authors;
-use crate::history_source::steps::{self, UNDONE_KEY};
+use crate::history::authors;
+use crate::history::steps::{self, UNDONE_KEY};
 
 /// A window instance of an app, as the runtime numbers it.
 pub type InstanceId = u64;
@@ -545,7 +545,6 @@ impl UndoLog {
     /// The brackets of this session's steps in effect and of its undos redo
     /// would bring back, newest first.
     #[doc(hidden)]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn brackets(
         &self,
         doc: &AutoCommit,

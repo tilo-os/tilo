@@ -6,8 +6,10 @@ use crate::history_mode::restore::{
 use crate::permissions::MemberId;
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use collaboration::state::InstanceId;
-pub(crate) use collaboration::state::{OwnedActionAttribution, OwnedActionReceipt, same_frontier};
+use tilo_resource_store::history::InstanceId;
+pub(crate) use tilo_resource_store::history::{
+    OwnedActionAttribution, OwnedActionReceipt, same_frontier,
+};
 
 /// Private, synchronous admission staging. A prepared content plan alone is never an
 /// authority grant.

@@ -11,7 +11,7 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::HistoryEntryId;
-pub use collaboration::history_source::authors::{
+pub use tilo_resource_store::history::authors::{
     AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
 };
 

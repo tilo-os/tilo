@@ -29,7 +29,7 @@ pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSP
 pub(crate) use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
-pub use collaboration::state::InstanceId;
+pub use tilo_resource_store::history::InstanceId;
 
 /// What [`crate::widget::Widget::take_app_activation`] reports: the person gave the keyboard to
 /// another window.

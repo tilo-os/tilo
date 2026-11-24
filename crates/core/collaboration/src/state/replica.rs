@@ -2,11 +2,11 @@
 //! writers this replica wrote it as, and an app's [`State`] — its document and the undo
 //! history it keeps.
 
-use super::{UndoEntry, UndoLog};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjId};
 use collab_types::MemberId;
 use std::collections::HashSet;
 use tilo_automerge::ApplyIncoming;
+use tilo_resource_store::history::{UndoEntry, UndoLog};
 
 /// The actors this replica has written one document as, beyond the ones the document
 /// itself names.
@@ -100,7 +100,7 @@ impl DocumentFrontier {
     /// and the identity service signs a change for the action that names it.
     pub fn delta(&self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
         let actor = doc.get_actor().clone();
-        let device = crate::history_source::authors::DeviceActors::of(&actor);
+        let device = tilo_resource_store::history::authors::DeviceActors::of(&actor);
         let mut bytes = Vec::new();
         for change in doc.get_changes(&self.heads) {
             let mine = change.actor_id() == &actor

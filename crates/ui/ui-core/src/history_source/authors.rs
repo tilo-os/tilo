@@ -18,16 +18,16 @@
 use std::collections::HashMap;
 
 use crate::widget::history::{AuthorRelation, HistoryAttribution, HistoryAuthor};
-use collaboration::history_source::authors::handle_actor_hex;
+use tilo_resource_store::history::authors::handle_actor_hex;
 /// The data half of naming authors, below the toolkit: decoding an actor
 /// id, telling a device's actors apart and the colours history paints.
-pub use collaboration::history_source::authors::{
+pub use tilo_resource_store::history::authors::{
     DeviceActors, MemberNames, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, app_name,
     app_words, author_coloured, device_actor, installed_app_name, name_words, set_installed_apps,
     short_id,
 };
 #[cfg(test)]
-use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
+use tilo_resource_store::history::authors::{SHORT_LEN, rgb_to_hue};
 
 /// Maps automerge actor ids to the people the chrome should name.
 ///

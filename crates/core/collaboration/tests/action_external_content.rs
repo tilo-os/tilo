@@ -13,15 +13,15 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collaboration::document_content::{ContentLink, DocumentContent};
-use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
-use collaboration::history_source::verbs::step_summary;
-use collaboration::history_source::words::HistoryWords;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionContext, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport,
     MissingContent, Verified, dispatch_with_context, entry_of, verify_change,
 };
 use tilo_content::ContentStore;
+use tilo_resource_store::history::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
+use tilo_resource_store::history::verbs::step_summary;
+use tilo_resource_store::history::words::HistoryWords;
 use tilo_rt::wake::WakeScope;
 
 const APP: &str = "so.tilo.action-external-content-test";

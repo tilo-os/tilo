@@ -1,12 +1,12 @@
 //! Undoing somebody else's work: a contiguous run of changes, addressed by
 //! what it is rather than by where it sits on a local stack.
 //!
-//! [`UndoLog`](crate::state::UndoLog) only holds actions *this* process
+//! [`UndoLog`](crate::history::UndoLog) only holds actions *this* process
 //! handled — a peer's change re-baselines without pushing — so "undo what
 //! the agent just did" finds nothing there. A run is addressed instead by
 //! content-addressed [`HistoryEntryId`], so a peer that only ever received
 //! those changes can undo them. The inverse is written *forward* through
-//! [`write_patches`](crate::state::write_patches), never cut out of the
+//! [`write_patches`](crate::history::write_patches), never cut out of the
 //! graph, so the original keeps its author and the undo is itself undoable.
 //!
 //! Not wholesale: a revert takes back the run's own change and leaves
@@ -26,9 +26,9 @@ use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop
 
 mod text;
 
-use crate::history_source::authors::{HistoryAuthor, ResolveAuthor};
-use crate::history_source::entry_id_from_hash;
-use crate::state::write_selected_patches;
+use crate::history::authors::{HistoryAuthor, ResolveAuthor};
+use crate::history::entry_id_from_hash;
+use crate::history::write_selected_patches;
 use collab_types::history::HistoryEntryId;
 
 /// A contiguous run of changes, addressed by its first and last change.
@@ -370,7 +370,7 @@ fn later_writers(
         HashSet::new()
     };
     let undone = if start_at < versions.len() {
-        crate::history_source::steps::undone(doc)
+        crate::history::steps::undone(doc)
     } else {
         HashSet::new()
     };
@@ -410,7 +410,7 @@ fn later_writers(
         let hi = tilo_resource::history::prefix_heads(doc, i);
         let patches = doc.diff(&lo, &hi);
         // A change that only wrote history's metadata did not touch content.
-        if crate::history_source::is_history_metadata(&patches) {
+        if crate::history::is_history_metadata(&patches) {
             continue;
         }
         if saw_run.contains(&v.hash) {
@@ -444,8 +444,8 @@ fn undid_only(
     undone: &HashSet<String>,
 ) -> bool {
     matches!(
-        crate::history_source::steps::kind_of(doc, version),
-        crate::history_source::steps::Kind::Undo(moved)
+        crate::history::steps::kind_of(doc, version),
+        crate::history::steps::Kind::Undo(moved)
             if !moved.is_empty() && moved.iter().all(|step| undone.contains(step))
     )
 }
@@ -886,7 +886,7 @@ mod replay_regressions {
             doc.commit();
             let run = ChangeRange::single(entry_id_from_hash(&change.to_string()));
             let result =
-                revert_invocation(&mut doc, &run, None, &crate::history_source::TestWords).unwrap();
+                revert_invocation(&mut doc, &run, None, &crate::history::TestWords).unwrap();
             assert!(result.wrote);
             assert_eq!(result.kept.len(), 1);
             let labels = (0..doc.length(&list))
@@ -930,7 +930,7 @@ mod replay_regressions {
                 &mut doc,
                 &ChangeRange::single(entry_id_from_hash(&change.to_string())),
                 None,
-                &crate::history_source::TestWords,
+                &crate::history::TestWords,
             )
             .unwrap();
             assert!(!result.wrote);

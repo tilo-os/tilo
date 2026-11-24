@@ -2,9 +2,9 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
-use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
-use collaboration::history_source::verbs::HistoryEdit;
-use collaboration::history_source::words::HistoryWords;
+use tilo_resource_store::history::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
+use tilo_resource_store::history::verbs::HistoryEdit;
+use tilo_resource_store::history::words::HistoryWords;
 
 #[global_allocator]
 static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;

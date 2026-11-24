@@ -2,7 +2,7 @@
 //! anyone who can invoke an action can use them: a person, a script, an
 //! agent over the action API.
 //!
-//! [`UndoLog`](crate::state::UndoLog) is the process's own stack: it knows
+//! [`UndoLog`](crate::history::UndoLog) is the process's own stack: it knows
 //! only what this window did, and only while it runs. The verbs here read
 //! the change graph instead, so "undo my last two steps" means the same on
 //! every replica and after a restart, and an agent session is undone by naming
@@ -26,8 +26,8 @@ use tilo_actions::ActionContext;
 pub use tilo_doc::model::is_schema_genesis;
 use tilo_resource::history::{self, StepFacts, Version};
 
-use crate::history_source::revert::revert_changes;
-use crate::history_source::words::HistoryWords;
+use crate::history::revert::revert_changes;
+use crate::history::words::HistoryWords;
 
 /// Prefix of the root keys naming each undone change, by its full hash.
 pub use tilo_actions::UNDONE_KEY;
@@ -1333,7 +1333,7 @@ fn built_on(
         let Some(change) = recorded_hash(&hash) else {
             continue;
         };
-        let (_, wrote) = crate::history_source::revert::objects_of_change(doc, change);
+        let (_, wrote) = crate::history::revert::objects_of_change(doc, change);
         let gone: Vec<automerge::ObjId> = wrote
             .into_iter()
             .filter(|obj| *obj != automerge::ROOT && !reachable(obj))
@@ -1346,8 +1346,7 @@ fn built_on(
                 .iter()
                 .filter_map(|hash| {
                     let change = recorded_hash(hash)?;
-                    let (created, _) =
-                        crate::history_source::revert::objects_of_change(doc, change);
+                    let (created, _) = crate::history::revert::objects_of_change(doc, change);
                     (!created.is_empty()).then(|| (hash.clone(), created))
                 })
                 .collect()
@@ -1606,7 +1605,7 @@ pub fn restore(
         .filter_map(item_of)
         .filter(|item| differs(doc, item, &current, heads))
         .collect();
-    let written = crate::state::write_revert_patches_where(doc, &current, heads, &|patch| {
+    let written = crate::history::write_revert_patches_where(doc, &current, heads, &|patch| {
         !is_bookkeeping(patch)
             && (ids.is_empty() || touches(patch, ids))
             && item_of(patch).is_some_and(|item| differing.contains(&item))
@@ -1750,7 +1749,7 @@ pub fn restore_paths(
     if written == 0 {
         return Err("The selected paths have no applicable restore patches.".into());
     }
-    crate::state::write_selected_patches(doc, patches, target_heads, &current);
+    crate::history::write_selected_patches(doc, patches, target_heads, &current);
     Ok(written)
 }
 

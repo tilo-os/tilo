@@ -24,12 +24,29 @@ postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
 # Bytes in a command or reply travel as base64 text.
 base64.workspace = true
+# A document's history: its versions and the action each names, and how a step is grouped.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# Whether a version is the schema's genesis rather than anyone's step.
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# What wrote a change, when a device recorded a writer beside it.
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol" }
+# Actors are named by their bytes in hex.
+hex.workspace = true
+# A history feed names the run it was read in.
+uuid.workspace = true
+tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
+
 [dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

@@ -24,7 +24,7 @@
 //! skip, so both stay flat as a kind grows.
 
 pub mod admit;
-mod history;
+pub mod history;
 mod index;
 mod port;
 mod query;

@@ -1,18 +1,33 @@
-//! A document's history below the toolkit: its steps (undo, redo, restore
-//! and checkpoints written into the document itself), the revert they are
-//! taken back by, and who wrote them.
+//! The workspace's one history: every document's steps (undo, redo, restore and checkpoints),
+//! the revert they are taken back by, and who wrote them, for every app's records and whichever
+//! language declared them; and each resource's versions across the documents it is in
+//! ([`Version`]).
 //!
-//! The toolkit's `ui::history_source` builds the History views on this and
-//! keeps its paths; a process without the toolkit reads and moves the same
-//! history through the same code.
+//! The toolkit's `ui::history_source` builds the History views on this and keeps its paths; a
+//! tilolang host, the shell and a process without the toolkit read and move the same history
+//! through the same code.
 
 pub mod authors;
+mod built_on;
 pub mod feed;
+mod patches;
 pub mod revert;
+mod sequence_replay;
 pub mod steps;
 pub mod typing;
+mod undo_log;
 pub mod verbs;
+mod versions;
 pub mod words;
+
+pub use patches::{
+    write_patches, write_revert_patches, write_revert_patches_where, write_selected_patches,
+};
+#[doc(hidden)]
+pub use undo_log::{HistoryMoment, OwnedActionAttribution, OwnedActionReceipt, same_frontier};
+pub use undo_log::{InstanceId, UndoEntry, UndoLog};
+pub use versions::{Nested, Version, VersionKind, touched_by};
+pub(crate) use versions::{Touches, stamped};
 
 use automerge::{PatchAction, Prop};
 use collab_types::history::HistoryEntryId;

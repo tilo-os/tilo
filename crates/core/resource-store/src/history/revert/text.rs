@@ -3,7 +3,7 @@
 //! somebody else typing in the same text keeps their words.
 //!
 //! The revert's patches name characters by identity
-//! ([`write_selected_patches`](crate::state::write_selected_patches) replays
+//! ([`write_selected_patches`](crate::history::write_selected_patches) replays
 //! them through cursors), so the text around them may have changed in any
 //! way. Only one thing makes a text's part of a change somebody else's too:
 //! they rewrote it since. Then their text is the newer value, and the revert

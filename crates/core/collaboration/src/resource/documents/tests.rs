@@ -853,14 +853,16 @@ mod undo_without_the_toolkit {
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use collab_types::MemberId;
 
-    use crate::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
-    use crate::history_source::steps::{self, Scope};
-    use crate::history_source::words::HistoryWords;
     use crate::resource::{
         DocumentCheckout, DocumentId, MemoryWorkspace, ResourceOwners, ResourceSaveStatus,
         ResourceType,
     };
-    use crate::state::UndoLog;
+    use tilo_resource_store::history::UndoLog;
+    use tilo_resource_store::history::authors::{
+        HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME,
+    };
+    use tilo_resource_store::history::steps::{self, Scope};
+    use tilo_resource_store::history::words::HistoryWords;
 
     const PACKAGE: &str = "dev.tilo.undo-without-toolkit";
     const WORKSPACE: &str = "33333333-3333-4333-8333-333333333333";

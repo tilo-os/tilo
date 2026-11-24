@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collaboration::history_source::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, name_words};
+use tilo_resource_store::history::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, name_words};
 
 use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
@@ -48,7 +48,7 @@ const SCENARIO: &str = "scenario:";
 /// The name of `who` as the session's catalogue says it, by what they are: an app by its
 /// installed name, an agent by its name, a sample person a scenario named (`person("Mia")`, whose
 /// id is that name rather than a root key) by that name, and a person nobody named as
-/// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
+/// [`UNKNOWN_AUTHOR_NAME`](tilo_resource_store::history::authors::UNKNOWN_AUTHOR_NAME), never
 /// their key.
 #[must_use]
 pub fn installed(who: &Actor) -> String {

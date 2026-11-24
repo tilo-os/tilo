@@ -744,7 +744,7 @@ fn happened(
     use tilo_actions::remote::What;
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
-    let touched = tilo_resource_store::touches(committed, "", &change)?;
+    let touched = crate::admit::touches(committed, "", &change)?;
     let made = touched.resources.iter().find(|(_, touch)| touch.made);
     let removed = touched.resources.iter().find(|(_, touch)| touch.removed);
     let what = if made.is_some() {
@@ -756,13 +756,13 @@ fn happened(
     };
     // The resource the change is about: the one it made or removed, else the one it touched when
     // it touched a single resource.
-    let item = made
-        .or(removed)
-        .map(|(id, _)| id.clone())
-        .or_else(|| match touched.resources.len() {
-            1 => touched.resources.keys().next().cloned(),
-            _ => None,
-        });
+    let item =
+        made.or(removed)
+            .map(|(id, _)| id.clone())
+            .or_else(|| match touched.resources.len() {
+                1 => touched.resources.keys().next().cloned(),
+                _ => None,
+            });
     Some((what, item))
 }
 
@@ -1354,7 +1354,7 @@ fn local(action: steps::Inverse) -> Result<steps::Inverse, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history_source::TestWords;
+    use crate::history::TestWords;
     use automerge::{ROOT, ReadDoc};
 
     tilo_test_env::scenario! {
@@ -1459,9 +1459,7 @@ mod tests {
             .put_object(ROOT, "r:note1", automerge::ObjType::Map)
             .unwrap();
         doc.put(&note, "k", "tl.test.Note").unwrap();
-        let fields = doc
-            .put_object(&note, "f", automerge::ObjType::Map)
-            .unwrap();
+        let fields = doc.put_object(&note, "f", automerge::ObjType::Map).unwrap();
         doc.put(&fields, "title", "Plan").unwrap();
         doc.commit();
         doc.put(&fields, "title", "Plan B").unwrap();

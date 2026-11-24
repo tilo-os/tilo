@@ -27,8 +27,8 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 
 use crate::history_source::revert::ChangeRange;
 use crate::widget::history::HistoryEntryId;
-pub use collaboration::history_source::{INVOCATIONS_KEY, is_invocation_marker};
 use tilo_automerge::read::int_at;
+pub use tilo_resource_store::history::{INVOCATIONS_KEY, is_invocation_marker};
 
 /// Longest label stored. An invocation's label is the instruction as the person
 /// phrased

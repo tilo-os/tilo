@@ -3537,7 +3537,7 @@ struct ActiveMutation {
     deferred: bool,
 }
 struct ActionFrame {
-    history: crate::state::UndoLog,
+    history: tilo_resource_store::history::UndoLog,
     state: crate::resource::ResourceActions,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
@@ -3856,7 +3856,7 @@ impl Drop for BoundOperation<'_> {
 }
 
 struct RestoreFrame<'a> {
-    history: &'a mut crate::state::UndoLog,
+    history: &'a mut tilo_resource_store::history::UndoLog,
     state: &'a mut crate::resource::ResourceActions,
     frame: FrameHandle,
 }
