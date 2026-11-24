@@ -724,6 +724,27 @@ action open_app(app_name: Text) {
             assert_eq!(m.text(&m.root, "reviewed_app"), "", "the review is used once");
         }
 
+        phase a_flatpak_reference_is_opened_not_verified_as_a_package;
+        {
+            let m = Market::new();
+            let file = Value::file(FileValue::new(
+                "app.flatpakref",
+                "application/vnd.flatpak.ref",
+                10,
+                "h2",
+            ));
+            m.call("import_package", vec![Value::resource(&m.root), file]);
+            let asked = m.engine.ops();
+            assert!(
+                asked.iter().any(|op| op == "call:reference"),
+                "the reference reaches the repository's own read: {asked:?}"
+            );
+            assert!(
+                !asked.iter().any(|op| op == "call:review"),
+                "a reference is never verified as a package: {asked:?}"
+            );
+        }
+
         phase a_report_is_a_draft_the_registry_answers_and_evidence_is_a_file;
         {
             let m = Market::new();
@@ -818,6 +839,35 @@ action open_app(app_name: Text) {
             );
         }
 
+
+        phase choosing_a_category_narrows_the_catalogue;
+        {
+            let m = Market::new();
+            m.read();
+            let mut window = m.window();
+            let category = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| {
+                    item.props.get("label").and_then(Value::as_text) == Some("Productivity")
+                })
+                .expect("the sidebar lists the catalogue's categories")
+                .key
+                .clone();
+            window.fire(&category, "select").unwrap();
+            window.poll_patches().unwrap();
+            let shell = of_kind(window.tree(), "ui.NavShell")
+                .into_iter()
+                .next()
+                .expect("a window");
+            assert_eq!(
+                shell.props.get("overview_title").and_then(Value::as_text),
+                Some("Productivity"),
+                "the window names the category it shows: {}",
+                dump(window.tree())
+            );
+            let titles = rows(window.tree());
+            assert_eq!(titles, ["Notes"], "only that category's apps: {titles:?}");
+        }
 
         phase updating_everything_asks_for_each_app_s_own_offer;
         {

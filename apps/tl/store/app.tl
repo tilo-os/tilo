@@ -1637,8 +1637,14 @@ action unblock_app(s: Store, a: App) (label: "Unblock", icon: .circle_check) {
 // ---------------------------------------------------------------- packages and references
 action import_package(s: Store, file: File) (
     icon: .package,
-    opens: [.tapp, "application/vnd.tilo.package"],
+    opens: [.tapp, .flatpakref, "application/vnd.tilo.package", "application/vnd.flatpak.ref"],
 ) {
+    // A `.flatpakref` names a repository's app, which the source installs itself; only a
+    // package file is verified here.
+    if file.name.ends_with(".flatpakref") {
+        open_reference(s, file)
+        return
+    }
     match engine.call(
         "review",
         json.encode(PackageAsk(file: file.url, name: file.name, size: file.size)),
@@ -1693,7 +1699,9 @@ action install_reviewed(s: Store) (label: "Install reviewed package", icon: .dow
 
 /// Opens a `.flatpakref`: it joins the catalogue as a card, and installing it stays a separate
 /// step the person takes.
-action open_reference(s: Store, file: File) (opens: [.flatpakref, "application/vnd.flatpak.ref"]) {
+/// Opens a `.flatpakref`: a repository's app, which the source installs itself. The package
+/// review reaches it through `import_package`, which opens both kinds of file.
+action open_reference(s: Store, file: File) {
     match engine.call(
         "reference",
         json.encode(PackageAsk(file: file.url, name: file.name, size: file.size)),

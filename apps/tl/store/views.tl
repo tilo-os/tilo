@@ -19,9 +19,19 @@ view catalogue(s: Store) {
     state page: Text = "apps"
     let places = places_of()
     let place = places.find(f -> f.query == chosen)
-    let listed = if let p = place { browsable(s).matching(p) } else { browsable(s) }
+    let category = if chosen.starts_with("category:") {
+        chosen.slice("category:".len(), chosen.len())
+    } else { "" }
+    let by_place = if let p = place { browsable(s).matching(p) } else { browsable(s) }
+    let listed = if category == "" {
+        by_place
+    } else {
+        by_place.filter(a -> a.categories.contains(category))
+    }
     let found = if searched.is_empty() { listed } else { listed.matching(searched) }
-    let title = if searched != "" { "Search" } else if let p = place { p.label } else { "All apps" }
+    let title = if searched != "" {
+        "Search"
+    } else if let p = place { p.label } else if category != "" { category } else { "All apps" }
     if page == "apps" {
         ui.NavShell(
             content_kind: .document,
@@ -95,6 +105,8 @@ view catalogue_actions(s: Store, page: State<Text>) {
             on press: update_all(s)
         }
     }
+    // A package file is reviewed whichever kind it is: the app reads a `.tapp`, and a
+    // `.flatpakref` is a reference to a repository the source itself installs.
     ui.Button("Review package", icon: .package) {
         on press: file.choose(import_package(s), accept: [".tapp", ".flatpakref"])
     }
@@ -120,7 +132,7 @@ view catalogue_sidebar(s: Store, places: List<Filter<App>>, chosen: State<Text>)
         ui.NavSection("Categories") {
             for c in categories {
                 ui.NavItem("category:{c}", c, icon: .layout_grid) {
-                    on select: set(chosen, "")
+                    on select: set(chosen, "category:{c}")
                 }
             }
         }
