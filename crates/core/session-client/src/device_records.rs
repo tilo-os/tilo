@@ -5,11 +5,14 @@
 //! with the device's `settings#set` action, both on the shell link the daemon handed the desktop.
 //!
 //! A write is handed to the daemon in the order the session made it, away from the thread that made
-//! it; [`DeviceRecords::flush`] is what a session that ends waits for.
+//! it; [`DeviceRecords::flush`] is what a session that ends waits for. A record the session shows
+//! while it runs is followed ([`DeviceRecord::follow`]): a change Settings, an agent or another of
+//! the person's tools writes reaches the session as it lands.
 
 #![cfg(unix)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
@@ -17,12 +20,23 @@ use tilo_actions::remote::{
     ResourceReadRequest,
 };
 use tilo_actions::{ActionAddress, InvocationId};
+use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc;
 
 use crate::daemon_documents::DaemonShell;
 
 /// The action that writes one of the device's records.
 const SET: &str = "set";
+
+/// How long a follower's read waits for the record to move before it asks again.
+const FOLLOW_WAIT: Duration = tilo_actions::remote::MAX_REMOTE_WAIT;
+
+/// How long a follower waits after the daemon could not be asked before it asks again.
+const ASK_AGAIN: Duration = Duration::from_secs(2);
+
+/// How many of its own writes a follower remembers, so a reading of one of them is not taken for a
+/// change from elsewhere.
+const OWN_WRITES: usize = 16;
 
 /// The device's records, as the desktop reads and writes them.
 #[derive(Clone)]
@@ -45,7 +59,15 @@ enum Keeper {
     },
     /// Records held in this process alone, as the daemon would keep them: a test's.
     #[cfg(any(test, feature = "test-support"))]
-    Held(std::sync::Mutex<std::collections::BTreeMap<String, Value>>),
+    Held(Mutex<Held>),
+}
+
+/// Records held in this process, and who follows each.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct Held {
+    values: std::collections::BTreeMap<String, Value>,
+    followers: Vec<(String, Weak<Followed>)>,
 }
 
 /// What waits its turn to reach the daemon.
@@ -98,7 +120,29 @@ impl DeviceRecords {
     #[must_use]
     pub fn held() -> Self {
         Self {
-            keeper: Arc::new(Keeper::Held(std::sync::Mutex::default())),
+            keeper: Arc::new(Keeper::Held(Mutex::default())),
+        }
+    }
+
+    /// Write `value` as the record `name` from outside this session, as Settings or an agent does:
+    /// what a test of a session that follows the record hands it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn write_elsewhere(&self, name: &str, value: Value) {
+        let Keeper::Held(held) = &*self.keeper else {
+            panic!("only held records are written from elsewhere in this process");
+        };
+        let followers: Vec<_> = {
+            let mut held = held.lock_recover();
+            held.values.insert(name.to_owned(), value.clone());
+            held.followers.retain(|(_, follower)| follower.strong_count() > 0);
+            held.followers
+                .iter()
+                .filter(|(followed, _)| followed == name)
+                .filter_map(|(_, follower)| follower.upgrade())
+                .collect()
+        };
+        for follower in followers {
+            follower.arrived(Some(value.clone()).filter(|value| !value.is_null()));
         }
     }
 
@@ -108,6 +152,7 @@ impl DeviceRecords {
         DeviceRecord {
             records: self.clone(),
             name: name.to_owned(),
+            followed: None,
         }
     }
 
@@ -128,51 +173,177 @@ impl DeviceRecords {
 }
 
 /// One record of the device's, by its name.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DeviceRecord {
     records: DeviceRecords,
     name: String,
+    /// What the record holds as its follower last heard, once it is followed.
+    followed: Option<Arc<Followed>>,
+}
+
+impl std::fmt::Debug for DeviceRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceRecord")
+            .field("name", &self.name)
+            .field("followed", &self.followed.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A followed record: what it holds as last heard, the writes of this session a reading may still
+/// bring back, and who is told a change from elsewhere.
+struct Followed {
+    known: Mutex<Known>,
+    changed: Box<dyn Fn(Option<Value>) + Send + Sync>,
+}
+
+#[derive(Default)]
+struct Known {
+    value: Option<Value>,
+    written: Vec<Option<Value>>,
+}
+
+impl Followed {
+    /// A reading of the record landed: told on when it is neither what was known nor one of this
+    /// session's own writes coming back.
+    fn arrived(&self, value: Option<Value>) {
+        {
+            let mut known = self.known.lock_recover();
+            if known.value == value {
+                return;
+            }
+            if let Some(own) = known.written.iter().position(|written| *written == value) {
+                known.written.drain(..=own);
+                return;
+            }
+            known.value.clone_from(&value);
+            known.written.clear();
+        }
+        (self.changed)(value);
+    }
+
+    /// This session wrote `value`.
+    fn wrote(&self, value: Option<Value>) {
+        let mut known = self.known.lock_recover();
+        if known.written.len() == OWN_WRITES {
+            known.written.remove(0);
+        }
+        known.written.push(value.clone());
+        known.value = value;
+    }
+}
+
+/// What a followed record holds now, when it changed since it was last taken: for a session that
+/// takes a change up on its own loop.
+#[derive(Clone, Default)]
+pub struct Arrived(Arc<Mutex<Option<Option<Value>>>>);
+
+impl Arrived {
+    /// The record as it changed to since the last take, `Some(None)` when it was emptied.
+    #[must_use]
+    pub fn take(&self) -> Option<Option<Value>> {
+        self.0.lock_recover().take()
+    }
 }
 
 impl DeviceRecord {
-    /// What the record holds, `None` when nothing was kept yet. Called from a thread that is not
-    /// the shell's runtime.
+    /// What the record holds, `None` when nothing was kept yet: as last heard once it is followed,
+    /// else read from the daemon. Called from a thread that is not the shell's runtime.
     ///
     /// # Errors
     /// The daemon could not be asked, or refused the read.
     pub fn read(&self) -> Result<Option<Value>, String> {
+        if let Some(followed) = &self.followed {
+            return Ok(followed.known.lock_recover().value.clone());
+        }
         match &*self.records.keeper {
             Keeper::Daemon {
                 shell, workspace, ..
+            } => shell
+                .read_blocking(read_request(workspace, &self.name, None))
+                .map(|readings| value_of(&readings)),
+            #[cfg(any(test, feature = "test-support"))]
+            Keeper::Held(held) => Ok(held.lock_recover().values.get(&self.name).cloned()),
+        }
+    }
+
+    /// The record, followed from now on: [`Self::read`] answers it as last heard, and `changed` is
+    /// told each change written elsewhere (never one of this session's own), on a thread that is
+    /// not the session's. The follower stops once every copy of the record is dropped.
+    ///
+    /// # Errors
+    /// The daemon could not be asked what the record holds now, or refused the read.
+    pub fn follow(
+        &self,
+        changed: impl Fn(Option<Value>) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let followed = |now| {
+            Arc::new(Followed {
+                known: Mutex::new(Known {
+                    value: now,
+                    written: Vec::new(),
+                }),
+                changed: Box::new(changed),
+            })
+        };
+        let followed = match &*self.records.keeper {
+            Keeper::Daemon {
+                shell, workspace, ..
             } => {
-                let readings = shell.read_blocking(ResourceReadRequest {
-                    workspace: workspace.clone(),
-                    app: DEVICE_SETTINGS.to_owned(),
-                    record: self.name.clone(),
-                    joined: false,
-                    after: None,
-                    wait_ms: None,
-                    answer: ReadAnswer::Reading,
-                })?;
-                let record = &readings["records"][0];
-                Ok(record
-                    .get("value")
-                    .filter(|_| record["absent"].as_bool() != Some(true))
-                    .filter(|value| !value.is_null())
-                    .cloned())
+                // What it holds now, and the revision the follower waits past: a reading of the
+                // record before this session's own writes is never heard as news.
+                let readings = shell.read_blocking(read_request(workspace, &self.name, None))?;
+                let followed = followed(value_of(&readings));
+                let after = readings["revision"].as_str().map(str::to_owned);
+                let (shell, workspace, name) =
+                    (shell.clone(), workspace.clone(), self.name.clone());
+                let follower = Arc::downgrade(&followed);
+                shell
+                    .runtime()
+                    .clone()
+                    .spawn(follow(shell, workspace, name, after, follower));
+                followed
             }
             #[cfg(any(test, feature = "test-support"))]
-            Keeper::Held(held) => Ok(held
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&self.name)
-                .cloned()),
-        }
+            Keeper::Held(held) => {
+                let mut held = held.lock_recover();
+                let followed = followed(held.values.get(&self.name).cloned());
+                held.followers
+                    .push((self.name.clone(), Arc::downgrade(&followed)));
+                followed
+            }
+        };
+        Ok(Self {
+            records: self.records.clone(),
+            name: self.name.clone(),
+            followed: Some(followed),
+        })
+    }
+
+    /// [`Self::follow`], each change kept in what it answers for the session's loop to take, and
+    /// `wake` called to run it.
+    ///
+    /// # Errors
+    /// As [`Self::follow`].
+    pub fn follow_waking(
+        &self,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(Self, Arrived), String> {
+        let arrived = Arrived::default();
+        let keeping = arrived.clone();
+        let record = self.follow(move |value| {
+            *keeping.0.lock_recover() = Some(value);
+            wake();
+        })?;
+        Ok((record, arrived))
     }
 
     /// Keep `value` as the record, replacing what it held: handed to the daemon after every write
     /// before it, without waiting for it.
     pub fn set(&self, value: Value) {
+        if let Some(followed) = &self.followed {
+            followed.wrote(Some(value.clone()).filter(|value| !value.is_null()));
+        }
         match &*self.records.keeper {
             Keeper::Daemon { writes, .. } => {
                 if writes.send(Queued::Set(self.name.clone(), value)).is_err() {
@@ -181,9 +352,7 @@ impl DeviceRecord {
             }
             #[cfg(any(test, feature = "test-support"))]
             Keeper::Held(held) => {
-                held.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(self.name.clone(), value);
+                held.lock_recover().values.insert(self.name.clone(), value);
             }
         }
     }
@@ -197,6 +366,9 @@ impl DeviceRecord {
             Keeper::Daemon {
                 shell, workspace, ..
             } => {
+                if let Some(followed) = &self.followed {
+                    followed.wrote(Some(value.clone()).filter(|value| !value.is_null()));
+                }
                 // After every write handed before it.
                 self.records.flush();
                 shell
@@ -215,6 +387,66 @@ impl DeviceRecord {
             }
         }
     }
+}
+
+/// Follow the record `name` past the revision `after` for `follower`, with one held read at a time,
+/// until the follower is dropped.
+async fn follow(
+    shell: DaemonShell,
+    workspace: String,
+    name: String,
+    mut after: Option<String>,
+    follower: Weak<Followed>,
+) {
+    while follower.strong_count() > 0 {
+        match shell
+            .read(read_request(&workspace, &name, after.clone()))
+            .await
+        {
+            Ok(readings) => {
+                after = readings["revision"].as_str().map(str::to_owned);
+                let Some(follower) = follower.upgrade() else {
+                    return;
+                };
+                follower.arrived(value_of(&readings));
+                if after.is_none() {
+                    // A reading with no revision gives no wait to hold: asked again shortly.
+                    tokio::time::sleep(ASK_AGAIN).await;
+                }
+            }
+            Err(error) => {
+                tracing::debug!(%error, record = %name, "a kept record is followed again shortly");
+                tokio::time::sleep(ASK_AGAIN).await;
+            }
+        }
+    }
+}
+
+/// The read of the record `name`: what it holds now, or with `after` once it moves past that
+/// revision or the follower's wait went by.
+fn read_request(workspace: &str, name: &str, after: Option<String>) -> ResourceReadRequest {
+    let wait_ms = after
+        .is_some()
+        .then(|| u32::try_from(FOLLOW_WAIT.as_millis()).unwrap_or(u32::MAX));
+    ResourceReadRequest {
+        workspace: workspace.to_owned(),
+        app: DEVICE_SETTINGS.to_owned(),
+        record: name.to_owned(),
+        joined: false,
+        after,
+        wait_ms,
+        answer: ReadAnswer::Reading,
+    }
+}
+
+/// What a reading of one record holds: `None` for one absent or emptied.
+fn value_of(readings: &Value) -> Option<Value> {
+    let record = &readings["records"][0];
+    record
+        .get("value")
+        .filter(|_| record["absent"].as_bool() != Some(true))
+        .filter(|value| !value.is_null())
+        .cloned()
 }
 
 /// The request writing the record `name` as `value`.

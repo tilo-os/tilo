@@ -65,7 +65,7 @@ fn rig() -> Rig {
 }
 
 /// A rig whose centre is kept at `history` , so a next session can open it.
-fn rig_at(history: Option<tilo_session_client::device_records::DeviceRecord>) -> Rig {
+fn rig_at(history: Option<super::KeptCentre>) -> Rig {
     let daemon = Notifications::new();
     let heard = Arc::new(Heard::default());
     let tap = Arc::clone(&heard);
@@ -727,7 +727,10 @@ tilo_test_env::scenario! {
     // centre the last one left.
     {
         let records = tilo_session_client::device_records::DeviceRecords::held();
-        let rig = rig_at(Some(records.record(super::KEPT)));
+        let rig = rig_at(Some(super::KeptCentre {
+            record: records.record(super::KEPT),
+            arrived: tilo_session_client::device_records::Arrived::default(),
+        }));
         let id = rig.daemon.alloc_id();
         rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
         rig.step();
@@ -754,6 +757,13 @@ tilo_test_env::scenario! {
         );
         let centre = next.centre();
         assert_eq!(centre.count, 1, "the next session opens the centre it had");
+
+        // The centre is followed while the session runs: one Settings or an agent cleared on
+        // this device is the one the person sees, with no restart.
+        let mut next = next;
+        records.write_elsewhere(super::KEPT, serde_json::json!({ "notifications": [] }));
+        next.step(&mut || None);
+        assert_eq!(next.centre().count, 0, "the centre cleared elsewhere shows cleared");
     }
 
     phase the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it;

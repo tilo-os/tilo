@@ -100,13 +100,19 @@ struct Kept {
 const KEPT: &str = "so.tilo.session-wallpapers";
 
 fn load_at(kept: &DeviceRecord) -> Choices {
-    let value = match kept.read() {
-        Ok(Some(value)) => value,
-        Ok(None) => return Choices::default(),
+    match kept.read() {
+        Ok(value) => choices_of(value),
         Err(error) => {
             tracing::warn!(%error, "the kept wallpapers are not read");
-            return Choices::default();
+            Choices::default()
         }
+    }
+}
+
+/// The choices a reading of the record holds.
+fn choices_of(value: Option<serde_json::Value>) -> Choices {
+    let Some(value) = value else {
+        return Choices::default();
     };
     match serde_json::from_value::<Kept>(value) {
         Ok(kept) if kept.schema == SCHEMA => kept.choices,
@@ -164,14 +170,23 @@ impl Wallpapers {
     /// nothing is read or kept.
     pub(crate) fn new(records: Option<&DeviceRecords>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let kept = records.map(|records| records.record(KEPT));
-        Self {
-            state: Arc::new(Mutex::new(State {
-                choices: kept.as_ref().map_or_else(Choices::default, load_at),
-                ..State::default()
-            })),
-            kept,
-            wake,
-        }
+        let state = Arc::new(Mutex::new(State {
+            choices: kept.as_ref().map_or_else(Choices::default, load_at),
+            ..State::default()
+        }));
+        // The choices are followed while the session runs: a picture Settings or an agent chose
+        // for this device shows as it is written.
+        let kept = kept.map(|record| {
+            let (choosing, waking) = (Arc::clone(&state), Arc::clone(&wake));
+            record
+                .follow(move |value| {
+                    choosing.lock_recover().choices = choices_of(value);
+                    waking();
+                })
+                .inspect_err(|error| tracing::warn!(%error, "the wallpapers are not followed"))
+                .unwrap_or(record)
+        });
+        Self { state, kept, wake }
     }
 
     /// Write `choices` as this device's, replacing the ones before.
@@ -449,6 +464,33 @@ mod tests {
             wallpapers.save(&kept);
             let again = Wallpapers::new(Some(&records), Arc::new(|| {}));
             assert_eq!(again.state.lock_recover().choices, kept);
+        }
+
+        phase a_picture_chosen_elsewhere_shows_while_the_session_runs;
+        {
+            let records = DeviceRecords::held();
+            let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let waking = Arc::clone(&woken);
+            let wallpapers = Wallpapers::new(
+                Some(&records),
+                Arc::new(move || {
+                    waking.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }),
+            );
+            // The session's own choice is not told back to it.
+            wallpapers.save(&Choices {
+                default: Some("meadow".into()),
+                workspaces: BTreeMap::new(),
+            });
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 0);
+            // Settings chooses another for this device: the session shows it, and draws again.
+            records.write_elsewhere(
+                KEPT,
+                json!({ "schema": SCHEMA, "default": "dunes", "workspaces": { "1": "reef" } }),
+            );
+            assert_eq!(wallpapers.value("1").as_deref(), Some("reef"));
+            assert_eq!(wallpapers.value("2").as_deref(), Some("dunes"));
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
         }
     }
 

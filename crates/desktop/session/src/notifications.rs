@@ -25,7 +25,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
-use tilo_session_client::device_records::DeviceRecord;
+use tilo_session_client::device_records::{Arrived, DeviceRecord};
 use tilo_session_core::desktop::notifications;
 use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
@@ -103,13 +103,39 @@ pub(crate) fn save_history(notices: &DesktopNotifications, kept: &DeviceRecord) 
 /// The device record the centre is kept in.
 const KEPT: &str = "so.tilo.session-notifications";
 
+/// Where the centre is kept: one of the device's records, followed, so a change Settings or an
+/// agent writes there while the session runs is the centre the person sees.
+pub(crate) struct KeptCentre {
+    record: DeviceRecord,
+    arrived: Arrived,
+}
+
+impl KeptCentre {
+    /// Show what was written elsewhere since the last pass as the centre's history.
+    fn take_up(&self, desktop: &DesktopNotifications) {
+        let Some(value) = self.arrived.take() else {
+            return;
+        };
+        let replaced = serde_json::to_vec(&value.unwrap_or_else(|| serde_json::json!({ "notifications": [] })))
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                desktop
+                    .replace_kept(&bytes, ui::time::wall())
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = replaced {
+            tracing::warn!(%error, "the notification centre written elsewhere was not read");
+        }
+    }
+}
+
 /// Open the centre the last session left, as old as it was, and hand back where it is kept so this
-/// session writes it back there: one of the device's records, as the rest of what the session
-/// keeps.
+/// session writes it back there and follows it: one of the device's records, as the rest of what
+/// the session keeps.
 pub(crate) fn restore_history(
     notices: &DesktopNotifications,
     options: &crate::Options,
-) -> Option<DeviceRecord> {
+) -> Option<KeptCentre> {
     let kept = options.records.as_ref()?.record(KEPT);
     match kept.read() {
         Ok(Some(value)) => {
@@ -127,7 +153,11 @@ pub(crate) fn restore_history(
         Ok(None) => {}
         Err(error) => tracing::warn!(%error, "the notification centre kept was not read"),
     }
-    Some(kept)
+    let (record, arrived) = kept
+        .follow_waking(options.wake.handle())
+        .inspect_err(|error| tracing::warn!(%error, "the notification centre is not followed"))
+        .unwrap_or_else(|_| (kept, Arrived::default()));
+    Some(KeptCentre { record, arrived })
 }
 
 /// The event sound an arrival asks for: a `suppress-sound` sender asks for
@@ -402,7 +432,7 @@ pub(crate) struct SessionNotifications {
     /// stands: the shell draws it as the one the keys act on.
     focused: Cell<Option<u64>>,
     /// Where the centre is written between sessions; `None` keeps it in memory.
-    history: Option<DeviceRecord>,
+    history: Option<KeptCentre>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
     noted: Noted,
@@ -424,7 +454,7 @@ impl SessionNotifications {
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
-        history: Option<DeviceRecord>,
+        history: Option<KeptCentre>,
     ) -> Self {
         let opened: Opened = Rc::default();
         let choosing = Rc::clone(&opened);
@@ -1023,10 +1053,13 @@ impl SessionNotifications {
         self.banners_up = banners;
         // What the centre kept since the last look is written to this person's state, so a restart
         // opens the centre it had.
+        if let Some(kept) = &self.history {
+            kept.take_up(&self.desktop);
+        }
         if self.desktop.take_history_dirty()
             && let Some(kept) = &self.history
         {
-            save_history(&self.desktop, kept);
+            save_history(&self.desktop, &kept.record);
         }
         self.publish_signals();
         appeared

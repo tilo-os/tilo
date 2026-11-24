@@ -82,8 +82,8 @@ impl Finish {
     ) -> Self {
         Self::new(
             Instant::now(),
-            records.map(|records| records.record(ASKED)),
-            records.map(|records| records.record(TOLD)),
+            records.map(|records| followed(records, ASKED)),
+            records.map(|records| followed(records, TOLD)),
             desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
@@ -275,6 +275,17 @@ impl Finish {
 
 /// When the person was last asked, or the desktop or machine last restarted, as recorded in
 /// `asked` .
+/// The record `name`, followed: when it last asked and what the person heard of are read as the
+/// person's other tools last wrote them (an update Settings finished, a fallback heard of there),
+/// never asked of the daemon on the clock's own turn.
+fn followed(records: &DeviceRecords, name: &str) -> DeviceRecord {
+    let record = records.record(name);
+    record
+        .follow(|_| {})
+        .inspect_err(|error| tracing::warn!(%error, record = name, "an update's record is not followed"))
+        .unwrap_or(record)
+}
+
 fn last_asked_at(asked: &DeviceRecord) -> Option<SystemTime> {
     let record = match asked.read() {
         Ok(record) => record?,

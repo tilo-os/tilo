@@ -434,6 +434,32 @@ impl DesktopNotifications {
         )
     }
 
+    /// Replace the centre's history with the one [`Self::kept`] wrote elsewhere, as Settings or an
+    /// agent changed it while this session runs: shown as it is now, nothing as new banners.
+    pub fn replace_kept(
+        &self,
+        bytes: &[u8],
+        wall_now: ui::time::SystemTime,
+    ) -> Result<(), serde_json::Error> {
+        let kept = crate::desktop::notifications::decode_history(bytes, wall_now, ui::time::now())?;
+        let mut history = Vec::with_capacity(kept.len());
+        {
+            let mut unread = self.log.unread.borrow_mut();
+            for notification in self.log.log.borrow().history() {
+                unread.remove(&notification.id);
+            }
+            for (notification, was_unread) in kept {
+                if was_unread {
+                    unread.insert(notification.id);
+                }
+                history.push(notification);
+            }
+        }
+        self.log.log.borrow_mut().replace_history(history);
+        self.log.touch();
+        Ok(())
+    }
+
     /// Put the history [`Self::kept`] wrote back into the centre, without showing it as new
     /// banners: what the person had not seen is still unread, so the bell counts it again.
     pub fn restore_kept(

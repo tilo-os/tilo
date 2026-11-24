@@ -1347,6 +1347,35 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
         next.record("so.tilo.session-file-paste").read().unwrap(),
         Some(json!({ "version": 1 }))
     );
+
+    // A record the session shows while it runs is followed: what another of the person's tools
+    // writes there reaches it as it lands, and the session's own writes are not told back to it.
+    let (hearing, heard) = std::sync::mpsc::channel();
+    let wallpapers = next
+        .record("so.tilo.session-wallpapers")
+        .follow(move |value| {
+            let _ = hearing.send(value);
+        })
+        .expect("the record is followed");
+    wallpapers.set(json!({ "schema": 1, "this": "ours" }));
+    next.flush();
+    let elsewhere = desktop();
+    elsewhere
+        .record("so.tilo.session-wallpapers")
+        .set_now(json!({ "schema": 1, "this": "Settings'" }))
+        .expect("another tool writes the record");
+    assert_eq!(
+        heard
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the change written elsewhere reaches the follower"),
+        Some(json!({ "schema": 1, "this": "Settings'" })),
+        "the follower hears the change written elsewhere, and not its own write first"
+    );
+    assert_eq!(
+        wallpapers.read().unwrap(),
+        Some(json!({ "schema": 1, "this": "Settings'" })),
+        "a followed record reads as last heard"
+    );
 }
 
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.

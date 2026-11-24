@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::task::Poll;
 
-use tilo_session_client::device_records::DeviceRecord;
+use tilo_session_client::device_records::{Arrived, DeviceRecord};
 use ui::automerge::AutoCommit;
 
 use crate::platform::notice::{Notice, Notices, OPEN_ACTION, Place};
@@ -283,6 +283,8 @@ pub struct Given {
 struct Inner {
     me: BTreeSet<ui::MemberId>,
     kept: Option<DeviceRecord>,
+    /// What another of the person's tools wrote to the record since the last pass.
+    arrived: Arrived,
     records: Option<Reads>,
     notices: Option<Rc<dyn Notices>>,
     name: Names,
@@ -318,9 +320,22 @@ impl Mentions {
         if let Some(told) = kept.as_ref().and_then(read) {
             held.restore(&told);
         }
+        // What was told is followed while the session runs: what is marked told elsewhere is not
+        // told here again.
+        let (kept, arrived) = match (kept, &wake) {
+            (Some(record), Some(wake)) => match record.follow_waking(std::sync::Arc::clone(wake)) {
+                Ok((record, arrived)) => (Some(record), arrived),
+                Err(error) => {
+                    tracing::warn!(%error, "the mentions told are not followed");
+                    (Some(record), Arrived::default())
+                }
+            },
+            (kept, _) => (kept, Arrived::default()),
+        };
         Self(Rc::new(Inner {
             me,
             kept,
+            arrived,
             records,
             notices,
             name,
@@ -347,6 +362,12 @@ impl Mentions {
             return;
         }
         self.chosen_places();
+        if let Some(Some(told)) = self.0.arrived.take()
+            && let Ok(told) = serde_json::from_value(told)
+                .inspect_err(|error| tracing::warn!(%error, "the mentions told do not read back"))
+        {
+            self.0.held.borrow_mut().restore(&told);
+        }
         let Some(records) = &self.0.records else {
             return;
         };

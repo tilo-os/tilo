@@ -234,6 +234,14 @@ impl NotificationLog {
         expired
     }
 
+    /// Replace the history with `kept`, as it was written elsewhere, keeping the newest bound: no
+    /// change of this session's to write back.
+    pub fn replace_history(&mut self, mut kept: Vec<Notification>) {
+        retain_newest(&mut kept);
+        self.history = kept;
+        self.history_dirty = false;
+    }
+
     /// Put history restored from an earlier session ahead of anything this session already
     /// retained, keeping the newest bound.
     pub fn restore_history(&mut self, mut restored: Vec<Notification>) {
