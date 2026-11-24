@@ -3840,21 +3840,8 @@ impl DirectSync {
                 store.retire_checked(workspace, checkpoint);
             }
         }
-        let frame = match Frame::of(message) {
-            Ok(frame) => frame,
-            // A device keeps its own writes even where it has no keys to
-            // seal them: the host store its store replaced kept every commit
-            // its device made, and a device or holder that links later is
-            // replayed them. A member's unsealed op stays in the replica.
-            Err(crate::retained::Refusal::NotSealed)
-                if !from_link && author_of(message) == Some(self.device()) =>
-            {
-                let Ok(frame) = Frame::unsealed(message) else {
-                    return Ok(true);
-                };
-                frame
-            }
-            Err(_) => return Ok(true),
+        let Ok(frame) = Frame::of(message) else {
+            return Ok(true);
         };
         let retained = if from_link {
             store.retain_from_link(workspace, &frame)
