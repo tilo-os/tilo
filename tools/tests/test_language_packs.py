@@ -66,9 +66,9 @@ class LanguagePackTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
                              ["tray.ftl"])
 
-    def test_the_repository_packs_the_clocks_models_german(self) -> None:
+    def test_the_repository_packs_the_poker_models_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "clocks-model"), found)
+        self.assertIn(("de-DE", "poker-model"), found)
 
     def test_one_pack_per_language_whatever_region_a_crate_names(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
@@ -87,7 +87,7 @@ class LanguagePackTests(unittest.TestCase):
 
     def test_the_repository_packs_settings_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "settings"), found)
+        self.assertIn(("de-DE", "settings-sections"), found)
         self.assertNotIn("en-US", {locale for locale, _ in found})
 
     def test_a_locales_pack_is_signed_data_named_by_the_locale(self) -> None:
