@@ -35,7 +35,7 @@ use crate::abi::Imp;
 use crate::ast::{self, Item, StmtKind};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::{self, Conv, Ek, Facts, ForList, FuncKind, LocalId, Stmt};
-use crate::resolve::{CKind, Callable, Env, ParamInfo, resolve_type_expr};
+use crate::resolve::{Access, CKind, Callable, Env, ParamInfo, resolve_type_expr};
 use crate::types::{MergeKind, Ty, TypeKey};
 use std::collections::{BTreeSet, HashMap};
 
@@ -902,7 +902,7 @@ impl Checker<'_> {
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
-        if c.scenario {
+        if c.access == Access::Scenario {
             self.st.written = Written::Scenario;
         }
         self.st.role.clone_from(&c.present.role);

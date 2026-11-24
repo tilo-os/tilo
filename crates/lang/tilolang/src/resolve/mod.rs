@@ -179,20 +179,23 @@ impl Env {
     pub fn own_callable(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
-            .find(|c| c.own && !c.scenario && c.name == name)
+            .find(|c| c.own && c.access != Access::Scenario && c.name == name)
     }
 
     pub fn scenario(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
-            .find(|c| c.own && c.scenario && c.name == name)
+            .find(|c| c.own && c.access == Access::Scenario && c.name == name)
     }
 
     pub fn row_view(&self, key: &TypeKey) -> Option<&Callable> {
         let (_, name) = self.row_views.iter().find(|(k, _)| k == key)?;
-        self.callables
-            .iter()
-            .find(|c| c.app == key.app && !c.scenario && c.kind == CKind::View && &c.name == name)
+        self.callables.iter().find(|c| {
+            c.app == key.app
+                && c.access != Access::Scenario
+                && c.kind == CKind::View
+                && &c.name == name
+        })
     }
 
     pub fn template(&self, ns: Option<&str>, name: &str) -> Option<&Template> {
@@ -245,7 +248,7 @@ impl Env {
             c.kind == CKind::Action
                 && c.name == name
                 && !c.hidden()
-                && !c.private
+                && c.access != Access::Private
                 && matches!(c.params.first().map(|p| &p.ty), Some(Ty::Record(on)) if on == key)
         })
     }
@@ -261,7 +264,7 @@ impl Env {
                     && c.own == own
                     && c.app == app
                     && c.name == name
-                    && !c.scenario
+                    && c.access != Access::Scenario
             })
             .collect()
     }
@@ -529,8 +532,7 @@ impl Env {
                 class: None,
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
-                scenario: false,
-                private: true,
+                access: Access::Private,
                 capture_protected: v.capture_protected,
             });
         }
@@ -555,8 +557,7 @@ impl Env {
                 class,
                 uses,
                 present,
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected,
             });
         };
@@ -1853,7 +1854,7 @@ impl Resolver<'_> {
             let ours = on_type(&params);
             let clash = self.env.callables.iter().any(|c| {
                 c.own
-                    && !c.scenario
+                    && c.access != Access::Scenario
                     && c.name == name.name
                     && !(kind == CKind::Action
                         && c.kind == CKind::Action
@@ -1936,8 +1937,7 @@ impl Resolver<'_> {
                 class: None,
                 uses,
                 present,
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected: matches!(
                     item,
                     Item::View(v) if v
@@ -1964,8 +1964,7 @@ impl Resolver<'_> {
                 class: None,
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected: false,
             });
             func += 1;
@@ -2054,8 +2053,7 @@ impl Resolver<'_> {
                 label: name.clone(),
                 ..Presentation::default()
             },
-            scenario: true,
-            private: false,
+            access: Access::Scenario,
             capture_protected: false,
         });
     }
