@@ -23,12 +23,16 @@ mod canvas;
 mod capture;
 mod chained;
 mod chat;
+<<<<<<< HEAD
 mod chat_agents;
 mod chat_ban;
 mod chat_calls;
 mod chat_copylink;
 mod chat_emoji;
 mod chat_liveshare;
+=======
+mod chat_members;
+>>>>>>> bcdf53d3887 (feat(chat): a channel's members are its readers, changed by the workspace's grants)
 mod chat_persona_shot;
 mod chat_small;
 mod composer;

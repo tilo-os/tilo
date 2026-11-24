@@ -280,6 +280,14 @@ pub const WORKSPACE_PERMISSION: &str = "permissions/*";
 /// `workspace/permissions/<grant>#revoke`: by the person who gave it, or by whoever the
 /// workspace's policy lets revoke grants.
 pub const WORKSPACE_GRANT_REVOKE: &str = "grant.revoke";
+/// The operation that lets a person or a role read one resource (`workspace/members#grant-read`):
+/// a grant on the resource's own node, admitted by the workspace's grant on granting. Who belongs
+/// to a channel, a shared folder or any resource is who reads it, so this is how one is let in
+/// (`tilo_action_policy::reading`).
+pub const WORKSPACE_READ_GRANT: &str = "reading.grant";
+/// The operation that keeps a person or a role from reading one resource
+/// (`workspace/members#revoke-read`), admitted by the workspace's grant on revoking.
+pub const WORKSPACE_READ_REVOKE: &str = "reading.revoke";
 /// The workspace's record of its agents, under its governance root (`workspace/agents`): who
 /// works in the workspace, changed only by the three actions published there.
 pub const WORKSPACE_AGENTS: &str = "agents";
@@ -300,7 +308,7 @@ pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 45] = [
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -357,6 +365,12 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 45] = [
     ("uninstall-app", Some(WORKSPACE_APP), "uninstall"),
     ("app.earlier", Some(WORKSPACE_APP), "earlier"),
     (WORKSPACE_GRANT_REVOKE, Some(WORKSPACE_PERMISSION), "revoke"),
+    (WORKSPACE_READ_GRANT, Some(WORKSPACE_MEMBERS), "grant-read"),
+    (
+        WORKSPACE_READ_REVOKE,
+        Some(WORKSPACE_MEMBERS),
+        "revoke-read",
+    ),
     (WORKSPACE_AGENT_CREATE, Some(WORKSPACE_AGENTS), "create"),
     (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),

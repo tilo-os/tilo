@@ -55,11 +55,12 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
-    WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING,
-    formats, mcp_server, model_providers, person_accounts, person_connections, person_telling,
-    person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
-    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
-    workspace_member, workspace_person,
+    WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, model_providers,
+    person_accounts, person_connections, person_telling, person_vault, server_account,
+    workspace_app, workspace_app_named, workspace_governance_address, workspace_governance_child,
+    workspace_governance_operation, workspace_governance_resource, workspace_member,
+    workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -261,7 +262,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 51] = [
+const VERBS: [Verb; 53] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -645,6 +646,20 @@ const VERBS: [Verb; 51] = [
         kind: roles::GOVERNANCE_KIND,
         params: grant_params,
     },
+    Verb {
+        id: WORKSPACE_READ_GRANT,
+        label: "Let read",
+        check: governance::GRANT,
+        kind: roles::GOVERNANCE_KIND,
+        params: reading_params,
+    },
+    Verb {
+        id: WORKSPACE_READ_REVOKE,
+        label: "Stop reading",
+        check: governance::REVOKE,
+        kind: roles::GOVERNANCE_KIND,
+        params: reading_params,
+    },
 ];
 
 fn person_param() -> ActionParam {
@@ -997,6 +1012,28 @@ fn grant_params() -> Vec<ActionParam> {
         ParamType::Text,
         "The grant, by its id: what `workspace/permissions/<grant>` names.",
     )]
+}
+
+/// Who reads which resource: the resource, and the member or the role.
+fn reading_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "resource",
+            ParamType::Resource,
+            "The resource, as the workspace publishes it (`tl:<app>:<id>`).",
+        ),
+        ActionParam::optional(
+            "member",
+            ParamType::Object,
+            "The member: a person, an agent or a bot, as a program names them.",
+        ),
+        ActionParam::optional(
+            "role",
+            ParamType::Text,
+            "Everyone holding a role, when no member is named.",
+        )
+        .with_choices(["viewer", "commenter", "editor", "moderator", "owner"]),
+    ]
 }
 
 fn key_params() -> Vec<ActionParam> {
@@ -2466,6 +2503,8 @@ impl Workspaces {
             REVOKE_KEY => self.governance_revoke_key(call).await,
             WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK => self.webhook_actions(action, call).await,
             WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
+            WORKSPACE_READ_GRANT => self.set_reading(call, true).await,
+            WORKSPACE_READ_REVOKE => self.set_reading(call, false).await,
             _ => self.governance_members(action, call).await,
         }
     }
@@ -2705,6 +2744,43 @@ impl Workspaces {
             .await
             .map_err(ActionCallError::refused)?;
         Ok(json!({ "revoked": id }))
+    }
+
+    /// Let a person or a role read one resource, or keep them from it
+    /// (`workspace/members#grant-read`, `#revoke-read`): the grant on the resource's node,
+    /// decided as every receiver decides it ([`tilo_action_policy::reading`]). Answers whether
+    /// anything changed.
+    async fn set_reading(
+        &self,
+        call: GovernanceCall<'_>,
+        reads: bool,
+    ) -> Result<Value, ActionCallError> {
+        let resource = call.args.required_text("resource")?;
+        let node = tilo_action_policy::reading::published_node(call.workspace, resource)
+            .ok_or_else(|| {
+                ActionCallError::invalid_request(format!(
+                    "`{resource}` is no resource of an app of this workspace"
+                ))
+            })?;
+        let member = call.args.object::<tilo_action_policy::MemberId>("member")?;
+        let grantee = match (member, call.args.text("role")?) {
+            (Some(member), None) => tilo_action_policy::Grantee::member(member),
+            (None, Some(role)) => tilo_action_policy::Grantee::role(
+                tilo_action_policy::Role::parse(role).ok_or_else(|| {
+                    ActionCallError::invalid_request(format!("`{role}` is no role"))
+                })?,
+            ),
+            _ => {
+                return Err(ActionCallError::invalid_request(
+                    "name a member or a role, not both",
+                ));
+            }
+        };
+        let changed = self
+            .set_resource_reading(call.workspace, call.device, &node, grantee, reads)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(json!({ "resource": resource, "reads": reads, "changed": changed }))
     }
 
     /// Making the workspace a public workspace, taking it back, and what it is
@@ -4986,22 +5062,21 @@ mod surface_tests {
                 {
                     object.insert("enum".to_owned(), json!(param.choices));
                 }
-                // A person a member is named by is an actor to a program: a tilolang app
-                // passes the `Actor` it holds, which the action reads as their key.
-                if param.name == "person" {
-                    json!({
-                        "name": param.name,
-                        "required": param.required,
-                        "schema": schema,
-                        "type": "actor",
-                    })
-                } else {
-                    json!({
-                        "name": param.name,
-                        "required": param.required,
-                        "schema": schema,
-                    })
+                let mut written = json!({
+                    "name": param.name,
+                    "required": param.required,
+                    "schema": schema,
+                });
+                // A resource of any kind: what a program names it by, which reaches the
+                // workspace as the id it publishes it under. A person or a member is an actor to
+                // a program: a tilolang app passes the `Actor` it holds, which the action reads
+                // as their key.
+                if param.ty == ParamType::Resource {
+                    written["type"] = json!({ "resource": "" });
+                } else if param.name == "person" || param.name == "member" {
+                    written["type"] = json!("actor");
                 }
+                written
             })
             .collect()
     }

@@ -244,6 +244,7 @@ d-5rkfnkg4 = Seitenleiste
 
 d-ymtess4x = Kanal
     .w-pinned-messages = Angeheftete Nachrichten
+    .w-members = Mitglieder
     .w-channel = Kanal
     .w-rename-channel = Kanal umbenennen
     .w-set-the-topic = Thema setzen
@@ -269,6 +270,13 @@ d-ymtess4x = Kanal
     .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können sie in den Einstellungen unter Inhaltsgrenzen erhöhen.
     .w-reply = Antworten
     .w-edit = Bearbeiten
+
+d-27cntb22 = Mitglieder des Kanals
+    .w-members = Mitglieder
+    .w-agent = Agent
+    .w-remove = Entfernen
+    .w-not-in-the-channel = Nicht im Kanal
+    .w-add = Hinzufügen
 
 d-jbezqvlc = Direkt
     .w-message = Nachricht an { $name }

@@ -255,6 +255,7 @@ impl Core {
     /// Whether `who` reads `target`: the answer `members(r)` gives for them, and none for an
     /// actor who is no member, an automation or an app among them (`std.may_read`).
     pub(crate) fn may_read(&self, who: &Actor, target: &ResourceRef) -> bool {
+        let target = &self.typed(target);
         let list = self.read_members();
         let reads = self.members.borrow().reads.clone();
         let readers = self.readers_of(target);
@@ -262,6 +263,17 @@ impl Core {
             who.member_id() == Some(&member.id)
                 && member_reads(reads.as_deref(), &readers, member, target)
         })
+    }
+
+    /// `target` with the type the store keeps it as, when the reference names none: the
+    /// workspace's grants decide a read at the resource's app and kind, so an untyped reference
+    /// would be decided at the workspace and miss every grant on the resource itself.
+    fn typed(&self, target: &ResourceRef) -> ResourceRef {
+        let mut typed = target.clone();
+        if typed.ty.is_empty() {
+            typed.ty = self.stored_type(target);
+        }
+        typed
     }
 
     /// Whether every record holding `target` that says who reads it names `who`
@@ -390,13 +402,13 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::Members => {
-                let target = self.ref_arg(a.h(0)?)?;
+                let target = self.typed(&self.ref_arg(a.h(0)?)?.target);
                 let list = self.read_members();
                 let reads = self.members.borrow().reads.clone();
-                let readers = self.readers_of(&target.target);
-                let readers = list.iter().filter(|member| {
-                    member_reads(reads.as_deref(), &readers, member, &target.target)
-                });
+                let readers = self.readers_of(&target);
+                let readers = list
+                    .iter()
+                    .filter(|member| member_reads(reads.as_deref(), &readers, member, &target));
                 self.ret_h(actors(readers))
             }
             // Whether one actor reads a resource: the answer `members(r)` gives for them, and

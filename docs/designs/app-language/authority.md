@@ -32,6 +32,13 @@ resource says to someone else (an ask to an agent mentioned in it) asks first, a
 that may not read it so instead of copying it. Both read the membership the host gives, so a view
 that asked shows the new answer once a grant changes.
 
+`members(r)` is also who belongs to `r`: a channel, a shared folder or any resource keeps no
+membership list of its own. Code changes it through the workspace's own actions,
+`workspace.grant_read(workspace.members, resource: r, member: p)` and `revoke_read`
+(`use tilo.workspace as workspace`), admitted by the workspace's grants on granting and revoking.
+Each person or role holds at most one reading grant on a resource, and a change that leaves them
+where they would stand without it removes that grant instead of writing another.
+
 The compiler computes which actions a piece of code can reach. Granting, keeping and updating
 are decided against that list, shown in plain words, so nobody has to read code to decide.
 

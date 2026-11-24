@@ -100,6 +100,14 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
     out
 }
 
+/// What the members were last given from: the person, the policy, and where each resource type
+/// stood ([`kind_nodes`]).
+pub(crate) type MembersFrom = (
+    String,
+    tilo_action_policy::WorkspacePolicy,
+    HashMap<String, (String, String)>,
+);
+
 /// Where each resource type of `host` stands in the workspace's tree: its app and its kind.
 #[must_use]
 pub(crate) fn kind_nodes(host: &Host) -> HashMap<String, (String, String)> {
@@ -228,12 +236,17 @@ impl Host {
             return false;
         };
         let person = access.person_id().unwrap_or_default();
+        // Who reads a resource is decided at its app and kind, so a package loaded since the
+        // members were last given is a change too: its resources were decided at the workspace.
+        let kinds = kind_nodes(self);
         let seen = self
             .inner
             .members_from
             .borrow()
             .as_ref()
-            .is_some_and(|(was, policy)| was == person && *policy == *access.policy);
+            .is_some_and(|(was, policy, known)| {
+                was == person && *policy == *access.policy && *known == kinds
+            });
         if seen {
             return false;
         }
@@ -242,7 +255,7 @@ impl Host {
         self.inner.record_reads.follow_with_kinds(
             Some(access.clone()),
             self.viewer(),
-            kind_nodes(self),
+            kinds.clone(),
         );
         let me = PersonId::from(
             self.viewer()
@@ -254,6 +267,7 @@ impl Host {
         *self.inner.members_from.borrow_mut() = Some((
             person.to_owned(),
             std::sync::Arc::unwrap_or_clone(access.policy),
+            kinds,
         ));
         true
     }

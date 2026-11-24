@@ -43,6 +43,7 @@ mod path;
 mod person;
 mod policy_edit;
 mod readers;
+pub mod reading;
 pub mod roles;
 pub mod share;
 pub mod turn;
