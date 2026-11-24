@@ -298,6 +298,20 @@ pub fn account_identity_dir(uid: u32) -> io::Result<std::path::PathBuf> {
         .join(uid.to_string()))
 }
 
+/// What this process admits the person's devices by: one answer for the process, installed
+/// once, which each start of the daemon points at the record its own workspaces hold. A daemon
+/// stopped and started again in one process (Android's runs beside its windows) answers from its
+/// new workspaces, never from the ones the last start dropped.
+pub(crate) fn devices_trust() -> &'static Arc<tilo_identity::sources::DevicesTrust> {
+    static DEVICES: std::sync::OnceLock<Arc<tilo_identity::sources::DevicesTrust>> =
+        std::sync::OnceLock::new();
+    DEVICES.get_or_init(|| {
+        let devices = Arc::new(tilo_identity::sources::DevicesTrust::new());
+        tilo_identity::sources::install_device_trust(Arc::clone(&devices) as _);
+        devices
+    })
+}
+
 /// Where the person of the account this process runs as is kept.
 ///
 /// # Errors
@@ -1381,8 +1395,8 @@ impl Daemon {
             .keep_in(std::sync::Arc::new(personal.clone()));
         // The person's devices, as the record of their own workspace holds them, each revocation
         // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
-        let devices = std::sync::Arc::new(tilo_identity::sources::DevicesTrust::new());
-        devices.reading({
+        // Each start of the daemon reads them from its own workspaces.
+        devices_trust().reading({
             let workspaces = std::sync::Arc::downgrade(&workspaces);
             move || {
                 workspaces
@@ -1390,7 +1404,6 @@ impl Daemon {
                     .map(|workspaces| super::signing::devices_seen(&workspaces))
             }
         });
-        tilo_identity::sources::install_device_trust(devices);
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked.
         // Kept before anything is served, so the first host that reads the person's devices sees

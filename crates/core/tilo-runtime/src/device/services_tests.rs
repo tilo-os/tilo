@@ -903,16 +903,14 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
     // The person's devices record lists this device, as the daemon reads it from their workspace
     // once it holds it: a device signs only where that record holds it.
-    let devices = Arc::new(tilo_identity::sources::DevicesTrust::new());
     let (person, device) = (cert.user_public_key, cert.device_public_key);
-    devices.reading(move || {
+    super::devices_trust().reading(move || {
         Some(tilo_identity::sources::DevicesSeen::of_host(
             person,
             [device],
             [],
         ))
     });
-    tilo_identity::sources::install_device_trust(devices);
 
     let identity = Identity::here().unwrap();
     assert_eq!(identity.cert, cert);
