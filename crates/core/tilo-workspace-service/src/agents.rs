@@ -1933,6 +1933,9 @@ struct Written {
     before: Arc<Mutex<String>>,
     /// This round's words so far, and when the reply last took them.
     now: Arc<Mutex<(String, Option<Instant>)>>,
+    /// What the model reasoned over the whole turn, as its provider shows it, and when the reply
+    /// last took it.
+    thought: Arc<Mutex<(String, Option<Instant>)>>,
 }
 
 impl Written {
@@ -1951,6 +1954,27 @@ impl Written {
         }
         now.1 = Some(tilo_clock::now());
         Some(body)
+    }
+
+    /// Take `piece`, more of what the model reasons: all its reasoning so far, once a moment
+    /// passed since the reply last took any, and nothing before then.
+    fn think(&self, piece: &str) -> Option<String> {
+        let mut thought = self.thought.lock_recover();
+        thought.0.push_str(piece);
+        if !thought.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY) {
+            return None;
+        }
+        let reasoned = thought.0.trim().to_owned();
+        if reasoned.is_empty() {
+            return None;
+        }
+        thought.1 = Some(tilo_clock::now());
+        Some(reasoned)
+    }
+
+    /// Everything the model reasoned so far.
+    fn reasoned(&self) -> String {
+        self.thought.lock_recover().0.trim().to_owned()
     }
 
     /// The round it writes in ended: what it wrote stays, below what came before it.
@@ -2079,6 +2103,12 @@ impl Reply {
         let mut arguments = Map::new();
         arguments.insert("m".into(), json!(message));
         arguments.insert("body".into(), json!(words));
+        // What the model reasoned stands beside the answer, whole each time: the reply's last
+        // write carries all of it, however the writes between were spaced.
+        let reasoned = self.written.reasoned();
+        if !reasoned.is_empty() {
+            arguments.insert("reasoning".into(), json!(reasoned));
+        }
         if !self.turn.is_empty() {
             arguments.insert("turn".into(), json!(self.turn));
         }
@@ -2105,6 +2135,17 @@ impl Reply {
         };
         if let Err(error) = self.say(&words).await {
             tracing::debug!(workspace = %self.workspace, %error, "the reply did not take what its model wrote");
+        }
+    }
+
+    /// Take `piece`, more of what the model reasons, into the reply beside what it wrote, once
+    /// a moment passed since the reply last took any.
+    async fn reason(&self, piece: &str) {
+        if self.ask.message().is_none() || self.written.think(piece).is_none() {
+            return;
+        }
+        if let Err(error) = self.say(&self.written.wrote()).await {
+            tracing::debug!(workspace = %self.workspace, %error, "the reply did not take what its model reasoned");
         }
     }
 
@@ -2666,14 +2707,16 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         })
     }
 
-    /// What the model writes goes into the reply as it comes. What it thinks and the tools it
-    /// calls are the steps of the turn's invocation, which Chat shows beside the reply.
+    /// What the model writes, and the reasoning its provider shows, go into the reply as they
+    /// come. The tools it calls are the steps of the turn's invocation, which Chat shows beside
+    /// the reply.
     async fn hear(&self, mut hearing: tilo_agent_turn::Hearing) {
         let at = self.at.lock().await;
         while let Some(pieces) = hearing.next().await {
             for piece in pieces {
                 match piece {
                     StreamEvent::TextDelta { text } => at.1.stream(&text).await,
+                    StreamEvent::ReasoningDelta { text } => at.1.reason(&text).await,
                     // The call broke off and may be asked again: what comes then stands in
                     // its place.
                     StreamEvent::Failed { .. } => at.1.broke_off(),
