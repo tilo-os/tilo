@@ -1,17 +1,21 @@
-//! The Photos app (`apps/tl/photos/app.tl`) end to end: a folder import that says what it read,
-//! a picture imported twice that stays one photo, the words a device reads into a picture, and a
-//! copy of it on the clipboard.
+//! The Photos app (`apps/tl/photos/app.tl`) end to end: a folder import that runs as a job on the
+//! device, says how far it has got, can be stopped and tried again, and brings what it read into
+//! the library when it ends; a picture imported twice that stays one photo; the words a device
+//! reads into a picture; faces scanned batch by batch behind a switch, paused, and deleted; and a
+//! copy of a picture on the clipboard.
 
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+    use tilolang_runtime::host_work::{EngineHost, Push};
     use tilolang_runtime::{EnumValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/photos/app.tl");
@@ -136,6 +140,94 @@ mod cases {
         }
     }
 
+    /// The device's engine for Photos: the jobs it was asked to start, by their input, the jobs it
+    /// was asked to stop, and the record each job pushes, which the test moves as the device would.
+    #[derive(Clone, Default)]
+    struct Engine {
+        started: Rc<RefCell<Vec<(String, String)>>>,
+        cancelled: Rc<RefCell<Vec<String>>>,
+        push: Rc<RefCell<Option<Arc<dyn Push>>>>,
+    }
+
+    impl Engine {
+        /// The job last started, and the pictures it was asked to read, by name and address.
+        fn last(&self) -> (String, Vec<(String, String)>) {
+            let started = self.started.borrow();
+            let (job, input) = started.last().expect("a job was started").clone();
+            let ask: serde_json::Value = serde_json::from_str(&input).expect("the ask is JSON");
+            let files = ask["files"]
+                .as_array()
+                .expect("the ask names its pictures")
+                .iter()
+                .map(|f| {
+                    (
+                        f["name"].as_str().unwrap().to_owned(),
+                        f["url"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+            (job, files)
+        }
+
+        /// The job says how far it has got.
+        fn says(&self, job: &str, record: &serde_json::Value) {
+            let push = self
+                .push
+                .borrow()
+                .clone()
+                .expect("the job was handed its record");
+            push.state(job, &record.to_string());
+        }
+
+        /// The job ends, saying what it read last.
+        fn ends(&self, job: &str, record: &serde_json::Value) {
+            let push = self
+                .push
+                .borrow()
+                .clone()
+                .expect("the job was handed its record");
+            push.ended(job, &record.to_string());
+        }
+    }
+
+    impl EngineHost for Engine {
+        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+            Err(format!("`{op}` is no op this device answers now"))
+        }
+
+        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+            Err(format!("`{op}` is started with its record"))
+        }
+
+        fn start_held(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            push: Arc<dyn Push>,
+        ) -> Result<String, String> {
+            assert_eq!(app, "so.tilo.photos");
+            assert_eq!(op, "import");
+            let job = format!("photos-{}", self.started.borrow().len() + 1);
+            self.started
+                .borrow_mut()
+                .push((job.clone(), input.to_owned()));
+            *self.push.borrow_mut() = Some(push);
+            Ok(serde_json::json!({ "job": job }).to_string())
+        }
+
+        fn status(&self, job: &str) -> Result<String, String> {
+            Err(format!(
+                "the window reads job `{job}` from its record, never by asking"
+            ))
+        }
+
+        fn cancel(&self, job: &str) -> bool {
+            self.cancelled.borrow_mut().push(job.to_owned());
+            true
+        }
+    }
+
     fn model() -> ResourceRef {
         ResourceRef::parse_id("vision:vision.image-model", "so.tilo.vision#ImageModel")
             .expect("a resource id")
@@ -153,6 +245,7 @@ mod cases {
         device: Device,
         clipboard: Clipboard,
         vision: Vision,
+        engine: Engine,
     }
 
     impl Gallery {
@@ -179,6 +272,8 @@ mod cases {
             rt.set_clipboard(clipboard.clone());
             let vision = Vision::default();
             rt.set_foreign_invoker(vision.clone());
+            let engine = Engine::default();
+            rt.set_engine(engine.clone());
             let app = App::compile(SOURCE, std::slice::from_ref(&package));
             app.load(&rt);
             let lib = rt.create_root("Library").unwrap();
@@ -189,7 +284,58 @@ mod cases {
                 device,
                 clipboard,
                 vision,
+                engine,
             }
+        }
+
+        /// Runs `action` as the person, who says yes if the workspace asks them first: whether it
+        /// ran, rather than being refused.
+        fn attempt(&self, action: &str, args: Vec<Value>) -> bool {
+            let id = self.app.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(InvokeOutcome::Done(_)) => true,
+                Ok(InvokeOutcome::Asked(_)) => {
+                    let (call, values) = self.vision.question();
+                    matches!(
+                        self.rt
+                            .invoke_admitted(&me(), (call.as_str(), values), None),
+                        Ok(InvokeOutcome::Done(_))
+                    )
+                }
+                _ => false,
+            }
+        }
+
+        /// A field of the library as text.
+        fn text(&self, field: &str) -> String {
+            self.rt
+                .read(&self.lib, field)
+                .unwrap()
+                .as_text()
+                .unwrap_or_default()
+                .to_owned()
+        }
+
+        /// This person's face scan.
+        fn scan(&self) -> ResourceRef {
+            self.records("face_scans")
+                .into_iter()
+                .next()
+                .expect("the person has a face scan")
+        }
+
+        /// The labels of a view's buttons and progress bars.
+        fn labels(&self, view: &ViewInstance) -> Vec<String> {
+            let mut labels: Vec<String> = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .map(|node| text_prop(node, "label"))
+                .collect();
+            labels.extend(
+                of_kind(view.tree(), "ui.ProgressBar")
+                    .into_iter()
+                    .map(|node| text_prop(node, "label")),
+            );
+            labels
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> tilolang_runtime::InvokeOutcome {
@@ -380,19 +526,79 @@ mod cases {
     tilo_test_env::scenario! {
         fn photos_imports_reads_and_copies_a_picture;
 
-        phase a_folder_import_says_what_it_read;
+        phase a_folder_import_runs_as_a_job_and_says_what_it_read;
         {
             let g = Gallery::new();
             g.call(
-                "import_dropped",
+                "import_folder",
                 vec![
                     Value::resource(&g.lib),
-                    Value::List(vec![g.chosen("Harbour.png"), g.not_a_picture("Notes.txt")]),
+                    Value::List(vec![
+                        g.chosen("Harbour.png"),
+                        g.chosen("Quay-at-dusk.png"),
+                        g.not_a_picture("Notes.txt"),
+                    ]),
                 ],
             );
-            assert_eq!(g.number("import_found"), 2);
+            // The device is asked to read the two pictures; the notes are no picture.
+            let (job, files) = g.engine.last();
+            assert_eq!(
+                files.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+                ["Harbour.png", "Quay-at-dusk.png"]
+            );
+            assert_eq!(g.text("import_job"), job, "the library holds the job under way");
+            assert_eq!(g.number("import_found"), 3);
+            assert!(g.photos().is_empty(), "nothing arrives before the job reads it");
+            // The window reads how far the job has got from its record, as the device pushes it.
+            g.engine.says(
+                &job,
+                &serde_json::json!({
+                    "job": job, "state": "running", "found": 2, "done": 1,
+                    "photos": [], "issues": [],
+                }),
+            );
+            let page = g.open("library", vec![Value::resource(&g.lib)]);
+            let labels = g.labels(&page);
+            assert!(
+                labels.iter().any(|l| l == "Importing 1 of 2"),
+                "the window shows the job's progress: {labels:?}"
+            );
+            assert!(labels.iter().any(|l| l == "Stop"), "and a way to stop it: {labels:?}");
+            // The job ends: its `done:` runs as the person who started it, and what it read joins
+            // the library; what it could not read is kept to try again.
+            let (harbour, quay) = (&files[0].1, &files[1].1);
+            g.engine.ends(
+                &job,
+                &serde_json::json!({
+                    "job": job, "state": "done", "found": 2, "done": 2,
+                    "photos": [{
+                        "name": "Harbour.png", "picture": harbour, "thumb": "",
+                        "folder": "Trip", "captured_at": "2026:07:12 18:16:00",
+                        "latitude": 53.5, "longitude": 10.0,
+                    }],
+                    "issues": [{
+                        "name": "Quay-at-dusk.png", "picture": quay, "path": "Trip/Quay-at-dusk.png",
+                        "why": "Could not read this image", "retry": true,
+                    }],
+                }),
+            );
+            let finished = g.rt.finish_jobs();
+            assert_eq!(finished.len(), 1, "the job's `done:` ran");
+            assert!(
+                matches!(&finished[0], (ran, Ok(InvokeOutcome::Done(_))) if *ran == job),
+                "{finished:?}"
+            );
+            assert!(g.rt.finish_jobs().is_empty(), "a job's `done:` runs once");
+            let photos = g.photos();
+            assert_eq!(photos.len(), 1, "the picture the device read became a photo");
+            assert_eq!(
+                g.rt.read(&photos[0], "captured_at").unwrap(),
+                Value::text("2026:07:12 18:16:00")
+            );
+            assert_eq!(g.rt.read(&photos[0], "folder").unwrap(), Value::text("Trip"));
             assert_eq!(g.number("import_done"), 1);
-            assert_eq!(g.photos().len(), 1, "one picture became a photo");
+            assert_eq!(g.text("import_job"), "", "no import is under way any more");
+            assert_eq!(g.records("unread").len(), 1, "the picture it could not read is kept");
             let page = g.open("library", vec![Value::resource(&g.lib)]);
             let banner = of_kind(page.tree(), "ui.Banner")
                 .into_iter()
@@ -400,14 +606,46 @@ mod cases {
                 .unwrap_or_else(|| panic!("the window shows no import report: {}", dump(page.tree())));
             assert_eq!(
                 banner.props.get("title").and_then(Value::as_text),
-                Some("Imported 1 of 2"),
+                Some("Imported 1 of 3"),
                 "the window says how many arrived"
             );
             assert_eq!(
                 banner.props.get("message").and_then(Value::as_text),
-                Some("Not pictures: Notes.txt is not a picture"),
-                "and which file was not a picture"
+                Some("Notes.txt is not a picture, Quay-at-dusk.png: Could not read this image"),
+                "and what could not be read, and why"
             );
+            assert!(g.labels(&page).iter().any(|l| l == "Try again"));
+
+            // Trying again asks the device for the picture that failed, and nothing else.
+            g.call("retry_import", vec![Value::resource(&g.lib)]);
+            let (again, files) = g.engine.last();
+            assert_eq!(files, [("Quay-at-dusk.png".to_owned(), quay.clone())]);
+            // Stopping it asks the device to stop, and the job ends saying so.
+            g.call("stop_import", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.engine.cancelled.borrow().as_slice(), [again.clone()]);
+            g.engine.ends(
+                &again,
+                &serde_json::json!({
+                    "job": again, "state": "stopped", "found": 1, "done": 0,
+                    "photos": [], "issues": [],
+                }),
+            );
+            assert_eq!(g.rt.finish_jobs().len(), 1);
+            let page = g.open("library", vec![Value::resource(&g.lib)]);
+            let banner = of_kind(page.tree(), "ui.Banner").into_iter().next().unwrap();
+            assert_eq!(
+                banner.props.get("title").and_then(Value::as_text),
+                Some("Import stopped: 0 of 1 imported")
+            );
+            assert_eq!(g.photos().len(), 1);
+
+            // Reading a folder again hands the device the photos the library holds there.
+            g.call(
+                "reindex",
+                vec![Value::resource(&g.lib), Value::text("Trip")],
+            );
+            let (_, files) = g.engine.last();
+            assert_eq!(files, [("Harbour.png".to_owned(), harbour.clone())]);
             g.call("dismiss_import", vec![Value::resource(&g.lib)]);
             assert_eq!(g.number("import_found"), 0, "the report can be taken down");
         }
@@ -468,6 +706,13 @@ mod cases {
                 "import_photo",
                 vec![Value::resource(&g.lib), g.chosen("Quay.png")],
             ));
+            // Recognition is off until the person turns it on: no scan reaches the model.
+            assert!(
+                !g.attempt("scan_faces", vec![Value::resource(&g.lib)]),
+                "a scan with recognition off is refused"
+            );
+            assert!(g.vision.asked.borrow().is_empty());
+            g.call("set_recognition", vec![Value::resource(&g.lib), Value::Bool(true)]);
             // A scan reaches the device's model, so the workspace asks the person first.
             g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
             let suggestions = g.records("suggestions");
@@ -487,9 +732,12 @@ mod cases {
                 "another member does not read a face nobody named"
             );
             assert_eq!(g.ids_of(suggestion, "photos").len(), 2);
-            // A scan again finds the same face, and does not suggest it twice.
+            // A scan again goes on with the photos it has not read: there are none, so it asks the
+            // model nothing and suggests nobody twice.
             g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.vision.asked.borrow().len(), 1);
             assert_eq!(g.records("suggestions").len(), 1);
+            assert_eq!(g.rt.read(&g.scan(), "state").unwrap(), Value::text(""));
             // Naming it makes the person, and puts the photos on them.
             g.call(
                 "approve_suggestion",
@@ -534,6 +782,59 @@ mod cases {
                 .filter_map(|row| row.props.get("title").and_then(Value::as_text).map(str::to_owned))
                 .collect();
             assert!(names.iter().any(|name| name == "Ava"), "{names:?}");
+            // Deleting this device's face data keeps the people already named.
+            g.call("delete_face_data", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.records("people").len(), 1);
+            assert_eq!(g.records("suggestions").len(), 1, "a named face is the workspace's");
+            assert!(g.ids_of(&g.scan(), "scanned").is_empty());
+        }
+
+        phase a_face_scan_goes_batch_by_batch_and_pauses;
+        {
+            let g = Gallery::new();
+            // Thirteen pictures: the model reads twelve at a time. Each name is its own length,
+            // so each picture is its own.
+            for at in 0..13 {
+                let name = format!("{}.png", "p".repeat(at + 1));
+                g.call("import_photo", vec![Value::resource(&g.lib), g.chosen(&name)]);
+            }
+            assert_eq!(g.photos().len(), 13);
+            g.call("set_recognition", vec![Value::resource(&g.lib), Value::Bool(true)]);
+            g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
+            let scan = g.scan();
+            assert_eq!(g.ids_of(&scan, "scanned").len(), 12, "one batch of twelve was read");
+            assert_eq!(g.rt.read(&scan, "state").unwrap(), Value::text("running"));
+            let people = g.open("face_recognition", vec![Value::resource(&g.lib)]);
+            assert!(
+                g.labels(&people).iter().any(|l| l == "Scanned 12 of 13 photos"),
+                "the people page shows how far the scan has got: {:?}",
+                g.labels(&people)
+            );
+            // Paused, the scan reads nothing more.
+            g.call("pause_scan", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.rt.read(&scan, "state").unwrap(), Value::text("paused"));
+            g.call_and_approve("scan_step", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.vision.asked.borrow().len(), 1, "a paused scan asks the model nothing");
+            let people = g.open("face_recognition", vec![Value::resource(&g.lib)]);
+            assert!(g.texts(&people).iter().any(|t| t == "Scanning is paused at 12 of 13 photos."));
+            // Going on reads the photo left.
+            g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.ids_of(&scan, "scanned").len(), 13);
+            assert_eq!(g.vision.asked.borrow().len(), 2);
+            assert_eq!(g.records("suggestions").len(), 2);
+            // The switch off ends the scan, and a scan with it off is refused.
+            g.call("set_recognition", vec![Value::resource(&g.lib), Value::Bool(false)]);
+            assert_eq!(g.rt.read(&scan, "state").unwrap(), Value::text(""));
+            assert!(!g.attempt("scan_faces", vec![Value::resource(&g.lib)]));
+            g.call_and_approve("scan_step", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.vision.asked.borrow().len(), 2, "recognition off reads nothing");
+            // Deleting the face data takes the faces nobody named and what the scan had read.
+            g.call("delete_face_data", vec![Value::resource(&g.lib)]);
+            assert!(g.records("suggestions").is_empty());
+            assert!(g.ids_of(&scan, "scanned").is_empty());
+            // The face scan is its person's alone.
+            let other = tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("bo"));
+            assert!(!g.rt.readers_admit(&other, &scan));
         }
 
         phase copying_a_photo_puts_its_picture_on_the_clipboard;

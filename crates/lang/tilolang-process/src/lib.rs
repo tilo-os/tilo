@@ -63,6 +63,8 @@ pub mod page_prompts;
 mod passwords_vault;
 pub mod pdf;
 pub mod personal;
+#[cfg(feature = "app-launch")]
+pub mod photos_engine;
 pub mod phrases;
 pub mod presence;
 #[cfg(all(

@@ -149,12 +149,6 @@ d-hexbnfml-captured_at = Aufgenommen am
 
 d-hexbnfml-location = Ort
 
-d-vk76kjxc = Abgelegte importieren
-    .doc = Importiert die Bilder, die eine Person auf das Fenster zieht: jede Bilddatei wird ein Foto, und eine Datei, die kein Bild ist, bleibt unberührt.
-    .did = hat Fotos hinzugefügt
-
-d-vk76kjxc-files = Dateien
-
 d-4y5pwp2y = Favorit umschalten
     .doc = Markiert ein Foto als Favorit oder nimmt das zurück.
 
@@ -234,13 +228,9 @@ d-fltwmykq-person = Person
 
 d-fltwmykq-to = An
 
-d-qwdie7fn = Gesichter finden
-    .doc = Die Gesichter, die das Gerät in `photos` findet, als Vorschläge der Person selbst: ein Gesicht hat keinen Namen, also erreicht nichts davon ein anderes Mitglied, bis ein Name bestätigt ist.
-
-d-qwdie7fn-photos = Fotos
-
 d-7223fwrx = Nach Gesichtern suchen
     .doc = Sucht die nächsten Fotos auf diesem Gerät, auf denen noch niemand benannt ist: das Modell nimmt zwölf auf einmal, also ist eine Suche ein Durchgang, und jedes Gesicht, das sie findet, ist ein Vorschlag des Suchenden selbst.
+    .w-turn-recognition-on-to-scan-this = Schalte die Erkennung ein, um die Fotos dieses Geräts nach Gesichtern zu durchsuchen
 
 d-x3kp75qe = Den Namen bestätigen
     .doc = Benennt ein Gesicht: seine Fotos kommen zu der Person mit diesem Namen, und der Vorschlag wird gesendet, sodass der Arbeitsbereich ihn behält.
@@ -338,7 +328,6 @@ d-hfgcskel = Bibliothek
     .w-analyzing-of = Analysiere { $completed } von { $total }
     .w-analysis-paused = Analyse pausiert
     .w-analyze-photos = Fotos analysieren
-    .w-scan-for-faces = Nach Gesichtern suchen
     .w-library = Bibliothek
     .w-favorites = Favoriten
     .w-timeline = Zeitleiste
@@ -382,7 +371,6 @@ d-hfgcskel = Bibliothek
     .w-larger-thumbnails = Größere Vorschaubilder
     .w-imported-of = { $import_done } von { $import_found } importiert
     .w-every-file-became-a-photo = Jede Datei wurde ein Foto.
-    .w-not-pictures = Keine Bilder: { $join }
     .w-dismiss = Schließen
     .w-read-the-text = Text lesen
     .w-copy = Kopieren
@@ -420,6 +408,8 @@ d-hfgcskel = Bibliothek
     .w-the-place = Den Ort
     .w-all-months = Alle Monate
     .w-every-day = Jeden Tag
+    .w-import-stopped-of-imported = Import angehalten: { $import_done } von { $import_found } importiert
+    .w-try-again = Erneut versuchen
 
 d-i4ssir2r = Personenzeile
     .w-photos = { $len } Fotos
@@ -566,3 +556,215 @@ d-emafkrvf = Geteilte Namenszeile
     .w-mixed = Gemischt
 
 d-v2p3fpqt = Auswahl bearbeiten~present
+
+d-4gwd7453 = Importauftrag
+    .doc = Der Import, der gerade auf diesem Gerät läuft, als sein Auftrag: Das Fenster liest aus dem Eintrag des Auftrags, wie weit er ist, und das `done:` des Imports bringt in die Bibliothek, was er gelesen hat.
+
+d-ii2qmjt5 = Import angehalten
+    .doc = Ob der letzte Import angehalten wurde, bevor er alles gelesen hatte.
+
+d-xkkw7d65 = Nicht gelesen
+    .doc = Die Bilder, die der letzte Import nicht lesen konnte und bei denen ein neuer Versuch helfen kann.
+
+d-fypuuz3p = Gesichtersuchen
+    .doc = Die Gesichtersuche jeder Person: ihre eigene, sodass Schalter und Fortschritt einer Person nie die einer anderen sind.
+
+d-hrhnyx6d = Nicht gelesenes Bild
+    .doc = Ein Bild, das ein Import nicht lesen konnte: wie es heißt, wo seine Bytes liegen, wo es in der Auswahl der Person stand, und warum.
+    .noun = { $count ->
+        [one] nicht gelesenes Bild
+       *[other] nicht gelesene Bilder
+    }
+
+d-6iu5enh3 = Name
+
+d-cpplykgh = Bild
+
+d-3iejvl3x = Pfad
+
+d-vzrzob3d = Grund
+
+d-dof27753 = Erneut versuchen
+
+d-hrhnyx6d-filter-retry = Erneut versuchen
+
+d-dm2g4mij = Gewähltes Bild
+    .doc = Ein Bild, das ein Import dem Gerät zum Lesen gibt.
+    .noun = { $count ->
+        [one] gewähltes Bild
+       *[other] gewählte Bilder
+    }
+
+d-wjvddrc5 = Name
+
+d-6agrr5bt = Adresse
+
+d-e67vj6hs = Pfad
+
+d-5hsisemw = Importanfrage
+    .doc = Was ein Import vom Gerät verlangt: die zu lesenden Bilder.
+    .noun = { $count ->
+        [one] Importanfrage
+       *[other] Importanfragen
+    }
+
+d-pgrmuslm = Dateien
+
+d-yethupzk = Gelesenes Bild
+    .doc = Ein Bild, das das Gerät gelesen hat: was die Bibliothek davon behält.
+    .noun = { $count ->
+        [one] gelesenes Bild
+       *[other] gelesene Bilder
+    }
+
+d-z7dxm5rp = Name
+
+d-bedul3kq = Bild
+
+d-v72wrl73 = Vorschau
+
+d-f56g7pyb = Ordner
+
+d-sc6xvdzp = Aufgenommen am
+
+d-ohsouzrl = Breitengrad
+
+d-ug6uhwwb = Längengrad
+
+d-yethupzk-filter-latitude = Breitengrad
+
+d-yethupzk-filter-longitude = Längengrad
+
+d-dnva5poj = Importeintrag
+    .doc = Der Eintrag eines Imports, wie sein Auftrag ihn sagt: `running`, `done` oder `stopped`, wie viele Bilder er von wie vielen hat und, sobald er endet, was er gelesen hat und was nicht.
+    .noun = { $count ->
+        [one] Importeintrag
+       *[other] Importeinträge
+    }
+
+d-k33gw4xu = Auftrag
+
+d-hbuvlsle = Zustand
+
+d-l5ism53v = Gefunden
+
+d-nbqjpo64 = Erledigt
+
+d-jrp3muui = Fotos
+
+d-affxqykm = Probleme
+
+d-dnva5poj-filter-found = Gefunden
+
+d-dnva5poj-filter-done = Erledigt
+
+d-kwxrxssz = Gestarteter Auftrag
+    .doc = Der Auftrag, den ein Start zurückgab.
+    .noun = { $count ->
+        [one] gestarteter Auftrag
+       *[other] gestartete Aufträge
+    }
+
+d-cgbfeocd = Auftrag
+
+d-6ekj3sj2 = Gesichtersuche
+    .doc = Die Gesichtersuche einer Person in dieser Bibliothek: ob sie das Gerät nach Gesichtern in den Fotos suchen lässt, ob eine Suche läuft oder pausiert, und welche Fotos sie gelesen hat, damit sie mit den nächsten weitermacht.
+    .noun = { $count ->
+        [one] Gesichtersuche
+       *[other] Gesichtersuchen
+    }
+
+d-dejwr76b = An
+    .doc = Ob dieses Gerät überhaupt nach Gesichtern suchen darf: aus, bis die Person es einschaltet.
+
+d-dcarwzkc = Zustand
+    .doc = `running`, `paused` oder leer, wenn keine Suche läuft.
+
+d-quetfngb = Gelesen
+    .doc = Die Fotos, die die Suche gelesen hat, nach ihrer ID.
+
+d-6ekj3sj2-filter-on = An
+
+d-6ekj3sj2-filter-scanned = Gelesen
+
+d-gnzspozv = Ordner importieren
+    .doc = Importiert die Bilder, die eine Person auf das Fenster zieht oder als Ordner wählt, als Auftrag auf diesem Gerät: Es liest jedes Bild, wann und wo es aufgenommen wurde und seine Vorschau, sagt dabei, wie weit es ist, und lässt sich anhalten.
+    .did = hat Fotos importiert
+
+d-gnzspozv-files = Dateien
+
+d-lkqkgzw2 = Import starten
+    .doc = Lässt das Gerät die Bilder lesen, die `ask` nennt, und hält einen noch laufenden Import vorher an.
+
+d-lkqkgzw2-ask = Anfrage
+
+d-lkqkgzw2-found = Gefunden
+
+d-7mf7wkrg = Importiert
+    .doc = Das Ende eines Imports: Jedes gelesene Bild wird ein Foto oder ergänzt das Foto, das dasselbe Bild schon ergab, und was er nicht lesen konnte, wird für einen neuen Versuch behalten.
+    .did = hat Fotos hinzugefügt
+
+d-7mf7wkrg-outcome = Ergebnis
+
+d-pgozefho = Import anhalten
+    .doc = Hält den laufenden Import an: Er endet nach dem Bild, das er gerade liest, und was er bis dahin gelesen hat, kommt in die Bibliothek.
+    .w-no-import-is-under-way = Es läuft kein Import
+
+d-fz4vxrqb = Erneut versuchen
+    .doc = Versucht die Bilder erneut, die der letzte Import nicht lesen konnte und bei denen ein neuer Versuch helfen kann.
+    .w-every-picture-of-the-last-import = Jedes Bild des letzten Imports wurde gelesen
+
+d-b3dw3ak6 = Ordner aktualisieren
+    .doc = Liest die Fotos eines Ordners erneut, oder der ganzen Bibliothek, wenn kein Ordner genannt ist: ihre Vorschauen, und wann und wo sie aufgenommen wurden, wo niemand es festgelegt hat.
+    .w-no-photos-to-read-again = Keine Fotos zum erneuten Lesen
+
+d-b3dw3ak6-folder = Ordner
+
+d-22vplnp7 = Gesichtersuche
+    .doc = Die Gesichtersuche dieser Person, angelegt, wo sie noch keine hat.
+
+d-j3scrlnn = Erkennung auf dem Gerät
+    .doc = Lässt dieses Gerät in den Fotos nach Gesichtern suchen oder beendet das: Ausschalten beendet eine laufende Suche und behält jeden schon vergebenen Namen.
+
+d-j3scrlnn-on = An
+
+d-dffypedg = Suchschritt
+    .doc = Ein Durchgang einer laufenden Suche: die nächsten zwölf Fotos, die sie noch nicht gelesen hat.
+
+d-nx4efgks = Durchgang lesen
+    .doc = Liest die nächsten zwölf Fotos, die `scan` noch nicht gelesen hat und auf denen noch niemand benannt ist.
+
+d-nx4efgks-scan = Suche
+
+d-tezlhkyd = Suche pausieren
+    .doc = Pausiert die laufende Suche: Erneutes Suchen macht mit den nächsten Fotos weiter.
+
+d-cdts7hoj = Lokale Gesichtsdaten löschen
+    .doc = Löscht die Gesichtsdaten, die die Suchen dieser Person auf diesem Gerät angelegt haben: die noch unbenannten Gesichter und was die Suche gelesen hatte.
+
+d-ul72y6fb = Import anhalten
+
+d-oxw3xig6 = Import erneut versuchen
+
+d-qgeerpz2 = Erneut lesen
+
+d-oaenkqwj = Nach Gesichtern suchen
+
+d-c5ramr5n = Importfortschritt
+    .w-importing-of = { $done } von { $found } werden importiert
+    .w-could-not-be-read = { $len } konnten nicht gelesen werden
+    .w-importing-pictures = { $import_found } Bilder werden importiert
+    .w-stop = Anhalten
+
+d-ztmmdu2j = Gesichtserkennung
+    .w-on-device-recognition = Erkennung auf dem Gerät
+    .w-recognize-faces-in-the-photos-on = Gesichter in den Fotos auf diesem Gerät erkennen
+    .w-recognition-is-off-turn-it-on = Die Erkennung ist aus. Schalte sie ein, um Vorschläge von diesem Gerät zu bekommen.
+    .w-scanned-of-photos = { $scanned } von { $total } Fotos durchsucht
+    .w-pause-scanning = Suche pausieren
+    .w-scanning-is-paused-at-of-photos = Die Suche ist bei { $scanned } von { $total } Fotos pausiert.
+    .w-go-on-scanning = Weiter suchen
+    .w-scan-for-faces = Nach Gesichtern suchen
+    .w-delete-local-face-data = Lokale Gesichtsdaten löschen
+
+d-j45kskqf-filter-import_stopped = Import angehalten

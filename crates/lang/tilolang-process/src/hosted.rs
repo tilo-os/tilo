@@ -589,6 +589,18 @@ impl HostPlatform {
     fn store(&self) -> &tilo_content::ContentStore {
         self.content.as_ref().unwrap_or(&self.own_content)
     }
+
+    /// The device's preview cache, opened the first time a preview is asked for; `None` on a host
+    /// that keeps no previews.
+    fn previews(&self) -> Option<Arc<thumbnail::ThumbnailService>> {
+        let shared = self.thumbnails.as_ref()?;
+        Some(Arc::clone(shared.get_or_init(|| {
+            Arc::new(
+                thumbnail::ThumbnailService::open_default(1)
+                    .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
+            )
+        })))
+    }
 }
 
 /// One `tilolang-process` hosts multiple windows of different apps on a single thread — some
@@ -672,6 +684,11 @@ impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
 
     fn state(&self, slot: &str, state: &str) {
         self.push.state(slot, state);
+        (self.wake)();
+    }
+
+    fn ended(&self, slot: &str, state: &str) {
+        self.push.ended(slot, state);
         (self.wake)();
     }
 }
@@ -855,6 +872,52 @@ impl Platform for HostPlatform {
         tilolang_tilo::engine::begin(app, op, input)
     }
 
+    /// A job whose record it pushes as it moves and when it ends: Photos' own reads the pictures
+    /// a person chose; any other app's engine starts as [`Self::engine_start`] does, or pushes its
+    /// record when it is one registered for its app.
+    #[cfg(feature = "app-launch")]
+    fn engine_start_held(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        let record = Arc::new(StreamFrames {
+            push,
+            wake: self.waker(),
+        });
+        if app == crate::photos_engine::APP {
+            return crate::photos_engine::start(
+                self.store().clone(),
+                self.previews(),
+                op,
+                input,
+                record,
+            );
+        }
+        // The engines this host answers itself start their jobs as they always have.
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let routed = [
+                crate::video_engine::APP,
+                crate::print_centre_engine::APP,
+                crate::camera_engine::APP,
+                API_TESTER_APP,
+            ];
+            if routed.contains(&app) {
+                return self.engine_start(app, op, input);
+            }
+            crate::backups_engine::register();
+            crate::feed_engine::register();
+        }
+        if app == crate::containers_engine::APP || app == crate::git_engine::APP {
+            return self.engine_start(app, op, input);
+        }
+        crate::chip_design_engine::register();
+        tilolang_tilo::engine::begin_held(app, op, input, record)
+    }
+
     #[cfg(feature = "app-launch")]
     fn engine_stream(
         &self,
@@ -948,6 +1011,7 @@ impl Platform for HostPlatform {
         ui_core::live_pictures::forget(job);
         crate::git_engine::cancel(job)
             || crate::containers_engine::cancel(job)
+            || crate::photos_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
     }
 
@@ -990,16 +1054,10 @@ impl Platform for HostPlatform {
         file: &tilolang_tilo::runtime::blob::FileValue,
         size: u32,
     ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
-        let Some(shared) = self.thumbnails.as_ref() else {
+        let Some(thumbnails) = self.previews() else {
             return Err("this host keeps no previews".to_owned());
         };
-        let thumbnails = shared.get_or_init(|| {
-            Arc::new(
-                thumbnail::ThumbnailService::open_default(1)
-                    .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
-            )
-        });
-        crate::files::thumbnail(self.store(), thumbnails, file, size)
+        crate::files::thumbnail(self.store(), &thumbnails, file, size)
     }
 
     /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection

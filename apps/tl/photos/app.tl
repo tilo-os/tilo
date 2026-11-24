@@ -106,6 +106,77 @@ type Library {
     import_found: Int = 0
     import_done: Int = 0
     import_issues: List<Text>
+    /// The import running on this device, by its job: the window reads how far it has got from the
+    /// job's record, and the import's `done:` brings what it read into the library.
+    import_job: Text = ""
+    /// Whether the last import was stopped before it read everything.
+    import_stopped: Bool = false
+    /// The pictures the last import could not read where trying again could help.
+    unread: Collection<Unread>
+    /// Each person's face scan: their own alone, so one person's switch and progress are never
+    /// another's.
+    face_scans: Collection<FaceScan>
+}
+
+/// A picture an import could not read: what it is called, where its bytes are, where it stood in
+/// what the person chose, and why.
+type Unread {
+    name: Text
+    picture: Text
+    path: Text
+    why: Text
+    retry: Bool
+}
+
+/// One picture an import hands the device to read.
+type ChosenPicture {
+    name: Text
+    url: Text
+    path: Text
+}
+
+/// What an import asks of the device: the pictures to read.
+type ImportAsk {
+    files: List<ChosenPicture>
+}
+
+/// A picture the device read: what the library keeps of it.
+type ReadPicture {
+    name: Text
+    picture: Text
+    thumb: Text
+    folder: Text
+    captured_at: Text
+    latitude: Float
+    longitude: Float
+}
+
+/// An import's record, as its job says it: `running`, `done` or `stopped`, how many pictures it
+/// has of how many, and, once it ends, what it read and what it could not.
+type ImportRecord {
+    job: Text
+    state: Text
+    found: Int
+    done: Int
+    photos: List<ReadPicture>
+    issues: List<Unread>
+}
+
+/// The job a start answered.
+type JobStarted {
+    job: Text
+}
+
+/// One person's face scan on this library: whether they let the device look for faces in the
+/// photos, whether a scan runs or is paused, and the photos it has read, so it goes on with the
+/// next ones. Faces are personal data: this is its person's alone.
+type FaceScan (readers: author) {
+    /// Whether this device may look for faces at all: off until the person turns it on.
+    on: Bool = false
+    /// `running`, `paused`, or empty when no scan is under way.
+    state: Text = ""
+    /// The photos the scan has read, by id.
+    scanned: Set<Text>
 }
 
 root library: Library
@@ -206,25 +277,126 @@ fn base_name(path: Text) -> Text {
     path.split("/").last() ?? path
 }
 
-/// Imports the pictures a person drops on the window or picks a folder of: each picture file
-/// becomes a photo, with the folder it came in, and a file that is no picture is left alone and
-/// said so in the report. Picking the same folder again brings what the files say to the photos
-/// already there, rather than making a second copy of each.
-action import_dropped(lib: Library, files: List<File>) uses image (did: "added photos") {
-    let found = files.len()
-    let done = 0
-    let issues: List<Text> = []
-    for file in files {
-        if file.media.starts_with("image/") {
-            absorb_picture(lib, file)
-            done = done + 1
-        } else {
-            issues = [issues, ["{base_name(file.name)} is not a picture"]].flat_map(x -> x)
+/// Imports the pictures a person drops on the window or picks a folder of, as a job on this
+/// device: it reads each picture, when and where it was taken and its preview, saying how far it
+/// has got as it goes, and can be stopped. A file that is no picture is left alone and said so.
+/// Picking the same folder again brings what the files say to the photos already there, rather
+/// than making a second copy of each.
+action import_folder(lib: Library, files: List<File>) uses image (
+    icon: .folder,
+    label: "Import folder",
+    did: "imported photos",
+) {
+    let pictures = files.filter(f -> f.media.starts_with("image/"))
+    let chosen = pictures.map(f -> ChosenPicture(name: f.name, url: f.url, path: f.path))
+    start_import(lib, json.encode(ImportAsk(files: chosen)), files.len())
+    lib.import_issues = files
+        .filter(f -> not f.media.starts_with("image/"))
+        .map(f -> "{base_name(f.name)} is not a picture")
+}
+
+/// Starts the device reading the pictures `ask` names, stopping an import still under way first.
+/// When the job ends, `imported` brings what it read into the library, as the one who started it.
+action start_import(lib: Library, ask: Text, found: Int) {
+    if lib.import_job != "" { engine.cancel(lib.import_job) }
+    lib.import_found = found
+    lib.import_done = 0
+    lib.import_issues = []
+    lib.import_stopped = false
+    match engine.start("import", ask, done: imported(lib)) {
+        .err(why) => {
+            lib.import_job = ""
+            lib.import_issues = ["The import could not start: {why}"]
+        }
+        .ok(said) => match json.decode<JobStarted>(said) {
+            .err(why) => {
+                lib.import_issues = ["The import could not start: {why}"]
+            }
+            .ok(started) => {
+                lib.import_job = started.job
+            }
+        },
+    }
+}
+
+/// An import's end: each picture it read becomes a photo, or brings what it says to the photo the
+/// same picture already made, and what it could not read is kept to try again. What the person set
+/// on a photo (its time, its place) is theirs, so reading it again never overwrites it.
+action imported(lib: Library, outcome: Text) (did: "added photos") {
+    match json.decode<ImportRecord>(outcome) {
+        .err(why) => {
+            lib.import_issues = [why]
+            lib.import_job = ""
+        }
+        .ok(record) => {
+            for read in record.photos {
+                let photo = if let held = lib.photos.find(p -> p.picture == read.picture) {
+                    held
+                } else {
+                    lib.photos.insert(
+                        Photo(name: read.name, picture: read.picture, folder: read.folder),
+                    )
+                }
+                if photo.folder == "" {
+                    photo.folder = read.folder
+                }
+                if read.thumb != "" {
+                    photo.thumb = read.thumb
+                }
+                if photo.captured_at == "" {
+                    photo.captured_at = read.captured_at
+                }
+                if photo.latitude == 0.0 and photo.longitude == 0.0 {
+                    photo.latitude = read.latitude
+                    photo.longitude = read.longitude
+                }
+            }
+            for u in lib.unread {
+                lib.unread.remove(u)
+            }
+            for issue in record.issues.filter(i -> i.retry) {
+                lib.unread.insert(issue)
+            }
+            lib.import_done = record.photos.len()
+            lib.import_issues = [lib.import_issues, record.issues.map(i -> "{i.name}: {i.why}")]
+                .flat_map(x -> x)
+            lib.import_stopped = record.state == "stopped"
+            if record.job == lib.import_job {
+                lib.import_job = ""
+            }
         }
     }
-    lib.import_found = found
-    lib.import_done = done
-    lib.import_issues = issues
+}
+
+/// Stops the import under way: it ends after the picture it is reading, and what it read so far
+/// joins the library.
+action stop_import(lib: Library) (icon: .square, label: "Stop importing") {
+    require lib.import_job != "" "No import is under way"
+    engine.cancel(lib.import_job)
+}
+
+/// Tries again the pictures the last import could not read where trying again could help.
+action retry_import(lib: Library) (icon: .refresh, label: "Try again") {
+    require not lib.unread.is_empty() "Every picture of the last import was read"
+    let chosen = lib.unread.map(u -> ChosenPicture(name: u.name, url: u.picture, path: u.path))
+    start_import(lib, json.encode(ImportAsk(files: chosen)), chosen.len())
+}
+
+/// Reads the photos of a folder again, or of the whole library when no folder is named: their
+/// previews, and when and where they were taken where nobody set it.
+action reindex(lib: Library, folder: Text = "") (icon: .refresh, label: "Refresh folder") {
+    require not lib.photos
+        .filter(p -> p.picture != "" and (folder == "" or p.folder == folder))
+        .is_empty() "No photos to read again"
+    let held = lib.photos.filter(p -> p.picture != "" and (folder == "" or p.folder == folder))
+    let chosen = held.map(
+        p -> ChosenPicture(
+            name: p.name,
+            url: p.picture,
+            path: if p.folder == "" { p.name } else { "{p.folder}/{p.name}" },
+        ),
+    )
+    start_import(lib, json.encode(ImportAsk(files: chosen)), chosen.len())
 }
 
 /// Takes the last import's report off the window.
@@ -232,6 +404,7 @@ action dismiss_import(lib: Library) (icon: .x, label: "Dismiss the import report
     lib.import_found = 0
     lib.import_done = 0
     lib.import_issues = []
+    lib.import_stopped = false
 }
 
 /// Marks a photo as a favorite, or takes that back.
@@ -646,17 +819,61 @@ action rename_person(lib: Library, person: Person, to: Text) (
     }
 }
 
-/// The faces the device finds in `photos`, kept as suggestions of the person's own: a face has
-/// no name, so nothing of it reaches another member until a name is approved.
-action find_faces(lib: Library, photos: List<Photo>) uses image {
-    let images = photos.map(p -> shown_picture(p))
-    if images.is_empty() {
+/// This person's face scan, started where they have none.
+action face_scan(lib: Library) -> FaceScan {
+    if let held = lib.face_scans.first() { held } else { lib.face_scans.insert(FaceScan()) }
+}
+
+/// Lets this device look for faces in the photos, or stops it: turning it off ends a scan under
+/// way, and keeps every name already given.
+action set_recognition(lib: Library, on: Bool) (icon: .scan_line, label: "On-device recognition") {
+    let scan = face_scan(lib)
+    scan.on = on
+    if not on {
+        scan.state = ""
+    }
+}
+
+/// Starts scanning the photos on this device for faces, or goes on with a paused scan: the model
+/// reads twelve at a time, and the window takes the next twelve as each batch ends, until every
+/// photo nobody is named on was read. Each face it finds is a suggestion of the scanner's own.
+action scan_faces(lib: Library) uses image (icon: .scan_line, label: "Scan for faces") {
+    require recognition_on(lib) "Turn recognition on to scan this device's photos for faces"
+    let scan = face_scan(lib)
+    scan.state = if read_batch(lib, scan) { "running" } else { "" }
+}
+
+/// Whether this person let the device look for faces.
+fn recognition_on(lib: Library) -> Bool {
+    if let s = lib.face_scans.first() { s.on } else { false }
+}
+
+/// One batch of a running scan: the next twelve photos it has not read.
+action scan_step(lib: Library) uses image {
+    let scan = face_scan(lib)
+    if scan.state != "running" or not scan.on {
         return
     }
+    if not read_batch(lib, scan) {
+        scan.state = ""
+    }
+}
+
+/// Reads the next twelve photos `scan` has not read and nobody is named on yet. Answers whether there were any to read.
+action read_batch(lib: Library, scan: FaceScan) -> Bool uses image {
+    let batch = lib.photos
+        .filter(
+            p -> p.picture != "" and p.people.is_empty() and not scan.scanned.contains(p.id),
+        )
+        .take(12)
+    if batch.is_empty() {
+        return false
+    }
+    let images = batch.map(p -> shown_picture(p))
     match try vision.faces(vision.image_model, images: images) {
         .ok(groups) => {
             for group in groups {
-                let ids = photos.filter(p -> group.contains(shown_picture(p))).map(p -> p.id)
+                let ids = batch.filter(p -> group.contains(shown_picture(p))).map(p -> p.id)
                 if not ids.is_empty() and not known_face(lib, ids) {
                     let made = lib.suggestions.insert(Suggestion())
                     for id in ids {
@@ -667,13 +884,31 @@ action find_faces(lib: Library, photos: List<Photo>) uses image {
         }
         .err(_) => {}
     }
+    for p in batch {
+        scan.scanned.add(p.id)
+    }
+    true
 }
 
-/// Scans the next photos on this device nobody is named on yet: the model takes twelve at a
-/// time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own.
-action scan_faces(lib: Library) uses image (icon: .scan_line, label: "Scan for faces") {
-    let batch = lib.photos.filter(p -> p.people.is_empty() and p.picture != "").take(12)
-    find_faces(lib, batch)
+/// Pauses the scan under way: scanning again goes on with the next photos.
+action pause_scan(lib: Library) (icon: .pause, label: "Pause scanning") {
+    let scan = face_scan(lib)
+    if scan.state == "running" {
+        scan.state = "paused"
+    }
+}
+
+/// Deletes the face data this person's scans made on this device: the faces nobody named yet and
+/// what the scan had read. The people already named are kept.
+destructive action delete_face_data(lib: Library) (icon: .trash, label: "Delete local face data") {
+    for s in lib.suggestions.filter(x -> not x.sent) {
+        lib.suggestions.remove(s)
+    }
+    let scan = face_scan(lib)
+    scan.state = ""
+    for id in scan.scanned {
+        scan.scanned.remove(id)
+    }
 }
 
 /// Whether a group of photos is already a suggestion, or already on a person: the same face read
@@ -904,7 +1139,7 @@ view library(lib: Library) {
         sidebar_title: "Photos",
     ) {
         // A picture dropped anywhere on the window joins the library.
-        on drop(files: List<File>): import_dropped(lib, files)
+        on drop(files: List<File>): import_folder(lib, files)
         actions: {
             ui.SearchButton()
             if selecting {
@@ -948,7 +1183,7 @@ view library(lib: Library) {
                 }
                 ui.Button("Import folder", icon: .folder) {
                     on press: file.choose_folder(
-                        import_dropped(lib),
+                        import_folder(lib),
                         accept: ["image/png", "image/jpeg", "image/webp"],
                     )
                 }
@@ -984,13 +1219,6 @@ view library(lib: Library) {
                 } else if not lib.photos.is_empty() {
                     ui.Button("Analyze photos", icon: .sparkles) {
                         on press: vision.start(vision.analysis)
-                    }
-                }
-                if not lib.photos.is_empty() {
-                    if vision.analysis.phase != "running" and vision.analysis.phase != "paused" {
-                        ui.Button("Scan for faces", icon: .scan_line) {
-                            on press: scan_faces(lib)
-                        }
                     }
                 }
             }
@@ -1044,18 +1272,27 @@ view library(lib: Library) {
             stack(gap: .related, fill) {
                 // What the last import did: what arrived, and what could not, so a folder of a
                 // thousand pictures says at once how many of them the library has.
-                if lib.import_found > 0 {
+                if lib.import_job != "" {
+                    import_progress(lib)
+                } else if lib.import_found > 0 {
                     ui.Banner(
-                        "Imported {lib.import_done} of {lib.import_found}",
+                        if lib.import_stopped {
+                            "Import stopped: {lib.import_done} of {lib.import_found} imported"
+                        } else {
+                            "Imported {lib.import_done} of {lib.import_found}"
+                        },
                         message: if lib.import_issues.is_empty() {
                             "Every file became a photo."
-                        } else {
-                            "Not pictures: {lib.import_issues.join(", ")}"
-                        },
+                        } else { lib.import_issues.join(", ") },
                         kind: if lib.import_issues.is_empty() { .info } else { .warning },
                         action: "Dismiss",
                     ) {
                         on act: dismiss_import(lib)
+                    }
+                    if not lib.unread.is_empty() {
+                        ui.Button("Try again", icon: .refresh) {
+                            on press: retry_import(lib)
+                        }
                     }
                 }
                 if presenting {
@@ -1098,6 +1335,35 @@ view library(lib: Library) {
     }
 }
 
+/// The import under way, as its job's record says it now: how many pictures it has read of how
+/// many, what it could not, and a way to stop it.
+view import_progress(lib: Library) {
+    let said = engine.state(lib.import_job)
+    let record = json.decode<ImportRecord>(said)
+    row(gap: .related, align: .center) {
+        match record {
+            .ok(now) => {
+                ui.ProgressBar(
+                    value: if now.found > 0 {
+                        now.done.to_float() / now.found.to_float()
+                    } else { 0.0 },
+                    label: "Importing {now.done} of {now.found}",
+                    fill,
+                )
+                if not now.issues.is_empty() {
+                    ui.Text("{now.issues.len()} could not be read", role: .caption, secondary: true)
+                }
+            }
+            .err(_) => {
+                ui.ProgressBar(label: "Importing {lib.import_found} pictures", fill)
+            }
+        }
+        ui.Button("Stop", icon: .square) {
+            on press: stop_import(lib)
+        }
+    }
+}
+
 /// The slide after `slide`, back at the first after the last: a presentation goes round.
 fn next_slide(slide: Int, count: Int) -> Int {
     if count <= 0 { 0 } else if slide + 1 >= count { 0 } else { slide + 1 }
@@ -1133,6 +1399,7 @@ view present(lib: Library, slide: State<Int>, presenting: State<Bool>) {
 /// The people the library knows, each a row opening the photos they are on.
 view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
     stack(gap: .section, fill) {
+        face_recognition(lib)
         // The faces nobody has named: each is this device's own until its name is approved, so
         // another member's suggestions never appear here.
         if not lib.suggestions.is_empty() {
@@ -1186,6 +1453,59 @@ view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
                         person_row(person)
                     }
                 }
+            }
+        }
+    }
+}
+
+/// This person's on-device recognition: the switch, how far a scan has got, pause and go on,
+/// and deleting the face data it made. A running scan takes its next batch as each one ends.
+view face_recognition(lib: Library) {
+    let scan = lib.face_scans.first()
+    let on = if let s = scan { s.on } else { false }
+    let state = if let s = scan { s.state } else { "" }
+    let scanned = if let s = scan { s.scanned.len() } else { 0 }
+    let total = lib.photos.filter(p -> p.picture != "" and p.people.is_empty()).len()
+    ui.Section("On-device recognition") {
+        ui.Toggle(shown: on, label: "Recognize faces in the photos on this device") {
+            on check(now): set_recognition(lib, now)
+        }
+        if not on {
+            ui.Text(
+                "Recognition is off. Turn it on to get suggestions from this device.",
+                role: .caption,
+                secondary: true,
+            )
+        } else if not vision.image_model.available {
+            ui.Text(vision.image_model.detail, role: .caption, secondary: true)
+        } else if state == "running" {
+            every 1s: scan_step(lib)
+            row(gap: .related, align: .center) {
+                ui.ProgressBar(
+                    value: if total > 0 { scanned.to_float() / total.to_float() } else { 0.0 },
+                    label: "Scanned {scanned} of {total} photos",
+                    fill,
+                )
+                ui.Button("Pause scanning", icon: .pause) {
+                    on press: pause_scan(lib)
+                }
+            }
+        } else {
+            row(gap: .related, align: .center) {
+                if state == "paused" {
+                    ui.Text("Scanning is paused at {scanned} of {total} photos.", fill)
+                }
+                ui.Button(
+                    if state == "paused" { "Go on scanning" } else { "Scan for faces" },
+                    icon: .scan_line,
+                ) {
+                    on press: scan_faces(lib)
+                }
+            }
+        }
+        if scanned > 0 or not lib.suggestions.filter(x -> not x.sent).is_empty() {
+            ui.Button("Delete local face data", icon: .trash, role: .destructive) {
+                on press: delete_face_data(lib)
             }
         }
     }
