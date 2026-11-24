@@ -1403,6 +1403,40 @@ pub(super) fn open_sealed(
         .map(|(opened, _)| opened)
 }
 
+/// An opening that took no write since the last: what that one opened, and what it merged.
+type Unchanged = Box<(OpenedDocument, Option<MergedDocument>)>;
+
+/// Where an opening of `sealed` goes on from `prior`: the first write it has not merged and what
+/// it merged, or the whole history from the document itself. When nothing was written since,
+/// what the last read made, as the opening (`Err`).
+fn continued(
+    document: &super::Document,
+    sealed: &[&SignedOp],
+    base: &[automerge::ChangeHash],
+    prior: Option<MergedDocument>,
+) -> Result<(usize, AutoCommit), Unchanged> {
+    let prior = match prior.filter(|prior| prior.continued_by(base, sealed)) {
+        // Nothing written since: it reads as the last read made it.
+        Some(prior) if prior.through == sealed.len() => {
+            let document = prior.saved.clone();
+            return Err(Box::new((
+                OpenedDocument {
+                    document,
+                    unmerged: Vec::new(),
+                },
+                Some(prior),
+            )));
+        }
+        prior => prior,
+    };
+    Ok(
+        match prior.and_then(|prior| Some((prior.through, prior.merged?))) {
+            Some(continued) => continued,
+            None => (0, (*document.doc).clone()),
+        },
+    )
+}
+
 /// `open_sealed` over what `prior`, an earlier opening of the document, merged: where the
 /// document only took writes since (its base and the history `prior` merged are as they were),
 /// only those are opened and merged, so reading a document its writes keep growing costs the
@@ -1421,23 +1455,9 @@ pub(super) fn open_sealed_after(
 ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let base = document.doc.committed_document().get_heads();
-    let prior = match prior.filter(|prior| prior.continued_by(&base, &sealed)) {
-        // Nothing written since: it reads as the last read made it.
-        Some(prior) if prior.through == sealed.len() => {
-            let document = prior.saved.clone();
-            return Ok((
-                OpenedDocument {
-                    document,
-                    unmerged: Vec::new(),
-                },
-                Some(prior),
-            ));
-        }
-        prior => prior,
-    };
-    let (from, merged) = match prior.and_then(|prior| Some((prior.through, prior.merged?))) {
-        Some(continued) => continued,
-        None => (0, (*document.doc).clone()),
+    let (from, merged) = match continued(document, &sealed, &base, prior) {
+        Ok(continued) => continued,
+        Err(unchanged) => return Ok(*unchanged),
     };
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();

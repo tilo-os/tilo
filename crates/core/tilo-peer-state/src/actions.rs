@@ -1143,6 +1143,38 @@ impl ActionService {
             })
     }
 
+    /// Run one invocation a caller asked for and answer its receipt.
+    async fn invoke(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+        caller: &Caller,
+        client: Option<std::net::IpAddr>,
+        invoke: &tilo_actions::remote::InvokeRequest,
+    ) -> InvocationReceipt {
+        let alone = self.alone(dispatcher);
+        // The ticket admitted for a computer with no certificate yet answers its one
+        // call as before; every other visitor is counted by its network.
+        let spent = if alone.is_some() {
+            Ok(())
+        } else {
+            self.spend(caller, client)
+        };
+        let provider = alone.unwrap_or_else(|| self.provider_for(&invoke.target.provider));
+        let status = match spent {
+            Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
+                .await
+                .map_or_else(
+                    |error| ReceiptStatus::Rejected { error },
+                    |receipt| receipt.status,
+                ),
+            Err(error) => ReceiptStatus::Rejected { error },
+        };
+        InvocationReceipt {
+            invocation: invoke.invocation,
+            status,
+        }
+    }
+
     /// Hand one verified request to `dispatcher` and answer it.
     async fn dispatch(
         &self,
@@ -1160,30 +1192,9 @@ impl ActionService {
                     result,
                 })
             }
-            RemoteActionMessage::Invoke(invoke) => {
-                let alone = self.alone(dispatcher);
-                // The ticket admitted for a computer with no certificate yet answers its one
-                // call as before; every other visitor is counted by its network.
-                let spent = if alone.is_some() {
-                    Ok(())
-                } else {
-                    self.spend(caller, client)
-                };
-                let provider = alone.unwrap_or_else(|| self.provider_for(&invoke.target.provider));
-                let status = match spent {
-                    Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
-                        .await
-                        .map_or_else(
-                            |error| ReceiptStatus::Rejected { error },
-                            |receipt| receipt.status,
-                        ),
-                    Err(error) => ReceiptStatus::Rejected { error },
-                };
-                Some(RemoteActionMessage::Receipt(InvocationReceipt {
-                    invocation: invoke.invocation,
-                    status,
-                }))
-            }
+            RemoteActionMessage::Invoke(invoke) => Some(RemoteActionMessage::Receipt(
+                self.invoke(dispatcher, caller, client, invoke).await,
+            )),
             RemoteActionMessage::Observe {
                 correlation,
                 invocation,

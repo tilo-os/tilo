@@ -3396,16 +3396,14 @@ async fn drive_shovel(
                             // The route learns its keys (or that it waits)
                             // before the content that waited for it is stored.
                             if let Some(fetch) = key_fetch.take() {
-                                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx))
-                                    .await;
+                                apply_fetched_keys(&routes, fetch.await, &inbound_tx);
                             }
                             let round = key_schedule.join_round();
                             let mut signing = signer.lock().await;
                             if let Some(fetch) =
                                 Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
                             {
-                                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx))
-                                    .await;
+                                apply_fetched_keys(&routes, fetch.await, &inbound_tx);
                             }
                         }
                     }
@@ -3512,7 +3510,7 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                if Box::pin(apply_fetched_keys(&routes, fetched, &inbound_tx)).await {
+                if apply_fetched_keys(&routes, fetched, &inbound_tx) {
                     key_schedule.restart();
                 }
                 // Routes told to ask while the round was out ask now.
@@ -3901,7 +3899,7 @@ async fn drive_shovel(
             #[cfg(test)]
             SdkCommand::KeyScheduleProbe(reply) => {
                 if let Some(fetch) = key_fetch.take()
-                    && apply_fetched_keys(&routes, fetch.await, &inbound_tx).await
+                    && apply_fetched_keys(&routes, fetch.await, &inbound_tx)
                 {
                     key_schedule.restart();
                 }
@@ -3924,14 +3922,14 @@ async fn drive_shovel(
             // rather than at the next round, so the content it stores is
             // sealed under them. The routes keep receiving meanwhile.
             if let Some(fetch) = key_fetch.take() {
-                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx)).await;
+                apply_fetched_keys(&routes, fetch.await, &inbound_tx);
             }
             let round = key_schedule.join_round();
             let mut signing = signer.lock().await;
             if let Some(fetch) =
                 Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
             {
-                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx)).await;
+                apply_fetched_keys(&routes, fetch.await, &inbound_tx);
             }
         }
     }
@@ -5285,11 +5283,7 @@ async fn refresh_keys(
 
 /// Take a finished round's answers, and tell the app what each route's
 /// access became. Returns whether any route's state or keys changed.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn apply_fetched_keys(
+fn apply_fetched_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     fetched: FetchedKeys,
     inbound_tx: &InboundBridge,

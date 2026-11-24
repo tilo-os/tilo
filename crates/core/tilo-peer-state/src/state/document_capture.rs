@@ -705,6 +705,17 @@ fn merge_a_look(
     Ok(crate::opening::due())
 }
 
+/// What a checkpoint this reader cannot read yet makes of the read: one whose writes are not
+/// here waits for them; one this device cannot decide is not opened.
+fn checkpoint_refused(refusal: super::checkpoints::CheckpointRefusal) -> PeerDocumentReadError {
+    match refusal {
+        super::checkpoints::CheckpointRefusal::Waits => PeerDocumentReadError::Incomplete,
+        super::checkpoints::CheckpointRefusal::CannotDecide(reason) => {
+            PeerDocumentReadError::Opening(reason)
+        }
+    }
+}
+
 /// `document`'s sealed history opened onto its cleartext document, continuing what `kept` opened
 /// of it before. A history that does not open leaves nothing kept; one that waits for the rest
 /// of a write's segments keeps what opened.
@@ -794,14 +805,7 @@ fn open_history<'a>(
                     &mut |write, mutation| peer.check_opened_write((app, record), write, mutation),
                     &|checkpoint| peer.checkpoint_settled((app, record), checkpoint),
                 )
-                .map_err(|refusal| match refusal {
-                    super::checkpoints::CheckpointRefusal::Waits => {
-                        PeerDocumentReadError::Incomplete
-                    }
-                    super::checkpoints::CheckpointRefusal::CannotDecide(reason) => {
-                        PeerDocumentReadError::Opening(reason)
-                    }
-                })?;
+                .map_err(checkpoint_refused)?;
                 read.refuse_in(&mut opened.refusing);
                 opened.refused.extend(read.named().iter().cloned());
                 writes.push((index, read.instead.unwrap_or(mutation)));

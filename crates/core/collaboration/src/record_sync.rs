@@ -158,7 +158,7 @@ async fn read(
         .map(|head| ChangeHash::from_str(head).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     frontier.reached(heads);
-    Ok((!changes.is_empty()).then(|| DocumentMutation::Incremental(changes)))
+    Ok((!changes.is_empty()).then_some(DocumentMutation::Incremental(changes)))
 }
 
 /// Hand the store `mutation`, the app's own changes of `route`'s record, as the changes it
