@@ -354,11 +354,25 @@ impl StatePeer {
                 // leaving it out would put the history a write short of what its
                 // author's compaction covers, so every compaction of the
                 // document would be refused. Only a write the history holds
-                // already, or a fold over it already carries, is a replay.
-                let replayed = candidate
-                    .sealed
-                    .iter()
-                    .any(|held| held.author == envelope.author && held.seq == envelope.seq)
+                // already, or a fold over it already carries, is a replay. A
+                // fold this peer took leaves its writers' marks behind, and the
+                // fold leading the history now may be a later one that names
+                // none of them: a write a mark covers is decided, and taking it
+                // again would keep a write the index holds no evidence of.
+                let replayed = self
+                    .core
+                    .exact_admissions
+                    .covers(&crate::admission::AdmissionKey {
+                        workspace: self.core.workspace.clone(),
+                        app: route.app.clone(),
+                        record: route.record.clone(),
+                        author: *envelope.author.as_bytes(),
+                        sequence: envelope.seq,
+                    })
+                    || candidate
+                        .sealed
+                        .iter()
+                        .any(|held| held.author == envelope.author && held.seq == envelope.seq)
                     || candidate
                         .sealed
                         .first()

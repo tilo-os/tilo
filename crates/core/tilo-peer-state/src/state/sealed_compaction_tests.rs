@@ -3746,3 +3746,66 @@ fn a_reader_without_a_checkpoints_writes_fetches_them_before_reading_it() {
     let read = captured(&f, &fresh, &keys).unwrap();
     assert_eq!(text(&read, "other").as_deref(), Some("kept"));
 }
+
+tilo_test_env::scenario! {
+    fn a_host_following_its_store_reopens_what_it_kept;
+
+    phase a_write_an_earlier_fold_decided_and_handed_over_again_stays_decided;
+    // A host keeps a busy record for hours: its writers fill the history, the host folds it, and
+    // its store hands writes over again as it follows them. A fold that folds the one before it
+    // names only the writers since, so a write the first fold decided comes back past what the
+    // history's leading fold names. It is decided all the same, and the host's durable state
+    // reopens with every write in it, however often it is stored on the way.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.replica);
+        let mut sent = Vec::new();
+        let mut written = Vec::new();
+        for round in 0..6 {
+            // The other device writes in every other round; the host writes and folds in each.
+            if round % 2 == 0 {
+                for chunk in 0..24 {
+                    let key = format!("chunk.{round}.{chunk}");
+                    let write = write(&f.replica, &f.other, &keys, &author.edit(&key, "x"), now);
+                    sent.push(write.clone());
+                    written.push(key);
+                    admit(&mut f.replica, &f.other, write, now);
+                    // Stored as it goes, each time from what the last store made.
+                    f.replica.durable_parts().unwrap();
+                }
+            }
+            let key = format!("tree.{round}");
+            let tree = write(&f.replica, &f.owner, &keys, &author.edit(&key, "x"), now);
+            written.push(key);
+            admit(&mut f.replica, &f.owner, tree, now);
+            mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+            // Every device with the record's keys checks the fold, as the host checks its own.
+            let mut checked = f.replica.clone();
+            checked_by_every_device(&f, &mut checked, &keys);
+            f.replica = checked;
+            f.replica.durable_parts().unwrap();
+            let history = held(&f.replica);
+            // Handed over as the store follows them: decided by the writer's floor, not looked
+            // up as a retry first.
+            for again in &sent {
+                f.replica
+                    .receive_from(origin(&f.other), again.clone(), now)
+                    .unwrap();
+            }
+            let restored = f.restore(&f.replica.durable().unwrap()).unwrap();
+            assert_eq!(held(&restored), held(&f.replica), "round {round} reopens");
+            assert_eq!(
+                held(&f.replica),
+                history,
+                "a write handed over again is no new write of the history"
+            );
+            f.replica = restored;
+        }
+        let read = captured(&f, &f.replica, &keys).unwrap();
+        for key in &written {
+            assert_eq!(text(&read, key).as_deref(), Some("x"), "{key} is read");
+        }
+    }
+}
