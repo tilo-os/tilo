@@ -1507,6 +1507,12 @@ fn broker_services(
     let server_settings: Arc<dyn PublishedResources> = Arc::new(
         super::server_settings::Published::new(super::server_settings::Served::this_device()),
     );
+    // Everything this device publishes to the apps attached to it: each resource served by the
+    // provider that keeps it, through one table.
+    let published: Arc<dyn PublishedResources> = Arc::new(
+        super::published::Published::new()
+            .serving(&[super::server_settings::SERVER], Arc::clone(&server_settings)),
+    );
     Ok(ProcessServices {
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.
@@ -1552,7 +1558,7 @@ fn broker_services(
         // This device's server settings, as the apps attached to this daemon read and change them:
         // the work its machine takes and the services it offers, saved to the configuration the
         // daemon keeps.
-        published: Some(Arc::clone(&server_settings)),
+        published: Some(Arc::clone(&published)),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
@@ -1565,7 +1571,7 @@ fn broker_services(
             parts.shell_links,
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
-            server_settings,
+            published,
             shell_processes(parts.apps, parts.workspaces),
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on

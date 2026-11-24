@@ -56,6 +56,8 @@ pub(crate) mod presence;
 #[cfg(target_os = "linux")]
 pub mod processes;
 mod search;
+/// The resources the daemon publishes to the apps attached to it: one table, a provider each.
+pub mod published;
 pub mod serve;
 pub mod server_settings;
 pub mod services;
