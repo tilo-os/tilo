@@ -136,4 +136,7 @@ pub enum DesktopAsk {
     /// The person asked to open what `link`, a `tilo://open#…` address, names: the app that keeps
     /// it shows it, started first when no window of it does.
     OpenLink(String),
+    /// The person asked to see `path` in the file manager, which only the
+    /// host can open: its search runs where the workspaces are.
+    ShowInFiles(String),
 }

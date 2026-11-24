@@ -149,6 +149,10 @@ impl Shared {
                 // What a `tilo://open#…` link names, shown by the app that keeps it, as a link
                 // the person followed lands.
                 DesktopAsk::OpenLink(link) => self.open_link(&link),
+                // A file shown in Files: the shell's own search opens the app at it.
+                DesktopAsk::ShowInFiles(path) => {
+                    crate::documents::show_in_files(self, &path);
+                }
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press

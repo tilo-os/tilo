@@ -159,6 +159,7 @@ action-failed-that-notification = That notification's action
 action-failed-that-app = Opening that app
 action-failed-no-workspace = There is no workspace open.
 action-failed-that-settings = Opening Settings
+action-failed-that-files = Showing that file in Files
 action-failed-that-change = Opening that change
 action-failed-that-agent = Taking that agent's access back
 downloaded-apps-app-name = Downloaded apps

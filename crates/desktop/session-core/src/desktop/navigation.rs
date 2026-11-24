@@ -377,6 +377,17 @@ pub enum ChromeEffect {
         link: String,
     },
 
+    /// Show in Files
+    /// The folder that holds `path` in the file manager, with the file itself chosen: what an app
+    /// that saved a file offers, and what a link to one opens.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    ShowInFiles {
+        /// The path to show.
+        #[param("The file or folder to show in Files")]
+        path: String,
+    },
+
     /// Move a tab elsewhere
     /// Its window onto another strip of the workspace (or another place in its own), the tab alone
     /// into another workspace as a window of its own, its window onto another display, or the tab
@@ -1520,6 +1531,7 @@ fn admit_chrome(
         | ChromeEffect::WorkspaceMenu
         | ChromeEffect::About { .. }
         | ChromeEffect::OpenSettings { .. }
+        | ChromeEffect::ShowInFiles { .. }
         | ChromeEffect::SwitchWorkspace {
             workspace: None, ..
         } => Err("The surfaces carry this out themselves".into()),

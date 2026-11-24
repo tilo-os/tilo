@@ -1282,6 +1282,7 @@ so-tilo-chrome-set-width = Set the width
 so-tilo-chrome-share-window = Share a window
 so-tilo-chrome-shortcut = Run a shortcut
 so-tilo-chrome-open-settings = Open Settings
+so-tilo-chrome-show-in-files = Show in Files
 so-tilo-chrome-show-app = Show an app
 so-tilo-chrome-show-person = Show a person
 so-tilo-chrome-show-self = Who you are here

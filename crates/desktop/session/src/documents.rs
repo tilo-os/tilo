@@ -221,6 +221,42 @@ fn source_of(app: &str, lists: &AppLists) -> Option<AppKind> {
         .then_some(AppKind::Tilo)
 }
 
+/// The file manager's own record, where it publishes the verb that shows a path.
+const FILES_RESOURCE: &str = "tl:so.tilo.file-explorer";
+/// The file manager's verb that shows a path in it.
+const SHOW_ACTION: &str = "show";
+/// The name that verb takes the path by.
+const SHOW_ARGUMENT: &str = "path";
+
+/// Shows `path` in the file manager: the folder that holds it, with the file itself chosen. What an
+/// app that saved a file offers a press later, and what a link to one opens. The app opens when no
+/// window of it runs, as any action of its own does.
+pub(crate) fn show_in_files(shared: &crate::Shared, path: &str) {
+    let workspace = shared.active_workspace_id();
+    let target = tilo_desktop_search::Target::Invoke(Box::new(
+        tilo_desktop_search::InvokeTarget::action(
+            ui::apps::FILE_EXPLORER,
+            &workspace,
+            FILES_RESOURCE,
+            SHOW_ACTION,
+        )
+        .with_argument(SHOW_ARGUMENT, path),
+    ));
+    let shown = shared.search.perform(&workspace, target, &mut |own| {
+        shared
+            .published
+            .invoke(
+                &own.address,
+                &own.arguments,
+                &mut tilo_session_core::surfaces::Look::none(),
+            )
+            .map(drop)
+    });
+    if let Err(error) = shown {
+        shared.answer_failed(&crate::i18n::t("action-failed-that-files"), &error);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

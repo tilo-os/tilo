@@ -51,6 +51,15 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "show-in-files"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+type = "text"
+
+[[resources.verbs]]
 id = "move-tab"
 kind = "outside"
 
