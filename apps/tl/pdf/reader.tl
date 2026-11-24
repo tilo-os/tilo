@@ -309,9 +309,7 @@ fn page_zoom(p: Page, fit: Text, zoom: Float, room: Float, tall: Float) -> Float
         fitted(room, p.width)
     } else if fit == "page" {
         fitted(room, p.width).min(fitted(tall, p.height))
-    } else {
-        zoom
-    }
+    } else { zoom }
 }
 
 /// A PDF point in device-independent pixels: 72 to the inch, against the screen's 96.
@@ -321,7 +319,11 @@ fn point() -> Float {
 
 /// The zoom, in percent, at which a page `size` points across stands in `room` pixels.
 fn fitted(room: Float, size: Float) -> Float {
-    if size <= 0.0 { 100.0 } else { (room / (size * point()) * 100.0).clamp(10.0, 1600.0) }
+    if size <= 0.0 {
+        100.0
+    } else {
+        (room / (size * point()) * 100.0).clamp(10.0, 1600.0)
+    }
 }
 
 /// The colours a marker comes in.

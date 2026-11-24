@@ -462,9 +462,7 @@ action choose(f: Files, paths: List<Text>) uses files {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     s.chosen = paths
     s.selected = paths.last() ?? ""
-    if let last = paths.last() {
-        inspect(f, last)
-    }
+    if let last = paths.last() { inspect(f, last) }
 }
 
 /// Chooses every entry the folder shown places: what a press on "Select all" does.
@@ -844,13 +842,8 @@ action add_favorite(f: Files, place: Text) (icon: .star, label: "Add to Favorite
 }
 
 /// Takes the place `place` out of the sidebar's favorites.
-action remove_favorite(f: Files, place: Text) (
-    icon: .star_off,
-    label: "Remove from Favorites",
-) {
-    if let favorite = f.favorites.find(x -> x.place == place) {
-        f.favorites.remove(favorite)
-    }
+action remove_favorite(f: Files, place: Text) (icon: .star_off, label: "Remove from Favorites") {
+    if let favorite = f.favorites.find(x -> x.place == place) { f.favorites.remove(favorite) }
 }
 
 /// Reads what the chosen entry is, so the inspector says its size, its kind and its path, and

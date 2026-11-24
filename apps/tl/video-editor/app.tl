@@ -3203,7 +3203,9 @@ view window(e: Editor) {
                                                 .success
                                             } else if k.palette % 6 == 3 {
                                                 .warning
-                                            } else if k.palette % 6 == 4 { .danger } else { .ink },
+                                            } else if k.palette % 6 == 4 {
+                                                .danger
+                                            } else { .ink },
                                         ) {
                                             on moved(at: Float): move_marker(p, k, at)
                                         }

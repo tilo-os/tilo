@@ -1,10 +1,10 @@
 app so.tilo.store "App Store" (
     icon: .store,
     category: .system,
-    schemes: "tilo-store",
     tagline: "The apps of your workspace, and what they run on this computer",
     keywords: ["store", "apps", "install", "update", "uninstall", "get", "flatpak", "registry", "repositories", "bots"],
     web: ["flathub.org"],
+    schemes: "tilo-store",
 )
 
 use so.tilo.session as session

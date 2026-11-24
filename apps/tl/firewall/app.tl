@@ -789,7 +789,10 @@ view window(f: Firewall) {
             // or an undo took it back, the window at this device hands it to firewalld. The
             // device's own answer arrives first, so a change this window made is not applied
             // twice.
-            if (now.serving and not f.zones.is_empty() and now.pending.is_empty()) and not device_holds(f, now) {
+            if now.serving
+                and not f.zones.is_empty()
+                and now.pending.is_empty()
+                and not device_holds(f, now) {
                 every 2s: apply_stored(f)
             }
             if let problem = now.problem {

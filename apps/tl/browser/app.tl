@@ -1275,11 +1275,7 @@ action developer_tools(p: Page) -> Answer uses page (icon: .code, label: "Develo
 /// Writes the page as a PDF and hands it to Print Centre, where the person chooses the printer
 /// and how it prints. The engine answers with the file once it has written it; a page with
 /// nothing open has nothing to print.
-action print_page(p: Page) -> Answer uses page (
-    icon: .printer,
-    label: "Print",
-    key: "Ctrl+P",
-) {
+action print_page(p: Page) -> Answer uses page (icon: .printer, label: "Print", key: "Ctrl+P") {
     require p.url != "" "Open a page to print"
     ask_page(p, json.encode(Ask(op: "print")))
 }
@@ -1289,11 +1285,13 @@ action print_page(p: Page) -> Answer uses page (
 /// raises it once the engine is done; a person, agent or script never does.
 action note_print(p: Page, ok: Bool, path: Text, name: Text, message: Text) uses files {
     if not ok {
-        p.print_notice = if message == "" { std.say("The page could not be printed") } else { message }
+        p.print_notice = if message == "" {
+            std.say("The page could not be printed")
+        } else { message }
         return
     }
     let bytes = match File.read(path) {
-        .ok(bytes) => bytes
+        .ok(bytes) => bytes,
         .err(why) => {
             p.print_notice = std.say("The page could not be printed: {why}")
             return

@@ -1,9 +1,9 @@
 app so.tilo.music "Music" (
     icon: .music,
     category: .multimedia,
-    schemes: "music",
     tagline: "The music on your devices, and the catalogues that have more",
     keywords: ["music", "musik", "song", "songs", "titel", "track", "tracks", "album", "alben", "artist", "artists", "künstler", "kuenstler", "playlist", "playlists", "wiedergabe", "player", "audio", "listen", "hören", "hoeren", "spotify", "youtube music", "lyrics", "songtext", "liedtext"],
+    schemes: "music",
 )
 
 use so.tilo.playback as playback
