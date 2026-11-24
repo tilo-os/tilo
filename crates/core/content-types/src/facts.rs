@@ -233,7 +233,7 @@ mod tests {
         bytes.extend_from_slice(b"\0\0\0\x6cmoov\0\0\0\x64mvhd\0\0\0\0");
         bytes.extend_from_slice(&[0; 8]);
         bytes.extend_from_slice(&600u32.to_be_bytes());
-        bytes.extend_from_slice(&(seconds * 600).to_be_bytes());
+        bytes.extend_from_slice(&seconds.checked_mul(600).unwrap().to_be_bytes());
         bytes.extend_from_slice(b"\0\0\0\x20stsd\0\0\0\0\0\0\0\x01\0\0\0\x10avc1");
         bytes
     }
