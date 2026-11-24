@@ -31,6 +31,8 @@ fn a_window_opens_with_its_content_at_rest() {
 /// The content named again is no change; a new name brings the content it shows in.
 #[test]
 fn a_new_content_key_brings_the_content_it_shows_in() {
+    // A person chose the pane: a press, whose motion follows it.
+    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     let mut shell = NavShell::from_props("window", props(Some("appearance")));
     let now = crate::motion::frame_now();
     assert!(shell.set_props(props(Some("appearance"))));

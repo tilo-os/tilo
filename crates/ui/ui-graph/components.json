@@ -4962,6 +4962,47 @@
           "name": "nothing_listed",
           "doc": "Nothing at all to list: what `content` gives is the window's empty state, in place of the overview, the content and the inspector.",
           "type": "bool"
+        },
+        {
+          "name": "sidebar_collapse",
+          "doc": "How the sidebar stands in a window too narrow to dock it: the shell's own rule (`auto`), a drawer over the content (`drawer`), or a screen of the push stack (`screen`).",
+          "type": {
+            "choice": {
+              "name": "SidebarCollapse",
+              "cases": [
+                "auto",
+                "drawer",
+                "screen"
+              ]
+            }
+          }
+        },
+        {
+          "name": "inspector_collapse",
+          "doc": "How the inspector stands in a window too narrow to dock it: a sheet up from the window's foot (`sheet`, the default) or a drawer in from its trailing edge (`drawer`).",
+          "type": {
+            "choice": {
+              "name": "InspectorCollapse",
+              "cases": [
+                "sheet",
+                "drawer"
+              ]
+            }
+          }
+        },
+        {
+          "name": "sidebar_open",
+          "doc": "Whether the view asks for the sidebar open (`true`) or closed (`false`). Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "inspector_open",
+          "doc": "Whether the view asks for the inspector open or closed. Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
         }
       ],
       "parts": [

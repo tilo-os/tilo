@@ -3,7 +3,7 @@
 use crate::component::{Component, Described, Event, PartViews, PropType, Type, Value};
 use crate::widget::Element;
 
-use super::{Column, ContentKind, NavPane, NavShell};
+use super::{Column, ContentKind, InspectorCollapse, NavPane, NavShell, SidebarCollapse};
 
 /// A window's shell: a sidebar of places, an overview list, the content and an inspector side
 /// by side while they fit, and one at a time with Back when they do not.
@@ -60,6 +60,18 @@ pub struct NavShellProps {
     /// The column in front of a narrow window.
     #[component(state)]
     pub pane: Option<NavPane>,
+    /// How the sidebar stands in a window too narrow to dock it: the shell's own rule (`auto`),
+    /// a drawer over the content (`drawer`), or a screen of the push stack (`screen`).
+    pub sidebar_collapse: SidebarCollapse,
+    /// How the inspector stands in a window too narrow to dock it: a sheet up from the window's
+    /// foot (`sheet`, the default) or a drawer in from its trailing edge (`drawer`).
+    pub inspector_collapse: InspectorCollapse,
+    /// Whether the view asks for the sidebar open (`true`) or closed (`false`). Applied when it
+    /// changes; the person's own toggle stands until the view asks for another state.
+    pub sidebar_open: Option<bool>,
+    /// Whether the view asks for the inspector open or closed. Applied when it changes; the
+    /// person's own toggle stands until the view asks for another state.
+    pub inspector_open: Option<bool>,
     /// The content's Back was pressed.
     #[component(event)]
     pub back: Event,
@@ -123,6 +135,47 @@ impl PropType for NavPane {
     }
 }
 
+impl PropType for SidebarCollapse {
+    fn ty() -> Type {
+        Type::Choice {
+            name: "SidebarCollapse".into(),
+            cases: ["auto", "drawer", "screen"].map(String::from).to_vec(),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let (Value::Choice(case) | Value::Text(case)) = value else {
+            return Err(format!("takes SidebarCollapse, not {}", value.kind()));
+        };
+        Ok(match case.as_str() {
+            "auto" => Self::Auto,
+            "drawer" => Self::Drawer,
+            "screen" => Self::Screen,
+            other => return Err(format!("has no case `{other}`")),
+        })
+    }
+}
+
+impl PropType for InspectorCollapse {
+    fn ty() -> Type {
+        Type::Choice {
+            name: "InspectorCollapse".into(),
+            cases: ["sheet", "drawer"].map(String::from).to_vec(),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let (Value::Choice(case) | Value::Text(case)) = value else {
+            return Err(format!("takes InspectorCollapse, not {}", value.kind()));
+        };
+        Ok(match case.as_str() {
+            "sheet" => Self::Sheet,
+            "drawer" => Self::Drawer,
+            other => return Err(format!("has no case `{other}`")),
+        })
+    }
+}
+
 fn count_of(count: Option<i64>) -> Option<usize> {
     count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX))
 }
@@ -150,11 +203,19 @@ impl Described for NavShell {
             overview_actions,
             band,
             pane,
+            sidebar_collapse,
+            inspector_collapse,
+            sidebar_open,
+            inspector_open,
             back,
             search: _,
             drop: _,
         } = props;
-        let mut shell = Self::new().with_id(key).content_kind(content_kind);
+        let mut shell = Self::new()
+            .with_id(key)
+            .content_kind(content_kind)
+            .sidebar_collapse(sidebar_collapse)
+            .inspector_collapse(inspector_collapse);
         // The first frame shows the content it has at rest: motion explains changes.
         shell.content_key = content_key;
         if let Some(sidebar) = sidebar {
@@ -204,13 +265,22 @@ impl Described for NavShell {
             shell.show(pane);
             shell.snap();
         }
+        // The first frame shows the columns where the view asks them to stand: motion explains
+        // a change, not the state a window opens in.
+        shell.show_sidebar_from_view(sidebar_open);
+        shell.show_inspector_from_view(inspector_open);
         shell
     }
 
-    /// Titles, counts and whether Back goes back change in place; the columns and header
-    /// actions change through their parts.
+    /// Titles, counts, whether Back goes back and the open state a view asks for change in
+    /// place; the columns and header actions change through their parts.
     fn set_props(&mut self, props: NavShellProps) -> bool {
         if self.inputs.borrow().kind != props.content_kind {
+            return false;
+        }
+        if self.inputs.borrow().sidebar_collapse != props.sidebar_collapse
+            || self.inputs.borrow().inspector_collapse != props.inspector_collapse
+        {
             return false;
         }
         if self.nothing_listed_shown() != props.nothing_listed {
@@ -230,6 +300,8 @@ impl Described for NavShell {
             can.set(props.can_go_back);
         }
         self.set_can_go_back(props.can_go_back);
+        self.show_sidebar_from_view(props.sidebar_open);
+        self.show_inspector_from_view(props.inspector_open);
         true
     }
 
