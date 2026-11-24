@@ -17,17 +17,20 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tilo_action_policy::Actor as Who;
-use tilo_actions::remote::Caller;
-use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_actions::remote::{
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionTarget,
+};
 use tilo_resource_store::wire::{Command, Edit};
 use tilo_resource_store::{Cell, Resource, Stamp, Value as StoreValue};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::apps::triggers::{Firing, Runner};
+use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::workspaces::fixtures::{
     Started, TestGroupKeys, TestHost, declare_built_in_app, governor, test_host_holding,
 };
-use tilo_workspace_service::workspaces::{MemberDevice, ResourceWrite, Workspaces};
+use tilo_workspace_service::workspaces::{DocumentRoute, MemberDevice, ResourceWrite, Workspaces};
 
 /// Mount the language runtime the daemon links on `workspaces`, as its program does when it
 /// opens: its own roles read and change the built-in apps' records, and the records are served
@@ -86,11 +89,7 @@ impl Device {
         let workspace = workspaces.create(name).await.unwrap().workspace;
         if let Some(app) = app {
             declare_built_in_app(&host, app);
-            let route = DocumentRoute {
-                app_id: app.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            };
+            let route = record_route(&workspace, app);
             let _ = workspaces.own_route_keys(&route, true).await.unwrap();
         }
         Device {
@@ -101,6 +100,61 @@ impl Device {
             workspace,
         }
     }
+}
+
+/// The route a record of `app` is opened, written and read by in `workspace`: where its frames
+/// travel and the address the record reads and writes name it at.
+pub(crate) fn record_route(workspace: &str, app: &str) -> DocumentRoute {
+    DocumentRoute {
+        app_id: app.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: String::new(),
+    }
+}
+
+/// `operation` of `workspace`'s governance with `arguments`, asked by `cert`'s device over the
+/// workspace service's dispatch, as every caller asks it: what a window's button calls.
+pub(crate) async fn govern(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    operation: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, ActionCallError> {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("arguments are an object");
+    };
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget::workspace_governance(workspace, operation),
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let caller = local_caller(cert).in_workspace(workspace);
+    let receipt = settled(workspaces.device_actions().invoke(&caller, request)).await?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(serde_json::Value::Null)),
+        ReceiptStatus::Rejected { error } => Err(error),
+        other => panic!("a governed change completes at once: {other:?}"),
+    }
+}
+
+/// What a pending answer comes to, on this runtime.
+pub(crate) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    pending.then(move |value| {
+        let _ = sender.send(value);
+    });
+    tilo_test_env::within("the dispatch's answer", receiver)
+        .await
+        .unwrap()
+        .expect("answered")
 }
 
 /// The key a device makes for its agents: one fixed key here.

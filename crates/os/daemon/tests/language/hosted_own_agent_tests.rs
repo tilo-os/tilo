@@ -30,9 +30,8 @@ use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
-use super::own_agent_tests::{
-    Answers, PLAN_READY, SCOUT, argument, ask_agents, chat_writes, mentioning, settled,
-};
+use super::own_agent_tests::{Answers, PLAN_READY, SCOUT, argument, chat_writes, mentioning};
+use super::{govern, record_route, settled};
 use tilo_workspace_service::agents::agent_keys::AgentKeys;
 use tilo_workspace_service::agents::ticketed_keys::{
     AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys,
@@ -217,7 +216,7 @@ async fn hosted() -> Hosted {
         signer: Arc::new(bea_key.clone()),
     }));
     bea.workspaces().join_member(&invitation).await.unwrap();
-    let made = ask_agents(
+    let made = govern(
         bea.workspaces(),
         &workspace,
         &bea_cert,
@@ -383,11 +382,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         .await
         .expect("Chat opens");
     }
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = record_route(&workspace, CHAT);
     let _ = beas.own_route_keys(&route, true).await;
     let chat_provider = format!("{}:{CHAT}:", tilo_actions::remote::RESOURCE_PROVIDER);
     let caller_bea = Caller::authenticated(
@@ -731,7 +726,7 @@ async fn only_the_agents_own_person_approves_a_device_for_it() {
             json!({ "agent": SCOUT, "device": ada_device, "ticket": "tilo1other" }),
         ),
     ] {
-        let refused = ask_agents(
+        let refused = govern(
             adas,
             &workspace,
             &hosted.ada_cert,

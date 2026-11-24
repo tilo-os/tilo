@@ -33,32 +33,25 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
     let (_, canonical) =
         collab_types::surface::SurfaceFile::kept(&surface).expect("the built-in surface reads");
     // The version the workspace runs names its surface by the hash of the file it keeps, as an
-    // installed release does.
-    let release = tilo_peer_state::workspace_membership::AppRelease {
-        app: APP.into(),
-        version: "1.0.0".into(),
-        surface: blake3::hash(canonical.as_bytes()).to_hex().to_string(),
-        package: "00".repeat(32),
-        publisher: "00".repeat(32),
-        file: None,
-        dev: true,
-        pinned: false,
-        payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
-    };
-    workspaces
-        .commit_own_membership(
-            &workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp(release),
-            None,
-        )
-        .await
-        .unwrap();
+    // installed release does: one install through the workspace's published `install-app`.
+    super::govern(
+        workspaces,
+        &workspace,
+        cert,
+        "install-app",
+        serde_json::json!({
+            "app": APP,
+            "version": "1.0.0",
+            "surface": blake3::hash(canonical.as_bytes()).to_hex().to_string(),
+            "package": "00".repeat(32),
+            "publisher": "00".repeat(32),
+            "dev": true,
+        }),
+    )
+    .await
+    .expect("the workspace runs a version of Tasks");
     // The record's channel keys are here before it is written.
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     assert!(
         workspaces
             .own_route_keys(&route, true)

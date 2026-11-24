@@ -17,8 +17,8 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value as Json, json};
 use tilo_action_policy::Actor as Who;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionTarget, TestProvider, WORKSPACE_AGENT_CREATE,
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionTarget, TestProvider, WORKSPACE_AGENT_CREATE,
 };
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
@@ -33,15 +33,15 @@ use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE};
 use tilo_workspace_service::agents::{Model, ServerAgents};
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
-use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::work::Order;
+use tilo_workspace_service::workspaces::fixtures::answer_grant;
 use tilo_workspace_service::workspaces::fixtures::{
     Started, TestGroupKeys, device_cert, governor, test_host_holding,
 };
 use tilo_workspace_service::workspaces::fixtures::{invitation, invited, membership_log_alone};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
-use super::mount;
+use super::{govern, mount, record_route, settled};
 
 /// Bea's agent.
 pub(super) const SCOUT: &str = "scout";
@@ -74,42 +74,6 @@ impl PlanTurns for Answers {
 
     fn model(&self) -> &'static str {
         "scripted"
-    }
-}
-
-/// The key Bea's device makes for her agent: one fixed key here, which the dispatch standing in
-/// for her device's takes as the agent's own.
-
-/// `operation` of `workspace`'s agents with `arguments`, asked by `device` over `workspaces`'
-/// dispatch, as every caller asks it.
-pub(super) async fn ask_agents(
-    workspaces: &Workspaces,
-    workspace: &str,
-    device: &DeviceCert,
-    operation: &str,
-    arguments: Json,
-) -> Result<Json, ActionCallError> {
-    let Json::Object(arguments) = arguments else {
-        panic!("arguments are an object");
-    };
-    let request = InvokeRequest {
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(workspace, operation),
-        argument: InvokeArgument::Json(arguments),
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let caller = local_caller(device).in_workspace(workspace);
-    let receipt = settled(workspaces.device_actions().invoke(&caller, request)).await?;
-    match receipt.status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Json::Null)),
-        ReceiptStatus::Rejected { error } => Err(error),
-        other => panic!("an agent's change completes at once: {other:?}"),
     }
 }
 
@@ -175,18 +139,6 @@ pub(super) async fn chat_writes(
         .map(drop)
 }
 
-/// What a pending answer comes to, on this runtime.
-pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    pending.then(move |value| {
-        let _ = sender.send(value);
-    });
-    tilo_test_env::within("the dispatch's answer", receiver)
-        .await
-        .unwrap()
-        .expect("answered")
-}
-
 /// Rich text whose words are `words`, mentioning `agent`.
 pub(super) fn mentioning(words: &str, agent: &str) -> Json {
     let named = json!({ "agent": agent }).to_string();
@@ -228,7 +180,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let bea_person = hex::encode(bea_cert.user_public_key);
 
     // Bea makes an agent of her own, from her own device, over its dispatch.
-    let made = ask_agents(
+    let made = govern(
         beas,
         &workspace,
         &bea_cert,
@@ -272,15 +224,9 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(bea_person.clone()),
         );
-        beas.commit_own_change(
-            &workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Grant(answer),
-            },
-            None,
-        )
-        .await
-        .expect("Bea answers for her agent");
+        answer_grant(beas, &workspace, answer)
+            .await
+            .expect("Bea answers for her agent");
     }
 
     // Her trigger for it is saved as hers, and arms on her device.
@@ -291,11 +237,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         Order::WORKSPACE,
     );
     let mut writes = beas.document_writes();
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = record_route(&workspace, CHAT);
     let _ = beas.own_route_keys(&route, true).await;
     runner.arm().await;
 
@@ -623,7 +565,7 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         hex::encode(cy_cert.user_public_key),
     );
 
-    ask_agents(
+    govern(
         beas,
         &workspace,
         &bea_cert,
@@ -645,28 +587,22 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
                 .answer
         })
     };
-    let member = |change| {
-        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member { change }
-    };
-
     // Bea keeps her agent from changing anything in Chat. A `SCOUT` certified by Cy's root is
     // another agent: nothing Bea answers for hers reaches it.
     let unanswered = beas.policy_of(&workspace).await.unwrap();
-    beas.commit_own_change(
+    answer_grant(
+        beas,
         &workspace,
-        member(tilo_action_policy::Change::Grant(
-            tilo_action_policy::agent_answers::grant(
-                &workspace,
-                SCOUT,
-                (
-                    &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
-                    ActionKind::Undoable,
-                ),
-                Answer::Deny,
-                tilo_action_policy::Grantee::person(bea_person.clone()),
+        tilo_action_policy::agent_answers::grant(
+            &workspace,
+            SCOUT,
+            (
+                &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
+                ActionKind::Undoable,
             ),
-        )),
-        None,
+            Answer::Deny,
+            tilo_action_policy::Grantee::person(bea_person.clone()),
+        ),
     )
     .await
     .expect("Bea answers for her agent");
@@ -703,13 +639,9 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         membership_log_alone(cys, &workspace).await,
     ];
     for change in [cys_stop, cys_answer] {
-        cys.commit_own_change(
-            &workspace,
-            member(tilo_action_policy::Change::Grant(change)),
-            None,
-        )
-        .await
-        .expect("Cy's say about his own agent of that id is his");
+        answer_grant(cys, &workspace, change)
+            .await
+            .expect("Cy's say about his own agent of that id is his");
     }
     let cys_after = [
         cys.policy_of(&workspace).await.unwrap(),
