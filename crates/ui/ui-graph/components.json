@@ -12026,6 +12026,14 @@
                 "bool": false
               },
               "doc": "Its fill fading out downward, down to the drawing's foot when it is open."
+            },
+            {
+              "name": "shade",
+              "ty": {
+                "option": "float"
+              },
+              "default": "none",
+              "doc": "How much of the fill's light reaches it, `1` the ink itself and `0` black: a filled cell of a surface shades by the angle it turns to the light."
             }
           ]
         },

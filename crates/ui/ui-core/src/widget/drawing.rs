@@ -11,6 +11,8 @@ use vello::kurbo::{
 use vello::peniko::{Color, Fill, Gradient, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::ColorCompat;
+use crate::color::to_rgb8;
 use crate::motion::{Direction, Feel, MotionValue, Reading};
 use crate::paint::with_alpha_scaled;
 
@@ -162,6 +164,10 @@ pub enum Shape {
         stroke: Option<Ink>,
         weight: Weight,
         wash: bool,
+        /// How much of its fill's light reaches the shape: `1` is the ink as it is, `0` black.
+        /// A filled cell of a surface shades by the angle its face turns to the light; nothing
+        /// else uses it.
+        shade: Option<f64>,
     },
     /// A text at (x, y), set in one of the theme's type roles.
     Text {
@@ -468,6 +474,14 @@ impl Shape {
 
     fn washed(&self) -> bool {
         matches!(self, Self::Path { wash: true, .. })
+    }
+
+    /// The light its fill is drawn with, when it says (`Shape::Path`'s `shade`).
+    fn shaded_by(&self) -> Option<f64> {
+        match self {
+            Self::Path { shade, .. } => *shade,
+            _ => None,
+        }
     }
 }
 
@@ -799,7 +813,7 @@ impl Drawing {
                     _ => {}
                 }
                 if let Some(ink) = shape.fill() {
-                    let colour = ink.colour(theme);
+                    let colour = shaded(ink.colour(theme), shape.shaded_by());
                     if shape.washed() {
                         let top = path.bounding_box();
                         let wash = Gradient::new_linear(
@@ -1062,6 +1076,25 @@ fn paint_own_stroke(
 
 /// What a washed path fills: a closed path itself, and under an open one the area down to the
 /// drawing's foot, so a trend's line and its wash are one shape and the line keeps its curve.
+/// `colour` with `shade` of its light: each channel scaled, `1.0` the colour itself and `0.0`
+/// black. A surface's cell is its ink lit by the angle it turns to the light.
+fn shaded(colour: Color, shade: Option<f64>) -> Color {
+    let Some(shade) = shade.map(|shade| shade.clamp(0.0, 1.0)) else {
+        return colour;
+    };
+    let channel = |c: u8| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a channel and a 0..=1 shade make 0.0..=255.99, which narrows to u8 exactly"
+        )]
+        let lit = (f64::from(c) * shade).round() as u8;
+        lit
+    };
+    let [r, g, b] = to_rgb8(colour);
+    Color::from_rgba8(channel(r), channel(g), channel(b), colour.a())
+}
+
 fn washed_area(path: &BezPath, shape: &Shape, bounds: Rect) -> BezPath {
     if matches!(shape, Shape::Path { closed: true, .. }) {
         return path.clone();

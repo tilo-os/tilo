@@ -283,6 +283,12 @@ pub fn shape_description() -> EnumDescription {
                         "wash",
                         "Its fill fading out downward, down to the drawing's foot when it is open.",
                     ),
+                    FieldDescription {
+                        name: "shade".to_owned(),
+                        ty: Type::Option(Box::new(Type::Float)),
+                        default: Some(Value::None),
+                        doc: "How much of the fill's light reaches it, `1` the ink itself and `0` black: a filled cell of a surface shades by the angle it turns to the light.".to_owned(),
+                    },
                 ],
             ),
             case(
@@ -600,6 +606,10 @@ impl PropType for Shape {
                 stroke: ink("stroke")?,
                 weight,
                 wash: flag("wash"),
+                shade: match field("shade") {
+                    None | Some(Value::None) => None,
+                    Some(_) => Some(float("shade")?),
+                },
             },
             "text" => Shape::Text {
                 x: float("x")?,
