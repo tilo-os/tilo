@@ -860,18 +860,22 @@ mod tests {
     }
 
     /// An agent's certificate gives it its person's default delegation in the workspace, which
-    /// the workspace's own grants naming it then narrow. A caller no certificate names as an
-    /// agent, and a person, hold nothing of their own.
+    /// the workspace's own grants naming it then narrow. The certificate reaches an agent a
+    /// device handed its session to or a roster bound: a caller that only says it is an agent
+    /// for a person is named by neither and holds nothing, and neither does a person.
     #[test]
     fn an_agents_certificate_gives_it_its_default_delegation() {
         use tilo_action_policy::Grantee;
         let (ada, device) = ([1; 32], [3; 32]);
         let person = hex::encode(ada);
-        let agent = Caller::delegated_agent("scout", ada, device).in_workspace("w");
         let expected = tilo_action_policy::roles::certified_agent("w", "scout", &person);
         assert!(!expected.is_empty());
-        assert_eq!(agent.certified("w"), expected, "the certificate's own");
-        assert_eq!(agent.granted(), expected, "nothing else narrows it");
+        // An agent its workspace's roster bound carries the certificate's delegation.
+        let bound = Caller::delegated_agent("scout", ada, device)
+            .in_workspace("w")
+            .on_roster(7, ada);
+        assert_eq!(bound.certified("w"), expected, "the certificate's own");
+        assert_eq!(bound.granted(), expected, "nothing else narrows it");
         assert!(
             expected
                 .iter()
@@ -887,6 +891,13 @@ mod tests {
             .delegated_to("scout")
             .in_workspace("w");
         assert_eq!(handed.certified("w"), expected);
+        // An agent that only says it is one for a person is named by no session and no roster.
+        let bare = Caller::delegated_agent("scout", ada, device).in_workspace("w");
+        assert!(
+            bare.certified("w").is_empty(),
+            "no session and no roster: {:?}",
+            bare.certified("w")
+        );
         // A person, and an agent no certificate names, hold nothing of their own.
         assert!(Caller::local_person("ada").certified("w").is_empty());
         assert!(Caller::local_agent("scout").certified("w").is_empty());

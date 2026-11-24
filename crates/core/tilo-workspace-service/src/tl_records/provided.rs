@@ -572,9 +572,11 @@ mod tests {
         let records = records(&workspaces);
         let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
+        // The workspace's roster bound it, so its certificate's delegation reaches it.
         let scout = || {
             Caller::delegated_agent("scout", owner.user_public_key, [7; 32])
                 .in_workspace(workspace.clone())
+                .on_roster(1, owner.user_public_key)
         };
 
         // Outside its delegation: the workspace denies it everything.
@@ -622,12 +624,14 @@ mod tests {
             .expect("an agent within its delegation writes");
         let versions = written(&workspaces, &workspace, &person);
         assert!(!versions.is_empty(), "the write reaches the store");
-        let agent =
-            serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::agent("scout")))
-                .unwrap();
-        let device_person =
-            serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::person(person)))
-                .unwrap();
+        let agent = serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::agent(
+            "scout",
+        )))
+        .unwrap();
+        let device_person = serde_json::to_value(crate::tl_records::member(
+            tilo_actions::MemberId::person(person),
+        ))
+        .unwrap();
         for version in &versions {
             assert_eq!(
                 version["who"], agent,
