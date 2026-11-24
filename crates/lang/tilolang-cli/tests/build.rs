@@ -678,7 +678,7 @@ fn a_locked_build_refuses_an_out_of_date_ids_lock_and_writes_nothing() {
         .unwrap()
         .lines()
         .filter(|line| !line.starts_with("counter = "))
-        .map(|line| format!("{line}\n"))
+        .map(|line| line.to_owned() + "\n")
         .collect();
     std::fs::write(&lock, &stale).unwrap();
     let out = scratch.path().join("out");
@@ -712,11 +712,11 @@ fn a_locked_build_refuses_an_out_of_date_ids_lock_and_writes_nothing() {
     );
     assert!(!out.join("counter.tapp").exists(), "nothing is built");
 
-    let built = build(false);
+    let unlocked = build(false);
     assert!(
-        built.status.success(),
+        unlocked.status.success(),
         "{}",
-        String::from_utf8_lossy(&built.stderr)
+        String::from_utf8_lossy(&unlocked.stderr)
     );
     assert!(
         std::fs::read_to_string(&lock)
