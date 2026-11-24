@@ -126,7 +126,9 @@ fn matches(process: device.Process, query: Text) -> Bool {
         or "{process.pid}".contains(wanted)
 }
 
-/// The processes under `parent`, flattened depth first, each with how deep it stands.
+/// The processes under `parent`, flattened depth first, each with how deep it stands. A process
+/// the filter leaves out is not drawn, but its children still are, at its own depth: what the
+/// person typed is found wherever it stands in the tree.
 fn tree_rows(
     all: List<device.Process>,
     parent: Int,
@@ -139,27 +141,30 @@ fn tree_rows(
     if depth > 32 {
         []
     } else {
-        let shown = all.filter(
-            process -> (process.ppid ?? 0) == parent
-                and (kernel or not process.kernel_thread)
-                and matches(process, query),
+        let blood = all.filter(
+            process -> (process.ppid ?? 0) == parent and (kernel or not process.kernel_thread),
         )
-        let children = sorted(shown, key, descending)
+        let children = sorted(blood, key, descending)
         children.flat_map(
-            process -> [
+            process -> if matches(process, query) {
                 [
-                    Row(
-                        process: process,
-                        depth: depth,
-                        has_children: all.any(
-                            child -> (child.ppid ?? 0) == process.pid
-                                and (kernel or not child.kernel_thread),
+                    [
+                        Row(
+                            process: process,
+                            depth: depth,
+                            has_children: all.any(
+                                child -> (child.ppid ?? 0) == process.pid
+                                    and (kernel or not child.kernel_thread)
+                                    and matches(child, query),
+                            ),
                         ),
-                    ),
-                ],
-                tree_rows(all, process.pid, depth + 1, key, descending, kernel, query),
-            ]
-                .flat_map(one -> one),
+                    ],
+                    tree_rows(all, process.pid, depth + 1, key, descending, kernel, query),
+                ]
+                    .flat_map(one -> one)
+            } else {
+                tree_rows(all, process.pid, depth, key, descending, kernel, query)
+            },
         )
     }
 }

@@ -152,7 +152,7 @@ impl Installed {
             .map(|action| (action.name.clone(), action.id.clone()))
             .collect();
         let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
+        host.runtime().set_foreign_invoker(sent.clone());
         host.runtime().set_reading(&reading(), reading_json).expect("the reading is set");
         let root = host.runtime().create_root("Monitor").expect("the app's root");
         Self {
@@ -190,12 +190,13 @@ impl Installed {
     }
 }
 
+/// The words the page shows: each node's text, its title and the label a described component
+/// reads by.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    if let Some(Value::Text(text)) = node.props.get("value") {
-        into.push(text.clone());
-    }
-    if let Some(Value::Text(title)) = node.props.get("title") {
-        into.push(title.clone());
+    for prop in ["value", "title", "label", "text", "message", "action"] {
+        if let Some(Value::Text(text)) = node.props.get(prop) {
+            into.push(text.clone());
+        }
     }
     for child in &node.children {
         words(child, into);
@@ -212,6 +213,17 @@ fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
 }
 
+fn contains(view: &ViewInstance, wanted: &str) -> bool {
+    shown(view).iter().any(|text| text.contains(wanted))
+}
+
+/// Pick `value` for the window's `state`, as the person does, and let the view run again: the
+/// window draws what the person picked at its next turn.
+fn pick(window: &mut ViewInstance, state: &str, value: Value) {
+    window.set_view_state(state, value);
+    window.poll_patches().expect("the window runs again");
+}
+
 #[test]
 fn the_process_list_shows_the_processes_and_what_the_machine_uses() {
     let app = Installed::new(READING);
@@ -223,13 +235,13 @@ fn the_process_list_shows_the_processes_and_what_the_machine_uses() {
     for wanted in ["CPU", "Memory in use", "Network", "Disk"] {
         assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
     }
-    assert!(!has(&window, "kworker/0:1"), "kernel threads are hidden by default");
+    assert!(!contains(&window, "kworker/0:1"), "kernel threads are hidden by default");
 }
 
 #[test]
 fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
     let app = Installed::new(READING);
-    let window = app.window();
+    let mut window = app.window();
     let words = shown(&window);
     let systemd = words
         .iter()
@@ -241,7 +253,7 @@ fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
         .unwrap_or_else(|| panic!("a child, indented: {words:?}"));
     assert!(sshd > systemd, "the child follows its parent: {words:?}");
 
-    window.set_view_state("tree", Value::Bool(false));
+    pick(&mut window, "tree", Value::Bool(false));
     let words = shown(&window);
     assert!(words.iter().any(|text| text.ends_with("sshd")), "{words:?}");
     assert!(!words.iter().any(|text| text.starts_with("  ")), "no indentation flat: {words:?}");
@@ -250,16 +262,16 @@ fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
 #[test]
 fn kernel_threads_show_when_they_are_asked_for() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("kernel", Value::Bool(true));
-    assert!(has(&window, "kworker/0:1"));
+    let mut window = app.window();
+    pick(&mut window, "kernel", Value::Bool(true));
+    assert!(contains(&window, "kworker/0:1"), "{:?}", shown(&window));
 }
 
 #[test]
 fn the_filter_narrows_the_list() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("filter", Value::text("sshd"));
+    let mut window = app.window();
+    pick(&mut window, "filter", Value::text("sshd"));
     let words = shown(&window);
     assert!(words.iter().any(|text| text.ends_with("sshd")), "{words:?}");
     assert!(!words.iter().any(|text| text.ends_with("systemd")), "{words:?}");
@@ -268,10 +280,10 @@ fn the_filter_narrows_the_list() {
 #[test]
 fn sorting_by_name_orders_the_list_rising() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("sort", Value::text("name"));
-    window.set_view_state("descending", Value::Bool(false));
-    window.set_view_state("tree", Value::Bool(false));
+    let mut window = app.window();
+    pick(&mut window, "sort", Value::text("name"));
+    pick(&mut window, "descending", Value::Bool(false));
+    pick(&mut window, "tree", Value::Bool(false));
     let words = shown(&window);
     let bash = words.iter().position(|text| text.ends_with("bash")).expect("bash");
     let systemd = words
@@ -284,8 +296,8 @@ fn sorting_by_name_orders_the_list_rising() {
 #[test]
 fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::Int(11));
+    let mut window = app.window();
+    pick(&mut window, "chosen", Value::Int(11));
     let words = shown(&window);
     for wanted in ["PID", "User", "Status", "Threads", "Virtual memory", "Running for", "End process", "Kill process"] {
         assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
@@ -295,8 +307,8 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
 #[test]
 fn an_app_from_the_reading_is_offered_its_end() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::Int(12));
+    let mut window = app.window();
+    pick(&mut window, "chosen", Value::Int(12));
     assert!(has(&window, "End app"));
 }
 
@@ -314,8 +326,8 @@ fn ending_a_process_asks_the_device_for_its_lifetime() {
 #[test]
 fn the_resources_tab_shows_the_machine_readings() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("tab", Value::text("resources"));
+    let mut window = app.window();
+    pick(&mut window, "tab", Value::text("resources"));
     let words = shown(&window);
     for wanted in [
         "Processor", "Processor use", "Memory", "RAM", "Network", "Network throughput", "Disk",
