@@ -356,6 +356,7 @@ fn an_app_no_workspace_names_any_more_goes_only_when_the_follower_installed_it()
         &release_of(OTHERWISE, "1.0.0", &otherwise),
         &otherwise,
         &TrustLists::default(),
+        None,
     ));
     let found = |app: &str| {
         package_store::Catalog::at(dir.path().join("apps"), None)

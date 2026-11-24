@@ -905,7 +905,8 @@ impl PackageCache {
                     rows.fetching(release, progress.received, progress.total);
                 })
                 .map_err(|error| error.to_string())?;
-                return std::fs::read(staged.path()).map_err(|error| error.to_string());
+                let bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
+                return Ok((bytes, registry.base_url.clone()));
             }
             Err(format!(
                 "no repository offers version {} of {}",
@@ -913,7 +914,9 @@ impl PackageCache {
             ))
         });
         match fetched {
-            Ok(bytes) => self.install_bytes(release, &bytes, lists, registries),
+            Ok((bytes, registry)) => {
+                self.install_bytes(release, &bytes, lists, registries, Some(registry));
+            }
             Err(error) => {
                 self.writer.rows.arrived(&release.app);
                 tracing::warn!(app = %release.app, %error, "the version a workspace runs is not here");
@@ -945,7 +948,7 @@ impl PackageCache {
             tracing::warn!(app = %release.app, "a workspace's package file is not the version it names");
             return;
         }
-        self.install_bytes(release, bytes, lists, registries);
+        self.install_bytes(release, bytes, lists, registries, None);
     }
 
     /// Install `bytes`, a package file of `release`, bound to the package root and publisher it
@@ -957,13 +960,14 @@ impl PackageCache {
         bytes: &[u8],
         lists: &TrustLists,
         registries: &app_cli::config::RegistriesFile,
+        payload_from: Option<String>,
     ) {
         if let Err(error) = self.keep_runtimes(release, bytes, lists, registries) {
             self.writer.rows.arrived(&release.app);
             tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
             return;
         }
-        if self.install_package(release, bytes, lists) {
+        if self.install_package(release, bytes, lists, payload_from) {
             self.mark_followed(&release.app);
         }
     }
@@ -1024,7 +1028,11 @@ impl PackageCache {
             })
             .map_err(|error| error.to_string())?;
             let runtime_bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
-            if !self.install_package(&needed, &runtime_bytes, lists) {
+            let payload_from = registries
+                .enabled()
+                .find(|registry| registry.name == offer.registry)
+                .map(|registry| registry.base_url.clone());
+            if !self.install_package(&needed, &runtime_bytes, lists, payload_from) {
                 return Err(format!("the runtime {runtime} did not install"));
             }
         }
@@ -1038,12 +1046,15 @@ impl PackageCache {
         release: &tilo_peer_state::workspace_membership::AppRelease,
         bytes: &[u8],
         lists: &TrustLists,
+        payload_from: Option<String>,
     ) -> bool {
-        // The surface the workspace decides the app's changes against is the one it runs.
+        // The surface the workspace decides the app's changes against is the one it runs. A
+        // version that publishes no surface (`release.surface` empty) is held to none.
         let surface = app_registry::publisher::entry::surface_hex(bytes);
-        if !surface
-            .as_ref()
-            .is_ok_and(|surface| surface.eq_ignore_ascii_case(&release.surface))
+        if !release.surface.is_empty()
+            && !surface
+                .as_ref()
+                .is_ok_and(|surface| surface.eq_ignore_ascii_case(&release.surface))
         {
             self.writer.rows.arrived(&release.app);
             tracing::warn!(app = %release.app, ?surface, "a package's surface is not the one the workspace records");
@@ -1075,7 +1086,7 @@ impl PackageCache {
             replacement: package_actions::Replacement::Replace,
             ignore_missing_runtime: false,
             dry_run: false,
-            payload_from: None,
+            payload_from,
         };
         let applied = self.writer.apply(change);
         self.writer.rows.arrived(&release.app);
