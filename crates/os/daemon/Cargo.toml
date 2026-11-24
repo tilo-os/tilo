@@ -133,6 +133,8 @@ test-server = { path = "../../../tools/test-server" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 # The collaboration wire the refusal is read on, as a program that attaches by hand speaks it.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", default-features = false }
+# The calendar bridge the daemon runs, and the calendar server a test keeps on loopback.
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", features = ["test-support"] }
 
 [lints]
 workspace = true

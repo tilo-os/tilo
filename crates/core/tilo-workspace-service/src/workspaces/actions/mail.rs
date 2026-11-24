@@ -21,8 +21,6 @@ use tilo_actions::{ActionContract, contract::Audience};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
-#[cfg(feature = "agents")]
-use crate::workspaces::person_settings::calendars::LIST as CALENDARS_LIST;
 use crate::workspaces::workspace_stores::Store;
 
 /// A workspace's mail accounts, as their holder publishes them.
@@ -336,14 +334,6 @@ impl super::super::Workspaces {
             .is_ok()
         {
             rows.extend(assistant_rows());
-        }
-        #[cfg(feature = "agents")]
-        if self
-            .reaching(asked, Store::CALENDARS, CALENDARS_LIST, ActionKind::Read)
-            .await
-            .is_ok()
-        {
-            rows.extend(super::calendars::assistant_rows());
         }
         rows
     }

@@ -1698,10 +1698,6 @@ mod addresses_tests;
 #[cfg(test)]
 mod asking_tests;
 mod branch;
-#[cfg(all(test, feature = "agents"))]
-mod calendar_reach_tests;
-#[cfg(all(test, feature = "agents"))]
-mod calendar_tests;
 #[cfg(test)]
 mod connections_tests;
 #[cfg(test)]

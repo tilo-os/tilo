@@ -27,8 +27,6 @@ pub mod folders;
 mod mail;
 #[cfg(feature = "agents")]
 mod outside;
-#[cfg(feature = "agents")]
-mod times;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -620,10 +618,6 @@ pub struct Runner {
     connectors: Option<Arc<dyn ConnectorEvents>>,
     /// How far each connector app's event log was read, by app id.
     reported: BTreeMap<String, u64>,
-    /// What each trigger at a time a resource holds has answered, by workspace, shortcut and
-    /// trigger (`times`).
-    #[cfg(feature = "agents")]
-    times: BTreeMap<(String, String, usize), times::Progress>,
     /// What the looks at each source outside took in, by workspace, shortcut and trigger
     /// (`outside`).
     #[cfg(feature = "agents")]
@@ -664,8 +658,6 @@ impl Runner {
             going: BTreeMap::new(),
             connectors: None,
             reported: BTreeMap::new(),
-            #[cfg(feature = "agents")]
-            times: BTreeMap::new(),
             #[cfg(feature = "agents")]
             looks: BTreeMap::new(),
             #[cfg(feature = "agents")]
@@ -820,8 +812,6 @@ impl Runner {
         self.schedules(now_ms).await;
         self.invocation_events(now_ms);
         self.presence_events(now_ms);
-        #[cfg(feature = "agents")]
-        self.moments(now_ms).await;
         #[cfg(feature = "agents")]
         self.outside_changes(now_ms).await;
         #[cfg(feature = "agents")]

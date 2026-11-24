@@ -132,7 +132,6 @@ core = [
     "tilo-workspace-service -> tilo-ui",
     "tilo-workspace-service -> tilo-web-search",
     "tilo-workspace-service -> tilo-workspace-agent",
-    "tilo-workspace-service -> tilolang-calendar",
 ]
 
 services = [

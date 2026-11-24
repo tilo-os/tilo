@@ -8,7 +8,6 @@
 use std::path::Path;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::AccountTester as _;
 use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::person_accounts::{
     self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, MailSignIn,
@@ -111,18 +110,13 @@ impl Workspaces {
         #[cfg(feature = "agents")]
         if provider == Provider::Icloud && adding.services.calendar && !adding.password.is_empty() {
             let server = self.icloud_calendar_server();
-            let service = super::calendars::Service {
-                server_url: server.clone(),
-                username: adding.address.clone(),
-                password: adding.password.clone(),
-                name: adding.display_name.clone(),
-                mail_account: adding.address.clone(),
-            };
-            match super::calendars::prepare_service_in(
-                (signing.vault, signing.root),
-                self.inner.models.mail_reach(),
-                signing.by,
-                service,
+            match keep_calendar_account(
+                signing.vault,
+                &server,
+                &adding.address,
+                &adding.password,
+                &adding.display_name,
+                &adding.address,
             )
             .await
             {
@@ -179,10 +173,10 @@ impl Workspaces {
         let (kept, secret) = super::account_with_secret(signing, account).await?;
         let tester = self.account_tester();
         let checking = kept.clone();
-        let tested = tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
+        let outcome = tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
             .await
             .map_err(|_| "the account's sign-in did not finish".to_owned())?;
-        let (health, signed_in, words) = match &tested {
+        let (health, signed_in, words) = match &outcome {
             Ok(_) => (accounts::SyncHealth::Healthy, true, String::new()),
             Err(reason) if reason.to_ascii_lowercase().contains("rejected") => (
                 accounts::SyncHealth::NeedsSignIn,
@@ -209,7 +203,7 @@ impl Workspaces {
             &words,
         )
         .await?;
-        tested.map(|_| ()).map_err(|reason| {
+        outcome.map(|_| ()).map_err(|reason| {
             let name = kept.display_name.trim();
             if name.is_empty() {
                 format!("The account could not be signed in again: {reason}")
@@ -569,7 +563,6 @@ impl Workspaces {
                 {
                     signing.vault.forget_sign_in(calendar, &sign_in).await?;
                 }
-                super::calendars::forget_kept(signing.root, calendar);
                 return Ok(mail_accounts(
                     &signing.vault.accounts().await?,
                     signing.root,
@@ -593,22 +586,19 @@ impl Workspaces {
     ) -> Result<accounts::Account, String> {
         let (kept, secret) = super::account_with_secret(signing, account).await?;
         let address = field(&kept, "email");
-        let service = super::calendars::Service {
-            server_url: self.icloud_calendar_server(),
-            username: if address.is_empty() {
-                kept.id.to_string()
-            } else {
-                address
-            },
-            password: secret.password,
-            name: kept.display_name.clone(),
-            mail_account: kept.id.to_string(),
+        let server = self.icloud_calendar_server();
+        let username = if address.is_empty() {
+            kept.id.to_string()
+        } else {
+            address
         };
-        super::calendars::prepare_service_in(
-            (signing.vault, signing.root),
-            self.inner.models.mail_reach(),
-            signing.by,
-            service,
+        keep_calendar_account(
+            signing.vault,
+            &server,
+            &username,
+            &secret.password,
+            &kept.display_name,
+            kept.id.as_str(),
         )
         .await
     }
@@ -910,7 +900,62 @@ fn linked_calendar(
         .get("calendar_account")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty());
-    super::calendars::linked_to(held, named, account.id.as_str())
+    super::linked_calendar(held, named, account.id.as_str())
+}
+
+/// The calendar account kept beside a provider's mail account, signed in with
+/// the password its person gave. Its server is not asked here: the calendar
+/// bridge asks it when it keeps the account's calendars, and the person
+/// chooses among them in Settings.
+#[cfg(feature = "agents")]
+async fn keep_calendar_account(
+    vault: VaultAt<'_>,
+    server_url: &str,
+    username: &str,
+    password: &str,
+    name: &str,
+    mail_account: &str,
+) -> Result<accounts::Account, String> {
+    let username = username.trim().to_owned();
+    if username.is_empty() || password.is_empty() {
+        return Err("A calendar account has a user name and a password".into());
+    }
+    let server = tilo_dav::Url::parse(server_url).map_err(|error| error.to_string())?;
+    let id = format!("caldav:{username}@{}", server.authority());
+    let display_name = if name.trim().is_empty() {
+        username.clone()
+    } else {
+        name.trim().to_owned()
+    };
+    let mut stored =
+        accounts::Account::new(accounts::AccountId::from(id), accounts::calendar::TYPE_ID);
+    stored.display_name = display_name.clone();
+    stored.config = serde_json::json!({
+        "display_name": display_name,
+        "server_url": server.as_str(),
+        "username": username,
+        "calendars": [],
+        "collapsed": false,
+        "mail_account": mail_account,
+    });
+    let places = places_of(&stored)?;
+    let owner = stored.id.to_string();
+    let before = vault
+        .accounts()
+        .await?
+        .account(stored.id.as_str())
+        .and_then(|kept| sign_in_of(&kept.config));
+    let reference = vault
+        .keep_sign_in(
+            &owner,
+            (accounts::vault_items::ItemKind::Login, places),
+            &username,
+            zeroize::Zeroizing::new(password.to_owned()),
+            before.as_ref(),
+        )
+        .await?;
+    accounts::email::set_password_item(&mut stored.config, Some(&reference.to_string()));
+    Ok(stored)
 }
 
 /// The services `account` feeds: the ones its settings name, else mail alone
@@ -935,14 +980,18 @@ pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Se
     // reads (`use_files`, `use_calendar`) as well as its own (`services`): the
     // words the cloud service reads stand where no choice was ever written,
     // so a mount keeps following them.
-    if is_file_account(account) {
-        if let Some(services) = account
-            .config
-            .get("services")
-            .and_then(|value| serde_json::from_value::<Services>(value.clone()).ok())
-        {
-            return services;
+    if is_file_account(account)
+        && let Some(written) = account.config.get("services")
+    {
+        match serde_json::from_value::<Services>(written.clone()) {
+            Ok(services) => return services,
+            Err(error) => tracing::warn!(
+                %error,
+                "the account's services do not read, so its own words stand"
+            ),
         }
+    }
+    if is_file_account(account) {
         let flag = |key: &str, usual: bool| {
             account
                 .config

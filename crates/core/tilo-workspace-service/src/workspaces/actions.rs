@@ -82,8 +82,6 @@ mod agent_record;
 #[cfg(test)]
 mod accounts_surface;
 pub(super) mod agents;
-#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
-mod calendars;
 mod server_params;
 use server_params::{add_server_params, copies_params, move_server_params, remove_server_params};
 #[cfg(not(target_arch = "wasm32"))]

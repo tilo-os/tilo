@@ -8,11 +8,8 @@
 //! The calendar origin against a calendar server kept on loopback: what a sync writes into a
 //! package's records, what a person's change sends, and what a server's refusal puts back.
 
-#[path = "support/mod.rs"]
-mod support;
-
-use support::fake_caldav::Server;
-use support::{NOW, Rig, at};
+use tilolang_calendar::test_support::fake_caldav::Server;
+use tilolang_calendar::test_support::{NOW, Rig, at};
 use tilolang_tilo::origin::Origin as _;
 
 const ADA: &str = "ada@example.test";

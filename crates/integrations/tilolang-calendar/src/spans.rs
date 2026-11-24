@@ -543,9 +543,8 @@ fn occurrence_of(event: &Event, date: Date, zone: &str) -> Option<Occurrence> {
     let edit = crate::shown::override_on(event, date);
     let original = edit.map_or(date, |edit| edit.original_date);
     let (start, end, from, to) = if event.all_day {
-        let last = date.saturating_add(jiff::Span::new().days(
-            event.all_day_span_days().saturating_sub(1),
-        ));
+        let last = date
+            .saturating_add(jiff::Span::new().days(event.all_day_span_days().saturating_sub(1)));
         (
             date.to_string(),
             last.to_string(),
@@ -637,9 +636,10 @@ pub fn occurrences<'a>(
                     .map_or(0, |span| span.get_days()),
             )
             .clamp(0, 60)
-                .saturating_add(1)
+            .saturating_add(1)
         };
-        for date in event.occurrences_in(first.saturating_sub(jiff::Span::new().days(reach)), last) {
+        for date in event.occurrences_in(first.saturating_sub(jiff::Span::new().days(reach)), last)
+        {
             let Some(occurrence) = occurrence_of(event, date, span.zone) else {
                 continue;
             };

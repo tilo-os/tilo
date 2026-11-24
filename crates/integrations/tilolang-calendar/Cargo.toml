@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "The calendar origin of tilolang packages: the iCalendar format a calendar server's entries speak, the logic that keeps a package's caldav types in step with such a server, and the connector that speaks CalDAV, run by the system in a process of its own and reached over a socket."
 
+# The renamed self dev-dependency only turns on `test-support` for this package's tests.
+[package.metadata.cargo-machete]
+ignored = ["calendar-test-support"]
+
 [dependencies]
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
 accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
@@ -36,6 +40,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# A server on loopback for the harness (`test-support`).
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http", optional = true }
+# The language runtime the harness runs the test package on (`test-support`).
+tilolang-runtime = { path = "../../lang/tilolang-runtime", optional = true }
 
 [features]
 default = ["engine"]
@@ -49,14 +57,17 @@ engine = [
     "dep:tilo-net",
     "dep:tokio",
 ]
+# The harness other tests of the connector run: a package's records over a real store, the
+# origin over the engine, and a calendar server on loopback. Tests and development runs only.
+test-support = ["engine", "dep:test-http", "dep:tilolang-runtime"]
 
 [dev-dependencies]
 tilo-action-policy = { path = "../../core/action-policy" }
 tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
-tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 tempfile.workspace = true
+# Turns on `test-support` for this package's own tests. The key must not be the package name.
+calendar-test-support = { package = "tilolang-calendar", path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

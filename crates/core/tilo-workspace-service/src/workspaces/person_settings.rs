@@ -13,10 +13,10 @@
 //! shared account and settings formats, so a device that reads them keeps
 //! reading the same files.
 
-/// The sign-ins of the accounts and providers, as entries of the workspace's vault.
-pub(in crate::workspaces) mod kept_sign_ins;
 /// The device's cloud-storage mounts: what the accounts' sync actions tell them.
 pub(in crate::workspaces) mod cloud_control;
+/// The sign-ins of the accounts and providers, as entries of the workspace's vault.
+pub(in crate::workspaces) mod kept_sign_ins;
 pub(in crate::workspaces) mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page: a Nextcloud server's login flow.
@@ -60,10 +60,6 @@ mod person_mail;
 #[cfg(feature = "agents")]
 use person_mail::answers_in_public;
 use person_mail::{kept_mail, mail_accounts};
-
-/// A person's calendars, kept beside their mail accounts.
-#[cfg(feature = "agents")]
-pub(in crate::workspaces) mod calendars;
 
 /// A mail account signed in by a turn's telling: asked for, and carried out.
 #[cfg(feature = "agents")]
@@ -378,13 +374,6 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        // The workspace's calendars are another resource of the same provider.
-        #[cfg(feature = "agents")]
-        if request.target.address.resource == calendars::RESOURCE {
-            return self
-                .person_calendars_invoke(workspace_id, caller, certificate, request)
-                .await;
-        }
         let action = request.target.address.action.as_str();
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);
@@ -828,27 +817,20 @@ async fn remove_mail(
         return Err("That account is not kept here".into());
     }
     let sign_in = kept.as_ref().and_then(|kept| sign_in_of(&kept.config));
-    // The calendars kept as its service go with it, in one change to the
-    // accounts record.
-    #[cfg(feature = "agents")]
+    // The calendar account kept as its service goes with it, in one change
+    // to the accounts record.
     let linked = kept.as_ref().and_then(|kept| {
-        calendars::linked_to(
+        linked_calendar(
             &held,
             kept.config.get("calendar_account").and_then(Value::as_str),
             account,
         )
     });
-    #[cfg(feature = "agents")]
     let linked_sign_in = linked
         .as_ref()
         .and_then(|id| held.account(id))
         .and_then(|kept| sign_in_of(&kept.config));
-    #[allow(
-        unused_mut,
-        reason = "a build without the calendar module removes the mail account alone"
-    )]
     let mut remove = vec![account];
-    #[cfg(feature = "agents")]
     if let Some(calendar) = &linked {
         remove.push(calendar.as_str());
     }
@@ -856,14 +838,31 @@ async fn remove_mail(
     if let Some(sign_in) = &sign_in {
         vault.forget_sign_in(account, sign_in).await?;
     }
-    #[cfg(feature = "agents")]
-    if let Some(calendar) = &linked {
-        if let Some(sign_in) = &linked_sign_in {
-            vault.forget_sign_in(calendar, sign_in).await?;
-        }
-        calendars::forget_kept(root, calendar);
+    if let Some(calendar) = &linked
+        && let Some(sign_in) = &linked_sign_in
+    {
+        vault.forget_sign_in(calendar, sign_in).await?;
     }
     Ok(mail_accounts(&vault.accounts().await?, root))
+}
+
+/// The calendar account kept as the mail account `mail`'s service: the one
+/// it names, else the one kept for it.
+fn linked_calendar(
+    held: &accounts::person::AccountList,
+    named: Option<&str>,
+    mail: &str,
+) -> Option<String> {
+    let accounts = held.of_type(accounts::calendar::TYPE_ID);
+    if let Some(named) = named
+        && accounts.iter().any(|account| account.id.as_str() == named)
+    {
+        return Some(named.to_owned());
+    }
+    accounts
+        .into_iter()
+        .find(|account| account.config.get("mail_account").and_then(Value::as_str) == Some(mail))
+        .map(|account| account.id.to_string())
 }
 
 /// The account `id` names, with the sign-in the workspace's vault keeps for it, the use

@@ -224,23 +224,14 @@ impl Definition {
             TriggerSpec::Once { .. }
             | TriggerSpec::Schedule { .. }
             | TriggerSpec::ResourceChanged { .. } => Ok(trigger),
-            TriggerSpec::ResourceTime {
-                kind,
-                field,
-                offset_secs,
-                ..
-            } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
-                Some(why) => Err(why),
-                // The times of a person's calendars are read where their accounts are kept;
-                // no other resource's are yet.
-                None if kind != tilo_automation::resource_time::PERSON_CALENDARS => Err(format!(
-                    "for now a moment is counted from the start or the end of an entry in its \
-                     person's calendars: `15 minutes before \"{}\" in a \"{}\"`",
-                    tilo_automation::resource_time::CALENDAR_START,
-                    tilo_automation::resource_time::PERSON_CALENDARS
-                )),
-                None => Ok(trigger),
-            },
+            // The times of a person's calendars are kept by the Calendar app and read there, not
+            // by the host that runs this shortcut, so a moment counted from one cannot be armed
+            // here.
+            TriggerSpec::ResourceTime { .. } => Err(
+                "a moment counted from a calendar entry is not available here: the Calendar app \
+                 reads its own entries"
+                    .into(),
+            ),
             // Mail is heard as it arrives in its person's own accounts, which need not be the
             // workspace's mailbox.
             TriggerSpec::SourceChanged { kind, filter, .. }
@@ -270,11 +261,9 @@ impl Definition {
             }
             _ => Err(
                 "the host runs an event with every device off: it starts at a time (`once at`, \
-                 `every`), a moment before or after an entry of its person's calendars (`15 \
-                 minutes before \"entries.*.start\" in a \"tilo.accounts.calendars\"`), when \
-                 something new is in a feed or on a page on the web (`when something new is in \
-                 \"tilo.web.feed\" at \"https://example.org/feed.xml\"`) or when something in \
-                 the workspace changes"
+                 `every`), when something new is in a feed or on a page on the web (`when \
+                 something new is in \"tilo.web.feed\" at \"https://example.org/feed.xml\"`) or \
+                 when something in the workspace changes"
                     .into(),
             ),
         }
@@ -1141,11 +1130,7 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
              offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (the \
-             host's clock), `every 3600 seconds`, `15 minutes before \"entries.*.start\" in a \
-             \"tilo.accounts.calendars\" where categories is \"Travel\"` (a moment before, `at` \
-             or after the start or the end, `entries.*.end`, of each entry in the workspace's \
-             calendars, every occurrence of one that repeats; each `where` names a field of the \
-             entry and the value it holds, and what the assistant is told carries the entry), \
+             host's clock), `every 3600 seconds`, \
              `when something new is in \"tilo.web.feed\" at \"https://example.org/feed.xml\"` \
              (a feed on the public web lists an entry it did not list before; you are told its \
              title, link, date and summary, as data), `when something new is in \

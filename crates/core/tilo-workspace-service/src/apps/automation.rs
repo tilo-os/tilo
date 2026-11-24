@@ -1545,23 +1545,13 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::Connector { source, .. } if source.trim().is_empty() => {
             Err("a connector trigger names the source the event comes from".into())
         }
-        TriggerSpec::ResourceTime {
-            kind,
-            field,
-            offset_secs,
-            ..
-        } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
-            Some(why) => Err(why),
-            // The times of a person's calendars are read where their accounts are kept; no other
-            // resource's are yet.
-            None if kind != tilo_automation::resource_time::PERSON_CALENDARS => Err(format!(
-                "a moment is counted from the start or the end of an entry in its person's \
-                 calendars: `15 minutes before \"{}\" in a \"{}\"`",
-                tilo_automation::resource_time::CALENDAR_START,
-                tilo_automation::resource_time::PERSON_CALENDARS
-            )),
-            None => Ok(()),
-        },
+        // The times of a person's calendars are kept by the Calendar app and read there, not by
+        // the host that runs this shortcut, so a moment counted from one cannot be armed here.
+        TriggerSpec::ResourceTime { .. } => Err(
+            "a moment counted from a calendar entry is not available here: the Calendar app \
+             reads its own entries"
+                .into(),
+        ),
         TriggerSpec::SourceChanged {
             kind,
             at,
@@ -1596,7 +1586,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::Connector { .. }
         | TriggerSpec::Webhook { .. } => Ok(()),
         other => Err(format!(
-            "`{}` triggers cannot be saved yet; keyboard, schedule, moment, calendar-time, \
+            "`{}` triggers cannot be saved yet; keyboard, schedule, moment, \
              app-opened, workspace-joined, file-changed, focus-mode, record-changed, \
              incoming-message, app-event, connector, feed and page triggers can",
             other.kind()
