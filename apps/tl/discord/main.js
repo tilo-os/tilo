@@ -334,7 +334,10 @@ export async function answerSetup({ calls, account, fetch = globalThis.fetch, wa
       }
       return await did("keep_token", { item });
     }
-    const token = await released(calls, account.token_item, { wait });
+    // A record the move carried over names no token item: the setup reads the vault item the
+    // old keeper's entry was adopted as, as the bridge's own gateway does.
+    const found = account.token_item || (await calls.find({ app: SELF, purpose: "bot-token" }));
+    const token = await released(calls, found, { wait });
     if (want === "find") {
       const answer = await discord(fetch, token, "/users/@me/guilds", {}, account.api_origin);
       return await did("found_servers", { servers: serversOf(answer) });
