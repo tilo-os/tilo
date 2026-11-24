@@ -39,7 +39,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_desktop_model::TabId;
-use tilo_live::live_session::LiveSession;
+use tilo_live::capture::Session as CaptureSession;
 use tilo_live::page::PageObject;
 
 /// How many payloads one page may hold for a live session that has not taken them
@@ -311,7 +311,7 @@ impl PageTracks {
     /// (none, for an app started in no workspace) decides nothing about where its page goes.
     pub(crate) fn step(
         &mut self,
-        live_sessions: &BTreeMap<String, Arc<LiveSession>>,
+        live_sessions: &BTreeMap<String, crate::live::Sessions>,
         shared: &BTreeMap<TabId, String>,
         now_us: u64,
     ) -> Vec<(TabId, Watch)> {
@@ -723,7 +723,7 @@ mod over_the_live_session {
         device: [u8; 32],
         devices: &[[u8; 32]],
         keys: &key_group::ContentKeys,
-    ) -> Arc<LiveSession> {
+    ) -> crate::live::Sessions {
         Arc::new(
             LiveSession::local(
                 relay,
@@ -737,7 +737,7 @@ mod over_the_live_session {
                 },
             )
             .expect("a local live session"),
-        )
+        ) as crate::live::Sessions
     }
 
     /// Drive the engine as a window does: read the frame, drain events, until
@@ -763,7 +763,7 @@ mod over_the_live_session {
     /// the window is shown to nobody.
     fn unshared_is_shown_to_nobody(
         pages: &mut PageTracks,
-        live_sessions: &BTreeMap<String, Arc<LiveSession>>,
+        live_sessions: &BTreeMap<String, crate::live::Sessions>,
     ) {
         assert!(
             pages.step(live_sessions, &BTreeMap::new(), 0).is_empty(),

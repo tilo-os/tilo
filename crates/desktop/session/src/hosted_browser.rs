@@ -352,46 +352,6 @@ fn item_answer(
     }
 }
 
-/// The action service's lender: the media keys of this device's own streams, as the workspace's host lends
-/// them, opened with this device's key.
-struct HostLends {
-    asking: HostAsks,
-    key: ed25519_dalek::SigningKey,
-}
-
-impl crate::live::MediaKeysLender for HostLends {
-    fn lend(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<key_group::SenderMediaKeys>> + Send + '_>,
-    > {
-        Box::pin(async move {
-            if workspace.to_string() != self.asking.workspace {
-                return None;
-            }
-            let answer = self
-                .asking
-                .ask(environment_device::MEDIA_KEYS, InvokeArgument::None)
-                .await?;
-            let lent: environment_device::MediaKeys = serde_json::from_value(answer).ok()?;
-            let sealed = hex::decode(lent.sealed).ok()?;
-            match key_group::SenderMediaKeys::open_with(
-                &self.key,
-                self.key.verifying_key().to_bytes(),
-                &sealed,
-            ) {
-                Ok(keys) => Some(keys),
-                Err(error) => {
-                    tracing::warn!(%error, "the media keys the host lent do not open here");
-                    None
-                }
-            }
-        })
-    }
-}
-
-/// The window shares' governor: the workspace's host writes each share of this device's windows.
 struct HostGoverns(HostAsks);
 
 impl crate::window_share::ShareGovernor for HostGoverns {
@@ -745,19 +705,7 @@ impl HostedBrowser {
         let Some(sync) = shared.sync.clone() else {
             return;
         };
-        let key = match self.material.key() {
-            Ok(key) => key,
-            Err(error) => {
-                tracing::warn!(%error, "this session's own streams cannot be lent keys");
-                self.asks_host = true;
-                return;
-            }
-        };
-        let lender = std::sync::Arc::new(HostLends { asking, key });
-        if !sync.lend_media_keys(lender) {
-            // No action service yet: the next pass hands it over.
-            return;
-        }
+        let _ = (&asking, &sync);
         self.asks_host = true;
     }
 

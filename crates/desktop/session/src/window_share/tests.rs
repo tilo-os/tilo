@@ -93,7 +93,7 @@ struct LiveSessions {
     runtime: tokio::runtime::Runtime,
     relay: Arc<Relay>,
     keys: key_group::ContentKeys,
-    joined: Mutex<Vec<([u8; 32], Arc<LiveSession>)>>,
+    joined: Mutex<Vec<([u8; 32], crate::live::Sessions)>>,
 }
 
 /// The relay the test's live sessions meet on: in-process, with no one to admit, since a local live session is
@@ -132,7 +132,7 @@ fn live_sessions() -> &'static LiveSessions {
 
 /// `device` 's live session in the test workspace, with every live session joined before it hearing it, and it
 /// hearing them.
-fn live_session(device: EndpointId) -> BTreeMap<String, Arc<LiveSession>> {
+fn live_session(device: EndpointId) -> BTreeMap<String, crate::live::Sessions> {
     let live = live_sessions();
     let _entered = live.runtime.enter();
     let mut joined = live.joined.lock().expect("the joined live sessions");
@@ -154,7 +154,7 @@ fn live_session(device: EndpointId) -> BTreeMap<String, Arc<LiveSession>> {
             },
         )
         .expect("a local live session"),
-    );
+    ) as crate::live::Sessions;
     for (_, other) in joined.iter() {
         other.set_roster(LiveRoster::new(devices.iter().copied()));
     }

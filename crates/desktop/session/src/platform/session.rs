@@ -793,7 +793,12 @@ impl Session {
                 (&own_workspace, tilo_live::link::TURNED_AWAY),
                 options.wake.handle(),
             );
-            sync.live_through(link.clone(), turned);
+            let sessions = crate::followed_resource::FollowedReading::follow(
+                &daemon,
+                (&own_workspace, tilo_live::link::SESSIONS),
+                options.wake.handle(),
+            );
+            sync.live_through(link.clone(), turned, sessions);
         }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.

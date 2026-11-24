@@ -50,7 +50,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_desktop_model::TabId;
-use tilo_live::live_session::{LiveSession, MAX_HEARD};
+use tilo_live::capture::Session as CaptureSession;
+use tilo_live::live_session::MAX_HEARD;
 use tilo_session_core::desktop::i18n::{t, t_args};
 
 use super::WindowShares;
@@ -392,7 +393,7 @@ fn not_heard(unheard: usize) -> String {
 fn live_row(
     workspace: &str,
     state: &LiveState,
-    live_session: Option<&LiveSession>,
+    live_session: Option<&dyn CaptureSession>,
     turned: &[Value],
 ) -> Value {
     let relay = match state {
@@ -402,7 +403,7 @@ fn live_row(
         | LiveState::Refused { relay, .. } => Some(relay),
         _ => None,
     };
-    let unheard = live_session.map_or(0, LiveSession::unheard);
+    let unheard = live_session.map_or(0, CaptureSession::unheard);
     let epoch = match state {
         LiveState::Open { epoch, .. } => Some(*epoch),
         _ => None,
@@ -432,8 +433,8 @@ fn live_row(
         "lent_keys": matches!(state, LiveState::Open { lent: true, .. }),
         "presented": presented,
         "turned_away": turned,
-        "heard": live_session.map_or(0, LiveSession::heard_total),
-        "refused": live_session.map(LiveSession::refusals).unwrap_or_default(),
+        "heard": live_session.map_or(0, CaptureSession::heard_total),
+        "refused": live_session.map(CaptureSession::refusals).unwrap_or_default(),
         "asked_for": asked_for,
         "unheard": unheard,
         "unheard_why": unheard_why(unheard),

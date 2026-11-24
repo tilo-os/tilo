@@ -39,7 +39,15 @@ fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
 /// Whether a relay that relays the workspace admits `grant` from the endpoint `peer` at `now_ns`.
 fn admits(peer: [u8; 32], grant: &grant::Native, devices: &[Device], now_ns: u64) -> bool {
     let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).unwrap();
-    bind(Peer(peer), grant, &scope_of(workspace), devices, true, now_ns).is_ok()
+    bind(
+        Peer(peer),
+        grant,
+        &scope_of(workspace),
+        devices,
+        true,
+        now_ns,
+    )
+    .is_ok()
 }
 
 tilo_test_env::scenario! {

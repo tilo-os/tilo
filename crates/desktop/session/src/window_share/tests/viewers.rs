@@ -360,13 +360,15 @@ fn a_shared_window_reaches_both_members_showing_it() {
     assert_eq!(
         exposures,
         both.iter()
-            .map(|(peer, can_control)| tilo_session_core::desktop::host::chrome::ActiveExposure {
-                peer: *peer,
-                surface: tab,
-                can_control: *can_control,
-                streaming: true,
-                name: String::new(),
-            })
+            .map(
+                |(peer, can_control)| tilo_session_core::desktop::host::chrome::ActiveExposure {
+                    peer: *peer,
+                    surface: tab,
+                    can_control: *can_control,
+                    streaming: true,
+                    name: String::new(),
+                }
+            )
             .collect::<Vec<_>>(),
         "the bar's sharing indicator says both are watching the window"
     );

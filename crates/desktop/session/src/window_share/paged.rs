@@ -28,10 +28,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use iroh::EndpointId;
 use neighbour_wire::PeerId;
-use tilo_live::share::{Control, Said};
 use tilo_compositor::Compositor;
 use tilo_desktop_model::window_share::mapped_window;
 use tilo_desktop_model::{Layout, TabId};
+use tilo_live::share::{Control, Said};
 use tilo_session_core::desktop::i18n::t;
 
 use super::{Starting, WindowShares};

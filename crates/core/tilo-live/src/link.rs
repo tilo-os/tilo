@@ -55,6 +55,14 @@ use crate::preface::PROTOCOL;
 /// let in, so this, read on the relaying device beside the refused device's own account, says why.
 pub const TURNED_AWAY: &str = "tilo.live.turned-away";
 
+/// The device's own resource its daemon publishes how far this device's place in each workspace's
+/// live session came as, read in the person's own workspace with `record` empty: a JSON object by
+/// workspace, each with the state (`"open"`, `"waiting-for-keys"`, `"keyless"`, `"unread"`,
+/// `"no-relay"`, `"unreached"`, `"busy"` or `"refused"`), the device that relays it (its key in
+/// `relay`, its person's name in `relay_name`, and `relay_here` when it is this computer), and the
+/// epoch the session seals under.
+pub const SESSIONS: &str = "tilo.live.sessions";
+
 /// Bytes one stream may have in flight unread before its reader takes some.
 pub const WINDOW: u64 = 1 << 20;
 /// The largest piece of one stream the writer sends at once.
