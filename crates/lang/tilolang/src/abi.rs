@@ -509,6 +509,8 @@ imports! {
     FileList = "file_list" ([H] -> [H]);
     FileStat = "file_stat" ([H] -> [H]);
     FileReadPath = "file_read_path" ([H] -> [H]);
+    // A preview of a file at a path, from the device's shared cache.
+    FilePreview = "file_preview" ([H, I64] -> [H]);
     FileWatch = "file_watch" ([H, H] -> [H]);
     // A folder made, a file written, an entry renamed or moved or copied, one removed, one put
     // in this device's trash, the trash read and an entry restored from it.
@@ -517,6 +519,9 @@ imports! {
     FileRename = "file_rename" ([H, H] -> [H]);
     FileMove = "file_move" ([H, H] -> [H]);
     FileCopy = "file_copy" ([H, H] -> [H]);
+    // A copy of a file made at a path named whole, so a copy beside one whose name is taken keeps
+    // both.
+    FileCopyTo = "file_copy_to" ([H, H] -> [H]);
     FileRemove = "file_remove" ([H] -> [H]);
     FileTrash = "file_trash" ([H] -> [H]);
     FileTrashEntries = "file_trash_entries" ([] -> [H]);

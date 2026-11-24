@@ -371,6 +371,19 @@ pub trait Platform {
         Err("this host keeps no previews".to_owned())
     }
 
+    /// A preview of the device file at `path`, no larger than `size` pixels a side, from the same
+    /// cache `thumbnail` reads: what `File.preview` answers. It reads the file at the path, so an
+    /// app that lists a folder of pictures shows their previews without reading every one itself.
+    /// `None` when the file has no preview; a platform that keeps no preview cache says so.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no preview.
+    fn preview_file(&self, path: &str, size: u32) -> Result<Option<FileValue>, String> {
+        let _ = (path, size);
+        Err("this host keeps no previews".to_owned())
+    }
+
     /// Offer `bytes` of `mime` (`text/plain` or an image type) as what the person copied: what
     /// `clipboard.copy` and `clipboard.copy_image` reach. A platform that serves no clipboard
     /// answers false.
@@ -507,6 +520,17 @@ pub trait Platform {
         folder: &str,
     ) -> Result<tilolang_runtime::files::Entry, String> {
         let _ = (path, folder);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Copy the entry at `path` to `to`, a path named whole: what `File.copy_to` does, so a paste
+    /// beside an entry whose name is taken keeps both.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be copied.
+    fn copy_file_to(&self, path: &str, to: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        let _ = (path, to);
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
@@ -887,6 +911,14 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
         self.0.read_file_bytes(path)
     }
 
+    fn preview(
+        &self,
+        path: &str,
+        size: u32,
+    ) -> Result<Option<tilolang_runtime::blob::FileValue>, String> {
+        self.0.preview_file(path, size)
+    }
+
     fn watch(&self, path: &str, run: &str) -> Result<String, String> {
         self.0.watch_folder(path, run)
     }
@@ -917,6 +949,10 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn copy(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
         self.0.copy_file(path, folder)
+    }
+
+    fn copy_to(&self, path: &str, to: &str) -> Result<tilolang_runtime::files::Entry, String> {
+        self.0.copy_file_to(path, to)
     }
 
     fn remove(&self, path: &str) -> Result<bool, String> {

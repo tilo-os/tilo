@@ -248,6 +248,71 @@ pub fn thumbnail(
     keep(store, &format!("{stem}-{edge}.png"), "image/png", &png).map(Some)
 }
 
+/// A preview of the device file at `path`, no larger than `size` pixels a side, kept in the content
+/// store: what `File.preview` answers, and how a folder of pictures lists with their previews
+/// without the window reading every one. The device's shared cache keeps it under the file's path,
+/// when it last changed and how large it is, so a file read again costs no decode.
+///
+/// # Errors
+///
+/// Why there is no preview: the file is gone or unreadable, or a preview that did not encode or
+/// could not be kept.
+pub fn preview(
+    store: &ContentStore,
+    thumbnails: &thumbnail::ThumbnailService,
+    path: &std::path::Path,
+    size: u32,
+) -> Result<Option<FileValue>, String> {
+    let path = &resolve(&path.to_string_lossy());
+    let category = thumbnail::category_for_path(path);
+    if !category.has_preview() {
+        return Ok(None);
+    }
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    let edge = size.clamp(1, 4096);
+    let dimension = thumbnail::ThumbSize::edge(edge);
+    let key = thumbnail::ThumbKey::of_path_meta(path, mtime, meta.len(), dimension);
+    let state = thumbnails.request(thumbnail::ThumbRequest::file(
+        key,
+        category,
+        path.to_path_buf(),
+    ));
+    let preview = match state {
+        thumbnail::ThumbState::Ready(preview) => Some(preview),
+        thumbnail::ThumbState::Badge(_) => None,
+        thumbnail::ThumbState::Loading => {
+            // The cache generates on its own workers; a preview is ready before the call answers,
+            // as a file read is. One that never settles answers no preview.
+            thumbnails.block_until_idle(Duration::from_secs(30));
+            thumbnails
+                .peek(&key)
+                .and_then(|state| state.ready().cloned())
+        }
+    };
+    let Some(preview) = preview else {
+        return Ok(None);
+    };
+    let png = thumbnail::encode_png(&preview)
+        .ok_or_else(|| format!("the preview of `{}` did not encode", path.display()))?;
+    let stem = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("preview");
+    keep(store, &format!("{stem}-{edge}.png"), "image/png", &png).map(Some)
+}
+
 /// Put `content` where the person says: what `file.save` runs.
 ///
 /// # Errors
@@ -560,6 +625,22 @@ pub fn move_entry(path: &str, folder: &str) -> Result<Entry, String> {
 /// Why it cannot be copied (a name is taken, the folder is gone).
 pub fn copy(path: &str, folder: &str) -> Result<Entry, String> {
     place(path, folder, true)
+}
+
+/// Copy the entry at `path` to `to`, a path named whole: what `File.copy_to` does, so a paste
+/// beside an entry whose name is taken keeps both.
+///
+/// # Errors
+///
+/// Why it cannot be copied (the name is taken, the folder is gone).
+pub fn copy_to(path: &str, to: &str) -> Result<Entry, String> {
+    let from = resolve(path);
+    let to = resolve(to);
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    copy_tree(&from, &to)?;
+    entry(&to)
 }
 
 /// Remove the entry at `path` for good, answering whether anything was there.

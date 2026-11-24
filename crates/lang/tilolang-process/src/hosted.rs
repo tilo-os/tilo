@@ -1098,6 +1098,25 @@ impl Platform for HostPlatform {
         crate::files::thumbnail(self.store(), &thumbnails, file, size)
     }
 
+    /// `File.preview(path, size)`: a preview of the device file at `path`, no larger than `size`
+    /// pixels a side, from the same cache; `None` for a file that has no preview.
+    fn preview_file(
+        &self,
+        path: &str,
+        size: u32,
+    ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
+        let Some(shared) = self.thumbnails.as_ref() else {
+            return Err("this host keeps no previews".to_owned());
+        };
+        let thumbnails = shared.get_or_init(|| {
+            Arc::new(
+                thumbnail::ThumbnailService::open_default(1)
+                    .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
+            )
+        });
+        crate::files::preview(self.store(), thumbnails, std::path::Path::new(path), size)
+    }
+
     /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection
     /// the session holds, as any app's copy is.
     fn copy_clipboard(&self, mime: &str, bytes: &[u8]) -> bool {
@@ -1269,6 +1288,14 @@ impl Platform for HostPlatform {
         folder: &str,
     ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
         crate::files::copy(path, folder)
+    }
+
+    fn copy_file_to(
+        &self,
+        path: &str,
+        to: &str,
+    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+        crate::files::copy_to(path, to)
     }
 
     fn remove_file(&self, path: &str) -> Result<bool, String> {
