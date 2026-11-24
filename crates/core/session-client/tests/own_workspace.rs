@@ -41,7 +41,7 @@ fn new_key() -> SigningKey {
 
 /// The names the person's list of workspaces gives them, as read on the computer that holds
 /// their own workspace: what a person sees their workspaces in.
-async fn listed_names(workspaces: &tilo_workspace_service::workspaces::Workspaces) -> Vec<String> {
+async fn listed_names(workspaces: &tilo_server::workspaces::Workspaces) -> Vec<String> {
     tilo_workspace_service::workspaces::person_workspace::read::<tilo_user_identity::WorkspaceList>(
         workspaces,
         tilo_server_protocol::workspaces::IDENTITY_LIST,
@@ -51,6 +51,30 @@ async fn listed_names(workspaces: &tilo_workspace_service::workspaces::Workspace
     .listed()
     .map(|(_, listed)| listed.name.clone())
     .collect()
+}
+
+/// Have `device` take in `workspace`, which `site` keeps, as a device of the person's does for
+/// each workspace it takes part in: it proves its membership at the address the site signs for
+/// it, and holds the copy from then on. Taking one in lists it in the person's own list, written
+/// by the device that governs that workspace.
+async fn take_in(
+    device: &tilo_server::workspaces::Workspaces,
+    site: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+) {
+    let kept = site
+        .kept_at(workspace)
+        .await
+        .expect("the site names where it keeps the workspace");
+    let hint = kept.hint.expect("the site signs its address for it");
+    let id = tilo_server_protocol::WorkspaceId::parse(workspace).expect("a workspace's id");
+    assert_eq!(
+        device
+            .hold_as_member(id, &hint)
+            .await
+            .expect("the person's device takes the workspace in"),
+        id
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -180,18 +204,12 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .await,
         "the site lists nothing in a workspace of someone whose root is elsewhere"
     );
-    // Bob's own computer lists what is his: the Lounge his tab entered, and the workspace the
-    // site just made him. That list is the record of his own workspace, which his computer
-    // holds, and it is what he sees his workspaces in.
-    for (workspace, name) in [
-        (&lounge.workspace, lounge.name.as_str()),
-        (&own.workspace, own.name.as_str()),
-    ] {
-        assert!(
-            bob_workspaces.list_for(&bob_person, workspace, name).await,
-            "the person's own computer lists {name}"
-        );
-    }
+    // Bob's computer takes in the Lounge his tab entered and the workspace the site just made
+    // him, as a device of his does for each workspace it takes part in. Taking one in lists it
+    // in the record of his own workspace, which his computer holds and writes: it is what he
+    // sees his workspaces in.
+    take_in(&bob_workspaces, &workspaces, &lounge.workspace).await;
+    take_in(&bob_workspaces, &workspaces, &own.workspace).await;
     let names = listed_names(bob_workspaces).await;
     assert!(
         names.contains(&own.name),
@@ -262,13 +280,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let second = device.own_workspace(asked_twice, once).await.unwrap();
     assert_eq!(first.0.workspace, second.0.workspace);
     assert_eq!(first.0.name, "Twice");
-    // His own computer lists it, and the second ask made no second workspace: one entry in the
+    // His computer takes it in, and the second ask made no second workspace: one entry in the
     // list has that name.
-    assert!(
-        bob_workspaces
-            .list_for(&bob_person, &first.0.workspace, &first.0.name)
-            .await
-    );
+    take_in(&bob_workspaces, &workspaces, &first.0.workspace).await;
     let twice = listed_names(bob_workspaces)
         .await
         .iter()

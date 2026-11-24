@@ -748,9 +748,16 @@ impl Workspaces {
     /// Hold each of `held`, a workspace and where the device hosting it serves it, as a member
     /// copy synced with that device: the workspaces this device takes part in that its service
     /// does not hold yet. One that is not taken in is said and left for the next call.
-    pub async fn hold_as_members(&self, held: impl IntoIterator<Item = (WorkspaceId, TransportHint)>) {
+    pub async fn hold_as_members(
+        &self,
+        held: impl IntoIterator<Item = (WorkspaceId, TransportHint)>,
+    ) {
         for (workspace, hint) in held {
-            if self.is_member(&workspace.to_string()).await.unwrap_or(false) {
+            if self
+                .is_member(&workspace.to_string())
+                .await
+                .unwrap_or(false)
+            {
                 continue;
             }
             match tokio::time::timeout(HOLD_WITHIN, self.hold_as_member(workspace, &hint)).await {
@@ -800,6 +807,8 @@ impl Workspaces {
         let _holding = self.inner.member.holding.lock().await;
         let held = self.inner.workspaces.lock().await.get(&name).cloned();
         let mut enrolled = 1;
+        // Whether this device is taken into the workspace now, never having held it before.
+        let mut taken_in = false;
         if let Some(held) = held {
             let mut governed = held.lock().await;
             // A disk copied from the machine that serves this workspace kept the workspace as
@@ -853,6 +862,7 @@ impl Workspaces {
                 self.serve_member(&held, device).await?;
             }
         } else {
+            taken_in = true;
             let path = self.inner.dir.join(format!("{name}.workspace"));
             let keys = self.device_keys();
             let mut governed = if path.exists() {
@@ -900,6 +910,17 @@ impl Workspaces {
         self.inner.executions.fence(workspace);
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
+        // The person's list names every workspace they take part in, and this device is taken
+        // into this one now: it is listed in the record of their own workspace, written where
+        // that workspace is held. A host that made it for them writes nothing of theirs.
+        if taken_in && let Ok(summary) = self.summary(&name).await {
+            self.list_for(
+                &device.cert.user_public_key,
+                &summary.workspace,
+                &summary.name,
+            )
+            .await;
+        }
         Ok(workspace)
     }
 

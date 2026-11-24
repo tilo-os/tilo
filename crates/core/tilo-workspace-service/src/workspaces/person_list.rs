@@ -7,10 +7,10 @@
 //! either, because founding it is their own device's, so nothing of theirs is written on the
 //! server.
 //!
-//! One writer runs wherever the person's own workspace is held: the daemon calls these changes as
-//! part of the action that made the workspace or admitted the person, so the list is complete
-//! without a desktop session, and a workspace removed is remembered as gone so a device that was
-//! away lets it go too.
+//! One writer runs wherever the person's own workspace is governed: the daemon calls these
+//! changes as part of the action that made the workspace, took the device into one or admitted
+//! the person, so the list is complete without a desktop session, and a workspace removed is
+//! remembered as gone so a device that was away lets it go too.
 
 use tilo_peer_state::join::TransportHint;
 use tilo_resource::Invoke;
@@ -102,8 +102,9 @@ impl Workspaces {
         })
     }
 
-    /// List `workspace` as `name` in `person`'s own list, where this device holds their own
-    /// workspace: whether it wrote. A host that keeps no copy of it writes nothing.
+    /// List `workspace` as `name` in `person`'s own list, where this device governs their own
+    /// workspace: whether it wrote. A device that keeps no copy of it writes nothing, and neither
+    /// does one keeping a copy another device governs.
     pub async fn list_for(&self, person: &[u8; 32], workspace: &str, name: &str) -> bool {
         // Their own workspace holds the list; the list never names it.
         if workspace == person_workspace_id(person) {
@@ -156,15 +157,16 @@ impl Workspaces {
         true
     }
 
-    /// Apply `changes` to `person`'s own workspace where this device holds it: whether every one
-    /// landed.
+    /// Apply `changes` to `person`'s own workspace where this device governs it: whether every one
+    /// landed. A member copy of it keeps what the device that governs it wrote, and adds nothing
+    /// of its own.
     async fn write_person_list(
         &self,
         person: &[u8; 32],
         changes: Vec<Invoke<WorkspaceList>>,
     ) -> bool {
         let own = person_workspace_id(person);
-        if self.state(&own).await.is_none() {
+        if self.state(&own).await.is_none() || self.is_member(&own).await.unwrap_or(false) {
             return false;
         }
         for change in changes {
