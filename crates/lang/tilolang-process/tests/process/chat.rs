@@ -235,8 +235,10 @@ fn a_members_picture_reaches_another_members_view_of_an_earlier_message() {
             },
             _ => None,
         };
+        // Each row the list draws wraps the item that names its author.
         rows.iter()
-            .find_map(|row| row.props.get("author").and_then(of))
+            .filter_map(|row| row.first_of_kind("ui.ListItem"))
+            .find_map(|item| item.props.get("author").and_then(of))
             .expect("the transcript's row names its author")
     };
     let before = author(&bo.rows_of(&list));
