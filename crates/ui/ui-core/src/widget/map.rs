@@ -3230,6 +3230,16 @@ impl Widget for Map {
             if let Ok(resource) = String::from_utf8(blob)
                 && !resource.is_empty()
             {
+                if landed
+                    .source
+                    .ends_with(crate::widget::canvas_place::HANDLE_KEY)
+                {
+                    // A place carried by its handle to another spot on the canvas: moved, as a
+                    // window by its bar, which the shell's control hints teach.
+                    crate::control_hints::performed::note(
+                        crate::control_hints::performed::Performed::MovedWindow,
+                    );
+                }
                 let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
                 self.point_at(at);
                 self.drop.fire(Some(crate::component::Value::List(vec![

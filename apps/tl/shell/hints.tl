@@ -9,7 +9,8 @@
 /// switch turn the same record on and off.
 ///
 /// No hint begins while something else has the person's attention (a surface over the windows,
-/// the style's settings), and none while they follow someone, whose view is not their own.
+/// the style's settings), while they type, and none while they follow someone, whose view is not
+/// their own.
 view control_hints() {
     let here = device.overlays.here
     let learned = settings.control_hints.learned
@@ -24,6 +25,7 @@ view control_hints() {
             or shell.settings_open
             or shell.reporting,
         engaged: device.people.following != "",
+        typing: device.input.typing,
         fill,
     ) {
         // Search opens from Super and Space, the chord the person's shortcuts start with.

@@ -56,6 +56,11 @@
           "name": "engaged",
           "doc": "The person is in a call or follows someone: no hint begins, and one on screen goes.",
           "type": "bool"
+        },
+        {
+          "name": "typing",
+          "doc": "The person is typing (the device's `input.typing`): no hint begins until they pause.",
+          "type": "bool"
         }
       ],
       "events": [
