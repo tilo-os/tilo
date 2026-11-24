@@ -1549,10 +1549,6 @@
       "libraries": 14846508,
       "tests": 316595904
     },
-    "windows-app": {
-      "libraries": 11798795,
-      "tests": 303287464
-    },
     "windows-vm": {
       "libraries": 9843374,
       "tests": 197516416

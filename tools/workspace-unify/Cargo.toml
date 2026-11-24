@@ -1507,7 +1507,6 @@ doc = false
 "whisper-rs-sys-0_15_0" = { package = "whisper-rs-sys", version = "^0.15.0", default-features = false, features = [] }
 "whoami-2_1_1" = { package = "whoami", version = "^2.1.1", default-features = false, features = ["default", "std", "wasi-wasite", "wasm-web"] }
 "winch-codegen-50_0_2" = { package = "winch-codegen", version = "^50.0.2", default-features = false, features = [] }
-"windows-app" = { path = "../../apps/windows", default-features = false, features = [] }
 "windows-vm" = { path = "../../crates/compat/windows-vm", default-features = false, features = [] }
 "winnow-0_7_14" = { package = "winnow", version = "^0.7.14", default-features = false, features = ["alloc", "default", "std"] }
 "winnow-1_0_3" = { package = "winnow", version = "^1.0.3", default-features = false, features = ["alloc", "ascii", "binary", "default", "parser", "std"] }
@@ -3987,7 +3986,6 @@ doc = false
 "whisper-rs-sys-0_15_0" = { package = "whisper-rs-sys", version = "^0.15.0", default-features = false, features = [] }
 "whoami-2_1_1" = { package = "whoami", version = "^2.1.1", default-features = false, features = ["default", "std", "wasi-wasite", "wasm-web"] }
 "winch-codegen-50_0_2" = { package = "winch-codegen", version = "^50.0.2", default-features = false, features = [] }
-"windows-app" = { path = "../../apps/windows", default-features = false, features = [] }
 "windows-vm" = { path = "../../crates/compat/windows-vm", default-features = false, features = [] }
 "winnow-0_7_14" = { package = "winnow", version = "^0.7.14", default-features = false, features = ["alloc", "default", "std"] }
 "winnow-1_0_3" = { package = "winnow", version = "^1.0.3", default-features = false, features = ["alloc", "ascii", "binary", "default", "parser", "std"] }

@@ -118,7 +118,6 @@ members = [
     "apps/staging-handoff-model",
     "apps/terminal",
     "apps/totp",
-    "apps/windows",
 
     # Agent
     "crates/core/agent-session",

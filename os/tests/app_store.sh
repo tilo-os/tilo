@@ -74,7 +74,7 @@ for m in "${manifests[@]}"; do
   rel="apps/$(basename "$dir")"
   grep -qF "\"$rel\"" "$REPO/Cargo.toml" || { bad "$rel is not a workspace member"; missing_member=1; }
   # build-thin-apps.sh reads this package name from Cargo.toml. It deliberately
-  # need not equal the directory (apps/windows uses windows-app to avoid the
+  # need not equal the directory (an app's package may avoid the
   # registry's `windows` package making `cargo -p windows` ambiguous).
   pkg="$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)"
   if [ -z "$pkg" ] || [ -n "${app_package_names[$pkg]:-}" ]; then

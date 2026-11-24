@@ -25200,28 +25200,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-app"
-version = "0.1.0"
-dependencies = [
- "compat-service",
- "os-actions",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-bounded-command",
- "tilo-history",
- "tilo-runtime-portal",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
 name = "windows-collections"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27785,7 +27763,6 @@ dependencies = [
  "whisper-rs-sys",
  "whoami",
  "winch-codegen",
- "windows-app",
  "windows-vm",
  "winnow 0.7.14",
  "winnow 1.0.3",
