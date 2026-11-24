@@ -750,7 +750,10 @@ fn a_page_joins_over_the_endpoint_its_device_delegated() {
             client.now_ns,
         )
         .unwrap();
-    let proof = sign_membership_proof(challenge, &client.page_key).unwrap();
+    let proof =
+        collab_types::signer::answered_now(sign_membership_proof(challenge, &client.page_key))
+            .unwrap()
+            .unwrap();
     let bootstrap = log
         .membership_complete(
             &workspace,
@@ -779,7 +782,10 @@ fn a_device_joins_over_its_own_key() {
             client.now_ns,
         )
         .unwrap();
-    let proof = sign_membership_proof(challenge, &client.page_key).unwrap();
+    let proof =
+        collab_types::signer::answered_now(sign_membership_proof(challenge, &client.page_key))
+            .unwrap()
+            .unwrap();
     let bootstrap = log
         .membership_complete(
             &workspace,
@@ -831,7 +837,8 @@ fn an_expired_delegation_is_refused() {
     let client = Client::seeded_page();
     let workspace = client.workspace();
     let endpoint = [7; 32];
-    let expired = client.delegation_for(7, client.now_ns.saturating_sub(2 * DELEGATION_LIFETIME_NS));
+    let expired =
+        client.delegation_for(7, client.now_ns.saturating_sub(2 * DELEGATION_LIFETIME_NS));
     let mut log = JoinLog::default();
     let refused = log
         .membership_challenge(

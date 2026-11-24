@@ -371,7 +371,7 @@ pub async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
-    let proof = join::sign_membership_proof(challenge, signer)?;
+    let proof = join::sign_membership_proof(challenge, signer).await?;
     match client
         .request(
             host.clone(),

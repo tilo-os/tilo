@@ -1134,12 +1134,13 @@ pub fn verify_stored_complete(
     Ok(redemption)
 }
 
-/// Sign the answer to a membership challenge.
+/// Sign the answer to a membership challenge, as the device's signer answers: a page's key signs
+/// through a promise, later than the turn that asked.
 ///
 /// # Errors
 ///
-/// Returns an error if the challenge cannot be encoded for signing.
-pub fn sign_membership_proof(
+/// Returns an error if the challenge cannot be encoded for signing, or the signer refused.
+pub async fn sign_membership_proof(
     challenge: MembershipChallenge,
     key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<MembershipProof, String> {
@@ -1149,7 +1150,9 @@ pub fn sign_membership_proof(
     let digest = tagged_digest(MEMBERSHIP_PROOF_DOMAIN, &challenge)?;
     Ok(MembershipProof {
         challenge,
-        signature: collab_types::signer::sign_now(key, digest.to_vec())
+        signature: key
+            .sign(digest.to_vec())
+            .await
             .map_err(|error| error.to_string())?,
     })
 }

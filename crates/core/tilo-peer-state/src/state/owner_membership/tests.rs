@@ -37,7 +37,9 @@ fn proof_through(
             now,
         )
         .unwrap();
-    let proof = sign_membership_proof(challenge.clone(), key).unwrap();
+    let proof = collab_types::signer::answered_now(sign_membership_proof(challenge.clone(), key))
+        .unwrap()
+        .unwrap();
     verify_membership_proof(
         &proof,
         &challenge,

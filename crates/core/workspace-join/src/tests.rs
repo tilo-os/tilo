@@ -121,7 +121,10 @@ fn durable_membership_proof_is_independent_of_the_original_invitation_lifetime()
         2,
     )
     .unwrap();
-    let proof = sign_membership_proof(challenge.clone(), &guest_device).unwrap();
+    let proof =
+        collab_types::signer::answered_now(sign_membership_proof(challenge.clone(), &guest_device))
+            .unwrap()
+            .unwrap();
     let verified =
         verify_membership_proof(&proof, &challenge, &guest, &RevocationList::new(), 3).unwrap();
     assert_eq!(verified.workspace_id(), challenge.workspace_id);
@@ -502,7 +505,13 @@ fn a_member_list_with_devices_crosses_as_json_and_postcard() {
         .into(),
     };
     let json = serde_json::to_string(&list).expect("a member list is JSON");
-    assert_eq!(serde_json::from_str::<crate::MemberList>(&json).expect("it reads back"), list);
+    assert_eq!(
+        serde_json::from_str::<crate::MemberList>(&json).expect("it reads back"),
+        list
+    );
     let bytes = postcard::to_allocvec(&list).expect("a member list is postcard");
-    assert_eq!(postcard::from_bytes::<crate::MemberList>(&bytes).expect("it reads back"), list);
+    assert_eq!(
+        postcard::from_bytes::<crate::MemberList>(&bytes).expect("it reads back"),
+        list
+    );
 }
