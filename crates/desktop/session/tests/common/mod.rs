@@ -725,10 +725,10 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
 pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
     use std::os::unix::fs::PermissionsExt as _;
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
-    let identity = home.root().join("identity");
     home.env()
-        .set("TILO_IDENTITY_ROOT", &identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    // The person's services start only on a device whose account holds the identity naming it.
+    device_in(&mut home);
     let profile = tempfile::tempdir().expect("a profile for the daemon");
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the profile is this user's");
@@ -786,8 +786,9 @@ pub fn device_state() -> std::path::PathBuf {
     STATE.with(|(_, state)| state.clone())
 }
 
-/// Sets up a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a
-/// secret store, so a session there holds its workspaces. Its state directory.
+/// Sets up a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, kept in
+/// the store every reader of this account's identity reads, and a secret store, so a session
+/// there holds its workspaces. Its state directory.
 ///
 /// # Panics
 /// The identity or its directories cannot be made.

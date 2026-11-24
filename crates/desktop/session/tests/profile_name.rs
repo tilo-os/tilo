@@ -162,7 +162,8 @@ fn rename_to(session: &mut Session, name: &str) {
 /// The person's identity as this device keeps it: what provisioning wrote, whose name is nobody's
 /// yet, so the card has a name to ask for.
 fn make_the_identity_unnamed(home: &tilo_test_env::TestHome) {
-    let dir = home.config().join("tilo").join("identity");
+    let dir =
+        tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
     let identity = tilo_identity::store::resolve_active_identity(&dir).expect("an active identity");
     let id = identity
         .file_stem()

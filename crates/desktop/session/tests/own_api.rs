@@ -1,8 +1,9 @@
 //! Tilo's API at the session's own socket: a program of this login —
 //! `tilolang repl`, `tilo` — answers as the person against the workspaces
 //! this desktop holds, because the socket's own permissions and the kernel's
-//! account of the peer are what admit it, and the desktop answers as the one
-//! key the session keeps in memory. No key is written beside the socket.
+//! account of the peer are what admit it, and the desktop answers as this
+//! device's own certificate, kept with its identity. No key is written beside
+//! the socket.
 //!
 //! A request over that socket, as both commands make one: the listing it asks
 //! first (`account/workspaces#list`) comes from the workspaces this device
@@ -22,19 +23,19 @@
 use serde_json::json;
 use tilo_session::Options;
 
-use crate::common::{
-    PERSON, api_account, api_request, app_store, device_in, headless, seeded_apps, until,
-};
+use crate::common::{api_account, api_request, app_store, device_in, headless, seeded_apps, until};
 
-/// A session that holds its workspaces here, with the home it keeps them in: the home lives as
-/// long as the session, since nothing of the session's reads it after the home is gone.
+/// A session on this computer, with the home it keeps it in: the home lives as long as the
+/// session, since nothing of the session's reads it after the home is gone.
 struct Desktop {
-    _home: tilo_test_env::TestHome,
     session: tilo_session::Session,
+    _home: tilo_test_env::TestHome,
 }
 
-/// The headless session that holds its workspaces here and serves its person's API at `api`:
-/// what a program of this login reaches as the person.
+/// The headless session that runs as the shell of this computer's device daemon and serves its
+/// person's API at `api`: what a program of this login reaches as the person. A computer's session
+/// reaches its workspaces over the daemon's shell link, and the API answers from the device's one
+/// dispatch on that link, so the daemon is started here as the person's own service starts it.
 fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
     session_serving(root, api, seeded_apps())
 }
@@ -45,18 +46,33 @@ fn session_serving(
     api: &std::path::Path,
     services: Vec<Box<dyn tilo_service::Service>>,
 ) -> Desktop {
+    use std::os::unix::fs::PermissionsExt as _;
     // A device of the person's own, as a person's computer is: the API's key is this device's
-    // certificate, and its workspaces are held here.
+    // certificate, and its workspaces are held by the daemon.
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     let state = device_in(&mut home);
     // The apps a program compiles against: this test's store, installed as a person's device
     // installs them, and named to this home as a device names its own. It is installed after
     // the home is made, since the home names the temporary directory the store is made in.
     let store = app_store();
     home.env().set("TILO_APPS_DATA_DIR", store);
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    let within = tilo_test_env::hang_bound();
+    let daemon =
+        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    let person = daemon.person(within).expect("its person's services run");
+    let shell_link = daemon
+        .link_shell(within)
+        .expect("the daemon makes the session's link");
     let session = headless(Options {
-        person: PERSON.to_owned(),
+        person,
         state: Some(state),
+        shell_link: Some(shell_link),
+        shell_daemon: Some(Box::new((daemon, profile))),
         collab: false,
         services,
         app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
@@ -64,8 +80,8 @@ fn session_serving(
         ..Options::default()
     });
     Desktop {
-        _home: home,
         session,
+        _home: home,
     }
 }
 
