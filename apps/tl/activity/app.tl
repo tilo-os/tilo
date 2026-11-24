@@ -494,30 +494,32 @@ view session_card(
         for c in s.in_effect {
             ui.ListRow(title: c.summary, secondary: changed_where(c), icon: .clock) {
                 trailing: {
-                    if c.target.id != "" {
-                        ui.Button(
-                            c.target.label,
-                            icon: .arrow_up_right,
-                            size: .small,
-                            role: .plain,
-                        ) {
-                            on press: history.open_change(
-                                history.history,
-                                id: c.target.id,
-                                kind: c.target.kind,
-                                label: c.target.label,
-                            )
+                    row(gap: .tight, align: .center) {
+                        if c.target.id != "" {
+                            ui.Button(
+                                c.target.label,
+                                icon: .arrow_up_right,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: history.open_change(
+                                    history.history,
+                                    id: c.target.id,
+                                    kind: c.target.kind,
+                                    label: c.target.label,
+                                )
+                            }
                         }
-                    }
-                    if let label = c.undo_label {
-                        ui.Button(label, size: .small, role: .plain) {
-                            on press: history.undo_record(
-                                history.history,
-                                range: history.Span(from: c.range.from, to: c.range.to),
-                                app_id: c.app_id,
-                                id: c.record,
-                                step: c.step,
-                            )
+                        if let label = c.undo_label {
+                            ui.Button(label, size: .small, role: .plain) {
+                                on press: history.undo_record(
+                                    history.history,
+                                    range: history.Span(from: c.range.from, to: c.range.to),
+                                    app_id: c.app_id,
+                                    id: c.record,
+                                    step: c.step,
+                                )
+                            }
                         }
                     }
                 }
