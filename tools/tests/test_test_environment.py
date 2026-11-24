@@ -170,12 +170,16 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         scripts = dict(config["scripts"]["setup"])
         # The session's sibling binaries are built before its tests in every
         # profile: a test that started Cargo itself would build the workspace
-        # again inside the run.
+        # again inside the run. The runtime's test-support binary and the
+        # example checklist are siblings too: a test that starts a daemon or
+        # installs the checklist needs them.
         siblings = scripts.pop("session-siblings")
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(siblings["command"][2:], [
             "tilo-lock-screen:tilo-lock-screen", "osk:osk",
             "tilolang-process:tilolang-process", "launcher:tilo-launcher",
+            "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
+            "example-shared-checklist:example-shared-checklist",
         ])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
@@ -188,12 +192,11 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 expected,
                 f"the {profile} profile builds the session's siblings for its tests",
             )
-        # A branched device's vault and provider keys are read through the apps
-        # that keep them, so the run that drives it builds those two and the
-        # launcher a desktop starts them from first.
+        # A branched device's vault keys are read through the app that keeps
+        # them, as a desktop starts it, so the run that drives it builds the
+        # launcher first; Passwords itself runs as its tilolang package.
         vault = scripts.pop("vault-siblings")
         self.assertEqual(vault["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                            "passwords:passwords",
                                             "launcher:tilo-launcher"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
@@ -209,7 +212,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-server:tilo-server=tilo-server/agents"])
+                                             "tilo-runtime:tilo-runtime=tilo-runtime/agents"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "lounge-siblings"]
@@ -260,9 +263,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # budgets: the run builds each of them first.
         opened = scripts.pop("app-open-siblings")
         self.assertEqual(opened["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-runtime:tilo-runtime",
-                                             "passwords:passwords",
-                                             "launcher:tilo-launcher"])
+                                             "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
+                                             "launcher:tilo-launcher",
+                                             "tilolang-process:tilolang-process=app-launch"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "app-open-siblings"]
@@ -271,6 +274,23 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [("package(tilo-session) and binary(it) and test(app_open_budget::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the apps the session opens and times",
+            )
+        # A device's views of its installed tilolang apps start the app's window
+        # as the device does: `tilo-launcher tilolang-process`, on a runtime
+        # bundle the test bakes with the tilolang host in it.
+        view = scripts.pop("view-siblings")
+        self.assertEqual(view["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                           "tilolang-process:tilolang-process",
+                                           "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "view-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-runtime) and binary(it) and "
+                  "(test(app_views::) or test(keeping_pages::))",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the apps whose views its tests lay out",
             )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
@@ -303,6 +323,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(node_workspace::)": "page-bundle",
+                                 "package(tilo-runtime) and binary(it) and "
+                                 "(test(app_views::) or test(keeping_pages::))":
+                                     "view-siblings",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
                                  # script's and proc macro's cache entry by it.
