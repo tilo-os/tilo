@@ -1,7 +1,7 @@
 //! The `disks` resource: the drives and partitions this computer sees, what each holds and how
 //! healthy it is, with the actions that open, close, erase, test and eject them.
 //!
-//! What reads the block devices and asks UDisks2 is the session's system service. The names a
+//! What reads the block devices and asks `UDisks2` is the session's system service. The names a
 //! person gives a drive are the workspace's, kept by the Disks app itself.
 
 use serde::{Deserialize, Serialize};
@@ -41,13 +41,15 @@ pub struct DiskHealth {
     pub media_errors: Option<u64>,
     #[serde(default)]
     pub bad_sectors: Option<u64>,
-    /// The last self-test's outcome as UDisks2 names it (`success`, `aborted`, `inprogress`).
+    /// The last self-test's outcome as `UDisks2` names it (`success`, `aborted`, `inprogress`).
     #[serde(default)]
     pub self_test: Option<String>,
 }
 
 /// One partition of a drive.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Partition {
     /// Its name in `/dev` (`sda1`, `nvme0n1p2`).
     pub name: String,
@@ -134,37 +136,68 @@ pub struct Disks {
 pub enum DiskAction {
     /// Read the drives and partitions again.
     #[effect(kind = "read")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "refresh disks, laufwerke neu lesen")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "refresh disks, laufwerke neu lesen"
+    )]
     Refresh,
     /// Open a partition, or a whole drive, at its filesystem.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "folder-open", keywords = "mount drive, laufwerk einhängen")]
+    #[effect(
+        own_device,
+        icon = "folder-open",
+        keywords = "mount drive, laufwerk einhängen"
+    )]
     Mount {
-        #[param("The drive's or partition's name in /dev, e.g. sda1")] device: String,
+        #[param("The drive's or partition's name in /dev, e.g. sda1")]
+        device: String,
     },
     /// Close a mounted partition.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "eject", keywords = "unmount drive, laufwerk aushängen")]
+    #[effect(
+        own_device,
+        icon = "eject",
+        keywords = "unmount drive, laufwerk aushängen"
+    )]
     Unmount {
-        #[param("The partition's name in /dev")] device: String,
+        #[param("The partition's name in /dev")]
+        device: String,
     },
     /// Erase a partition, or a whole drive, and write a new filesystem on it.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "format drive, erase, laufwerk formatieren")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "format drive, erase, laufwerk formatieren"
+    )]
     Format {
-        #[param("The drive's or partition's name in /dev")] device: String,
-        #[param("The filesystem to write, e.g. ext4, exfat, vfat")] filesystem: String,
+        #[param("The drive's or partition's name in /dev")]
+        device: String,
+        #[param("The filesystem to write, e.g. ext4, exfat, vfat")]
+        filesystem: String,
     },
     /// Measure the drive's read speed.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "gauge", keywords = "benchmark drive, laufwerk messen")]
+    #[effect(
+        own_device,
+        icon = "gauge",
+        keywords = "benchmark drive, laufwerk messen"
+    )]
     Benchmark {
-        #[param("The drive's or partition's name in /dev")] device: String,
+        #[param("The drive's or partition's name in /dev")]
+        device: String,
     },
     /// Power a removable drive off so it can be pulled out.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "eject", keywords = "eject drive, laufwerk auswerfen")]
+    #[effect(
+        own_device,
+        icon = "eject",
+        keywords = "eject drive, laufwerk auswerfen"
+    )]
     Eject {
-        #[param("The removable drive's name in /dev")] device: String,
+        #[param("The removable drive's name in /dev")]
+        device: String,
     },
 }
