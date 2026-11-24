@@ -7,6 +7,9 @@ d-so-tilo-tasks-keywords = aufgaben, tickets, problemverfolgung, kanban, board, 
 d-snj4onfb = Person
     .doc = Jemand, der an einem Projekt beteiligt ist, mit der Rolle dort: wem eine Aufgabe gegeben werden kann, ohne ihn erneut einzutippen.
     .noun = { $count ->
+        [one] Person
+       *[other] Personen
+    }
 
 d-ktw2jimm = Name
 
@@ -15,6 +18,9 @@ d-hgptkohm = Rolle
 d-bfqi332m = Projekt
     .doc = Ein Projekt: Aufgaben, die auf ein Ergebnis hinarbeiten.
     .noun = { $count ->
+        [one] Projekt
+       *[other] Projekte
+    }
 
 d-sgnau7vd = Name
 
@@ -30,6 +36,9 @@ d-bfqi332m-filter-kind = Art
 d-7jh5u6dc = Wartezeit
     .doc = Worauf eine Aufgabe wartet, in wenigen Worten.
     .noun = { $count ->
+        [one] Wartezeit
+       *[other] Wartezeiten
+    }
 
 d-4fz6j3rg = Art
 
@@ -49,6 +58,9 @@ d-7jh5u6dc-filter-until = Bis
 d-p634b5uh = Angehalten
     .doc = Warum die Arbeit an einer Aufgabe aufhörte.
     .noun = { $count ->
+        [one] angehalten
+       *[other] angehalten
+    }
 
 d-ps5lbw2w = Grund
 
@@ -64,6 +76,9 @@ d-p634b5uh-filter-at = Um
 d-3bdn2bkx = Fortgesetzt
     .doc = Worauf die Arbeit an einer Aufgabe wartete und was sie weitermachen ließ.
     .noun = { $count ->
+        [one] fortgesetzt
+       *[other] fortgesetzt
+    }
 
 d-66a5tqcs = Ursache
 
@@ -74,6 +89,9 @@ d-3bdn2bkx-filter-at = Um
 d-pwfklw2l = Arbeit
     .doc = Was eine Aufgabe behält, während ein Agent über viele Sitzungen an ihr arbeitet: wo ihr Arbeitsmaterial liegt, worauf sie wartet, was sie kosten darf und wie lange gearbeitet wurde.
     .noun = { $count ->
+        [one] Arbeit
+       *[other] Arbeiten
+    }
 
 d-finhtl5k = Ordner
     .doc = Der Ordner des Arbeitsbereichs, in dem ihr Material liegt, nach seiner Adresse.
@@ -152,6 +170,9 @@ d-pwfklw2l-filter-pieces_at_once = Teile gleichzeitig
 d-2nkvzgb3 = Herkunft
     .doc = Wo es zuerst geschrieben wurde, als es aus einem anderen Tracker oder Dienst hierher kam: die Person dort, der Dienst, wo es dort steht und seine Referenz, damit eine Aufgabe oder ein Thread von anderswo sagt, woher er oder sie kam.
     .noun = { $count ->
+        [one] Herkunft
+       *[other] Herkünfte
+    }
 
 d-3saq3nij = Autor
     .doc = Wer es dort schrieb, unter dem Namen von dort.
@@ -181,6 +202,9 @@ d-2nkvzgb3-filter-updated = Aktualisiert
 d-75ojxgs3 = Aufgabe
     .doc = Etwas zu tun: was, bis wann, von wem und in welchem Projekt.
     .noun = { $count ->
+        [one] Aufgabe
+       *[other] Aufgaben
+    }
 
 d-2y3yxgz4 = Nummer
     .doc = Ihre Nummer im Arbeitsbereich (`#12`), einmal vergeben, wenn sie entsteht.
@@ -284,6 +308,9 @@ d-75ojxgs3-filter-assignee = Zuständig
 d-fjqi4yze = Aufgaben
     .doc = Die Aufgaben und Projekte des Arbeitsbereichs.
     .noun = { $count ->
+        [one] Aufgabe
+       *[other] Aufgaben
+    }
 
 d-lg5gedbh = Einträge
     .doc = Jede Aufgabe, in der Reihenfolge, in die Menschen sie gebracht haben.
