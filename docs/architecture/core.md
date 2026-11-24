@@ -492,7 +492,10 @@ There are seven ways to add a device:
   the device's class: native on Tilo OS, foreign elsewhere. It keeps the root
   and the device key in its own store, and an OS account it serves is
   admitted as its person, named by the account's display name until they
-  rename themselves.
+  rename themselves. A device that holds the root acts with the root's
+  authority whatever its class. A foreign device without the root asks once
+  through the one ask, and the approving device signs. A Tilo OS device a
+  root holder adds is certified native.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
