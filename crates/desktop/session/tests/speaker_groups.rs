@@ -4,10 +4,11 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::common::people::{Device, Person, Role, Site, join_together};
+use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::json;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::RemoteActionTarget;
+use tilo_server_protocol::workspaces::Role;
 use tilo_session::platform::fabric::{DeviceId, EndpointSelector};
 use tilo_workspace_service::workspaces::person_workspace::speaker::{
     SpeakerEndpoint, SpeakerLedMember,
