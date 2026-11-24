@@ -215,7 +215,7 @@ impl Provider {
 pub enum CloudKind {
     /// Google Drive.
     GoogleDrive,
-    /// OneDrive.
+    /// Microsoft's cloud storage.
     OneDrive,
     /// Dropbox.
     Dropbox,
