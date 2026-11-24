@@ -111,6 +111,8 @@ mod engine;
 mod e2e_store;
 #[path = "e2e_typst_editor.rs"]
 mod e2e_typst_editor;
+#[path = "e2e_word_processor.rs"]
+mod e2e_word_processor;
 #[path = "effects.rs"]
 mod effects;
 #[path = "event_values.rs"]

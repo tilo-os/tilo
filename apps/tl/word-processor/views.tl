@@ -92,7 +92,8 @@ view writer(d: Document) {
                                     reveal: reveal,
                                     format: format_ask,
                                     page: d.paper,
-                                    header: d.title,
+                                    header: if d.header == "" { d.title } else { d.header },
+                                    footer: d.footer,
                                     margin_top: d.margin_top,
                                     margin_right: d.margin_right,
                                     margin_bottom: d.margin_bottom,
@@ -374,7 +375,7 @@ fn steps() -> List<Int> {
 
 /// The styles every document has, as the paragraph panel names them.
 fn style_names() -> List<Text> {
-    ["Body", "Heading 1", "Heading 2", "Heading 3"]
+    ["Body", "Heading 1", "Heading 2", "Heading 3", "Quote", "List item"]
 }
 
 /// The panel beside the page: the page's setup, the words' own look, or the review of what
@@ -524,6 +525,17 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                 ui.NumberInput(bind: d.margin_right, label: "Right", min: 0.0, max: 288.0)
                 ui.NumberInput(bind: d.margin_bottom, label: "Bottom", min: 0.0, max: 288.0)
                 ui.NumberInput(bind: d.margin_left, label: "Left", min: 0.0, max: 288.0)
+            }
+        }
+        section("Header and footer") {
+            stack(gap: .tight) {
+                ui.TextInput(bind: d.header, placeholder: "Header: the document's title")
+                ui.TextInput(bind: d.footer, placeholder: "Footer, before the page number")
+                text(
+                    "Each page's top margin carries the header, and its foot the footer and the page number.",
+                    role: .caption,
+                    secondary: true,
+                )
             }
         }
         section("Paragraph") {

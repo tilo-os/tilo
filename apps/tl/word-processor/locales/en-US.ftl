@@ -29,6 +29,12 @@ d-tim24jvi = Margin left
 d-5lzglfac = Paper
     .doc = The paper the page is set for, as the panel offers it: A4, Letter or Legal.
 
+d-yojargfl = Header
+    .doc = The words set in every page's top margin, above the writing.
+
+d-5ih7vhqz = Footer
+    .doc = The words set in every page's bottom margin, before its number; empty for the number alone.
+
 d-wdffnjds = Started
     .doc = What the writing was started as: a blank page, a letter, a report, a résumé or meeting notes.
 
@@ -130,6 +136,14 @@ d-jm653hke = Set paper
 
 d-jm653hke-paper = Paper
 
+d-zp6agjhw = Set the page's header and footer
+    .doc = Sets the words every page's top or bottom margin carries: `where` is `header` or `footer`.
+    .w-a-page-has-a-header-and = A page has a header and a footer
+
+d-zp6agjhw-where = Where
+
+d-zp6agjhw-words = Words
+
 d-5en3y2gh = Table of contents
     .doc = Writes a table of contents at the head of the document.
     .w-add-headings-first = Add headings first
@@ -220,6 +234,8 @@ d-pnlur6tt = Append paragraph~present
 
 d-ldyo3esg = Replace text~present
 
+d-xfosdeon = Set page words~present
+
 d-53dvuo5l = Generate toc~present
 
 d-axqdfnos = Set hyperlink~present
@@ -265,6 +281,10 @@ d-xxexkmsk = Writer
     .w-right = Right
     .w-bottom = Bottom
     .w-left = Left
+    .w-header-and-footer = Header and footer
+    .w-header-the-document-s-title = Header: the document's title
+    .w-footer-before-the-page-number = Footer, before the page number
+    .w-each-page-s-top-margin-carries = Each page's top margin carries the header, and its foot the footer and the page number.
     .w-paragraph = Paragraph
     .w-before = Before
     .w-after = After

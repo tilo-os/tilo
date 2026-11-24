@@ -28,6 +28,12 @@ d-tim24jvi = Linker Rand
 d-5lzglfac = Papier
     .doc = Das Papier, auf das die Seite gesetzt ist, wie es die Leiste anbietet: A4, Letter oder Legal.
 
+d-yojargfl = Kopfzeile
+    .doc = Die Wörter im oberen Rand jeder Seite, über dem Text.
+
+d-5ih7vhqz = Fußzeile
+    .doc = Die Wörter im unteren Rand jeder Seite, vor ihrer Nummer; leer für die Nummer allein.
+
 d-wdffnjds = Begonnen
     .doc = Wie der Text begonnen wurde: als leere Seite, Brief, Bericht, Lebenslauf oder Besprechungsnotizen.
 
@@ -129,6 +135,14 @@ d-jm653hke = Papier setzen
 
 d-jm653hke-paper = Papier
 
+d-zp6agjhw = Kopf- und Fußzeile der Seite setzen
+    .doc = Setzt die Wörter, die der obere oder untere Rand jeder Seite trägt: `where` ist `header` oder `footer`.
+    .w-a-page-has-a-header-and = Eine Seite hat eine Kopf- und eine Fußzeile
+
+d-zp6agjhw-where = Wo
+
+d-zp6agjhw-words = Wörter
+
 d-5en3y2gh = Inhaltsverzeichnis
     .doc = Schreibt ein Inhaltsverzeichnis an den Anfang des Dokuments.
     .w-add-headings-first = Fügen Sie zuerst Überschriften hinzu
@@ -219,6 +233,8 @@ d-pnlur6tt = Absatz anhängen~present
 
 d-ldyo3esg = Text ersetzen~present
 
+d-xfosdeon = Seitentexte setzen~present
+
 d-53dvuo5l = Inhaltsverzeichnis erzeugen~present
 
 d-axqdfnos = Hyperlink setzen~present
@@ -299,6 +315,10 @@ d-xxexkmsk = Writer
     .w-a4 = A4
     .w-letter = Letter
     .w-legal = Legal
+    .w-header-and-footer = Kopf- und Fußzeile
+    .w-header-the-document-s-title = Kopfzeile: der Titel des Dokuments
+    .w-footer-before-the-page-number = Fußzeile, vor der Seitenzahl
+    .w-each-page-s-top-margin-carries = Der obere Rand jeder Seite trägt die Kopfzeile, der untere die Fußzeile und die Seitenzahl.
     .w-paragraph = Absatz
     .w-body = Fließtext
     .w-bulleted = Aufzählung

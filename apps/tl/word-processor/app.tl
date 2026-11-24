@@ -26,6 +26,12 @@ type Document (untitled: "Untitled Document") {
     margin_left: Float = 96.0
     /// The paper the page is set for, as the panel offers it: A4, Letter or Legal.
     paper: Text = "A4"
+    /// The words set in every page's top margin, above the writing. Empty leaves the document's
+    /// title there, so a page of a document reads whose it is wherever it is printed.
+    header: Text = ""
+    /// The words set in every page's bottom margin, before its number; empty for the number
+    /// alone.
+    footer: Text = ""
     /// What the writing was started as: a blank page, a letter, a report, a résumé or meeting
     /// notes. The page's setup panel says it, so a person reads how the document began.
     started: Text = "blank"
@@ -164,11 +170,10 @@ fn without_suffix(text: Text, suffix: Text) -> Text {
 action add_row(d: Document) (icon: .plus, label: "Add row", group: "Table") {
     applies has_table(d) "The document holds no table"
     let lines = markdown_of(d).split("\n")
-    let last = table_lines(lines).last() ?? ""
-    let row = table_row(fill(table_cells(last).len(), ""))
-    let at = lines.index_of(last) ?? 0
+    let at = table_places(lines).last() ?? 0
+    let row = table_row(fill(table_cells(lines.at(at) ?? "").len(), ""))
     d.body = RichText.from_markdown(
-        (lines.take(at + 1) + [row] + lines.filter(l -> (lines.index_of(l) ?? 0) > at)).join("\n"),
+        (lines.take(at + 1) + [row] + lines_from(lines, at + 1)).join("\n"),
     )
 }
 
@@ -190,13 +195,60 @@ destructive action delete_row(d: Document, row: Int) (
     group: "Table",
 ) {
     let lines = markdown_of(d).split("\n")
-    let at = lines.index_of(table_lines(lines).at(row - 1) ?? "") ?? -1
-    d.body = RichText.from_markdown(without_line(lines, at))
+    let at = data_places(lines).at(row - 1) ?? -1
+    d.body = RichText.from_markdown(lines_without(lines, at).join("\n"))
 }
 
 /// `lines` without the one at `at`, and as it was when there is no such line.
-fn without_line(lines: List<Text>, at: Int) -> Text {
-    lines.filter(l -> (lines.index_of(l) ?? -1) != at).join("\n")
+fn lines_without(lines: List<Text>, at: Int) -> List<Text> {
+    lines_without_from(lines, at, 0)
+}
+
+/// [`lines_without`] from the place `here` on.
+fn lines_without_from(lines: List<Text>, at: Int, here: Int) -> List<Text> {
+    if here >= lines.len() {
+        []
+    } else {
+        let line = lines.at(here) ?? ""
+        let kept: List<Text> = if here == at { [] } else { [line] }
+        [kept, lines_without_from(lines, at, here + 1)].flat_map(x -> x)
+    }
+}
+
+/// `lines` from the place `at` on.
+fn lines_from(lines: List<Text>, at: Int) -> List<Text> {
+    if at >= lines.len() {
+        []
+    } else {
+        [[lines.at(at) ?? ""], lines_from(lines, at + 1)].flat_map(x -> x)
+    }
+}
+
+/// The places of a table's data rows: every row but the rule under its head, counted from the
+/// document's first table.
+fn data_places(lines: List<Text>) -> List<Int> {
+    table_places(lines).filter(at -> not rule_row(lines.at(at) ?? ""))
+}
+
+/// Whether a table row is the rule that sets the head apart from the rows under it.
+fn rule_row(line: Text) -> Bool {
+    let cells = table_cells(line)
+    not cells.is_empty() and cells.all(c -> c == "---")
+}
+
+/// The places of the lines that are a Markdown table's rows, in order.
+fn table_places(lines: List<Text>) -> List<Int> {
+    places_of(lines, 0)
+}
+
+/// [`table_places`] from the place `at` on.
+fn places_of(lines: List<Text>, at: Int) -> List<Int> {
+    if at >= lines.len() {
+        []
+    } else {
+        let here: List<Int> = if (lines.at(at) ?? "").trim().starts_with("|") { [at] } else { [] }
+        [here, places_of(lines, at + 1)].flat_map(x -> x)
+    }
 }
 
 /// Deletes a column of the document's first table, counted from its left at 1.
@@ -249,6 +301,19 @@ action set_page_margins(d: Document, top: Float, right: Float, bottom: Float, le
 /// Sets the paper the page is written on: A4, Letter or Legal.
 action set_paper(d: Document, paper: Text) (label: "Set paper") {
     d.paper = paper
+}
+
+/// Sets the words every page's top or bottom margin carries: `where` is `header` or `footer`.
+/// Empty words for the header leave the document's title there.
+action set_page_words(d: Document, where: Text, words: Text) (
+    label: "Set the page's header and footer",
+) {
+    require where == "header" or where == "footer" "A page has a header and a footer"
+    if where == "header" {
+        d.header = words
+    } else {
+        d.footer = words
+    }
 }
 
 /// Writes a table of contents at the head of the document. It is a field, not a copy: the page
