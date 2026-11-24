@@ -771,6 +771,15 @@ impl ResourceStore {
     }
 
     /// Takes in the types `meta` declares, so its resources are stored as their kinds.
+    /// Who places the reader fields this store writes, as the workspace's one read decision
+    /// answers: what a host gives it where it gives the store the workspace's access.
+    pub fn set_record_reader(
+        &self,
+        reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>,
+    ) {
+        self.inner.port.set_record_reader(reader);
+    }
+
     pub fn declare(&self, meta: &Meta) {
         self.declare_with(meta, &[]);
     }

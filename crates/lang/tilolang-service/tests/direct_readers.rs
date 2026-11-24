@@ -8,7 +8,8 @@
 
 use collaboration::history_source::verbs::HistoryView;
 use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
+    AgentMember, Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath,
+    WorkspacePolicy,
 };
 use tilo_actions::ResourceSpec;
 use tilolang_runtime::rich::{Reference, RichValue};
@@ -37,23 +38,18 @@ fn agent(id: &str) -> Actor {
     Actor::from(MemberId::agent(id))
 }
 
-/// Ada's workspace: Bo edits it, and the agents Scout and Helper are admitted to read and write
-/// all of it.
+/// Ada's workspace: Bo edits it, and the agents Scout and Helper are members: Scout acts for
+/// Ada, Helper for Bo, each reading no more than the person it acts for.
 fn policy() -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
     policy.members.insert("bo".to_owned(), Role::Editor);
-    for (grant, name) in [
-        ("agent-member:scout", "scout"),
-        ("agent-member:helper", "helper"),
-    ] {
-        policy.grants.push(Grant::new(
-            grant,
-            Grantee::agent(name),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("ada"),
-        ));
+    for (agent, person) in [("scout", "ada"), ("helper", "bo")] {
+        policy.agents.insert(
+            agent.to_owned(),
+            AgentMember {
+                for_person: person.to_owned(),
+            },
+        );
     }
     policy
 }
@@ -61,7 +57,18 @@ fn policy() -> WorkspacePolicy {
 /// `name`'s device holding `doc`, its runtime told the workspace's members and who of them
 /// reads what, as the window's instance tells it.
 fn device(name: &str, doc: crate::fixtures::Workspace, packages: &[(&str, &str)]) -> Replica {
-    let access = MemberAccess::person(policy(), name);
+    device_with(name, policy(), doc, packages)
+}
+
+/// As [`device`], in a workspace governed by `policy`: a test of who reads what names the
+/// members and grants that decide it.
+fn device_with(
+    name: &str,
+    policy: WorkspacePolicy,
+    doc: crate::fixtures::Workspace,
+    packages: &[(&str, &str)],
+) -> Replica {
+    let access = MemberAccess::person(policy, name);
     let (replica, _) = Replica::access(name, doc, packages, Some(access.clone()));
     let me = PersonId::from(name);
     replica.host.runtime().set_members(
@@ -87,6 +94,11 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 /// The action `action` of Chat, invoked by `by`: whichever of the device's packages offers it,
 /// as the earlier Chat and the one that replaces it name an action alike.
 fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
+    invoke_as(r, by, action, args).unwrap_or_else(|why| panic!("{action}: {why}"))
+}
+
+/// `action` of Chat invoked by `by`, answering what it returned or why it was not done.
+fn invoke_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Result<Value, String> {
     let id = r
         .host
         .find_in_packages(|package| {
@@ -98,15 +110,14 @@ fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
                 .map(|a| a.id.clone())
         })
         .unwrap_or_else(|| panic!("no action {action}"));
-    match r
-        .host
+    r.host
         .runtime()
         .invoke_action(by, (id.as_str(), args))
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+        .map_err(|error| error.to_string())
+        .and_then(|done| match done {
+            InvokeOutcome::Done(v) => Ok(v),
+            other => Err(format!("{other:?}")),
+        })
 }
 
 /// Commit everything the runtime committed, the asks its mentions made included.
@@ -123,6 +134,13 @@ fn listed(r: &Replica, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
         Value::List(items) => items.iter().map(target).collect(),
         other => panic!("a collection reads as a list: {other:?}"),
     }
+}
+
+/// `who` in the order a set keeps them: an assertion about who is in a conversation does not
+/// depend on the order the set reads them in.
+fn sorted(mut who: Vec<Actor>) -> Vec<Actor> {
+    who.sort();
+    who
 }
 
 fn people(r: &Replica, direct: &ResourceRef) -> Vec<Actor> {
@@ -219,7 +237,10 @@ fn a_direct_conversation_is_read_by_its_people_and_a_channel_by_everyone() {
     } = workspace();
     let with_scout = target(&with_scout);
     let general = target(&general);
-    assert_eq!(people(&ada, &with_scout), [person("ada"), agent("scout")]);
+    assert_eq!(
+        sorted(people(&ada, &with_scout)),
+        sorted(vec![person("ada"), agent("scout")])
+    );
 
     let message = listed(&ada, &with_scout, "messages")
         .pop()
@@ -347,7 +368,10 @@ fn bo_messaging_scout_opens_his_own_conversation_with_scout() {
         target(&with_scout).id_string(),
         "Bo's conversation with Scout is not Ada's"
     );
-    assert_eq!(people(&bo, &target(&his)), [person("bo"), agent("scout")]);
+    assert_eq!(
+        sorted(people(&bo, &target(&his))),
+        sorted(vec![person("bo"), agent("scout")])
+    );
     let again = call(
         &bo,
         "message_person",
@@ -450,8 +474,8 @@ fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
     assert!(now.host.migrate() >= 1, "its migration runs");
     settle(&now);
     assert_eq!(
-        people(&now, &with_scout),
-        [person("ada"), agent("scout")],
+        sorted(people(&now, &with_scout)),
+        sorted(vec![person("ada"), agent("scout")]),
         "who opened it, and who it was with"
     );
     assert!(!now.host.runtime().may_read(&person("bo"), &with_scout));
@@ -575,4 +599,64 @@ fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s
         assert!(!now.host.runtime().may_read(&who, &with_scout), "{who:?}");
     }
     assert!(now.host.runtime().may_read(&agent("scout"), &with_scout));
+}
+
+/// A reader field naming an agent of a person the workspace does not have reads none of it: the
+/// store refuses to place the conversation rather than seal it to nobody.
+#[test]
+fn a_conversation_naming_an_agent_of_no_member_is_refused() {
+    let mut policy = policy();
+    policy.agents.insert(
+        "scout".to_owned(),
+        AgentMember {
+            for_person: "zoe".to_owned(),
+        },
+    );
+    let ada = device_with("ada", policy, crate::fixtures::Workspace::new(), &[CHAT]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let invoked = invoke_as(
+        &ada,
+        &person("ada"),
+        "message_person",
+        vec![all, Value::Actor(agent("scout"))],
+    );
+    let refused = ada.host.store().take_refusal().or_else(|| invoked.err());
+    assert!(
+        refused
+            .as_ref()
+            .is_some_and(|why| why.contains("reads none of it")),
+        "an agent acting for no member places nothing, got {refused:?}"
+    );
+}
+
+/// A reader field naming an agent whose own grant is smaller than its person's reads none of it:
+/// the conversation is refused rather than sealed to the agent's person.
+#[test]
+fn a_conversation_naming_an_agent_a_denied_grant_stops_is_refused() {
+    let mut policy = policy();
+    policy.grants.push(Grant::new(
+        "scout-denied",
+        Grantee::agent("scout"),
+        TreePath::workspace(WORKSPACE),
+        KindSet::READ,
+        Answer::Deny,
+        Grantee::person("ada"),
+    ));
+    let ada = device_with("ada", policy, crate::fixtures::Workspace::new(), &[CHAT]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let invoked = invoke_as(
+        &ada,
+        &person("ada"),
+        "message_person",
+        vec![all, Value::Actor(agent("scout"))],
+    );
+    let refused = ada.host.store().take_refusal().or_else(|| invoked.err());
+    assert!(
+        refused
+            .as_ref()
+            .is_some_and(|why| why.contains("reads none of it")),
+        "an agent its grant does not reach places nothing, got {refused:?}"
+    );
 }

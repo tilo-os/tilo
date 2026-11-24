@@ -43,6 +43,7 @@ pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};
 pub use store::{
-    CHANGED, CREATED, Live, Resource, Source, Store, StoreError, UPDATED, Written, Wrote,
+    CHANGED, CREATED, Live, RecordReader, Resource, Source, Store, StoreError, UPDATED, Written,
+    Wrote,
 };
 pub use value::{Cell, Value};

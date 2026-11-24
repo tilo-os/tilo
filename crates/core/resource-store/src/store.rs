@@ -53,6 +53,7 @@ use crate::schema::Schema;
 use crate::value::{Cell, Value};
 
 mod readers;
+pub use readers::RecordReader;
 
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
@@ -218,6 +219,9 @@ pub struct Store {
     schema: Schema,
     /// The reader rule of each kind whose type names its readers, as [`Store::declare`] took it.
     rules: BTreeMap<String, tilo_actions::surface::ReaderRule>,
+    /// The workspace's one read decision, for the reader fields the store places: given by the
+    /// host that made this store, so an agent in a field is read as the person it acts for.
+    reader: Option<std::sync::Arc<dyn RecordReader>>,
     /// Per document, the changes it refused: kept beside it, never applied, and refusing
     /// every change built on them.
     refused: HashMap<String, BTreeSet<ChangeHash>>,
@@ -281,6 +285,13 @@ impl Store {
             source: Some(source),
             ..Self::default()
         }
+    }
+
+    /// Who reads a record this store places, as the workspace's one read decision answers. The
+    /// host gives it where it gives this store a workspace's policy; a reader field placed
+    /// before it is given is refused.
+    pub fn set_record_reader(&mut self, reader: std::sync::Arc<dyn RecordReader>) {
+        self.reader = Some(reader);
     }
 
     /// Send a command against a private copy of the store. The command can follow the placement,

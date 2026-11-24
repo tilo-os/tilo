@@ -100,12 +100,10 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
     out
 }
 
-/// Who of the members reads a resource, as `access`'s policy answers for each: the node of
-/// the resource under its app and kind, read.
+/// Where each resource type of `host` stands in the workspace's tree: its app and its kind.
 #[must_use]
-pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> {
-    let kinds: HashMap<String, (String, String)> = host
-        .packages()
+pub(crate) fn kind_nodes(host: &Host) -> HashMap<String, (String, String)> {
+    host.packages()
         .into_iter()
         .flat_map(|package| {
             let meta = &package.meta;
@@ -114,7 +112,14 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
                 .map(|ty| (ty.id.clone(), (meta.app.clone(), meta.kind_of(&ty.name))))
                 .collect::<Vec<_>>()
         })
-        .collect();
+        .collect()
+}
+
+/// Who of the members reads a resource, as `access`'s policy answers for each: the node of
+/// the resource under its app and kind, read.
+#[must_use]
+pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> {
+    let kinds = kind_nodes(host);
     let access = access.clone();
     let me = me.clone();
     Rc::new(move |who: &Actor, target: &ResourceRef| {
@@ -125,6 +130,82 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
         };
         reads_node(&access, &me, who, &node)
     })
+}
+
+/// The store's reader decision for the workspace this host serves: who of the members a reader
+/// field names reads a record, answered by the same check the runtime's member reads use
+/// ([`reads_of`]), so a host makes one read decision and not two.
+///
+/// A field may name a person or an agent: a person reads as themselves, an agent as the person it
+/// acts for, decided by its preset narrowed to that person's reach. An agent whose grant does not
+/// reach the record, or one acting for no member, reads none of it.
+#[derive(Default)]
+pub struct MemberRecordReads {
+    state: std::sync::Mutex<Option<MemberReadState>>,
+}
+
+struct MemberReadState {
+    access: MemberAccess,
+    me: PersonId,
+    kinds: HashMap<String, (String, String)>,
+}
+
+/// The person the viewer acts as in `access`: the person the host decides as.
+fn viewer_person(viewer: &Actor, access: &MemberAccess) -> PersonId {
+    viewer
+        .member_id()
+        .and_then(MemberId::person_id)
+        .map_or_else(|| PersonId::from(access.person_id().unwrap_or_default()), PersonId::from)
+}
+
+impl MemberRecordReads {
+    /// Follow the access and packages the host has now. Until there is an access, no field is
+    /// placed: the store refuses one.
+    pub(crate) fn follow(&self, access: Option<MemberAccess>, viewer: &Actor) {
+        self.follow_with_kinds(access, viewer, HashMap::new());
+    }
+
+    /// As [`Self::follow`], with the packages' kinds, so a record is decided at its own node.
+    pub(crate) fn follow_with_kinds(
+        &self,
+        access: Option<MemberAccess>,
+        viewer: &Actor,
+        kinds: HashMap<String, (String, String)>,
+    ) {
+        let next = access.map(|access| MemberReadState {
+            me: viewer_person(viewer, &access),
+            access,
+            kinds,
+        });
+        if let Ok(mut state) = self.state.lock() {
+            *state = next;
+        }
+    }
+}
+
+impl tilo_resource_store::RecordReader for MemberRecordReads {
+    fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId> {
+        let state = self.state.lock().ok()?;
+        let state = state.as_ref()?;
+        let workspace = TreePath::workspace(state.access.workspace());
+        let node = match state.kinds.get(kind) {
+            Some((app, named)) => workspace.app(app).kind(named).resource(id.to_owned()),
+            None => workspace,
+        };
+        if !reads_node(&state.access, &state.me, actor, &node) {
+            return None;
+        }
+        match actor.member_id()? {
+            MemberId::Person(person) => Some(PersonId::from(person.clone())),
+            MemberId::Agent(agent) => state
+                .access
+                .policy
+                .agents
+                .get(agent.as_str())
+                .map(|member| PersonId::from(member.for_person.as_str())),
+            _ => None,
+        }
+    }
 }
 
 impl Host {
@@ -146,6 +227,13 @@ impl Host {
         if seen {
             return false;
         }
+        // The store's reader decision follows the same access, and the packages' kinds as they
+        // stand now, so a package just declared places its kinds at their own nodes.
+        self.inner.record_reads.follow_with_kinds(
+            Some(access.clone()),
+            self.viewer(),
+            kind_nodes(self),
+        );
         let me = PersonId::from(
             self.viewer()
                 .member_id()

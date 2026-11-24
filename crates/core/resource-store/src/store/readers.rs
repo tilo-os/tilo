@@ -6,12 +6,26 @@
 use std::collections::{BTreeMap, HashMap};
 
 use tilo_actions::surface::ReaderRule;
-use tilo_actions::{Actor, MemberId};
+use tilo_actions::{Actor, MemberId, PersonId};
 
 use super::{Store, StoreError};
 use crate::admit::{Refusal, Touched};
 use crate::value::{Cell, Value};
 use crate::wire::Command;
+
+/// The workspace's one read decision, as the store asks it when it places a record whose type
+/// names its readers by a field: who of the actors that field names reads the record, and the
+/// person its keys seal to.
+///
+/// A host makes one per workspace store, so the decision is that workspace's own: a person reads
+/// as themselves, an agent as the person it acts for, and an agent whose grant does not reach the
+/// record reads none of it. The store decides no read itself.
+pub trait RecordReader: Send + Sync {
+    /// The person `actor` reads as for the record of `kind` and `id`: itself for a person, the
+    /// person an agent acts for, and `None` where it reads none of the record (no member, an
+    /// agent acting by itself, or a grant that does not reach it).
+    fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId>;
+}
 
 impl Store {
     /// `command`, each resource it puts of a kind with a reader rule placed with the readers the
@@ -67,8 +81,15 @@ impl Store {
                             acted_for: stamp.acted_for.clone(),
                         }
                     };
-                    resource.readers = readers_by_rule(rule, &author, &resource.fields)
-                        .map_err(|reason| StoreError::Readers(format!("a {kind}: {reason}")))?;
+                    resource.readers = readers_by_rule(
+                        rule,
+                        &author,
+                        &resource.fields,
+                        kind,
+                        id,
+                        self.reader.as_deref(),
+                    )
+                    .map_err(|reason| StoreError::Readers(format!("a {kind}: {reason}")))?;
                 } else if resource.readers.is_empty()
                     && let Some(parent) = &resource.parent
                 {
@@ -156,8 +177,15 @@ impl Store {
             } else {
                 self.author(&kind, id)
             };
-            let expected = readers_by_rule(rule, &author, &resource.fields)
-                .map_err(|reason| Refusal::Undeclared(format!("a {kind}: {reason}")))?;
+            let expected = readers_by_rule(
+                rule,
+                &author,
+                &resource.fields,
+                &kind,
+                id,
+                self.reader.as_deref(),
+            )
+            .map_err(|reason| Refusal::Undeclared(format!("a {kind}: {reason}")))?;
             if expected != readers {
                 return Err(Refusal::Undeclared(format!(
                     "a {kind} is read by whom its type names ({rule}), not by `{readers}`"
@@ -184,6 +212,9 @@ fn readers_by_rule(
     rule: &ReaderRule,
     author: &Author,
     fields: &BTreeMap<String, Cell>,
+    kind: &str,
+    id: &str,
+    reader: Option<&dyn RecordReader>,
 ) -> Result<String, String> {
     let mut people: Vec<String> = match rule {
         ReaderRule::AuthorAnd { role } => {
@@ -210,11 +241,23 @@ fn readers_by_rule(
             Some(Cell::Set(members)) => members
                 .iter()
                 .map(|member| match member {
-                    Value::Text(text) => serde_json::from_str::<Actor>(text)
-                        .ok()
-                        .as_ref()
-                        .and_then(person_of_actor)
-                        .ok_or_else(|| format!("its {field} names `{text}`, who is no person")),
+                    Value::Text(text) => {
+                        let actor = serde_json::from_str::<Actor>(text)
+                            .map_err(|_| format!("its {field} names `{text}`, who is no person"))?;
+                        // A person reads as themselves; software reads as the person the
+                        // workspace's one read decision gives it, and none where it reads none.
+                        let person = match actor.member_id() {
+                            Some(MemberId::Person(person)) => {
+                                Some(person.as_str().to_ascii_lowercase())
+                            }
+                            _ => reader
+                                .and_then(|reader| reader.reader_of(&actor, kind, id))
+                                .map(|person| person.as_str().to_ascii_lowercase()),
+                        };
+                        person.ok_or_else(|| {
+                            format!("its {field} names `{text}`, who reads none of it")
+                        })
+                    }
                     other => Err(format!("its {field} names {other:?}, who is no person")),
                 })
                 .collect::<Result<_, _>>()?,
@@ -235,17 +278,12 @@ impl Author {
     fn person(&self) -> Option<String> {
         self.actor
             .as_ref()
-            .and_then(person_of_actor)
+            .and_then(|actor| match actor.member_id() {
+                Some(MemberId::Person(person)) => Some(person.as_str().to_ascii_lowercase()),
+                _ => None,
+            })
             .or_else(|| self.acted_for.as_deref().map(str::to_ascii_lowercase))
     }
-}
-
-/// The person `actor` is, as a reader set names them; `None` for software acting by itself.
-fn person_of_actor(actor: &Actor) -> Option<String> {
-    actor
-        .member_id()
-        .and_then(MemberId::person_id)
-        .map(str::to_ascii_lowercase)
 }
 
 /// Whether the `Bool` field `field` holds.

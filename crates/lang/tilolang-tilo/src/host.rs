@@ -171,6 +171,8 @@ pub(crate) struct HostInner {
     runtime: Runtime,
     store: ResourceStore,
     authority: TiloAuthority,
+    /// The store's reader decision for this workspace, as the runtime's own member reads answer.
+    pub(crate) record_reads: std::sync::Arc<crate::members::MemberRecordReads>,
     viewer: Actor,
     packages: RefCell<Vec<Rc<Package>>>,
     /// The calls carried plans wait on, each for its embedder to register and answer.
@@ -1019,6 +1021,12 @@ impl Host {
         host_meta.register_schemas();
         store.declare(&host_meta);
         store.set_writer(viewer.clone());
+        // A reader field is placed by the workspace's one read decision, the same check the
+        // runtime's members are given: the store keeps no policy of its own.
+        let record_reads =
+            std::sync::Arc::new(crate::members::MemberRecordReads::default());
+        record_reads.follow(access(), &viewer);
+        store.set_record_reader(record_reads.clone());
         // What the runtime invokes is decided by the workspace's one policy: the person's access,
         // an agent's delegation and the answers the person gave it, and the code's authors.
         let authority = TiloAuthority::new(viewer.clone(), access);
@@ -1031,6 +1039,7 @@ impl Host {
             runtime,
             store,
             authority,
+            record_reads,
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
@@ -1387,14 +1396,22 @@ impl Host {
             wasm: std::sync::Arc::from(wasm),
         });
         self.inner.triggers.forget();
-        let mut packages = self.inner.packages.borrow_mut();
-        match packages
-            .iter_mut()
-            .find(|loaded| loaded.meta.app == package.meta.app)
         {
-            Some(loaded) => *loaded = Rc::clone(&package),
-            None => packages.push(Rc::clone(&package)),
+            let mut packages = self.inner.packages.borrow_mut();
+            match packages
+                .iter_mut()
+                .find(|loaded| loaded.meta.app == package.meta.app)
+            {
+                Some(loaded) => *loaded = Rc::clone(&package),
+                None => packages.push(Rc::clone(&package)),
+            }
         }
+        // The package's kinds place its reader fields at their own nodes from now on.
+        self.inner.record_reads.follow_with_kinds(
+            self.inner.authority.access(),
+            self.viewer(),
+            crate::members::kind_nodes(self),
+        );
         Ok(Package::clone(&package))
     }
 

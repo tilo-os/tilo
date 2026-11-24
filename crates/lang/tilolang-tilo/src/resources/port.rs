@@ -20,6 +20,10 @@ pub trait Port {
     /// Takes in what `schema` declares of the kinds the store holds: who reads each that says.
     /// A store the workspace keeps has every published surface's already.
     fn declare(&self, _schema: Schema) {}
+
+    /// Who places this store's reader fields, as the workspace's one read decision answers. A
+    /// port that keeps its store elsewhere (a device's) places them there already.
+    fn set_record_reader(&self, _reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {}
 }
 
 /// A store held in this process: everything in it is the device's person's to read. Kept on
@@ -175,6 +179,10 @@ impl LocalPort {
 impl Port for LocalPort {
     fn declare(&self, schema: Schema) {
         self.store.borrow_mut().declare(schema);
+    }
+
+    fn set_record_reader(&self, reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {
+        self.store.borrow_mut().set_record_reader(reader);
     }
 
     fn command(&self, command: Command) -> Result<Reply, String> {
