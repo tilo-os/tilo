@@ -1206,9 +1206,11 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     );
 
     // The device's one dispatch: its record of each invocation, and the person who asks: Ada,
-    // whose root this computer keeps and whose call runs with it.
+    // whose root this computer keeps and whose call runs with it. Anyone else is answered no
+    // secret of hers.
     let invocations = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
     let person = tilo_actions::remote::Caller::authenticated(ada, [8; 32]);
+    let someone_else = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
     let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
     for (action, args, field) in [
         (
@@ -1236,26 +1238,40 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
         let Value::Object(argument) = args else {
             unreachable!("the arguments are an object");
         };
+        let request = |invocation| InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, action),
+            },
+            argument: InvokeArgument::Json(argument.clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let refused = super::services::device_action(
+            (&invocations, None),
+            &tickets,
+            &someone_else,
+            request(InvocationId::new()),
+            "workspace",
+        )
+        .await
+        .expect("the action is answered");
+        assert!(
+            refused.is_err(),
+            "another person is handed {action}: {refused:?}"
+        );
         let invocation = InvocationId::new();
         let receipt = super::services::device_action(
             (&invocations, None),
             &tickets,
             &person,
-            InvokeRequest {
-                on_behalf_of: None,
-                invocation,
-                target: RemoteActionTarget {
-                    provider: PROVIDER.to_owned(),
-                    address: tilo_actions::ActionAddress::new(RESOURCE, action),
-                },
-                argument: InvokeArgument::Json(argument),
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            },
+            request(invocation),
             "workspace",
         )
         .await
