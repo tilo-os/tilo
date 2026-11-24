@@ -480,6 +480,28 @@ pub fn platform_packages_of<'a>(
         .collect()
 }
 
+/// The platform's packages the package written as `source` names with `use`: what it compiles
+/// against, a built-in package or a test's alike.
+///
+/// # Errors
+/// A named surface does not read.
+pub fn named_platform_packages(source: &str) -> Result<Vec<PackageMeta>, String> {
+    let named: Vec<String> = tilolang::parser::parse_module(source)
+        .0
+        .map(|module| {
+            module
+                .items
+                .into_iter()
+                .filter_map(|item| match item {
+                    tilolang::ast::Item::Use(used) => Some(used.app),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    platform_packages_of(named.iter().map(String::as_str))
+}
+
 /// Each platform app's package, or why its surface does not read, read once for the build.
 fn packages() -> &'static [Result<PackageMeta, String>] {
     static PACKAGES: std::sync::OnceLock<Vec<Result<PackageMeta, String>>> =

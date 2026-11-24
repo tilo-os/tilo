@@ -1287,22 +1287,8 @@ impl Host {
     /// being loaded here, as it does when the workspace compiles a built-in one.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
-        let named: Vec<String> = tilolang::parser::parse_module(source)
-            .0
-            .map(|module| {
-                module
-                    .items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        tilolang::ast::Item::Use(used) => Some(used.app),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut imports =
-            crate::platform_apps::platform_packages_of(named.iter().map(String::as_str))
-                .map_err(HostError::Compile)?;
+        let mut imports = crate::platform_apps::named_platform_packages(source)
+            .map_err(HostError::Compile)?;
         imports.extend(
             self.inner
                 .packages
