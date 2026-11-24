@@ -1,0 +1,112 @@
+{
+ "app": "maps",
+ "said": "Maps",
+ "live": "tl",
+ "tl": {
+  "id": "so.tilo.maps",
+  "package": "maps"
+ },
+ "steps": [
+  {
+   "id": "open",
+   "said": "Open Maps on a fresh desktop",
+   "ops": [
+    {
+     "theme": false
+    },
+    {
+     "launch": true
+    },
+    {
+     "wait_for": "window"
+    },
+    {
+     "wait_for": "actions"
+    },
+    {
+     "targets": true
+    }
+   ],
+   "budget_ms": 30000
+  },
+  {
+   "id": "map",
+   "said": "The map stands on OpenStreetMap's imagery, with its controls beside it",
+   "ops": [
+    {
+     "must": [
+      "Map",
+      "Zoom in",
+      "Zoom out",
+      "Use my location",
+      "What is nearby",
+      "Show traffic",
+      "Offline maps",
+      "Attribution"
+     ]
+    },
+    {
+     "press": "Zoom in"
+    },
+    {
+     "press": "Zoom out"
+    }
+   ]
+  },
+  {
+   "id": "places",
+   "said": "The places panel offers a search, its results and directions",
+   "ops": [
+    {
+     "must": [
+      "Search places",
+      "Results",
+      "Nearby",
+      "Saved",
+      "Recent"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "offline",
+   "said": "The offline maps open and close",
+   "ops": [
+    {
+     "press": "Offline maps"
+    },
+    {
+     "must": [
+      "Download this view",
+      "Search for a city or a place"
+     ]
+    },
+    {
+     "press": "Close offline maps"
+    },
+    {
+     "must_not": [
+      "Download this view"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "attribution",
+   "said": "The map says who its data belongs to",
+   "ops": [
+    {
+     "press": "Attribution"
+    },
+    {
+     "must": [
+      "Map data and map tiles © OpenStreetMap contributors."
+     ]
+    },
+    {
+     "press": "Done"
+    }
+   ]
+  }
+ ]
+}

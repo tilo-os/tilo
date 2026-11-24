@@ -3790,6 +3790,13 @@
           "type": "bool"
         },
         {
+          "name": "basemap",
+          "doc": "Where a map of the world's imagery comes from: a tile address with `%z`, `%x` and `%y` standing for the tile's zoom and its column and row (`https://tile.openstreetmap.org/%z/%x/%y.png`). The tiles draw under everything else, scaled with the camera, at the zoom that shows them sharpest; without one the map draws its ground, and a map of the world a faint grid at the places it names. A host serves the pictures (`crate::pictures::set_remote_fetcher`).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "outline",
           "doc": "A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the light outline a drag across the canvas draws: the rectangle the person dragged, kept while they say what fills it.",
           "type": {
@@ -3834,6 +3841,30 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "tracks",
+          "doc": "The lines drawn across the map under its markers and pins: a route, the way one leg of a journey goes.",
+          "accepts": {
+            "component": "MapTrack"
+          },
+          "many": true
+        },
+        {
+          "name": "markers",
+          "doc": "What stands on the map at a place, drawn as a marker of its own size on screen whatever the zoom: where a search found something, the device's own place. Pointing at one reports it (`marker`); the view opens what it is.",
+          "accepts": {
+            "component": "MapMarker"
+          },
+          "many": true
+        },
+        {
+          "name": "areas",
+          "doc": "The areas of the map this device keeps for offline use: every tile of them at its zoom levels loads and stays on the device, so what a person saved shows when nothing reaches the network. The map asks for them a few at a time, behind what it shows.",
+          "accepts": {
+            "component": "MapArea"
+          },
+          "many": true
         }
       ],
       "events": [
@@ -3895,6 +3926,19 @@
           "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
           "value": {
             "list": "float"
+          }
+        },
+        {
+          "name": "marker",
+          "doc": "The pointer pressed a marker and let go there, a click: carries the name the marker was given (`MapMarker`'s `name`), or its key where it has none. The view opens what the marker is; the map reports nothing of its own for that press.",
+          "value": "text"
+        },
+        {
+          "name": "saved",
+          "doc": "How far an area it keeps offline has come: carries the area's name (its key where it has none), and how many of its tiles are done of how many. Reported as the tiles are asked for, a few frames apart, and once more when every one is done.",
+          "value": "text",
+          "at": {
+            "list": "int"
           }
         }
       ],
@@ -9534,6 +9578,177 @@
           "accepts": "view",
           "many": true,
           "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
+      "name": "MapTrack",
+      "doc": "A line across a map of the world: a route, one leg of a journey, the way a walk goes.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "points",
+          "doc": "The places it runs through, in degrees: each place's latitude then its longitude, in turn (`[52.52, 13.40, 52.53, 13.41]`).",
+          "type": {
+            "list": "float"
+          },
+          "required": true
+        },
+        {
+          "name": "tone",
+          "doc": "What it says of itself, as the theme's ink: a route the person is taking, a way they walk, a public transport leg, or a quiet line.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MapTrackTone",
+                "cases": [
+                  "route",
+                  "walk",
+                  "transit",
+                  "quiet"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How thick it draws on screen, in logical pixels; without it, one line of the theme.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "dashed",
+          "doc": "Whether it draws as a dashed line: a walk, a way that is not the route itself.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
+      }
+    },
+    {
+      "name": "MapMarker",
+      "doc": "One marker on a map of the world: a place a view names, drawn at its size on screen whatever the zoom, standing on the place it names.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it stands for: a place's name, read to assistive technology and on pointing.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude of the place it stands on.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude of the place it stands on.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "kind",
+          "doc": "What it is, which its shape and ink say.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MapMarkerKind",
+                "cases": [
+                  "landmark",
+                  "cafe",
+                  "restaurant",
+                  "bar",
+                  "museum",
+                  "park",
+                  "transit",
+                  "hotel",
+                  "shop",
+                  "hospital",
+                  "other",
+                  "current",
+                  "start",
+                  "end",
+                  "poi"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the one the person chose: drawn a size larger, with a ring.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
+      }
+    },
+    {
+      "name": "MapArea",
+      "doc": "An area of the map this device keeps for offline use: its bounds in degrees, and the zoom levels whose tiles it keeps.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is called, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "north",
+          "doc": "The latitude of the area's northern edge, in degrees.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "south",
+          "doc": "The latitude of the area's southern edge, in degrees.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "east",
+          "doc": "The longitude of the area's eastern edge, in degrees.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "west",
+          "doc": "The longitude of the area's western edge, in degrees.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "least_zoom",
+          "doc": "The furthest zoom level out whose tiles it keeps, as the basemap's own `%z`.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "most_zoom",
+          "doc": "The closest zoom level in whose tiles it keeps, as the basemap's own `%z`.",
+          "type": {
+            "option": "int"
+          }
         }
       ],
       "semantics": {

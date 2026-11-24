@@ -78,7 +78,9 @@ impl CacheState {
 const DEFAULT_IMAGE_WORKERS: usize = 2;
 const MAX_IMAGE_WORKERS: usize = 4;
 const IMAGE_JOB_QUEUE_LIMIT: usize = 64;
-const IMAGE_CACHE_ENTRY_LIMIT: usize = 64;
+/// How many positions the store keeps: a window's pictures, and the screenfuls a map of the
+/// world has just left (a tile is 256 pixels a side) so going back needs no load.
+const IMAGE_CACHE_ENTRY_LIMIT: usize = 256;
 const IMAGE_CACHE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 const THUMBNAIL_MAX_DIMENSION: u32 = 600;
 // A single RGBA image must fit within the existing 64 MiB cache ceiling.
@@ -589,6 +591,17 @@ impl ImageStore {
             workers: workers.clamp(1, MAX_IMAGE_WORKERS),
         }));
         store
+    }
+
+    /// The decoded image at `url` when it is here, admitting nothing: what a map draws of a
+    /// coarser tile under one that is still on its way, without asking the network for it.
+    #[must_use]
+    pub fn loaded(&self, url: &str) -> Option<PenikoImage> {
+        let slots = self.shared.slots.lock().ok()?;
+        match &slots.slots.get(url)?.slot {
+            Slot::Ready(image) => Some(image.clone()),
+            Slot::Loading(_) | Slot::Failed => None,
+        }
     }
 
     /// Decoded image for `url`, kicking off an async load the first time a URL is seen. Returns `None`

@@ -446,7 +446,7 @@ pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
 #[cfg(feature = "native")]
-pub use pictures::lend_content;
+pub use pictures::{lend_content, set_remote_fetcher};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,

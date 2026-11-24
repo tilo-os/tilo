@@ -1,0 +1,25 @@
+[package]
+name = "tilo-tiles"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The pictures a window shows from the network, kept on this device: map tiles across the world, fetched once and shown again offline"
+
+# The window a device draws an app in asks the network for the pictures it shows by address
+# (a map's tiles), here: fetched once, kept under the app's own cache, and served from there
+# after that, so panning back and what a person saved show without a network.
+
+[lib]
+name = "tilo_tiles"
+path = "src/lib.rs"
+
+[dependencies]
+blake3.workspace = true
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -66,6 +66,8 @@ mod e2e_hex_editor;
 mod e2e_layout;
 #[path = "e2e_mail_files.rs"]
 mod e2e_mail_files;
+#[path = "e2e_maps.rs"]
+mod e2e_maps;
 #[path = "e2e_native.rs"]
 mod e2e_native;
 #[path = "e2e_native_ui.rs"]

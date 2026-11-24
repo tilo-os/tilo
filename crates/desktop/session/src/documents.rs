@@ -312,7 +312,7 @@ mod tests {
     fn a_link_reaches_the_app_through_its_offered_open_link() {
         use tilo_app_package::manifest::{OfferKind, OfferOperation, OfferedAction};
         let offer = |action: &str| OfferedAction {
-            resource: "maps.workspace".into(),
+            resource: "tl.so.tilo.maps.Atlas".into(),
             resource_kind: None,
             action: action.into(),
             label: "Open link".into(),
@@ -344,7 +344,7 @@ mod tests {
         };
         assert_eq!(
             link_offer(&lists, "so.tilo.maps").as_deref(),
-            Some("maps.workspace")
+            Some("tl.so.tilo.maps.Atlas")
         );
         assert_eq!(link_offer(&lists, "so.tilo.notes"), None);
         assert_eq!(link_offer(&lists, "so.tilo.absent"), None);

@@ -71,12 +71,6 @@ const APPS: &[App] = &[
         kind: "diffmerge.session",
     },
     App {
-        package: "maps",
-        bin: "maps",
-        id: "so.tilo.maps",
-        kind: "maps.workspace",
-    },
-    App {
         package: "messages",
         bin: "messages",
         id: "so.tilo.messages",

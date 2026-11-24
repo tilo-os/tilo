@@ -25,9 +25,8 @@ its unit tests, both of:
 
 Pixel variety alone cannot tell imagery from a refusal: a provider that stops
 serving can answer with a valid, colourful PNG at HTTP 200. Assert on what the
-backend returned as well. The maps job requires the tiles cached for distinct
-city-centre coordinates to be distinct images, and the tile layer records error
-statuses and non-PNG answers as rejected failures, not as imagery.
+backend returned as well: distinct addresses must fetch distinct images, and
+error statuses and non-image answers are failures, not imagery.
 
 Both must remain runnable through a named, documented opt-in job. Network tests
 must use `#[ignore]` rather than returning early: ordinary CI should report that
@@ -37,43 +36,6 @@ Service-backed tests are different: an ordinary run must report them as
 explicitly ignored, rather than executing an empty test body and reporting a
 false pass. Their documented runner must provision the service and select the
 ignored tests so missing infrastructure fails closed.
-
-## The reusable harness
-
-[`apps/maps/tests/livetest.rs`](../apps/maps/tests/livetest.rs) is the template. It
-is generic over `ui::widget::Widget`, so any app can reuse the pattern:
-
-- `Harness::new((w, h))` — one render context (theme, text cache, CRDT doc).
-- `Harness::pump_frame(widget, &mut scene)` — one real frame, exactly like
-  `ui::App` / `--shots`. `draw` is what issues the real requests; the next
-  frame's `sync` drains results. No GPU needed to drive plumbing.
-- `pump_frames_until(&mut h, &mut app, max_wait, poll, |a| a.tiles_mem_len() > 0)`
-  — loop frames until a predicate holds or it times out.
-- `render_live_to_png(&mut h, &mut app, path)` — one frame rasterised on the GPU
-  (lavapipe is fine headlessly) → PNG + a `Frame` of RGBA.
-- `Frame::{distinct_colors, is_uniform, changed_fraction}` — pixel-content
-  assertions: real imagery is varied and differs from the placeholder; a broken
-  path leaves a near-uniform placeholder that these catch.
-
-## Running the maps live job
-
-The `nightly-live-maps` check runs it every night; to run it by hand:
-
-```bash
-# Full plumbing + live-render pixel inspection (needs real network + a GPU).
-# Writes maps-live-{before,after}.png to $MAPS_LIVE_OUT (default apps/maps/live-out/).
-MAPS_LIVE_OUT=apps/maps/live-out \
-  cargo test -p maps --test live_maps -- \
-  --ignored --nocapture --test-threads 1
-```
-
-The job loads about one viewport of OpenStreetMap Standard tiles per case,
-the interactive scale the OSMF tile policy permits. Do not widen it into
-area sweeps.
-
-Ordinary `cargo test -p maps` compiles these cases but reports them as
-ignored. The job drives the whole app rather than duplicating a weaker raw
-`load_tile` network smoke test.
 
 ## Display configuration live job
 

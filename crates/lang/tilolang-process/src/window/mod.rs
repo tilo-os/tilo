@@ -134,6 +134,22 @@ pub fn definition() -> &'static ApplicationDefinition {
 
 /// How the runtime launches: the live window, or a capture of one of the package's scenarios.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
+    serve_remote_pictures();
     let _ = definition();
     ui::framework::launch_spec::<app::TlApp>()
+}
+
+/// Serve the pictures this window shows by address from the network its app may reach, kept
+/// under the app's own cache: a map's tiles pan back without a fresh fetch, and what nothing
+/// reaches any more shows the last time it was drawn. This process is the app's own, in the
+/// app's sandbox, so what a request reaches is what the app declares and the workspace grants.
+fn serve_remote_pictures() {
+    let app = installed_bundle()
+        .map_or_else(String::new, |bundle| bundle.meta.app.clone());
+    let name = app.rsplit('.').next().unwrap_or("app").to_owned();
+    let Some(tiles) = tilo_tiles::Tiles::of_app(&name) else {
+        return;
+    };
+    let fetch: ui::Fetcher = std::sync::Arc::new(move |url: &str| tiles.bytes(url));
+    ui::set_remote_fetcher(Some(fetch));
 }

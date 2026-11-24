@@ -8429,51 +8429,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maps"
-version = "0.1.0"
-dependencies = [
- "fnv",
- "jiff",
- "lru 0.18.3",
- "maps",
- "maps-model",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-net",
- "tilo-paths",
- "tilo-settings-model",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "maps-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "maps-model-wasm"
-version = "0.1.0"
-dependencies = [
- "maps-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18546,7 +18501,6 @@ dependencies = [
  "console-model-wasm",
  "diffmerge-model-wasm",
  "logs-model-wasm",
- "maps-model-wasm",
  "poker-model-wasm",
  "publisher-model-wasm",
  "remote-model-wasm",
@@ -21183,6 +21137,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-tiles"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tilo-net",
+ "tilo-paths",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-tray"
 version = "0.1.0"
 dependencies = [
@@ -22397,6 +22362,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-tiles",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",
@@ -26965,6 +26931,7 @@ dependencies = [
  "landlock",
  "launcher",
  "launcher-macos",
+ "launcher-windows",
  "lazy_static",
  "leb128",
  "leb128fmt",
@@ -27021,9 +26988,6 @@ dependencies = [
  "mail-builder",
  "mail-engine",
  "mail-parser",
- "maps",
- "maps-model",
- "maps-model-wasm",
  "matchers",
  "maybe-owned",
  "mcf",
@@ -27554,6 +27518,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-backups-engine",
  "tilo-bluetooth-agent",
  "tilo-bluez",
  "tilo-board-successor",
@@ -27785,6 +27750,7 @@ dependencies = [
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-taffy",
+ "tilo-terminal",
  "tilo-test-env",
  "tilo-test-http",
  "tilo-test-relay",
@@ -27792,6 +27758,7 @@ dependencies = [
  "tilo-theme-painter-wasm",
  "tilo-theme-sdk",
  "tilo-thumbnail",
+ "tilo-tiles",
  "tilo-tray",
  "tilo-tts",
  "tilo-typst-fonts",
@@ -27815,6 +27782,7 @@ dependencies = [
  "tilo-wallpapers",
  "tilo-wasm-host",
  "tilo-wayland-ext",
+ "tilo-weather",
  "tilo-web-search",
  "tilo-webview",
  "tilo-wet-media",
@@ -27843,6 +27811,7 @@ dependencies = [
  "tilolang-service",
  "tilolang-tilo",
  "tilolang-web",
+ "tilolang-window",
  "tilolang-youtube",
  "time",
  "time-core",

@@ -337,12 +337,12 @@ mod tests {
     fn a_link_names_the_app_that_claims_its_scheme() {
         claim_links(LinkClaim {
             app_id: "so.tilo.probe-maps",
-            resource: "maps.workspace",
+            resource: "tl.so.tilo.maps.Atlas",
             schemes: &["geo-probe"],
         });
         let claim = link_claim("GEO-PROBE:52.5,13.4").expect("the scheme is claimed");
         assert_eq!(claim.app_id, "so.tilo.probe-maps");
-        assert_eq!(claim.resource, "maps.workspace");
+        assert_eq!(claim.resource, "tl.so.tilo.maps.Atlas");
         assert_eq!(link_claim("unclaimed-probe:x"), None);
         assert_eq!(link_claim("/a/path"), None);
     }

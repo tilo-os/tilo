@@ -2709,7 +2709,10 @@ pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
 pub mod docked;
 pub use docked::{Docked, DockedProps};
 pub mod map;
-pub use map::{MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapPinProps, MapProps, PinPlace};
+pub use map::{
+    MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapAreaProps, MapCamera, MapMarkerKind, MapMarkerProps,
+    MapPinProps, MapProps, MapTrackProps, MapTrackTone, PinPlace,
+};
 pub mod window_well;
 pub use window_well::{Wells, WindowWell, WindowWellProps};
 pub mod window_preview;

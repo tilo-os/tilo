@@ -40,23 +40,3 @@ types the device's own name before it is written, so the question names what
 is lost.
 """
 
-[[deletion]]
-action = "delete-offline-area"
-file = "apps/maps/src/resource.rs"
-effect = "DeleteOfflineArea"
-reason = """
-A downloaded area is copied from the map server, not edited by anyone, and
-deleting it frees the space it takes on this device: the document never held
-the bytes, so Undo cannot put them back, and offering it would promise a
-download nobody asked for again.
-"""
-
-[[deletion]]
-action = "clear-offline-areas"
-file = "apps/maps/src/resource.rs"
-effect = "ClearOfflineAreas"
-reason = """
-Clearing deletes every downloaded area at once, each of them a copy of the map
-server's own data that this device downloaded and owns. Undo cannot restore
-bytes the document never held, and none of them is anyone's work.
-"""

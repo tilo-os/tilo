@@ -57,6 +57,72 @@ pub const MAP_ZOOM_WORLD_MIN: f64 = 1_600.0 / MERCATOR_WORLD;
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
 
+/// A basemap tile's side, in pixels of the tile server's own imagery: the size a tile is at when
+/// the camera takes a tile's pixel for a screen pixel.
+const TILE_PIXELS: f64 = 256.0;
+
+/// The closest basemap level a map asks for: the tile servers stop at 19.
+const TILE_ZOOM_MOST: i64 = 19;
+
+/// How many levels up a map looks for a loaded tile to stand under one still on its way: at a
+/// fresh zoom a coarser tile covers the screen while the sharp ones load.
+const TILE_FALLBACK_LEVELS: i64 = 4;
+
+/// How many tiles of the areas it keeps offline a map asks for in one frame, while nothing it
+/// shows is loading: enough to save an area steadily without starving the imagery on screen.
+const AREA_TILES_A_FRAME: usize = 2;
+
+/// A marker's dot, and the ring it stands in, in logical pixels on screen: a place a person
+/// points at, the same size at every zoom.
+const MARKER_RADIUS: f64 = 5.0;
+const MARKER_RING: f64 = 2.0;
+
+/// Draw `image` into `rect`: the tile scaled to the screen the camera puts it at.
+fn draw_tile(
+    scene: &mut Scene,
+    transform: Affine,
+    image: &vello::peniko::ImageData,
+    rect: Rect,
+) {
+    let width = f64::from(image.width).max(1.0);
+    let height = f64::from(image.height).max(1.0);
+    let scale = Affine::scale_non_uniform(rect.width() / width, rect.height() / height);
+    scene.draw_image(image, transform * Affine::translate(rect.origin().to_vec2()) * scale);
+}
+
+/// The ink a line of the map draws in: a route the person takes, a way walked, a public
+/// transport leg, or a quiet line — theme roles, never colours of the map's own.
+fn track_ink(tone: MapTrackTone, theme: &Theme) -> vello::peniko::Color {
+    match tone {
+        MapTrackTone::Route => theme.tokens.colors.intent.accent,
+        MapTrackTone::Walk => theme.tokens.colors.text_dim,
+        MapTrackTone::Transit => theme.tokens.colors.semantic.info,
+        MapTrackTone::Quiet => theme.tokens.colors.text_tertiary,
+    }
+}
+
+/// The ink a marker's dot draws in, by what it is: the categories in the theme's data colours,
+/// a journey's ends in its status inks, the device and what it points at in the accent and the
+/// quiet ink.
+fn marker_ink(kind: MapMarkerKind, theme: &Theme) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    match kind {
+        MapMarkerKind::Landmark | MapMarkerKind::Museum => colors.semantic.info,
+        MapMarkerKind::Cafe | MapMarkerKind::Restaurant | MapMarkerKind::Bar => {
+            colors.semantic.warning
+        }
+        MapMarkerKind::Park => colors.semantic.success,
+        MapMarkerKind::Transit => colors.intent.accent,
+        MapMarkerKind::Hotel => colors.presence.series(6),
+        MapMarkerKind::Shop => colors.presence.series(3),
+        MapMarkerKind::Hospital => colors.semantic.danger,
+        MapMarkerKind::Other | MapMarkerKind::Poi => colors.text_dim,
+        MapMarkerKind::Current => colors.intent.accent,
+        MapMarkerKind::Start => colors.semantic.success,
+        MapMarkerKind::End => colors.semantic.danger,
+    }
+}
+
 /// The room a place that arrives keeps from the viewport's edges when the camera shows it: a
 /// window's frame at the very edge of the canvas reads as cut off, so the pan leaves a gap of
 /// one section step.
@@ -170,9 +236,30 @@ pub struct MapProps {
     /// the size the view gave it on screen at every zoom, and the camera draws back until the
     /// whole world fits.
     pub world: bool,
+    /// Where a map of the world's imagery comes from: a tile address with `%z`, `%x` and `%y`
+    /// standing for the tile's zoom and its column and row
+    /// (`https://tile.openstreetmap.org/%z/%x/%y.png`). The tiles draw under everything else,
+    /// scaled with the camera, at the zoom that shows them sharpest; without one the map draws
+    /// its ground, and a map of the world a faint grid at the places it names. A host serves the
+    /// pictures (`crate::pictures::set_remote_fetcher`).
+    pub basemap: Option<String>,
     /// The pins, in the order the map draws them (the last on top).
     #[component(part(default))]
     pub pins: Vec<MapPinProps>,
+    /// The lines drawn across the map under its markers and pins: a route, the way one leg of a
+    /// journey goes.
+    #[component(part)]
+    pub tracks: Vec<MapTrackProps>,
+    /// What stands on the map at a place, drawn as a marker of its own size on screen whatever
+    /// the zoom: where a search found something, the device's own place. Pointing at one reports
+    /// it (`marker`); the view opens what it is.
+    #[component(part)]
+    pub markers: Vec<MapMarkerProps>,
+    /// The areas of the map this device keeps for offline use: every tile of them at its zoom
+    /// levels loads and stays on the device, so what a person saved shows when nothing reaches
+    /// the network. The map asks for them a few at a time, behind what it shows.
+    #[component(part)]
+    pub areas: Vec<MapAreaProps>,
     /// A resource was dragged onto the map and let go: carries the resource the drag carried,
     /// as its address, and where it was let go — its canvas x, then its canvas y. The view
     /// decides what to do with it; the shell's canvas places it there.
@@ -235,6 +322,16 @@ pub struct MapProps {
     /// under it, its latitude then its longitude, for a map centred on a place.
     #[component(event(value = Vec<f64>))]
     pub at: Event,
+    /// The pointer pressed a marker and let go there, a click: carries the name the marker was
+    /// given (`MapMarker`'s `name`), or its key where it has none. The view opens what the marker
+    /// is; the map reports nothing of its own for that press.
+    #[component(event(value = String))]
+    pub marker: Event,
+    /// How far an area it keeps offline has come: carries the area's name (its key where it has
+    /// none), and how many of its tiles are done of how many. Reported as the tiles are asked for, a few frames apart, and
+    /// once more when every one is done.
+    #[component(event(value = String, at = Vec<i64>))]
+    pub saved: Event,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -304,6 +401,292 @@ impl PartType for Vec<MapPinProps> {
         }
         *self = out;
         Ok(())
+    }
+}
+
+/// A line across a map of the world: a route, one leg of a journey, the way a walk goes.
+#[derive(Component, Default)]
+#[component(name = "MapTrack", role = "Image", label = "name")]
+pub struct MapTrackProps {
+    /// The line's stable key.
+    #[component(key)]
+    pub key: String,
+    /// What it is, for assistive technology.
+    pub name: Option<String>,
+    /// The places it runs through, in degrees: each place's latitude then its longitude, in turn
+    /// (`[52.52, 13.40, 52.53, 13.41]`).
+    #[component(required)]
+    pub points: Vec<f64>,
+    /// What it says of itself, as the theme's ink: a route the person is taking, a way they walk,
+    /// a public transport leg, or a quiet line.
+    pub tone: Option<MapTrackTone>,
+    /// How thick it draws on screen, in logical pixels; without it, one line of the theme.
+    pub width: Option<f64>,
+    /// Whether it draws as a dashed line: a walk, a way that is not the route itself.
+    pub dashed: bool,
+}
+
+/// What a line across the map says of itself, as the theme's ink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MapTrackTone {
+    /// A route the person is taking.
+    #[default]
+    Route,
+    /// A way a person walks.
+    Walk,
+    /// A public transport leg.
+    Transit,
+    /// A quiet line.
+    Quiet,
+}
+
+crate::component::choice!(MapTrackTone, "MapTrackTone", {
+    Route => "route",
+    Walk => "walk",
+    Transit => "transit",
+    Quiet => "quiet",
+});
+
+crate::component::part_type!(MapTrackProps);
+
+/// What a marker is: the category of place it names, or the part a journey or the device plays in
+/// it. The marker's shape says it, in the theme's inks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MapMarkerKind {
+    Landmark,
+    Cafe,
+    Restaurant,
+    Bar,
+    Museum,
+    Park,
+    Transit,
+    Hotel,
+    Shop,
+    Hospital,
+    #[default]
+    Other,
+    /// Where the device is.
+    Current,
+    /// Where a journey starts, and where it ends.
+    Start,
+    End,
+    /// A place of the map waiting to be opened.
+    Poi,
+}
+
+crate::component::choice!(MapMarkerKind, "MapMarkerKind", {
+    Landmark => "landmark",
+    Cafe => "cafe",
+    Restaurant => "restaurant",
+    Bar => "bar",
+    Museum => "museum",
+    Park => "park",
+    Transit => "transit",
+    Hotel => "hotel",
+    Shop => "shop",
+    Hospital => "hospital",
+    Other => "other",
+    Current => "current",
+    Start => "start",
+    End => "end",
+    Poi => "poi",
+});
+
+/// One marker on a map of the world: a place a view names, drawn at its size on screen whatever
+/// the zoom, standing on the place it names.
+#[derive(Component, Default)]
+#[component(name = "MapMarker", role = "Image", label = "name")]
+pub struct MapMarkerProps {
+    /// The marker's stable key.
+    #[component(key)]
+    pub key: String,
+    /// What it stands for: a place's name, read to assistive technology and on pointing.
+    pub name: Option<String>,
+    /// The latitude of the place it stands on.
+    #[component(required)]
+    pub latitude: f64,
+    /// The longitude of the place it stands on.
+    #[component(required)]
+    pub longitude: f64,
+    /// What it is, which its shape and ink say.
+    pub kind: Option<MapMarkerKind>,
+    /// Whether it is the one the person chose: drawn a size larger, with a ring.
+    pub selected: bool,
+}
+
+crate::component::part_type!(MapMarkerProps);
+
+/// An area of the map this device keeps for offline use: its bounds in degrees, and the zoom
+/// levels whose tiles it keeps.
+#[derive(Component, Default)]
+#[component(name = "MapArea", role = "Group", label = "name")]
+pub struct MapAreaProps {
+    /// The area's stable key.
+    #[component(key)]
+    pub key: String,
+    /// What it is called, for assistive technology.
+    pub name: Option<String>,
+    /// The latitude of the area's northern edge, in degrees.
+    #[component(required)]
+    pub north: f64,
+    /// The latitude of the area's southern edge, in degrees.
+    #[component(required)]
+    pub south: f64,
+    /// The longitude of the area's eastern edge, in degrees.
+    #[component(required)]
+    pub east: f64,
+    /// The longitude of the area's western edge, in degrees.
+    #[component(required)]
+    pub west: f64,
+    /// The furthest zoom level out whose tiles it keeps, as the basemap's own `%z`.
+    pub least_zoom: Option<i64>,
+    /// The closest zoom level in whose tiles it keeps, as the basemap's own `%z`.
+    pub most_zoom: Option<i64>,
+}
+
+crate::component::part_type!(MapAreaProps);
+
+/// An area of the map a view keeps offline, as the map holds it.
+#[derive(Clone, Debug, PartialEq)]
+struct MapArea {
+    key: String,
+    /// What the view calls it, which reporting it names; its key where it has no name.
+    name: Option<String>,
+    north: f64,
+    south: f64,
+    east: f64,
+    west: f64,
+    least: i64,
+    most: i64,
+}
+
+impl MapArea {
+    fn of(area: MapAreaProps) -> Self {
+        Self {
+            key: area.key,
+            name: area.name.filter(|name| !name.is_empty()),
+            north: area.north,
+            south: area.south,
+            east: area.east,
+            west: area.west,
+            least: area.least_zoom.unwrap_or(2).clamp(0, TILE_ZOOM_MOST),
+            most: area.most_zoom.unwrap_or(16).clamp(0, TILE_ZOOM_MOST),
+        }
+    }
+
+    /// The tiles of level `z` the area covers, as its first and last column and row: the columns
+    /// wrapped, and the rows the projection's own edge.
+    fn tiles_at(&self, z: i64) -> (i64, i64, i64, i64) {
+        let columns = 1_i64 << z.clamp(0, TILE_ZOOM_MOST);
+        let column = |longitude: f64| ((longitude + 180.0) / 360.0).rem_euclid(1.0);
+        let row = |latitude: f64| {
+            let lat = latitude.clamp(-MERCATOR_MAX_LAT, MERCATOR_MAX_LAT).to_radians();
+            let sine = lat.sin();
+            0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)
+        };
+        let west = column(self.west.min(self.east));
+        let east = column(self.west.max(self.east));
+        let first_x = (west * columns as f64).floor() as i64;
+        let last_x = (east * columns as f64).ceil() as i64;
+        let first_y = (row(self.north.max(self.south)) * columns as f64)
+            .floor()
+            .clamp(0.0, (columns - 1) as f64) as i64;
+        let last_y = (row(self.north.min(self.south)) * columns as f64)
+            .ceil()
+            .clamp((first_y + 1) as f64, columns as f64) as i64;
+        (first_x, last_x.max(first_x + 1), first_y, last_y)
+    }
+}
+
+/// How far asking for one area's tiles has come: the area's places, the level it is on, and the
+/// column and row of the next tile of it.
+#[derive(Clone, Debug)]
+struct Prefetch {
+    key: String,
+    area: MapArea,
+    z: i64,
+    x: i64,
+    y: i64,
+    first_x: i64,
+    last_x: i64,
+    first_y: i64,
+    last_y: i64,
+    done: i64,
+    total: i64,
+    report_at: i64,
+    report_every: i64,
+}
+
+impl Prefetch {
+    fn of(area: &MapArea) -> Self {
+        let mut total = 0;
+        for z in area.least..=area.most {
+            let (first_x, last_x, first_y, last_y) = area.tiles_at(z);
+            total += (last_x - first_x).max(1) * (last_y - first_y).max(1);
+        }
+        let mut prefetch = Self {
+            key: area.key.clone(),
+            area: area.clone(),
+            z: area.least,
+            x: 0,
+            y: 0,
+            first_x: 0,
+            last_x: 0,
+            first_y: 0,
+            last_y: 0,
+            done: 0,
+            total,
+            report_at: (total / 20).max(1),
+            report_every: (total / 20).max(1),
+        };
+        prefetch.start_level();
+        prefetch
+    }
+
+    /// The bounds of the level it is on, and its first tile.
+    fn start_level(&mut self) {
+        let (first_x, last_x, first_y, last_y) = self.area.tiles_at(self.z);
+        self.first_x = first_x;
+        self.last_x = last_x;
+        self.first_y = first_y;
+        self.last_y = last_y;
+        self.x = first_x;
+        self.y = first_y;
+    }
+
+    /// The next tile to ask for, as its level, column and row, or none once they are all asked
+    /// for.
+    fn next(&mut self) -> Option<(i64, i64, i64)> {
+        if self.z > self.area.most {
+            return None;
+        }
+        let columns = 1_i64 << self.z.clamp(0, TILE_ZOOM_MOST);
+        let asked = (self.z, self.x.rem_euclid(columns), self.y);
+        self.x += 1;
+        if self.x >= self.last_x {
+            self.x = self.first_x;
+            self.y += 1;
+            if self.y >= self.last_y {
+                self.z += 1;
+                if self.z <= self.area.most {
+                    self.start_level();
+                }
+            }
+        }
+        Some(asked)
+    }
+
+    fn seen(&mut self) {
+        self.done += 1;
+    }
+
+    fn should_report(&mut self) -> bool {
+        if self.done >= self.report_at {
+            self.report_at = self.done + self.report_every;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -478,6 +861,24 @@ pub struct Map {
     focus: Option<(f64, f64)>,
     /// The zoom the map opens at about `focus`: `None` keeps the camera's own.
     focus_zoom: Option<f64>,
+    /// Where a map of the world's imagery comes from: a tile address with `%z`, `%x` and `%y`.
+    basemap: Option<String>,
+    /// The lines drawn under the markers: each its key, the places it runs through in degrees, its
+    /// ink, how thick it draws in logical pixels, and whether it is dashed.
+    tracks: Vec<(String, Vec<(f64, f64)>, MapTrackTone, f64, bool)>,
+    /// The markers drawn over the lines: each its key, its place in degrees, what it is, whether
+    /// it is chosen, and what it is called.
+    markers: Vec<(String, (f64, f64), MapMarkerKind, bool, Option<String>)>,
+    /// The areas kept for offline use.
+    areas: Vec<MapArea>,
+    /// The areas whose tiles the map has asked for, so an area is saved once and reported once.
+    saved_areas: Vec<String>,
+    /// What a click on a marker reports.
+    marker_event: Event,
+    /// What an area kept offline reports as it is saved.
+    saved: Event,
+    /// How far the map has come asking for the tiles of the area it keeps offline now.
+    prefetch: Option<Prefetch>,
     /// The view set a new centre since the map was last laid out: centre it once, next layout.
     recentre: bool,
     /// The edge or corner being dragged, until it is let go.
@@ -622,6 +1023,14 @@ impl Map {
             at: Event::None,
             focus: None,
             focus_zoom: None,
+            basemap: None,
+            tracks: Vec::new(),
+            markers: Vec::new(),
+            areas: Vec::new(),
+            saved_areas: Vec::new(),
+            marker_event: Event::None,
+            saved: Event::None,
+            prefetch: None,
             recentre: false,
             edge_drag: None,
             outline: None,
@@ -1275,7 +1684,11 @@ impl Described for Map {
             name,
             ground,
             world,
+            basemap,
             pins,
+            tracks,
+            markers,
+            areas,
             drop,
             press,
             frame,
@@ -1289,6 +1702,8 @@ impl Described for Map {
             longitude,
             zoom,
             at,
+            marker,
+            saved,
         } = props;
         let mut map = Self::new();
         map.hint = hint.filter(|hint| !hint.trim().is_empty());
@@ -1305,6 +1720,39 @@ impl Described for Map {
         map.frame = frame;
         map.context = context;
         map.at = at;
+        map.marker_event = marker;
+        map.saved = saved;
+        map.basemap = basemap.filter(|template| template.contains("%z"));
+        map.tracks = tracks
+            .into_iter()
+            .map(|track| {
+                let points = track
+                    .points
+                    .chunks_exact(2)
+                    .map(|pair| (pair[0], pair[1]))
+                    .collect();
+                (
+                    track.key,
+                    points,
+                    track.tone.unwrap_or(MapTrackTone::Route),
+                    track.width.unwrap_or(3.0).max(0.5),
+                    track.dashed,
+                )
+            })
+            .collect();
+        map.markers = markers
+            .into_iter()
+            .map(|held| {
+                (
+                    held.key,
+                    (held.latitude, held.longitude),
+                    held.kind.unwrap_or_default(),
+                    held.selected,
+                    held.name.filter(|name| !name.is_empty()),
+                )
+            })
+            .collect();
+        map.areas = areas.into_iter().map(MapArea::of).collect();
         map.focus = latitude.zip(longitude);
         // A map of the world opens showing the world; a canvas keeps the camera's own zoom.
         map.focus_zoom = if world {
@@ -1354,7 +1802,11 @@ impl Described for Map {
             name: _,
             ground,
             world,
+            basemap,
             pins,
+            tracks,
+            markers,
+            areas,
             drop,
             press,
             frame,
@@ -1368,12 +1820,63 @@ impl Described for Map {
             longitude,
             zoom,
             at,
+            marker,
+            saved,
         } = props;
         let hint = hint.filter(|hint| !hint.trim().is_empty());
         if hint != self.hint {
             self.hint = hint;
             self.dirty = true;
         }
+        let basemap = basemap.filter(|template| template.contains("%z"));
+        if basemap != self.basemap {
+            self.basemap = basemap;
+            self.dirty = true;
+        }
+        let tracks: Vec<_> = tracks
+            .into_iter()
+            .map(|track| {
+                (
+                    track.key,
+                    track
+                        .points
+                        .chunks_exact(2)
+                        .map(|pair| (pair[0], pair[1]))
+                        .collect::<Vec<_>>(),
+                    track.tone.unwrap_or(MapTrackTone::Route),
+                    track.width.unwrap_or(3.0).max(0.5),
+                    track.dashed,
+                )
+            })
+            .collect();
+        if tracks != self.tracks {
+            self.tracks = tracks;
+            self.dirty = true;
+        }
+        let markers: Vec<_> = markers
+            .into_iter()
+            .map(|held| {
+                (
+                    held.key,
+                    (held.latitude, held.longitude),
+                    held.kind.unwrap_or_default(),
+                    held.selected,
+                    held.name.filter(|name| !name.is_empty()),
+                )
+            })
+            .collect();
+        if markers != self.markers {
+            self.markers = markers;
+            self.dirty = true;
+        }
+        let areas: Vec<MapArea> = areas.into_iter().map(MapArea::of).collect();
+        if areas != self.areas {
+            self.areas = areas;
+            self.saved_areas.clear();
+            self.prefetch = None;
+        }
+        self.marker_event = marker;
+        self.saved = saved;
         self.resize = resize;
         self.seen = seen;
         self.drawn = drawn;
@@ -1730,6 +2233,303 @@ impl Map {
         outline(scene, &rect);
     }
 
+    /// The zoom of the basemap whose tiles put about a tile's own pixels on a screen pixel: the
+    /// level whose imagery is sharpest at this camera.
+    fn tile_zoom(&self) -> i64 {
+        let zoom = self.shown.get().zoom.max(f64::EPSILON);
+        let exact = (MERCATOR_WORLD * zoom / TILE_PIXELS).log2();
+        exact.round().clamp(0.0, TILE_ZOOM_MOST as f64) as i64
+    }
+
+    /// The tile address for a level and column and row: the basemap's template with `%z`, `%x`
+    /// and `%y` filled in.
+    fn tile_address(basemap: &str, z: i64, x: i64, y: i64) -> String {
+        basemap
+            .replace("%z", &z.to_string())
+            .replace("%x", &x.to_string())
+            .replace("%y", &y.to_string())
+    }
+
+    /// How many canvas pixels a tile of `z` stands for: the world's width over its column count.
+    fn tile_canvas(z: i64) -> f64 {
+        MERCATOR_WORLD / (1_i64 << z.clamp(0, TILE_ZOOM_MOST)) as f64
+    }
+
+    /// Where a tile of `z` stands on screen, given the camera and the viewport's corner. A tile
+    /// is drawn half a pixel past its edges on each side, so two tiles that meet draw no seam.
+    fn tile_screen_rect(&self, camera: MapCamera, corner: Point, z: i64, x: i64, y: i64) -> Rect {
+        let tile = Self::tile_canvas(z);
+        let at = camera.to_screen(corner, Point::new(x as f64 * tile, y as f64 * tile));
+        let side = tile * camera.zoom.max(f64::EPSILON);
+        Rect::from_origin_size(at, (side, side)).inflate(0.5, 0.5)
+    }
+
+    /// The tiles of `z` the viewport shows, each its column and row, with the columns wrapped
+    /// across the date line. A row past the projection's own edge is not a tile.
+    fn visible_tiles(&self, camera: MapCamera, z: i64) -> Vec<(i64, i64)> {
+        let tile = Self::tile_canvas(z);
+        let corner = self.rect.origin();
+        let from = camera.to_canvas(corner, corner);
+        let to = camera.to_canvas(corner, Point::new(self.rect.x1, self.rect.y1));
+        let columns = 1_i64 << z.clamp(0, TILE_ZOOM_MOST);
+        let first_x = (from.x / tile).floor() as i64;
+        let last_x = (to.x / tile).ceil() as i64;
+        let first_y = (from.y / tile).floor().max(0.0) as i64;
+        let last_y = (to.y / tile).ceil().min(columns as f64) as i64;
+        let mut out = Vec::new();
+        for y in first_y..last_y {
+            for x in first_x..last_x {
+                if x < first_x || x >= last_x {
+                    continue;
+                }
+                out.push((x.rem_euclid(columns), y));
+            }
+        }
+        out
+    }
+
+    /// The basemap under everything else: the tiles the viewport shows at the sharpest level
+    /// that covers it, and, where one is still on its way, the coarser tile it stands in that
+    /// has loaded, so imagery never blanks when the person zooms or pans.
+    fn draw_basemap(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        pictures: &crate::pictures::Pictures,
+    ) {
+        let Some(basemap) = self.basemap.clone() else {
+            return;
+        };
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let camera = self.shown.get();
+        let corner = self.rect.origin();
+        let z = self.tile_zoom();
+        let tiles = self.visible_tiles(camera, z);
+        // The coarser tiles that stand under the ones on their way, drawn first so a loaded tile
+        // paints over them: one drawing per coarser tile, however many holes it covers.
+        let mut under: Vec<(i64, i64, i64)> = Vec::new();
+        for (x, y) in &tiles {
+            let source = crate::widget::PictureSource {
+                src: Self::tile_address(&basemap, z, *x, *y),
+            };
+            if pictures.loaded(&source).is_some() || pictures.failed(&source) {
+                continue;
+            }
+            for coarser in (0..z).rev() {
+                if z - coarser > TILE_FALLBACK_LEVELS {
+                    break;
+                }
+                let step = 1_i64 << (z - coarser);
+                let (parent_x, parent_y) = (x.div_euclid(step), y.div_euclid(step));
+                let parent = crate::widget::PictureSource {
+                    src: Self::tile_address(&basemap, coarser, parent_x, parent_y),
+                };
+                if pictures.loaded(&parent).is_some() {
+                    if !under.contains(&(coarser, parent_x, parent_y)) {
+                        under.push((coarser, parent_x, parent_y));
+                    }
+                    break;
+                }
+            }
+        }
+        for (coarser, x, y) in under {
+            let rect = self.tile_screen_rect(camera, corner, coarser, x, y);
+            let source = crate::widget::PictureSource {
+                src: Self::tile_address(&basemap, coarser, x, y),
+            };
+            if let Some(image) = pictures.loaded(&source) {
+                draw_tile(scene, transform, &image, rect);
+            }
+        }
+        for (x, y) in tiles {
+            let source = crate::widget::PictureSource {
+                src: Self::tile_address(&basemap, z, x, y),
+            };
+            // Asking for it admits a load the first time; until it lands, the coarser tile under
+            // it stands in.
+            if let Some(image) = pictures.get(&source) {
+                let rect = self.tile_screen_rect(camera, corner, z, x, y);
+                draw_tile(scene, transform, &image, rect);
+            }
+        }
+    }
+
+    /// Ask for the tiles of the areas the map keeps offline, a couple at a time while nothing
+    /// the map shows is still loading, and say how far each area has come (`saved`). The host's
+    /// picture fetcher keeps them on the device (`crate::pictures::set_remote_fetcher`), so what
+    /// a person saved shows when nothing reaches the network.
+    fn ask_for_areas(&mut self, pictures: &crate::pictures::Pictures) {
+        let Some(basemap) = self.basemap.clone() else {
+            return;
+        };
+        if self.areas.is_empty() {
+            self.prefetch = None;
+            self.saved_areas.clear();
+            return;
+        }
+        // An area the map no longer holds is not saved: it is asked for again when it comes back.
+        let keys: Vec<String> = self.areas.iter().map(|area| area.key.clone()).collect();
+        self.saved_areas.retain(|key| keys.contains(key));
+        // One area at a time, the first that still wants tiles, so each finishes and says so.
+        let wanted = self
+            .areas
+            .iter()
+            .find(|area| !self.saved_areas.contains(&area.key))
+            .cloned();
+        if let Some(area) = &wanted {
+            if self.prefetch.as_ref().is_none_or(|p| p.key != area.key) {
+                self.prefetch = Some(Prefetch::of(area));
+            }
+        } else {
+            self.prefetch = None;
+        }
+        // Nothing the person looks at waits behind a download: only an idle store takes more.
+        if pictures.store().pending() > 0 {
+            return;
+        }
+        let mut asked = 0;
+        while asked < AREA_TILES_A_FRAME {
+            let Some(prefetch) = self.prefetch.as_mut() else {
+                return;
+            };
+            let Some((z, x, y)) = prefetch.next() else {
+                let key = prefetch.key.clone();
+                let named = prefetch.area.name.clone().unwrap_or_else(|| key.clone());
+                let total = prefetch.total;
+                self.saved_areas.push(key);
+                self.prefetch = None;
+                self.saved.fire(Some(crate::component::Value::List(vec![
+                    crate::component::Value::Text(named),
+                    crate::component::Value::List(vec![
+                        crate::component::Value::Int(total),
+                        crate::component::Value::Int(total),
+                    ]),
+                ])));
+                return;
+            };
+            let source = crate::widget::PictureSource {
+                src: Self::tile_address(&basemap, z, x, y),
+            };
+            if !pictures.store().is_known(&source.src) {
+                // The store admits it, and its worker fetches and keeps it off the drawing
+                // thread.
+                let _ = pictures.get(&source);
+                asked += 1;
+            }
+            prefetch.seen();
+            if prefetch.should_report() {
+                let (key, done, total) = (prefetch.key.clone(), prefetch.done, prefetch.total);
+                self.saved.fire(Some(crate::component::Value::List(vec![
+                    crate::component::Value::Text(key),
+                    crate::component::Value::List(vec![
+                        crate::component::Value::Int(done),
+                        crate::component::Value::Int(total),
+                    ]),
+                ])));
+            }
+        }
+    }
+
+    /// The lines across the map, under its markers and pins: each through the places it names,
+    /// in its tone's ink. A line is drawn in canvas pixels, so it keeps its width on the ground
+    /// and grows on screen as the person zooms in.
+    fn draw_tracks(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.tracks.is_empty() {
+            return;
+        }
+        let camera = self.shown.get();
+        let corner = self.rect.origin();
+        for (_, points, tone, width, dashed) in &self.tracks {
+            let mut path = vello::kurbo::BezPath::new();
+            let mut first = true;
+            for (latitude, longitude) in points {
+                let at = mercator_project(*latitude, *longitude);
+                let at = camera.to_screen(corner, at);
+                if first {
+                    path.move_to(at);
+                    first = false;
+                } else {
+                    path.line_to(at);
+                }
+            }
+            if first {
+                continue;
+            }
+            let ink = track_ink(*tone, theme);
+            let mut stroke = vello::kurbo::Stroke::new(*width);
+            if *dashed {
+                stroke = stroke.with_dashes(0.0, vec![width * 2.0, width * 1.6]);
+            }
+            scene.stroke(&stroke, transform, ink, None, &path);
+        }
+    }
+
+    /// What stands on the map at its places: a dot at each, in the ink of what it is, ringed
+    /// with the surface's colour so it reads on any imagery, and a size larger with a ring while
+    /// it is the one the person chose. A dot keeps its size on screen whatever the zoom.
+    fn draw_markers(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.markers.is_empty() {
+            return;
+        }
+        let camera = self.shown.get();
+        let corner = self.rect.origin();
+        let ring = theme.tokens.colors.surfaces.content;
+        for (_, (latitude, longitude), kind, selected, _) in &self.markers {
+            let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
+            if !self.rect.inflate(MARKER_RING, MARKER_RING).contains(at) {
+                continue;
+            }
+            let (radius, halo) = if *selected {
+                (MARKER_RADIUS + 2.0, MARKER_RING + 1.5)
+            } else {
+                (MARKER_RADIUS, MARKER_RING)
+            };
+            if *selected {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    marker_ink(*kind, theme).with_alpha(0.35),
+                    None,
+                    &vello::kurbo::Circle::new(at, radius + MARKER_RING + 2.0),
+                );
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ring,
+                None,
+                &vello::kurbo::Circle::new(at, radius + halo),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                marker_ink(*kind, theme),
+                None,
+                &vello::kurbo::Circle::new(at, radius),
+            );
+        }
+    }
+
+    /// What a press at `at` (the window's logical coordinates, as the pointer reaches the map)
+    /// opens: the name of the marker whose dot it lands on, or its key where it has none; the one
+    /// drawn last among those covered, as the map draws them in order.
+    fn marker_under(&self, at: Point) -> Option<String> {
+        let camera = self.shown.get();
+        let corner = self.rect.origin();
+        self.markers
+            .iter()
+            .rev()
+            .find(|(_, (latitude, longitude), _, _, _)| {
+                camera
+                    .to_screen(corner, mercator_project(*latitude, *longitude))
+                    .distance(at)
+                    <= MARKER_RADIUS + MARKER_RING
+            })
+            .map(|(key, _, _, _, name)| name.clone().unwrap_or_else(|| key.clone()))
+    }
+
     /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
     /// arrived fades and scales in, one the person moved glides from where it stood, and one the
     /// map no longer holds leaves before it is forgotten. Every pin not drawn this frame is
@@ -2069,6 +2869,14 @@ impl Map {
                     ])));
                 } else {
                     self.point_at(from);
+                    // A click on a marker opens what the marker is; the map reports nothing of
+                    // its own for that press, as a click on a pin is the pin's.
+                    if let Some(key) = self.marker_under(press.start) {
+                        self.marker_event.fire(Some(crate::component::Value::Text(key)));
+                        self.dirty = true;
+                        *ctx.handled = true;
+                        return;
+                    }
                     self.press.fire(Some(crate::component::Value::List(vec![
                         crate::component::Value::Int(from.x.round() as i64),
                         crate::component::Value::Int(from.y.round() as i64),
@@ -2294,6 +3102,11 @@ impl Widget for Map {
                 &viewport,
             );
         }
+        let pictures = crate::pictures::Pictures::window();
+        self.draw_basemap(scene, transform, &pictures);
+        self.ask_for_areas(&pictures);
+        self.draw_tracks(scene, transform, theme);
+        self.draw_markers(scene, transform, theme);
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
         self.draw_pins(&mut crate::draw::DrawCtx::new(
