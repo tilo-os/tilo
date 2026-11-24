@@ -88,6 +88,24 @@ impl Clone for AutoCommit {
     }
 }
 
+/// TILO(history-on-store): a committed document, written on through an autocommit document: a
+/// store hands the history its document to write an undo or a restore into, and takes the change
+/// it made.
+impl From<Automerge> for AutoCommit {
+    fn from(doc: Automerge) -> Self {
+        let heads = doc.get_heads();
+        AutoCommit {
+            doc,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: Vec::new(),
+            diff_cache: None,
+            save_cursor: heads,
+            isolation: None,
+        }
+    }
+}
+
 /// An autocommit document with an inactive [`PatchLog`]
 ///
 /// See [`AutoCommit`]

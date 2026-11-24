@@ -1088,87 +1088,16 @@ impl Store {
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
-            let Some(span) = crate::undo::Span::of(doc, invocation) else {
+            let Some(change) = crate::history::revert::revert_stamped(doc, invocation, stamp)?
+            else {
                 continue;
             };
-            let was = doc.fork_at(&span.before)?;
-            let became = doc.fork_at(&span.after)?;
-            if let Some((kind, id)) = crate::admit::content_resource(&doc_id) {
-                if self.index.get(&kind, &id).is_none() {
-                    continue;
-                }
-                let (was_map, became_map) = (
-                    ReadDoc::hydrate(&was, &ROOT, None)?,
-                    ReadDoc::hydrate(&became, &ROOT, None)?,
-                );
-                let changed: Vec<String> = was
-                    .keys(ROOT)
-                    .chain(became.keys(ROOT))
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .filter(|key| hydrated_key(&was_map, key) != hydrated_key(&became_map, key))
-                    .collect();
-                if changed.is_empty() {
-                    continue;
-                }
-                let ((), change) = self.edit_content(&kind, &id, stamp, |tx, root| {
-                    for key in changed {
-                        crate::undo::undo_key(&span, (&was, &became), &key, tx, root)?;
-                    }
-                    Ok(())
-                })?;
-                written.extend(change);
-                continue;
-            }
-            let ids: BTreeSet<String> = was
-                .keys(ROOT)
-                .chain(became.keys(ROOT))
-                .filter_map(|key| key.strip_prefix(HELD).map(str::to_owned))
-                .collect();
-            let steps: Vec<_> = ids
-                .into_iter()
-                .filter_map(|id| {
-                    let (was, became) = (read(&was, &id), read(&became, &id));
-                    (was != became).then(|| (read(doc, &id), was, became, id))
-                })
-                .collect();
-            for (now, was, became, id) in steps {
-                match (was, now) {
-                    (None, Some((kind, _))) => written.push(self.remove(&kind, &id, stamp)?),
-                    (Some((kind, was)), None) => written.extend(self.put(
-                        &kind,
-                        &id,
-                        Resource {
-                            readers: readers.clone(),
-                            ..was
-                        },
-                        stamp,
-                    )?),
-                    (Some((kind, was)), Some((_, mut now))) => {
-                        let became = became.map(|(_, became)| became).unwrap_or_default();
-                        let names: BTreeSet<&String> =
-                            was.fields.keys().chain(became.fields.keys()).collect();
-                        for name in names {
-                            if was.fields.get(name) == became.fields.get(name) {
-                                continue;
-                            }
-                            match was.fields.get(name) {
-                                Some(cell) => now.fields.insert(name.clone(), cell.clone()),
-                                None => now.fields.remove(name),
-                            };
-                        }
-                        if was.parent != became.parent {
-                            now.parent.clone_from(&was.parent);
-                        }
-                        if was.order != became.order {
-                            now.order.clone_from(&was.order);
-                        }
-                        now.readers.clone_from(&readers);
-                        written.extend(self.put(&kind, &id, now, stamp)?);
-                    }
-                    (None, None) => {}
-                }
-            }
+            self.apply(&doc_id, &readers, change.clone())?;
+            written.push(Written {
+                doc: doc_id,
+                readers,
+                change,
+            });
         }
         Ok(written)
     }
@@ -2494,35 +2423,6 @@ impl Store {
     #[must_use]
     pub fn in_memory(&self) -> usize {
         self.docs.len()
-    }
-}
-
-/// What the key `key` of the map `map` holds; `None` where it holds nothing.
-fn hydrated_key(map: &automerge::hydrate::Value, key: &str) -> Option<automerge::hydrate::Value> {
-    match map {
-        automerge::hydrate::Value::Map(map) => map.get(key).cloned(),
-        _ => None,
-    }
-}
-
-/// Gives the key `key` of the map `to` in `tx` what it holds in the map at the root of `was`:
-/// its value as it stood, texts with their marks; nothing where it held nothing.
-pub(crate) fn restore_key(
-    was: &Automerge,
-    key: &str,
-    tx: &mut automerge::transaction::Transaction<'_>,
-    to: &ObjId,
-) -> Result<(), automerge::AutomergeError> {
-    if tx.get(to, key)?.is_some() {
-        tx.delete(to, key)?;
-    }
-    match was.get(ROOT, key)? {
-        None => Ok(()),
-        Some((AmValue::Scalar(value), _)) => tx.put(to, key, value.into_owned()),
-        Some((AmValue::Object(kind), from)) => {
-            let made = tx.put_object(to, key, kind)?;
-            copy_object(was, &from, tx, &made)
-        }
     }
 }
 

@@ -960,6 +960,7 @@ mod tests {
                     op: HistoryOp::Undo,
                     steps: 1,
                     of: None,
+                    takes_back: Vec::new(),
                 })))
                 .unwrap(),
                 ClaimedAction::History(HistoryOp::Undo)

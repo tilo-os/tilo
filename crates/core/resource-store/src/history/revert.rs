@@ -766,6 +766,59 @@ pub fn revert_changes(
         .collect())
 }
 
+/// Take back in `doc` every change stamped with the invocation `invocation`, and nothing a later
+/// change did besides, as one change stamped `stamp`: an invocation of its own, which names the
+/// verb it takes back and the invocation in `undoes`, and says which changes it took back. The
+/// change, written and not yet applied to `doc`; `None` where the invocation changed nothing of
+/// it, or what it changed is taken back already.
+///
+/// # Errors
+/// When the document cannot be written.
+pub fn revert_stamped(
+    doc: &automerge::Automerge,
+    invocation: &str,
+    stamp: &tilo_actions::stamp::Stamp,
+) -> Result<Option<automerge::Change>, automerge::AutomergeError> {
+    let mut changes: Vec<(ChangeHash, String)> = doc
+        .get_changes_meta(&[])
+        .into_iter()
+        .filter(|meta| {
+            meta.message
+                .as_deref()
+                .and_then(tilo_actions::stamp::Stamp::of_message)
+                .is_some_and(|stamp| stamp.invocation == invocation)
+        })
+        .map(|meta| (meta.hash, meta.actor.to_hex_string()))
+        .collect();
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    changes.reverse();
+    let mut working = AutoCommit::from(doc.clone());
+    let outcomes = revert_changes(&mut working, &changes, &super::authors::Unnamed)
+        .map_err(|_| automerge::AutomergeError::Fail)?;
+    if !outcomes.iter().any(|outcome| outcome.wrote) {
+        return Ok(None);
+    }
+    let mut context = stamp.action_context();
+    context.what = Some(tilo_actions::Did::History(
+        tilo_actions::entry::HistoryStep {
+            op: tilo_actions::HistoryOp::Undo,
+            steps: 1,
+            of: None,
+            takes_back: changes.iter().map(|(hash, _)| hash.to_string()).collect(),
+        },
+    ));
+    let stamp = tilo_actions::stamp::Stamp {
+        context: Some(Box::new(context)),
+        ..stamp.clone()
+    };
+    working.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(stamp.message()),
+    );
+    Ok(working.get_last_local_change())
+}
+
 /// The changes `entries` name, each with the actor whose work it is, newest
 /// first: what [`revert_changes`] takes. An entry is a History row, so it
 /// names every change of a person's typing it stands for

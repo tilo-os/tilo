@@ -208,6 +208,7 @@ impl Stamp {
                     op,
                     steps: 1,
                     of: None,
+                    takes_back: Vec::new(),
                 })
             });
         }

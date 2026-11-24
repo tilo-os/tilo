@@ -181,7 +181,8 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["even
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
-sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
+sec1-c38e5c1d305a1b54 = { package = "sec1", version = "0.8", features = ["ctutils", "pem", "std", "subtle"] }
+sec1-ca01ad9e24f5d932 = { package = "sec1", version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }
@@ -417,7 +418,8 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["even
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
-sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
+sec1-c38e5c1d305a1b54 = { package = "sec1", version = "0.8", features = ["ctutils", "pem", "std", "subtle"] }
+sec1-ca01ad9e24f5d932 = { package = "sec1", version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }

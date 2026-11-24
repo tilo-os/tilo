@@ -1972,7 +1972,11 @@ mod store {
             ..stamp("rename", "i4")
         };
         let written = store.undo("i2", &undo).unwrap();
-        assert!(written.len() >= 3, "{written:?}");
+        // One change in each document the invocation changed: the board's and `a`'s content.
+        let mut documents: Vec<&str> = written.iter().map(|write| write.doc.as_str()).collect();
+        documents.sort_unstable();
+        documents.dedup();
+        assert_eq!(documents.len(), 2, "{documents:?}");
         let a = store.get(ISSUE, "a", &all).unwrap();
         assert_eq!(a.fields["title"], Cell::One("Draft".into()));
         assert_eq!(
@@ -1984,11 +1988,35 @@ mod store {
         let (doc, root) = store.content(ISSUE, "a").unwrap().unwrap();
         let note = doc.get(&root, "note").unwrap().unwrap().0.to_string();
         assert_eq!(note, "\"first\"");
-        assert!(
-            written
-                .iter()
-                .all(|write| Stamp::of(&write.change) == Some(undo.clone()))
-        );
+        // Each is stamped as the undo, and says which of the invocation's changes it took back.
+        for write in &written {
+            let stamp = Stamp::of(&write.change).expect("the undo is stamped");
+            let context = stamp
+                .context
+                .clone()
+                .expect("the undo says what it took back");
+            assert_eq!(
+                Stamp {
+                    context: None,
+                    ..stamp
+                },
+                undo
+            );
+            let Some(tilo_actions::Did::History(step)) = &context.what else {
+                panic!("the undo is a step through history: {context:?}");
+            };
+            assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
+            assert!(!step.takes_back.is_empty(), "{step:?}");
+            for hash in &step.takes_back {
+                let taken = store
+                    .document(&write.doc)
+                    .unwrap()
+                    .get_change_by_hash(&hash.parse().unwrap())
+                    .and_then(|change| Stamp::of(&change))
+                    .expect("what it took back is a change of its document");
+                assert_eq!(taken.invocation, "i2", "only the rename's changes");
+            }
+        }
 
         // Undoing the undo takes the rename back again.
         store.undo("i4", &stamp("rename", "i5")).unwrap();

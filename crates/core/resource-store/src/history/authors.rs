@@ -16,6 +16,21 @@ pub trait ResolveAuthor {
     fn resolve(&self, actor_hex: &str) -> HistoryAuthor;
 }
 
+/// Names an actor by the handle it declares, else as nobody known: what history writes with
+/// where no person's names are at hand (a store taking a step back).
+pub struct Unnamed;
+
+impl ResolveAuthor for Unnamed {
+    fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
+        let name = actor_handle(actor_hex).unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned());
+        author_coloured(
+            name,
+            short_id(actor_hex),
+            collab_types::presence::user_color(actor_hex),
+        )
+    }
+}
+
 /// Display name used for an actor with no registered identity and no
 /// self-declared handle. Deliberately not a person's name.
 pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown member";

@@ -32,7 +32,6 @@ mod ranked;
 mod schema;
 mod snapshot;
 pub mod store;
-mod undo;
 mod value;
 pub mod wire;
 
