@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
 
-use super::super::secret_arguments::{SecretParameters, without_secrets};
+use super::super::secret_arguments::{
+    SecretParameters, restore, secret_arguments, without_secrets,
+};
 use super::super::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
 use super::{
     Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
@@ -249,12 +251,13 @@ impl AskedStore {
         let _ = self.secrets.set(secrets);
     }
 
-    /// The arguments of a call of `target` whose values no record keeps, by name.
-    fn secrets_of(&self, target: &super::super::RemoteActionTarget) -> Vec<String> {
-        self.secrets
-            .get()
-            .map(|secrets| secrets(target))
-            .unwrap_or_default()
+    /// The arguments of `request` whose values no record keeps, by name: those its action
+    /// declares secret, or every one where no descriptor of it is found. None where nothing
+    /// named what is secret ([`Self::keep_no_secrets`]).
+    fn secrets_of(&self, request: &InvokeRequest) -> Vec<String> {
+        self.secrets.get().map_or_else(Vec::new, |secrets| {
+            secret_arguments(request, secrets(&request.target))
+        })
     }
 
     /// The device this store asks on, its key in hex, once it is told ([`Self::asks_on`]).
@@ -402,7 +405,7 @@ impl AskedStore {
     ) -> Result<RecordRef, String> {
         let person = asked_person(caller).ok_or("the call acts for no person to ask")?;
         // The secret a call carries is held here alone, never kept with its record.
-        let (request, sealed) = &without_secrets(request, &self.secrets_of(&request.target));
+        let (request, sealed) = &without_secrets(request, &self.secrets_of(request));
         let at = RecordRef {
             workspace: workspace.to_owned(),
             // The invocation's own id: what the workspace's invocations publish it under.
@@ -651,10 +654,7 @@ impl AskedStore {
                 request.argument = super::super::InvokeArgument::Json(arguments.clone());
             }
             if let Some(held) = held {
-                match &mut request.argument {
-                    super::super::InvokeArgument::Json(arguments) => arguments.extend(held),
-                    argument => *argument = super::super::InvokeArgument::Json(held),
-                }
+                restore(&mut request, held);
             }
             // Held until the call is handed back, or its grant written.
             if grant.is_none() {

@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::secret_arguments::{SecretParameters, without_secrets};
+use super::secret_arguments::{SecretParameters, secret_arguments, without_secrets};
 use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvocationState,
@@ -28,6 +28,10 @@ pub type OriginWrites<'a> = dyn Fn(&Caller, &Origin) -> bool + 'a;
 
 /// The most invocations a device keeps a record of; the oldest goes first.
 const KEPT: usize = 4096;
+
+/// Why an invocation is not run again from its record: it keeps none of what it was asked with
+/// that may be secret.
+pub const NOT_KEPT: &str = "what it was asked with is not kept with its record: ask for it again";
 
 /// Why an invocation is not taken back at a provider: the record there offers no history.
 pub const NO_HISTORY: &str = "the record it changed offers no history to take back";
@@ -56,6 +60,9 @@ pub struct Recorded {
     /// follow and stop the call is [`Self::caller`].
     pub asked: Caller,
     pub request: InvokeRequest,
+    /// The arguments [`Self::request`] was asked with that the record keeps none of, by name:
+    /// those its action declares secret, or all where no descriptor of it was found.
+    pub sealed: Vec<String>,
     /// The workspace it acts in, when it acts in one.
     pub workspace: Option<String>,
     /// When it was asked for and when it ended, in ms since the epoch.
@@ -115,14 +122,14 @@ impl Invocations {
         let _ = self.secrets.set(secrets);
     }
 
-    /// `request` as its record keeps it: without the arguments its action declares secret.
-    fn journaled(&self, request: &InvokeRequest) -> InvokeRequest {
-        let names = self
-            .secrets
-            .get()
-            .map(|secrets| secrets(&request.target))
-            .unwrap_or_default();
-        without_secrets(request, &names).0
+    /// `request` as its record keeps it: without the arguments its action declares secret, or
+    /// any where no descriptor of it is found, beside their names.
+    fn journaled(&self, request: &InvokeRequest) -> (InvokeRequest, Vec<String>) {
+        let names = self.secrets.get().map_or_else(Vec::new, |secrets| {
+            secret_arguments(request, secrets(&request.target))
+        });
+        let (kept, taken) = without_secrets(request, &names);
+        (kept, taken.keys().cloned().collect())
     }
 
     /// Record that `caller` asked for `request` in `workspace`, running at `route`, as `asked`
@@ -151,10 +158,12 @@ impl Invocations {
         retries: Option<InvocationId>,
     ) {
         let id = request.invocation;
+        let (journaled, sealed) = self.journaled(request);
         let recorded = Recorded {
             caller: caller.clone(),
             asked: asked.clone(),
-            request: self.journaled(request),
+            request: journaled,
+            sealed,
             workspace: workspace.map(str::to_owned),
             started_ms: tilo_clock::unix_now_ms(),
             ended_ms: None,
@@ -443,6 +452,12 @@ impl Invocations {
         if recorded.request.signed.is_some() {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "it was asked for from another device: run it again from there".to_owned(),
+            }));
+        }
+        // Run again without what it was asked with, it would not be the call it was.
+        if !recorded.sealed.is_empty() {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: NOT_KEPT.to_owned(),
             }));
         }
         let original = recorded.request.invocation;
@@ -929,11 +944,8 @@ mod tests {
         let target = super::super::person_vault::target(super::super::person_vault::ADD);
         let described = target.clone();
         invocations.keep_no_secrets(Arc::new(move |asked: &RemoteActionTarget| {
-            if *asked == described {
-                super::super::secret_arguments::secret_parameters(&params)
-            } else {
-                Vec::new()
-            }
+            (*asked == described)
+                .then(|| super::super::secret_arguments::secret_parameters(&params))
         }));
         let asked = Caller::local_person("ada").in_new_execution();
         let mut request = request();
@@ -967,6 +979,35 @@ mod tests {
         }
         assert!(written.contains("https://bank.example"), "{written}");
         assert!(written.contains("Bank"), "{written}");
+    }
+
+    /// A call of an action described nowhere on the device is recorded with none of what it
+    /// was asked with, its text included, only the names of what it left out; run again from
+    /// its record, it is refused, saying to ask for it again.
+    #[test]
+    fn a_call_of_an_undescribed_action_is_recorded_without_its_arguments() {
+        let invocations = Arc::new(Invocations::default());
+        invocations.keep_no_secrets(Arc::new(|_: &RemoteActionTarget| None));
+        let asked = Caller::local_person("ada").in_new_execution();
+        let mut request = request();
+        request.argument = InvokeArgument::Text("made-up-passphrase-3317".into());
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(&asked, &asked, &request, Some("w1"), (runs, asked.clone()));
+        let kept = invocations.get(&asked, &id).unwrap();
+        assert_eq!(kept.request.argument, InvokeArgument::None);
+        assert_eq!(kept.sealed, [super::super::secret_arguments::TEXT_ARGUMENT]);
+        let listed = invocations
+            .listed("w1")
+            .iter()
+            .map(|listed| serde_json::to_string(&listed.request).unwrap())
+            .collect::<String>();
+        assert!(!listed.contains("made-up-passphrase-3317"), "{listed}");
+        let never = |_: &Caller, _: &Origin| false;
+        match answered(&invocations, &asked, &record_action(&id, RETRY), &never) {
+            Err(ActionCallError::Refused { reason }) => assert_eq!(reason, NOT_KEPT),
+            other => panic!("run again without what it was asked with: {other:?}"),
+        }
     }
 
     #[test]

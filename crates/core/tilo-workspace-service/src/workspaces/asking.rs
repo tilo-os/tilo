@@ -256,7 +256,9 @@ impl Workspaces {
     /// What each call's action takes secret, as this device publishes the action: the
     /// parameters its descriptor declares [`ParamType::Secret`](tilo_actions::ParamType::Secret),
     /// read from the provider registered for it ([`Self::providers`]) or from the host's own
-    /// actions. What keeps a call (its asked record, the device's record of its invocations)
+    /// actions. `None` for an action described nowhere here (one an app lists only as it is
+    /// asked, one only another device answers), whose every argument is then taken for a
+    /// secret. What keeps a call (its asked record, the device's record of its invocations)
     /// keeps none of them.
     #[must_use]
     pub fn secret_parameters(&self) -> tilo_actions::remote::secret_arguments::SecretParameters {
@@ -273,9 +275,7 @@ impl Workspaces {
                         .map(|(_, action)| action.params().to_vec())
                 })
                 .or_else(|| super::actions::published_params(target));
-            params.map_or_else(Vec::new, |params| {
-                tilo_actions::remote::secret_arguments::secret_parameters(&params)
-            })
+            params.map(|params| tilo_actions::remote::secret_arguments::secret_parameters(&params))
         })
     }
 
