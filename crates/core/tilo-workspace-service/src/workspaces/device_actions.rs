@@ -45,6 +45,9 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
 
+#[cfg(test)]
+mod acting_tests;
+
 /// The workspaces a host governs, by workspace: what [`Workspaces`](super::Workspaces)
 /// keeps and this action service reads.
 pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedWorkspace>>>>;
@@ -143,9 +146,10 @@ impl DeviceWork {
     }
 
     /// What `decide` answers for `caller`, a device asking in a workspace whose roster holds its
-    /// certificate, handed this work, the workspaces' governance, the workspace, that certificate
-    /// and the caller; a device off the roster is not permitted, and with no governance here
-    /// nothing is known.
+    /// certificate, acting as the workspace says that device acts, handed this work, the
+    /// workspaces' governance, the workspace, that certificate and the caller; a device off the
+    /// roster, or a caller acting as anyone else on it, is not permitted, and with no governance
+    /// here nothing is known.
     fn as_certified(
         self: &Arc<Self>,
         caller: &Caller,
@@ -179,19 +183,41 @@ impl DeviceWork {
                 .await
                 .get(&workspace.to_string())
                 .cloned();
-            let certificate = match held {
-                Some(held) => held
-                    .lock()
-                    .await
-                    .peer()
-                    .certificates()
-                    .into_iter()
-                    .find(|certificate| certificate.device_public_key == device),
+            // The device's certificate, and who the workspace says acts on it.
+            let listed = match held {
+                Some(held) => {
+                    let held = held.lock().await;
+                    let peer = held.peer();
+                    let listed = peer
+                        .certificates()
+                        .into_iter()
+                        .find(|certificate| certificate.device_public_key == device)
+                        .map(|certificate| {
+                            let by = peer
+                                .permissions(device, tilo_clock::wall())
+                                .map(|access| access.acting.by);
+                            (certificate, by.ok())
+                        });
+                    drop(peer);
+                    drop(held);
+                    listed
+                }
                 None => None,
             };
-            let Some(certificate) = certificate else {
-                completer.complete(Err(ActionCallError::NotPermitted));
-                return;
+            // What the host answers here it answers for whoever the device's certificate acts
+            // as: a caller acting as anyone else on it (a bot, an app, an agent the device
+            // handed its requests to) is not answered as that device's own.
+            let acting = caller.acting();
+            let certificate = match listed {
+                Some((certificate, Some(by)))
+                    if !acting.handed && acting.app().is_none() && acting.by == by =>
+                {
+                    certificate
+                }
+                _ => {
+                    completer.complete(Err(ActionCallError::NotPermitted));
+                    return;
+                }
             };
             completer.complete(decide(work, governance, workspace, certificate, caller).await);
         });
