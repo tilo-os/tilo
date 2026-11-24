@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_actions::WorkGroup;
 use tilo_actions::remote::Admits;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Fact};
+use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Fact, Named};
 use tilo_actions::remote::task_programs::{self as task_wire, Go};
 use tilo_actions::remote::{ActionCallError, Admitted, Caller, InvokeRequest, Outcome, Pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
@@ -215,7 +215,10 @@ impl Admits for TaskPrograms {
     ) -> Option<Pending<Result<(), ActionCallError>>> {
         let agent = caller.acting().agent_id()?;
         if request.approval().is_some()
-            || self.previewed.lock_recover().contains_key(&request.invocation)
+            || self
+                .previewed
+                .lock_recover()
+                .contains_key(&request.invocation)
         {
             return None;
         }
@@ -227,10 +230,11 @@ impl Admits for TaskPrograms {
             Ok(previewing) => previewing,
             Err(reason) => return Some(Pending::ready(Err(ActionCallError::Refused { reason }))),
         };
-        let by = AskedBy::Program {
+        // The agent asks: its program is the agent's own call, shown on the question as a fact.
+        let by = AskedBy::Agent(Named {
+            id: agent.to_owned(),
             name: caller.agent_called().unwrap_or(agent).to_owned(),
-            app_id: None,
-        };
+        });
         let (previewed, request) = (Arc::clone(&self.previewed), request.clone());
         Some(preview.map(move |outcome| {
             let shown = outcome.as_ref().ok().and_then(previewed_answer);
@@ -360,8 +364,7 @@ fn program_request<T>(
 
 /// The task host's answer in a program's preview, when it showed one instead of answering.
 fn previewed_answer(output: &tilo_actions::ActionOutput) -> Option<serde_json::Value> {
-    let answer: task_wire::ProgramAnswer =
-        serde_json::from_value(output.value.clone()?).ok()?;
+    let answer: task_wire::ProgramAnswer = serde_json::from_value(output.value.clone()?).ok()?;
     answer
         .answer
         .filter(|answer| answer.get("state").and_then(serde_json::Value::as_str) == Some("preview"))
@@ -643,10 +646,10 @@ mod tests {
             };
             assert_eq!(
                 facts.by,
-                AskedBy::Program {
+                AskedBy::Agent(Named {
+                    id: "claude".to_owned(),
                     name: "claude".to_owned(),
-                    app_id: None
-                }
+                })
             );
             assert!(facts.destructive);
             assert_eq!(

@@ -162,13 +162,7 @@ impl DaemonPrograms {
 impl Programs for DaemonPrograms {
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
-        tilo_mcp::task_runs::run(
-            api,
-            request.program,
-            request.go,
-            request.this,
-            request.stop,
-        )
+        tilo_mcp::task_runs::run(api, request.program, request.go, request.this, request.stop)
     }
 }
 
@@ -667,10 +661,21 @@ mod tests {
         let questions = store.asked_of(&ADA);
         assert_eq!(questions.len(), 1, "Ada is asked");
         let facts = &questions[0].facts;
+        assert_eq!(
+            facts.by,
+            asked::AskedBy::Agent(asked::Named {
+                id: "scout".into(),
+                name: "Scout".into(),
+            }),
+            "her agent asks, its program shown as what it would run"
+        );
         assert!(facts.destructive);
         assert_eq!(
             facts.facts,
-            [Fact::new("Program", delete), Fact::new("notes.delete", "×2")],
+            [
+                Fact::new("Program", delete),
+                Fact::new("notes.delete", "×2")
+            ],
             "she sees the program and what it would do"
         );
         assert!(
@@ -689,7 +694,9 @@ mod tests {
 
         resolve(&deleting, &ada, Offer::Approve).expect("her approve is taken");
         assert_eq!(
-            ran_for_real.recv_timeout(wait).expect("her approve runs it"),
+            ran_for_real
+                .recv_timeout(wait)
+                .expect("her approve runs it"),
             delete
         );
         let after = so_far();
