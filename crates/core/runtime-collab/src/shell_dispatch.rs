@@ -66,7 +66,7 @@ impl ShellDispatch {
     async fn ask_as(
         shell: &ShellClient,
         workspace: Option<String>,
-        caller: Option<tilo_actions::remote::KeptCaller>,
+        caller: Option<Box<tilo_actions::remote::KeptCaller>>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
@@ -208,13 +208,13 @@ fn unexpected() -> ActionCallError {
 /// Who the daemon decides a call as: `None` for the person the shell's link was made for (and for
 /// the shell's own system work, which the link carries as that person), else the caller itself,
 /// an app or an agent acting for them.
-fn named(caller: &Caller) -> Option<tilo_actions::remote::KeptCaller> {
+fn named(caller: &Caller) -> Option<Box<tilo_actions::remote::KeptCaller>> {
     let acting = caller.acting();
     let person = acting.is_person()
         && acting.app().is_none()
         && !caller.is_session_delegated()
         && !caller.is_foreign_device();
-    (!person && !caller.is_system()).then(|| caller.kept())
+    (!person && !caller.is_system()).then(|| Box::new(caller.kept()))
 }
 
 /// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides

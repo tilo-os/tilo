@@ -272,7 +272,8 @@ pub enum Ask {
     Action {
         channel: Handle,
         frame: Vec<u8>,
-        caller: tilo_actions::remote::KeptCaller,
+        /// Boxed: who a call is for is large, and every frame carrying one would be as large.
+        caller: Box<tilo_actions::remote::KeptCaller>,
         typed: shell::Typed,
     },
 }
@@ -700,7 +701,7 @@ mod tests {
                 ask: Ask::Action {
                     channel: Handle(2),
                     frame: br#"{"version":1}"#.to_vec(),
-                    caller: tilo_actions::remote::Caller::local_person("someone").kept(),
+                    caller: Box::new(tilo_actions::remote::Caller::local_person("someone").kept()),
                     typed,
                 },
             };

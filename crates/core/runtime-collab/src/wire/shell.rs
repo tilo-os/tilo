@@ -105,7 +105,8 @@ pub enum ShellCall {
     Action {
         workspace: Option<String>,
         frame: Vec<u8>,
-        caller: Option<tilo_actions::remote::KeptCaller>,
+        /// Boxed: who a call is for is large, and every call carrying one would be as large.
+        caller: Option<Box<tilo_actions::remote::KeptCaller>>,
     },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.

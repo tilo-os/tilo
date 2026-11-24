@@ -169,7 +169,7 @@ impl LinkProvider {
                     let ask = Ask::Action {
                         channel: self.channel,
                         frame,
-                        caller: caller.kept(),
+                        caller: Box::new(caller.kept()),
                         typed,
                     };
                     self.asks
