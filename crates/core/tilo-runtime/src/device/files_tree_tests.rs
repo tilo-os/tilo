@@ -285,19 +285,22 @@ fn tree_of(workspace: &str) -> String {
 }
 
 /// The daemon's folders, as `caller` reads them in `workspace` on this device.
-fn folders(
+async fn folders(
     own: &ServiceWorkspaces,
     caller: &Caller,
     workspace: &str,
 ) -> Result<FolderList, ActionCallError> {
-    let read = own.copies().resource_reads().read(
-        caller,
-        &ResourceAddress {
-            workspace: workspace.to_owned(),
-            app: FOLDERS_APP.into(),
-            record: String::new(),
-        },
-    )?;
+    let reads = own.copies().resource_reads();
+    let read = reads
+        .read(
+            caller,
+            &ResourceAddress {
+                workspace: workspace.to_owned(),
+                app: FOLDERS_APP.into(),
+                record: String::new(),
+            },
+        )
+        .await?;
     let ResourceCopy::Reading { value, .. } = read else {
         return Err(ActionCallError::Unavailable {
             reason: format!("the folders read as a reading, not {read:?}"),
@@ -518,6 +521,7 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
     let shown = tilo_test_env::within("the folder's status is the daemon's resource", async {
         loop {
             let list = folders(&ada_laptop.own, &me, &own_workspace)
+                .await
                 .expect("the person reads their device's folders");
             if let Some(folder) = list
                 .folders
@@ -533,7 +537,7 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
     assert_eq!(shown.workspace, workspace);
     assert!(
         matches!(
-            folders(&ada_laptop.own, &me, &workspace),
+            folders(&ada_laptop.own, &me, &workspace).await,
             Err(ActionCallError::Refused { .. })
         ),
         "the folders are read in the person's own workspace, not in another"
@@ -545,7 +549,8 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
                 &ada_laptop.own,
                 &Caller::authenticated(person, phone.device_public_key),
                 &own_workspace
-            ),
+            )
+            .await,
             Err(ActionCallError::Refused { .. })
         ),
         "another device, even the person's own, does not read this device's folders"
@@ -556,7 +561,8 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
                 &ada_laptop.own,
                 &Caller::local_agent("helper"),
                 &own_workspace
-            ),
+            )
+            .await,
             Err(ActionCallError::Refused { .. })
         ),
         "an agent does not read them"
@@ -567,7 +573,8 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
                 &bob_laptop.own,
                 &Caller::authenticated(person, device),
                 &own_workspace
-            ),
+            )
+            .await,
             Err(ActionCallError::Refused { .. })
         ),
         "another person's daemon does not answer for Ada"

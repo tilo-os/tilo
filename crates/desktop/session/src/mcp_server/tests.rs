@@ -196,14 +196,15 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
         agent_session: None,
     };
     let started = std::time::Instant::now();
-    let read = records.read(
+    let read = tilo_rt::block_on(records.read(
         &Caller::local_person("person"),
         &ResourceAddress {
             workspace: "workspace".to_owned(),
             app: "so.tilo.chat".to_owned(),
             record: String::new(),
         },
-    );
+    ))
+    .expect("a runtime to read on");
     assert!(
         matches!(&read, Err(ActionCallError::Unavailable { reason })
             if reason == "this desktop keeps no records of its own"),
@@ -493,7 +494,14 @@ fn a_live_reading_that_changes_reaches_its_follower() {
         let caller = caller.clone();
         let asks = asks.clone();
         let reading = std::thread::spawn(move || {
-            read_resources(&*records, &caller, &asks, None, tilo_clock::now())
+            tilo_rt::block_on(read_resources(
+                &*records,
+                &caller,
+                &asks,
+                None,
+                tilo_clock::now(),
+            ))
+            .expect("a runtime to read on")
         });
         let deadline = std::time::Instant::now() + WAIT;
         while !reading.is_finished() {
@@ -525,13 +533,14 @@ fn a_live_reading_that_changes_reaches_its_follower() {
         let asks = asks.clone();
         let after = first.revision.clone();
         std::thread::spawn(move || {
-            read_resources(
+            tilo_rt::block_on(read_resources(
                 &*records,
                 &caller,
                 &asks,
                 Some(&after),
                 tilo_clock::now().checked_add(WAIT).expect("a deadline"),
-            )
+            ))
+            .expect("a runtime to read on")
         })
     };
     // The loop's pass, where the services are: what moved wakes the follows waiting on it, and
@@ -612,7 +621,9 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     };
     let read_as = |caller: &Caller, kind: Option<&str>| {
         std::thread::scope(|scope| {
-            let reader = scope.spawn(|| records.read(caller, &address));
+            let reader = scope.spawn(|| {
+                tilo_rt::block_on(records.read(caller, &address)).expect("a runtime to read on")
+            });
             answer_once(&session, kind);
             reader.join().expect("the reader")
         })

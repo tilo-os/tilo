@@ -34,64 +34,56 @@ struct Stepped {
 /// The step `action` of the device's migrations with `args`, as `tilo migrate` takes it,
 /// answering the questions its run asks as `asks` says.
 async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Stepped {
-    let (steps, action) = (Arc::clone(steps), action.to_owned());
-    tokio::task::spawn_blocking(move || {
-        let Value::Object(args) = args else {
-            panic!("a step's arguments are an object")
-        };
-        let said = Arc::new(Mutex::new(Vec::new()));
-        let telling = Arc::clone(&said);
-        let mut say = move |line: &str| telling.lock().unwrap().push(line.to_owned());
-        let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
-            panic!("nobody is at a terminal here: {}", question_said(question))
-        };
-        let answer = match steps.step(
-            &action,
+    let Value::Object(args) = args else {
+        panic!("a step's arguments are an object")
+    };
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let telling = Arc::clone(&said);
+    let mut say = move |line: &str| telling.lock().unwrap().push(line.to_owned());
+    let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
+        panic!("nobody is at a terminal here: {}", question_said(question))
+    };
+    let answer = steps
+        .step(
+            action,
             args,
             &mut Answering {
                 asks,
                 prompt: &mut prompt,
                 say: &mut say,
             },
-        ) {
-            Ok(answer) => answer,
-            Err(error) => panic!("{action} reaches the device: {error:#}"),
-        }
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{action} reaches the device: {error:#}"))
         .unwrap_or_else(|failure| panic!("{action} runs: {failure:?}"));
-        let said = said.lock().unwrap().clone();
-        Stepped { answer, said }
-    })
-    .await
-    .unwrap()
+    let said = said.lock().unwrap().clone();
+    Stepped { answer, said }
 }
 
 /// The step `action` with `args`, which the device refuses before it runs: what it says.
 async fn refused(steps: &Arc<Steps>, action: &str, args: Value) -> String {
-    let (steps, action) = (Arc::clone(steps), action.to_owned());
-    tokio::task::spawn_blocking(move || {
-        let Value::Object(args) = args else {
-            panic!("a step's arguments are an object")
-        };
-        let mut say = |_: &str| {};
-        let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
-            panic!("a refused step asks nothing: {}", question_said(question))
-        };
-        let answered = steps.step(
-            &action,
+    let Value::Object(args) = args else {
+        panic!("a step's arguments are an object")
+    };
+    let mut say = |_: &str| {};
+    let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
+        panic!("a refused step asks nothing: {}", question_said(question))
+    };
+    let answered = steps
+        .step(
+            action,
             args,
             &mut Answering {
                 asks: Asks::Leave,
                 prompt: &mut prompt,
                 say: &mut say,
             },
-        );
-        match answered {
-            Err(error) => format!("{error:#}"),
-            Ok(ran) => panic!("{action} ran: {ran:?}"),
-        }
-    })
-    .await
-    .unwrap()
+        )
+        .await;
+    match answered {
+        Err(error) => format!("{error:#}"),
+        Ok(ran) => panic!("{action} ran: {ran:?}"),
+    }
 }
 
 /// What `tilo_ls` of `path` lists in `workspace`, as the person's agent reads it there.
@@ -325,7 +317,11 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         );
         assert!(!kept_accounts(&agent).await.contains(&WORK_EMAIL.to_owned()));
         assert!(
-            steps.questions().expect("the questions read").is_empty(),
+            steps
+                .questions()
+                .await
+                .expect("the questions read")
+                .is_empty(),
             "no question waits once it is answered"
         );
 

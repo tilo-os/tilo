@@ -444,7 +444,7 @@ mod tests {
             DOCUMENTS,
             "every document the device holds was read once"
         );
-        let search = IndexSearch::new(Arc::clone(&content), Arc::new(|_, _| true));
+        let search = IndexSearch::new(Arc::clone(&content), crate::search::deciding(|_, _| true));
         let ada = Caller::local_person("ada");
         let found = search.found(&ada, "word07x03", &Within::default());
         assert_eq!(found.len(), 1, "one note holds the word: {found:?}");

@@ -17,9 +17,9 @@ use tilo_server_protocol::refusal::Refusal;
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
-    ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer,
-    InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
+    ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer, InvocationReceipt,
+    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_clock::time::Instant;
@@ -1124,12 +1124,16 @@ impl tilo_actions::remote::ResourceReads for SessionActions {
         _caller: &Caller,
         correlation: u64,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        self.read_record(read)
-            .map(move |result| RemoteActionMessage::ResourceReading {
+    ) -> tilo_actions::remote::ReadingAnswer {
+        Box::pin(async move {
+            RemoteActionMessage::ResourceReading {
                 correlation,
-                result,
-            })
+                result: self
+                    .read_record(read)
+                    .await
+                    .unwrap_or(Err(ActionCallError::Unanswered)),
+            }
+        })
     }
 }
 
@@ -1365,7 +1369,6 @@ impl ActionProvider for SessionActions {
         });
         answered
     }
-
 }
 
 #[cfg(test)]

@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::remote::{
-    ActionCallError, Caller, Completer, MAX_REMOTE_WAIT, Pending, RemoteActionMessage,
-    ResourceAddress, ResourceAsk, ResourceCopy, ResourceReadRequest, ResourceReads, WatchScope,
-    pending, readings_of,
+    ActionCallError, Caller, Completer, MAX_REMOTE_WAIT, Pending, ReadingAnswer, ReadsAnswer,
+    RemoteActionMessage, ResourceAddress, ResourceAsk, ResourceCopy, ResourceReadRequest,
+    ResourceReads, WatchScope, pending, readings_of,
 };
 use tilo_lock::MutexRecover as _;
 use ui::time::{Duration, Instant};
@@ -135,21 +135,21 @@ impl ResourceReads for Reads {
     /// ([`Self::answer_read`]), never taken here. Refused, not unavailable: a reader that takes
     /// records itself ([`tilo_actions::remote::read_resources`]) reads an unavailable record as
     /// one still arriving, and would answer with a record that never comes.
-    fn read(&self, _: &Caller, _: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        Err(ActionCallError::Refused {
+    fn read<'a>(&'a self, _: &'a Caller, _: &'a ResourceAddress) -> ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(Err(ActionCallError::Refused {
             reason: ASKED_NOT_TAKEN.into(),
-        })
+        })))
     }
 
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &ResourceAddress,
-        _: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        Err(ActionCallError::Refused {
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a ResourceAddress,
+        _: &'a tilo_actions::remote::ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Err(ActionCallError::Refused {
             reason: ASKED_NOT_TAKEN.into(),
-        })
+        })))
     }
 
     fn answer_read(
@@ -157,7 +157,7 @@ impl ResourceReads for Reads {
         caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> ReadingAnswer {
         let (answer, answered) = pending();
         self.asked.lock_recover().push(RecordAsk {
             caller: caller.clone(),
@@ -165,9 +165,11 @@ impl ResourceReads for Reads {
             answer,
         });
         self.wake();
-        answered.map(move |result| RemoteActionMessage::ResourceReading {
-            correlation,
-            result,
+        Box::pin(async move {
+            RemoteActionMessage::ResourceReading {
+                correlation,
+                result: answered.await.unwrap_or(Err(ActionCallError::Unanswered)),
+            }
         })
     }
 }

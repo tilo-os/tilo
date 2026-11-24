@@ -186,7 +186,10 @@ fn search(host: &Host, needle: &str) -> Vec<tilo_desktop_search::Hit> {
             .publish(WORKSPACE, APP, "shelf", delta)
             .expect("the index takes what the window publishes");
     }
-    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(
+        Arc::new(index),
+        tilo_workspace_service::search::deciding(|_, _| true),
+    );
     IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),

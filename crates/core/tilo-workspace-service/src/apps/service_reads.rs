@@ -159,7 +159,7 @@ impl ServiceReads {
         known_revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
-        context.revalidate()?;
+        context.revalidate_read().await?;
         let route = context.route();
         let reader = context.certificate().device_public_key;
         let workspaces = self
@@ -206,7 +206,7 @@ impl ServiceReads {
             })
         }
         .await?;
-        context.revalidate()?;
+        context.revalidate_read().await?;
         Ok(answer)
     }
 
@@ -216,7 +216,7 @@ impl ServiceReads {
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
     ) -> Result<Option<bool>, String> {
-        context.revalidate()?;
+        context.revalidate_read().await?;
         let route = context.route();
         let reader = context.certificate().device_public_key;
         let Some(workspaces) = self.workspaces() else {

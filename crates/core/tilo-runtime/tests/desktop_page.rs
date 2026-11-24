@@ -752,20 +752,21 @@ fn the_styles_are_read_by_the_person_workspaces_rules() {
             .dispatch()
             .resource_reads()
             .expect("the dispatch answers reads");
-        let read = |caller: &Caller, app: &str| {
-            reads.read(
-                &caller.clone().in_workspace(own.clone()),
-                &ResourceAddress {
-                    workspace: own.clone(),
-                    app: app.to_owned(),
-                    record: String::new(),
-                },
-            )
+        let read = |caller: Caller, app: &str| {
+            let address = ResourceAddress {
+                workspace: own.clone(),
+                app: app.to_owned(),
+                record: String::new(),
+            };
+            let reads = std::sync::Arc::clone(&reads);
+            let caller = caller.in_workspace(own.clone());
+            async move { reads.read(&caller, &address).await }
         };
         let styles = tilo_workspace_service::styles::STYLES_APP;
         let person = Caller::local_person(host.person());
-        let theirs =
-            read(&person, styles).expect("the person reads them by their workspace's rules");
+        let theirs = read(person.clone(), styles)
+            .await
+            .expect("the person reads them by their workspace's rules");
         let ResourceCopy::Reading { value, .. } = theirs else {
             panic!("the styles read as a reading: {theirs:?}");
         };
@@ -780,14 +781,15 @@ fn the_styles_are_read_by_the_person_workspaces_rules() {
         );
         let (_, stranger) = host::stranger("Someone else's laptop");
         let refused = read(
-            &Caller::authenticated(stranger.user_public_key, stranger.device_public_key),
+            Caller::authenticated(stranger.user_public_key, stranger.device_public_key),
             styles,
-        );
+        )
+        .await;
         assert!(
             matches!(refused, Err(ActionCallError::Refused { .. })),
             "a stranger reads nothing of the person's: {refused:?}"
         );
-        let folders = read(&person, tilo_workspace_service::files::FOLDERS_APP);
+        let folders = read(person, tilo_workspace_service::files::FOLDERS_APP).await;
         assert!(
             matches!(folders, Err(ActionCallError::Refused { .. })),
             "where this device's folders stand is its own: {folders:?}"

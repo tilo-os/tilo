@@ -6,8 +6,7 @@
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath, roles};
 use tilo_actions::remote::{
-    ActionCallError, Caller, DEVICE_SETTINGS, Pending, RemoteActionMessage, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads,
+    ActionCallError, Caller, DEVICE_SETTINGS, ResourceAddress, ResourceCopy, ResourceReads,
 };
 use tilo_user_identity::DeviceCapabilities;
 
@@ -30,9 +29,7 @@ async fn read(
         app: NOTES.to_owned(),
         record: "groceries".to_owned(),
     };
-    tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-        .await
-        .expect("the read ran")
+    reads.read(&caller, &address).await
 }
 
 fn refused(read: &Result<ResourceCopy, ActionCallError>) -> bool {
@@ -337,9 +334,7 @@ async fn read_with(
         app: NOTES.to_owned(),
         record: record.to_owned(),
     };
-    tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-        .await
-        .expect("the read ran")
+    reads.read(&caller, &address).await
 }
 
 /// `caller`'s write decision for `app`'s `record` in `workspace` through `reads`.
@@ -356,17 +351,7 @@ async fn write_with(
         app: app.to_owned(),
         record: record.to_owned(),
     };
-    tokio::task::spawn_blocking(move || {
-        match reads
-            .may_write(&caller, &address)
-            .wait_timeout(std::time::Duration::MAX)
-        {
-            Ok(Some(decided)) => decided,
-            _ => panic!("the write decision answered"),
-        }
-    })
-    .await
-    .expect("the decision ran")
+    reads.may_write(&caller, &address).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -494,19 +479,10 @@ async fn a_watched_record_wakes_its_reader_on_its_next_write_alone() {
         record: "groceries".to_owned(),
     };
     let (wake, woken) = tilo_actions::remote::ResourceWake::new();
-    let watching = (
-        std::sync::Arc::clone(&reads),
-        h.person(),
-        address.clone(),
-        wake.clone(),
-    );
-    tokio::task::spawn_blocking(move || {
-        let (reads, person, address, wake) = watching;
-        reads.watch(&person, &address, &wake)
-    })
-    .await
-    .unwrap()
-    .expect("the person watches their record");
+    reads
+        .watch(&h.person(), &address, &wake)
+        .await
+        .expect("the person watches their record");
     h.write(&h.kitchen, "other").await;
     assert!(
         wake.waiting(),
@@ -520,9 +496,7 @@ async fn a_watched_record_wakes_its_reader_on_its_next_write_alone() {
         .in_workspace(h.kitchen.clone())
         .in_new_execution();
     let (stranger, _) = tilo_actions::remote::ResourceWake::new();
-    let refused = tokio::task::spawn_blocking(move || reads.watch(&alone, &address, &stranger))
-        .await
-        .unwrap();
+    let refused = reads.watch(&alone, &address, &stranger).await;
     assert!(refused.is_err());
     h.server.shutdown().await;
 }
@@ -701,8 +675,8 @@ async fn an_app_reads_its_own_records_and_no_kind_it_did_not_declare() {
             record: String::new(),
         },
     );
-    let read = tokio::task::spawn_blocking(move || reads.read(&mail, &address)).await;
-    assert!(not_read(&read.expect("the read ran")));
+    let read = reads.read(&mail, &address).await;
+    assert!(not_read(&read));
     h.server.shutdown().await;
 }
 
@@ -766,18 +740,10 @@ async fn an_app_keeps_open_only_the_records_its_manifest_declares() {
                 record: String::new(),
             },
         );
-        tokio::task::spawn_blocking(move || {
-            match reads
-                .may_read(&caller, &address)
-                .wait_timeout(std::time::Duration::MAX)
-            {
-                Ok(Some(decided)) => decided,
-                _ => panic!("the read decision answered"),
-            }
-        })
+        async move { reads.may_read(&caller, &address).await }
     };
     // Notes reads and changes its own record.
-    let read = decide_read(app(NOTES)).await.expect("the decision ran");
+    let read = decide_read(app(NOTES)).await;
     assert!(read.is_ok(), "{read:?}");
     let write = write_with(
         std::sync::Arc::clone(&reads),
@@ -789,9 +755,7 @@ async fn an_app_keeps_open_only_the_records_its_manifest_declares() {
     .await;
     assert!(write.is_ok(), "{write:?}");
     // An app that declares it reads notes reads the record, and changes nothing of it.
-    let read = decide_read(app("test.notes-reader"))
-        .await
-        .expect("the decision ran");
+    let read = decide_read(app("test.notes-reader")).await;
     assert!(read.is_ok(), "{read:?}");
     let write = write_with(
         std::sync::Arc::clone(&reads),
@@ -804,9 +768,7 @@ async fn an_app_keeps_open_only_the_records_its_manifest_declares() {
     assert!(not_changed(&write), "{write:?}");
     // An app that declares no read of notes keeps it open neither way, its person's grants
     // notwithstanding.
-    let read = decide_read(app("so.tilo.messages"))
-        .await
-        .expect("the decision ran");
+    let read = decide_read(app("so.tilo.messages")).await;
     assert!(
         matches!(&read, Err(ActionCallError::Refused { reason }) if reason.contains("declares no read")),
         "{read:?}"
@@ -872,20 +834,15 @@ async fn a_grant_that_reads_a_record_alone_changes_nothing_of_it() {
 struct Settings;
 
 impl ResourceReads for Settings {
-    fn read(&self, _: &Caller, _: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        Ok(ResourceCopy::reading(
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(Ok(ResourceCopy::reading(
             serde_json::json!({"layout": "us"}),
             None,
-        ))
-    }
-
-    fn answer_read(
-        self: std::sync::Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+        ))))
     }
 }
 
@@ -978,7 +935,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
     let laptop = Caller::authenticated(h.cert.user_public_key, [21; 32]).in_workspace(own.clone());
     for record in ["server", "displays"] {
         assert!(
-            reads.read(&laptop, &setting(record)).is_ok(),
+            reads.read(&laptop, &setting(record)).await.is_ok(),
             "the person reads {record} from another of their devices"
         );
     }
@@ -992,6 +949,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
     .in_workspace(h.kitchen.clone());
     let refusal = reads
         .read(&bob_caller, &setting("server"))
+        .await
         .expect_err("an administrator with no grant reads no setting of this device");
     assert!(
         matches!(refusal, ActionCallError::Refused { .. }),
@@ -1005,7 +963,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
         .acting_for(bob.clone())
         .in_workspace(h.kitchen.clone());
     assert!(
-        reads.read(&agent, &setting("server")).is_err(),
+        reads.read(&agent, &setting("server")).await.is_err(),
         "an administrator's agent reads none of them"
     );
 
@@ -1017,11 +975,14 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
     )
     .in_workspace(h.kitchen.clone());
     assert!(
-        reads.read(&carol_caller, &setting("server")).is_ok(),
+        reads.read(&carol_caller, &setting("server")).await.is_ok(),
         "whoever the person granted the setting reads it"
     );
     assert!(
-        reads.read(&carol_caller, &setting("displays")).is_err(),
+        reads
+            .read(&carol_caller, &setting("displays"))
+            .await
+            .is_err(),
         "a grant on one setting reaches no other"
     );
 
@@ -1033,7 +994,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
     )
     .await;
     assert!(
-        reads.read(&carol_caller, &setting("server")).is_err(),
+        reads.read(&carol_caller, &setting("server")).await.is_err(),
         "the setting reads nothing after the person revokes the grant"
     );
     h.server.shutdown().await;

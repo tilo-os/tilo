@@ -1726,7 +1726,10 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
             .publish("workspace", APP, "chat", delta)
             .expect("the index takes what the app publishes");
     }
-    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(
+        Arc::new(index),
+        tilo_workspace_service::search::deciding(|_, _| true),
+    );
     let hits = IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),

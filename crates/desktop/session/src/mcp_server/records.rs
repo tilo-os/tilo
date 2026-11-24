@@ -60,51 +60,50 @@ impl ServiceRecords {
 impl tilo_actions::remote::ResourceReads for ServiceRecords {
     /// Every app's resources are in the workspace's one store, whichever service publishes
     /// them: the broker answers.
-    fn store_read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
+    fn store_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
         read: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionCallError> {
-        self.workspace_reads()?.store_read(caller, address, read)
-    }
-
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    ) -> tilo_actions::remote::ReadsAnswer<'a, serde_json::Value> {
+        tilo_actions::remote::reads_answer(async move {
+            self.workspace_reads()?
+                .store_read(caller, address, read)
+                .await
+        })
     }
 
     /// The resources the session's services publish themselves (the device's sound, its windows,
     /// its styles, Settings' sections) are answered as a reading on the loop's pass, where the
     /// services are; every other address is an app's record, answered by the workspace.
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        if let Some(copy) = self.published(caller, address)? {
-            return Ok(copy);
-        }
-        self.workspace_reads()?.read(caller, address)
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            if let Some(copy) = self.published(caller, address).await? {
+                return Ok(copy);
+            }
+            self.workspace_reads()?.read(caller, address).await
+        })
     }
 
     /// A workspace's records change through the broker, which wakes its readers; what the session's
     /// services publish is woken by the pass that moves it ([`SessionServices::watch_reading`]).
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        if super::published_root(&address.app, &address.record) {
-            self.session.watch_reading(wake);
-            return Ok(());
-        }
-        self.workspace_reads()?.watch(caller, address, wake)
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+        wake: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        tilo_actions::remote::reads_answer(async move {
+            if super::published_root(&address.app, &address.record) {
+                self.session.watch_reading(wake);
+                return Ok(());
+            }
+            self.workspace_reads()?.watch(caller, address, wake).await
+        })
     }
 }
 
@@ -112,7 +111,7 @@ impl ServiceRecords {
     /// The reading of `address` when it names a resource the session publishes itself, read by the
     /// person at this device as their own; `None` when it names an app's record, or when the
     /// caller is not the person: the device's daemon answers both, deciding the read as the caller.
-    fn published(
+    async fn published(
         &self,
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
@@ -120,7 +119,11 @@ impl ServiceRecords {
         if !super::published_root(&address.app, &address.record) || !caller.acting().is_person() {
             return Ok(None);
         }
-        let Some(published) = self.session.reading(&address.app, &address.record)? else {
+        let Some(published) = self
+            .session
+            .reading_awaited(&address.app, &address.record)
+            .await?
+        else {
             return Ok(Some(tilo_actions::remote::ResourceCopy::Absent));
         };
         // A resource no service publishes a kind for has no node to decide a read at, so it is

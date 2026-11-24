@@ -17,8 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionCallError, Caller, Pending, RemoteActionMessage, ResourceAddress, ResourceCopy,
-    ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceReads, ResourceWake,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -126,44 +125,39 @@ impl Styles {
 }
 
 impl ResourceReads for Styles {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        if address.app != STYLES_APP || !address.record.is_empty() {
-            return Ok(ResourceCopy::Absent);
-        }
-        // The revision first: styles that move while they are read move it past this one.
-        let revision = self.0.revision.load(Ordering::Relaxed).to_string();
-        serde_json::to_value(StyleList {
-            offered: self.offered(),
-        })
-        .map(|value| ResourceCopy::reading(value, Some(revision)))
-        .map_err(|error| ActionCallError::Unavailable {
-            reason: error.to_string(),
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            if address.app != STYLES_APP || !address.record.is_empty() {
+                return Ok(ResourceCopy::Absent);
+            }
+            // The revision first: styles that move while they are read move it past this one.
+            let revision = self.0.revision.load(Ordering::Relaxed).to_string();
+            serde_json::to_value(StyleList {
+                offered: self.offered(),
+            })
+            .map(|value| ResourceCopy::reading(value, Some(revision)))
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: error.to_string(),
+            })
         })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        let mut waiting = self.0.waiting.lock_recover();
-        waiting.retain(ResourceWake::waiting);
-        waiting.push(wake.clone());
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        tilo_actions::remote::reads_answer(async move {
+            let mut waiting = self.0.waiting.lock_recover();
+            waiting.retain(ResourceWake::waiting);
+            waiting.push(wake.clone());
+            Ok(())
+        })
     }
 }
 

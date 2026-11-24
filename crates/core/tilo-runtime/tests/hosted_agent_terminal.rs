@@ -14,9 +14,7 @@
 use serde_json::{Value, json};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
-use tilo_actions::remote::{
-    ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
-};
+use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy};
 
 use crate::chat::{CHANNEL, chat_holds, made_channel, opens, said};
 use crate::host;
@@ -74,13 +72,10 @@ async fn allow(host: &host::Host) {
         app: workspace_invocations::PROVIDER.to_owned(),
         record: String::new(),
     };
-    let reading = {
-        let caller = caller.clone();
-        tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-            .await
-            .expect("the read ends")
-            .expect("the workspace's invocations read")
-    };
+    let reading = reads
+        .read(&caller, &address)
+        .await
+        .expect("the workspace's invocations read");
     let whole = match reading {
         ResourceCopy::Reading { value, .. } => value,
         other => panic!("the invocations are a reading, not {other:?}"),

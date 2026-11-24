@@ -1616,16 +1616,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             record: record.to_owned(),
         };
         let command = command.clone();
-        // The store answers under the workspace's lock, and the API's sessions share one runtime.
-        let read =
-            tokio::task::spawn_blocking(move || reads.store_read(&caller, &address, command)).await;
-        match read {
-            Ok(Ok(reply)) => json!({"ok": reply}),
-            Ok(Err(error)) => {
+        // The store answers under the workspace's lock, which the read awaits.
+        match reads.store_read(&caller, &address, command).await {
+            Ok(reply) => json!({"ok": reply}),
+            Err(error) => {
                 let name = app_names(&[app.to_owned()]).join("");
                 json!({"err": format!("{name}: {error}")})
             }
-            Err(error) => json!({"err": format!("the store read ended: {error}")}),
         }
     }
 

@@ -238,16 +238,11 @@ impl AppBrokerState {
             .certified_caller(&route.cluster_id, false)
             .through_app(app);
         let address = session::route_address(route);
-        // The device's reader may block to decide, never on the broker's own thread.
-        let (deciding, deciding_for) = (caller.clone(), address.clone());
-        let decided = tokio::task::spawn_blocking(move || reads.may_read(&deciding, &deciding_for))
-            .await
-            .map_err(|_| refused())?
-            .await;
+        let decided = reads.may_read(&caller, &address).await;
         let facts = match decided {
-            Some(Ok(())) => return Ok(()),
-            Some(Err(ActionCallError::ConfirmationRequired(facts))) => *facts,
-            Some(Err(ActionCallError::Refused { reason })) => {
+            Ok(()) => return Ok(()),
+            Err(ActionCallError::ConfirmationRequired(facts)) => *facts,
+            Err(ActionCallError::Refused { reason }) => {
                 return Err(format!("{}: {reason}", refused()));
             }
             _ => return Err(refused()),

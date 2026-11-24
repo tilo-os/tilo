@@ -1319,17 +1319,7 @@ impl ActionService {
             RemoteActionMessage::ResourceRead {
                 correlation, read, ..
             } => match dispatcher.resource_reads() {
-                Some(reads) => reads
-                    .answer_read(caller, *correlation, read.clone())
-                    .await
-                    .or_else(|| {
-                        tilo_actions::remote::refuse(
-                            request,
-                            ActionCallError::Unavailable {
-                                reason: "the record's reader dropped the read".into(),
-                            },
-                        )
-                    }),
+                Some(reads) => Some(reads.answer_read(caller, *correlation, read.clone()).await),
                 None => Some(RemoteActionMessage::ResourceReading {
                     correlation: *correlation,
                     result: Err(ActionCallError::Unavailable {

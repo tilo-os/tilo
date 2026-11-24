@@ -78,7 +78,7 @@ impl JoinedChannel {
     /// The record a record command of `command` addresses (`route`, [`addressed`]): once the
     /// device's one reader let this channel's caller (`admitted`) read it. `None` for any other
     /// command. A listing of the app's records names none, and each is read by id.
-    pub(super) fn record_of(
+    pub(super) async fn record_of(
         &self,
         command: &Command,
         admitted: &AdmittedJoinIdentity,
@@ -86,7 +86,7 @@ impl JoinedChannel {
     ) -> Result<Option<String>, BrokerError> {
         match command {
             Command::RecordChanges { .. } => {
-                self.may_read_record(admitted, route)?;
+                self.may_read_record(admitted, route).await?;
                 Ok(Some(route.document_id.clone()))
             }
             // Decided as every write on the route is, before it got here.
@@ -97,7 +97,7 @@ impl JoinedChannel {
 
     /// Refuse a read of the route's record the device's one reader does not let the caller make.
     /// One it would ask the person about reads, as the channel's join asked them already.
-    fn may_read_record(
+    async fn may_read_record(
         &self,
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
@@ -105,15 +105,13 @@ impl JoinedChannel {
         use tilo_actions::remote::ActionCallError::ConfirmationRequired;
         let address = session::route_address(route);
         let caller = self.record_caller(admitted, route);
-        let decided = self.state.records().map(|reads| {
-            reads
-                .may_read(&caller, &address)
-                .wait_timeout(Duration::MAX)
-        });
+        let decided = match self.state.records() {
+            Some(reads) => Some(reads.may_read(&caller, &address).await),
+            None => None,
+        };
         let why = match decided {
-            Some(Ok(Some(Ok(()) | Err(ConfirmationRequired(_))))) => return Ok(()),
-            Some(Ok(Some(Err(refusal)))) => refusal.to_string(),
-            Some(Ok(None) | Err(_)) => "the device's reader did not answer".to_owned(),
+            Some(Ok(()) | Err(ConfirmationRequired(_))) => return Ok(()),
+            Some(Err(refusal)) => refusal.to_string(),
             None => "this device serves no reader of records".to_owned(),
         };
         Err(BrokerError::failed(format!(

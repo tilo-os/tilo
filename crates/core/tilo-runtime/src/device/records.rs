@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_record_space,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReadsAnswer, ResourceAddress,
+    ResourceCopy, ResourceReads, ResourceWake, device_record_space, reads_answer,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -366,33 +366,35 @@ fn valid_name(name: &str) -> bool {
 }
 
 impl ResourceReads for DeviceRecords {
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        self.allows(
-            caller,
-            &address.workspace,
-            &address.record,
-            tilo_action_policy::ActionKind::Read,
-        )?;
-        if !self.names(address) {
-            return Ok(ResourceCopy::Absent);
-        }
-        let revision = self.revision().to_string();
-        Ok(match self.get(&address.record) {
-            Some(value) => ResourceCopy::reading(value, Some(revision)),
-            None => ResourceCopy::Absent,
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            self.allows(
+                caller,
+                &address.workspace,
+                &address.record,
+                tilo_action_policy::ActionKind::Read,
+            )?;
+            if !self.names(address) {
+                return Ok(ResourceCopy::Absent);
+            }
+            let revision = self.revision().to_string();
+            Ok(match self.get(&address.record) {
+                Some(value) => ResourceCopy::reading(value, Some(revision)),
+                None => ResourceCopy::Absent,
+            })
         })
     }
 
-    fn may_read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(
+    fn may_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(
             self.allows(
                 caller,
                 &address.workspace,
@@ -408,78 +410,73 @@ impl ResourceReads for DeviceRecords {
                     })
                 }
             }),
-        )
+        ))
     }
 
-    fn list(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        if app != DEVICE_SETTINGS
-            || !self
-                .spaces
-                .lock_recover()
-                .iter()
-                .any(|space| space == workspace)
-        {
-            return Err(ActionCallError::Unavailable {
-                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+    fn list<'a>(
+        &'a self,
+        caller: &'a Caller,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+        reads_answer(async move {
+            if app != DEVICE_SETTINGS
+                || !self
+                    .spaces
+                    .lock_recover()
+                    .iter()
+                    .any(|space| space == workspace)
+            {
+                return Err(ActionCallError::Unavailable {
+                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                });
+            }
+            let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+            names.retain(|name| {
+                self.allows(
+                    caller,
+                    workspace,
+                    name,
+                    tilo_action_policy::ActionKind::Read,
+                )
+                .is_ok()
             });
-        }
-        let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
-        names.retain(|name| {
+            Ok(names
+                .into_iter()
+                .map(|name| ResourceAddress {
+                    workspace: workspace.to_owned(),
+                    app: DEVICE_SETTINGS.to_owned(),
+                    record: name,
+                })
+                .collect())
+        })
+    }
+
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
             self.allows(
                 caller,
-                workspace,
-                name,
+                &address.workspace,
+                &address.record,
                 tilo_action_policy::ActionKind::Read,
-            )
-            .is_ok()
-        });
-        Ok(names
-            .into_iter()
-            .map(|name| ResourceAddress {
-                workspace: workspace.to_owned(),
-                app: DEVICE_SETTINGS.to_owned(),
-                record: name,
-            })
-            .collect())
-    }
-
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        self.allows(
-            caller,
-            &address.workspace,
-            &address.record,
-            tilo_action_policy::ActionKind::Read,
-        )?;
-        if !self.names(address) {
-            return Ok(());
-        }
-        let mut seen = self.revision.subscribe();
-        let wake = wake.clone();
-        tilo_rt::app().spawn(async move {
-            if seen.changed().await.is_ok() {
-                wake.wake();
+            )?;
+            if !self.names(address) {
+                return Ok(());
             }
-        });
-        Ok(())
+            let mut seen = self.revision.subscribe();
+            let wake = wake.clone();
+            tilo_rt::app().spawn(async move {
+                if seen.changed().await.is_ok() {
+                    wake.wake();
+                }
+            });
+            Ok(())
+        })
     }
 }
 

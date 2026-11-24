@@ -33,9 +33,20 @@ const OPEN_ANCHOR: &str = "anchor";
 /// Separates the parts of a result's key: an entry's own key may hold anything, so it comes last.
 const KEY_SEPARATOR: char = '\u{1f}';
 
+/// Whether a caller may read what was published under a key, once it is decided.
+pub type ReadDecision = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
+
 /// Whether `caller` may read what was published under a key: the record it came from, decided
-/// where every read of that record is.
-pub type MayRead = Arc<dyn Fn(&Caller, &IndexKey) -> bool + Send + Sync>;
+/// where every read of that record is. A decision may wait on the workspace it is made in, so it
+/// is awaited, never waited for on the thread that searches.
+pub type MayRead = Arc<dyn Fn(&Caller, &IndexKey) -> ReadDecision + Send + Sync>;
+
+/// A [`MayRead`] that decides at once, as `decide` answers.
+pub fn deciding(decide: impl Fn(&Caller, &IndexKey) -> bool + Send + Sync + 'static) -> MayRead {
+    Arc::new(move |caller: &Caller, key: &IndexKey| -> ReadDecision {
+        Box::pin(std::future::ready(decide(caller, key)))
+    })
+}
 
 /// The device's index, searched for each caller as that caller may read it.
 pub struct IndexSearch {
@@ -82,125 +93,205 @@ impl IndexSearch {
     /// app's own words for it, then one result per app whose locked secrets it matches, which
     /// opens that app to unlock them. Asked with no words and narrowed to what entries are
     /// about, every one of those, the most recent first.
-    #[must_use]
-    pub fn found(&self, caller: &Caller, needle: &str, within: &Within) -> Vec<Found> {
-        let needle = needle.trim();
-        let snapshot = self.current();
-        let reads = self.reads(caller);
-        if needle.is_empty() {
-            return if within.about.is_empty() {
-                Vec::new()
-            } else {
-                snapshot.listed(&reads, within)
-            };
-        }
-        let mut out = snapshot.matched(&reads, needle, within);
-        if within.place.is_none() && !within.is_timed() && within.about.is_empty() {
-            out.extend(snapshot.unlocking(&reads, needle, within.app.as_deref()));
-        }
-        out
+    fn finding(&self, caller: &Caller, needle: &str, within: &Within) -> Pending<Vec<Found>> {
+        let (needle, within) = (needle.trim().to_owned(), within.clone());
+        self.answer(caller, move |snapshot, reads| {
+            if needle.is_empty() {
+                return if within.about.is_empty() {
+                    Vec::new()
+                } else {
+                    snapshot.listed(reads, &within)
+                };
+            }
+            let mut out = snapshot.matched(reads, &needle, &within);
+            if within.place.is_none() && !within.is_timed() && within.about.is_empty() {
+                out.extend(snapshot.unlocking(reads, &needle, within.app.as_deref()));
+            }
+            out
+        })
+    }
+
+    /// [`Self::finding`], as a search whose every decision is made at once answers it.
+    #[cfg(test)]
+    pub(crate) fn found(&self, caller: &Caller, needle: &str, within: &Within) -> Vec<Found> {
+        self.finding(caller, needle, within)
+            .wait_timeout(std::time::Duration::ZERO)
+            .ok()
+            .flatten()
+            .expect("a test's reads are decided at once")
+    }
+
+    /// [`Self::picturing`], as a search whose every decision is made at once answers it.
+    #[cfg(test)]
+    fn pictures(&self, caller: &Caller) -> Vec<Picture> {
+        self.picturing(caller)
+            .wait_timeout(std::time::Duration::ZERO)
+            .ok()
+            .flatten()
+            .expect("a test's reads are decided at once")
+    }
+
+    /// [`Self::describing`], as a search whose every decision is made at once answers it.
+    #[cfg(test)]
+    fn describe(&self, caller: &Caller, description: Description) -> Result<(), ActionCallError> {
+        self.describing(caller, description)
+            .wait_timeout(std::time::Duration::ZERO)
+            .ok()
+            .flatten()
+            .expect("a test's reads are decided at once")
     }
 
     /// Every picture the index holds that `caller` may read: each entry an app published that
     /// names a picture's bytes, and that is no secret.
-    #[must_use]
-    pub fn pictures(&self, caller: &Caller) -> Vec<Picture> {
-        let reads = self.reads(caller);
-        self.current()
-            .visible
-            .iter()
-            .filter(|indexed| !indexed.entry.secret && reads.allows(indexed))
-            .filter_map(|indexed| {
-                Some(Picture {
-                    resource: indexed.entry.resource.clone(),
-                    app: indexed.key.app.clone(),
-                    workspace: indexed.key.workspace.clone(),
-                    record: indexed.key.record.clone(),
-                    image: indexed.entry.image.clone()?,
+    fn picturing(&self, caller: &Caller) -> Pending<Vec<Picture>> {
+        self.answer(caller, |snapshot, reads| {
+            snapshot
+                .visible
+                .iter()
+                .filter(|indexed| !indexed.entry.secret && reads.allows(indexed))
+                .filter_map(|indexed| {
+                    Some(Picture {
+                        resource: indexed.entry.resource.clone(),
+                        app: indexed.key.app.clone(),
+                        workspace: indexed.key.workspace.clone(),
+                        record: indexed.key.record.clone(),
+                        image: indexed.entry.image.clone()?,
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
     }
 
     /// Add what `description` says its picture shows to the entry its app published for it, so
     /// one picture is one result: its own name and glyph stay, and it is found by those words as
-    /// well. A picture whose app published no entry for it gets one of its own.
-    ///
-    /// # Errors
+    /// well. A picture whose app published no entry for it gets one of its own. Refused where
     /// `caller` may not read the record the picture is in.
-    pub fn describe(
+    fn describing(
         &self,
         caller: &Caller,
         description: Description,
-    ) -> Result<(), ActionCallError> {
-        let Description {
-            picture,
-            title,
-            words,
-        } = description;
-        let key = IndexKey::new(&picture.app, &picture.workspace, &picture.record);
-        let reads = self.reads(caller);
-        let refused = || ActionCallError::Refused {
-            reason: "the picture is in a record this caller may not read".into(),
-        };
-        if !reads.allows_record(&key) {
-            return Err(refused());
-        }
-        let published = self.index.contents().visible.into_iter().find(|indexed| {
-            indexed.key == key
-                && indexed.entry.resource == picture.resource
-                && !indexed.entry.secret
-        });
-        // A picture sealed to its readers is described by them alone.
-        if published
-            .as_ref()
-            .is_some_and(|indexed| !indexed.entry.found_by(reads.reader.as_deref()))
-        {
-            return Err(refused());
-        }
-        let entry = match published {
-            Some(indexed) => {
-                let mut entry = indexed.entry;
-                for (text, weight) in words {
-                    if !entry.fields.iter().any(|(held, _)| held == &text) {
-                        entry.fields.push((text, weight));
-                    }
-                }
-                entry.image = Some(picture.image);
-                entry
-            }
-            None => IndexEntry {
-                key: picture.resource.clone(),
-                resource: picture.resource,
-                title,
-                fields: words,
-                image: Some(picture.image),
-                icon: Some("image".to_owned()),
-                ..IndexEntry::default()
-            },
-        };
-        self.index.apply(
-            &key,
-            IndexDelta {
-                upsert: vec![entry],
-                ..IndexDelta::default()
-            },
-        );
-        Ok(())
+    ) -> Pending<Result<(), ActionCallError>> {
+        let index = Arc::clone(&self.index);
+        self.answer(caller, move |_, reads| describe(&index, reads, description))
     }
 
-    /// What `caller` may read of the index.
-    fn reads<'a>(&'a self, caller: &'a Caller) -> Reads<'a> {
-        Reads {
-            caller,
-            may_read: &self.may_read,
-            workspace: caller.workspace().filter(|_| !caller.acting().is_person()),
-            reader: caller
-                .acting()
-                .member_id()
-                .map(tilo_actions::contract::reader_name),
+    /// `work` on the index as it is now, with what `caller` may read of it: answered at once
+    /// where every decision it needs is made at once, else once they are, on a task of the
+    /// runtime that asked (or the app's), never by holding the asking thread.
+    fn answer<T: Send + 'static>(
+        &self,
+        caller: &Caller,
+        work: impl FnOnce(&Snapshot, &Reads<'_>) -> T + Send + 'static,
+    ) -> Pending<T> {
+        let snapshot = self.current();
+        let caller = caller.clone();
+        let workspace = caller
+            .workspace()
+            .filter(|_| !caller.acting().is_person())
+            .map(str::to_owned);
+        let deciding = snapshot
+            .records
+            .iter()
+            .filter(|key| {
+                workspace
+                    .as_deref()
+                    .is_none_or(|workspace| key.workspace == workspace)
+            })
+            .map(|key| {
+                let decided = (self.may_read)(&caller, key);
+                let key = key.clone();
+                async move { decided.await.then_some(key) }
+            })
+            .collect::<Vec<_>>();
+        let mut answering = Box::pin(async move {
+            let readable: HashSet<IndexKey> = futures::future::join_all(deciding)
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+            let reads = Reads {
+                readable: &readable,
+                workspace: workspace.as_deref(),
+                reader: caller
+                    .acting()
+                    .member_id()
+                    .map(tilo_actions::contract::reader_name),
+            };
+            work(&snapshot, &reads)
+        });
+        let now = answering
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        if let std::task::Poll::Ready(answer) = now {
+            return Pending::ready(answer);
         }
+        let (answer, answered) = tilo_actions::remote::pending();
+        let task = async move { answer.complete(answering.await) };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(task)),
+            Err(_) => drop(tilo_rt::app().spawn(task)),
+        }
+        answered
     }
+}
+
+/// [`IndexSearch::describing`], decided by `reads`.
+fn describe(
+    index: &AppContentIndex,
+    reads: &Reads<'_>,
+    description: Description,
+) -> Result<(), ActionCallError> {
+    let Description {
+        picture,
+        title,
+        words,
+    } = description;
+    let key = IndexKey::new(&picture.app, &picture.workspace, &picture.record);
+    let refused = || ActionCallError::Refused {
+        reason: "the picture is in a record this caller may not read".into(),
+    };
+    if !reads.allows_record(&key) {
+        return Err(refused());
+    }
+    let published = index.contents().visible.into_iter().find(|indexed| {
+        indexed.key == key && indexed.entry.resource == picture.resource && !indexed.entry.secret
+    });
+    // A picture sealed to its readers is described by them alone.
+    if published
+        .as_ref()
+        .is_some_and(|indexed| !indexed.entry.found_by(reads.reader.as_deref()))
+    {
+        return Err(refused());
+    }
+    let entry = match published {
+        Some(indexed) => {
+            let mut entry = indexed.entry;
+            for (text, weight) in words {
+                if !entry.fields.iter().any(|(held, _)| held == &text) {
+                    entry.fields.push((text, weight));
+                }
+            }
+            entry.image = Some(picture.image);
+            entry
+        }
+        None => IndexEntry {
+            key: picture.resource.clone(),
+            resource: picture.resource,
+            title,
+            fields: words,
+            image: Some(picture.image),
+            icon: Some("image".to_owned()),
+            ..IndexEntry::default()
+        },
+    };
+    index.apply(
+        &key,
+        IndexDelta {
+            upsert: vec![entry],
+            ..IndexDelta::default()
+        },
+    );
+    Ok(())
 }
 
 /// The device's index answers the workspace's search for every caller, as that caller may read
@@ -208,7 +299,7 @@ impl IndexSearch {
 /// entries say, never by reading anything through.
 impl ResourceSearch for IndexSearch {
     fn find(&self, caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
-        Pending::ready(Ok(self.found(caller, needle, &Within::default())))
+        self.finding(caller, needle, &Within::default()).map(Ok)
     }
 
     fn find_within(
@@ -217,11 +308,11 @@ impl ResourceSearch for IndexSearch {
         needle: &str,
         within: &Within,
     ) -> Pending<Result<Vec<Found>, ActionCallError>> {
-        Pending::ready(Ok(self.found(caller, needle, within)))
+        self.finding(caller, needle, within).map(Ok)
     }
 
     fn pictures(&self, caller: &Caller) -> Pending<Result<Vec<Picture>, ActionCallError>> {
-        Pending::ready(Ok(Self::pictures(self, caller)))
+        self.picturing(caller).map(Ok)
     }
 
     fn describe(
@@ -229,14 +320,14 @@ impl ResourceSearch for IndexSearch {
         caller: &Caller,
         description: Description,
     ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Self::describe(self, caller, description))
+        self.describing(caller, description)
     }
 }
 
 /// What one caller may read of the index.
 struct Reads<'a> {
-    caller: &'a Caller,
-    may_read: &'a MayRead,
+    /// The records the caller may read, decided before the search.
+    readable: &'a HashSet<IndexKey>,
     /// The one workspace an agent searches: the person's search spans every workspace they see.
     workspace: Option<&'a str>,
     /// The member the caller is, as an entry names its readers
@@ -249,7 +340,7 @@ impl Reads<'_> {
     fn allows_record(&self, key: &IndexKey) -> bool {
         self.workspace
             .is_none_or(|workspace| key.workspace == workspace)
-            && (self.may_read)(self.caller, key)
+            && self.readable.contains(key)
     }
 
     /// Whether the caller may find `indexed`: it reads the record the entry was published from,
@@ -264,6 +355,9 @@ impl Reads<'_> {
 /// The index at one generation, ready to search.
 struct Snapshot {
     generation: u64,
+    /// Every record an entry of the index came from, once: what a search decides before it
+    /// reads any.
+    records: Vec<IndexKey>,
     visible: Vec<IndexedEntry>,
     index: SearchIndex,
     /// Locked secret-bearing entries, matched only to offer unlocking.
@@ -281,8 +375,16 @@ struct Snapshot {
 impl Snapshot {
     fn new(generation: u64, contents: Contents) -> Self {
         let Contents { visible, locked } = contents;
+        let records = visible
+            .iter()
+            .chain(&locked)
+            .map(|indexed| indexed.key.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         Self {
             generation,
+            records,
             index: text_index(&visible),
             locked_index: text_index(&locked),
             titles: titles_of(&visible),

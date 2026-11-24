@@ -742,11 +742,13 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     assert!(
         settings
             .read(&carol_from_studio, &address("server"))
+            .await
             .is_ok(),
         "the grant reads the machine's controls' setting"
     );
     let other = settings
         .read(&carol_from_studio, &address("display"))
+        .await
         .expect_err("the grant reaches one setting, not another");
     assert!(
         matches!(other, ActionCallError::Refused { .. }),
@@ -755,7 +757,10 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     // The person's own other device reads every setting of theirs.
     let phone_person = caller_for(&phone_cert, &person);
     assert!(
-        settings.read(&phone_person, &address("display")).is_ok(),
+        settings
+            .read(&phone_person, &address("display"))
+            .await
+            .is_ok(),
         "the person reads their machine's settings from another of their devices"
     );
 

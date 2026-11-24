@@ -488,7 +488,7 @@ fn the_terminals_steps_land_in_the_workspace_it_names() {
         let Value::Object(args) = args else {
             panic!("arguments are an object")
         };
-        steps.step(
+        tilo_rt::block_on(steps.step(
             action,
             args,
             &mut Answering {
@@ -496,7 +496,8 @@ fn the_terminals_steps_land_in_the_workspace_it_names() {
                 prompt: &mut |_| panic!("nothing is asked"),
                 say: &mut |_| {},
             },
-        )
+        ))
+        .expect("the runtime runs the step")
     };
 
     let into_lab = steps_in(LAB).expect("a workspace id is taken");

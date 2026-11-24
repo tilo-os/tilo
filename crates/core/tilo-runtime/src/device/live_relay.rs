@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use collab_types::scope::Scope;
 use tilo_actions::remote::{
-    ActionCallError, Caller, Pending, RemoteActionMessage, ResourceAddress, ResourceCopy,
-    ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, ReadsAnswer, ResourceAddress, ResourceCopy, ResourceReads,
+    ResourceWake, reads_answer,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
@@ -1267,43 +1267,38 @@ impl link::Calls for Live {
 struct TurnedAwayReads(Arc<Shared>);
 
 impl ResourceReads for TurnedAwayReads {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        if address.app != link::TURNED_AWAY || !address.record.is_empty() {
-            return Ok(ResourceCopy::Absent);
-        }
-        // The revision first: a refusal while the lists are read moves it past this one.
-        let revision = self.0.turned_revision.load(Ordering::Relaxed).to_string();
-        serde_json::to_value(self.0.turned_rows())
-            .map(|value| ResourceCopy::reading(value, Some(revision)))
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            if address.app != link::TURNED_AWAY || !address.record.is_empty() {
+                return Ok(ResourceCopy::Absent);
+            }
+            // The revision first: a refusal while the lists are read moves it past this one.
+            let revision = self.0.turned_revision.load(Ordering::Relaxed).to_string();
+            serde_json::to_value(self.0.turned_rows())
+                .map(|value| ResourceCopy::reading(value, Some(revision)))
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        let mut waiting = self.0.turned_waiting.lock_recover();
-        waiting.retain(ResourceWake::waiting);
-        waiting.push(wake.clone());
-        drop(waiting);
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
+            let mut waiting = self.0.turned_waiting.lock_recover();
+            waiting.retain(ResourceWake::waiting);
+            waiting.push(wake.clone());
+            drop(waiting);
+            Ok(())
+        })
     }
 }
 
@@ -1332,42 +1327,37 @@ impl SessionReads {
 }
 
 impl ResourceReads for SessionReads {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        if address.app != link::SESSIONS || !address.record.is_empty() {
-            return Ok(ResourceCopy::Absent);
-        }
-        let revision = self.0.sessions_revision.load(Ordering::Relaxed).to_string();
-        serde_json::to_value(Self::rows(&self.0))
-            .map(|value| ResourceCopy::reading(value, Some(revision)))
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            if address.app != link::SESSIONS || !address.record.is_empty() {
+                return Ok(ResourceCopy::Absent);
+            }
+            let revision = self.0.sessions_revision.load(Ordering::Relaxed).to_string();
+            serde_json::to_value(Self::rows(&self.0))
+                .map(|value| ResourceCopy::reading(value, Some(revision)))
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        let mut waiting = self.0.sessions_waiting.lock_recover();
-        waiting.retain(ResourceWake::waiting);
-        waiting.push(wake.clone());
-        drop(waiting);
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
+            let mut waiting = self.0.sessions_waiting.lock_recover();
+            waiting.retain(ResourceWake::waiting);
+            waiting.push(wake.clone());
+            drop(waiting);
+            Ok(())
+        })
     }
 }
 

@@ -145,10 +145,10 @@ pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
     DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, RESOURCE_READ_REFUSED,
-    RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE, RESOURCE_WRITE_REFUSED, ResourceAddress,
-    ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings, ResourceReads,
-    ResourceWake, answer_read, answered, device_record_address, device_record_space,
-    read_resources, readings_of,
+    RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE, RESOURCE_WRITE_REFUSED, ReadingAnswer,
+    ReadsAnswer, ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy,
+    ResourceReadings, ResourceReads, ResourceWake, answer_read, answered, device_record_address,
+    device_record_space, read_resources, readings_from, readings_of, reads_answer,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]
@@ -2581,7 +2581,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             correlation, read, ..
         } => provider.resource_reads().map_or_else(
             || resource_read::unanswered(correlation),
-            |reads| reads.answer_read(caller, correlation, read),
+            |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
         ),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(

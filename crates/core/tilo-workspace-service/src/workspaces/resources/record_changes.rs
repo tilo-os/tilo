@@ -1383,7 +1383,7 @@ kind = "undoable"
             std::sync::Arc::new(Stores(workspaces.clone())),
             std::sync::Arc::clone(&content),
         );
-        let search = crate::search::IndexSearch::new(content, std::sync::Arc::new(|_, _| true));
+        let search = crate::search::IndexSearch::new(content, crate::search::deciding(|_, _| true));
         let mut writes = workspaces.document_writes();
         // Search is told of every document a write lands in, as the device's daemon tells it.
         let mut follow = || {

@@ -171,9 +171,9 @@ async fn deliveries(host: &host::Host, workspace: &str) -> Vec<Invocation> {
         record: String::new(),
     };
     let caller = host.caller();
-    let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address))
+    let read = reads
+        .read(&caller, &address)
         .await
-        .unwrap()
         .expect("the person reads the workspace's invocations");
     let value = match read {
         ResourceCopy::Reading { value, .. } => value,

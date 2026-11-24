@@ -323,11 +323,11 @@ fn named(caller: &Caller) -> Option<Box<tilo_actions::remote::KeptCaller>> {
 impl ResourceReads for ShellDispatch {
     /// Asked of the daemon as a read that answers only its decision, and followed as every call
     /// on the link is: the record's copy never crosses the link for it.
-    fn may_read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Pending<tilo_actions::remote::Decided> {
+    fn may_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
         let read = ResourceReadRequest {
             workspace: address.workspace.clone(),
             app: address.app.clone(),
@@ -337,21 +337,22 @@ impl ResourceReads for ShellDispatch {
             wait_ms: None,
             answer: tilo_actions::remote::ReadAnswer::Decision,
         };
-        Arc::new(self.clone())
-            .answer_read(caller, 0, read)
-            .map(|reply| match reply {
+        let this = Arc::new(self.clone());
+        Box::pin(async move {
+            match this.answer_read(caller, 0, read).await {
                 RemoteActionMessage::ResourceReading { result, .. } => result.map(|_| ()),
                 _ => Err(unexpected()),
-            })
+            }
+        })
     }
 
     /// Asked of the daemon as a change's decision alone, as [`Self::may_read`] asks a read's: the
     /// record's copy never crosses the link for it.
-    fn may_write(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Pending<tilo_actions::remote::Decided> {
+    fn may_write<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
         let read = ResourceReadRequest {
             workspace: address.workspace.clone(),
             app: address.app.clone(),
@@ -361,9 +362,9 @@ impl ResourceReads for ShellDispatch {
             wait_ms: None,
             answer: tilo_actions::remote::ReadAnswer::WriteDecision,
         };
-        Arc::new(self.clone())
-            .answer_read(caller, 0, read)
-            .map(|reply| match reply {
+        let this = Arc::new(self.clone());
+        Box::pin(async move {
+            match this.answer_read(caller, 0, read).await {
                 RemoteActionMessage::ResourceReading { result, .. } => match result {
                     // A decision answers `null`; a reader that read the record instead cannot
                     // say whether it may be changed, so its copy is no answer.
@@ -372,7 +373,8 @@ impl ResourceReads for ShellDispatch {
                     Err(error) => Err(error),
                 },
                 _ => Err(unexpected()),
-            })
+            }
+        })
     }
 
     fn answer_read(
@@ -380,8 +382,7 @@ impl ResourceReads for ShellDispatch {
         caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        let (done, result) = tilo_actions::remote::pending();
+    ) -> tilo_actions::remote::ReadingAnswer {
         let named = named(caller);
         let shell = self.0.shell.clone();
         let workspace = Some(read.workspace.clone());
@@ -390,17 +391,14 @@ impl ResourceReads for ShellDispatch {
             on_behalf_of: None,
             read,
         };
-        self.0.runtime.spawn(async move {
-            done.complete(
-                Self::ask_as(&shell, workspace, named, message, None)
-                    .await
-                    .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
-                        correlation,
-                        result: Err(error),
-                    }),
-            );
-        });
-        result
+        Box::pin(async move {
+            Self::ask_as(&shell, workspace, named, message, None)
+                .await
+                .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: Err(error),
+                })
+        })
     }
 }
 

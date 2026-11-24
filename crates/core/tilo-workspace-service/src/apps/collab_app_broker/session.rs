@@ -259,27 +259,25 @@ impl JoinedChannel {
     /// make: the caller at the route's record, decided with the write action kind. An app changes
     /// its own records; another app's record only where the caller's grants allow a change, so a
     /// grant that reads alone answers a refusal.
-    pub(super) fn may_write(
+    pub(super) async fn may_write(
         &self,
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
     ) -> Result<(), BrokerError> {
         let address = route_address(route);
         let caller = self.record_caller(admitted, route);
-        let decided = self.state.records().map(|reads| {
-            reads
-                .may_write(&caller, &address)
-                .wait_timeout(std::time::Duration::MAX)
-        });
+        let decided = match self.state.records() {
+            Some(reads) => Some(reads.may_write(&caller, &address).await),
+            None => None,
+        };
         match decided {
-            Some(Ok(Some(Ok(())))) => Ok(()),
-            // No reader answered the write decision: none is registered at this device, the
-            // answer was abandoned, or the reader cannot decide a change. The record cannot be
-            // changed from here now.
-            None | Some(Err(_) | Ok(None | Some(Err(ActionCallError::Unavailable { .. })))) => Err(
-                BrokerError::failed("this record can't be changed right now".into()),
-            ),
-            Some(Ok(Some(Err(refusal)))) => Err(BrokerError::failed(format!(
+            Some(Ok(())) => Ok(()),
+            // No reader answered the write decision: none is registered at this device, or the
+            // reader cannot decide a change. The record cannot be changed from here now.
+            None | Some(Err(ActionCallError::Unavailable { .. })) => Err(BrokerError::failed(
+                "this record can't be changed right now".into(),
+            )),
+            Some(Err(refusal)) => Err(BrokerError::failed(format!(
                 "this connection may not change the record of {} and changes nothing on it: \
                  {refusal}",
                 route.app_id
@@ -289,12 +287,16 @@ impl JoinedChannel {
 
     /// Hands the resource command `body` to the device's one store, for this route's app in its
     /// workspace.
+    ///
+    /// A change sent as a run of parts is gathered in the order its parts arrive, and decided
+    /// once it is whole: the reader's decision is awaited, so it must not reorder the parts, and
+    /// nothing of a run reaches the store before the run is decided.
     pub(super) fn resources_dispatch(
-        &self,
+        self: &std::rc::Rc<Self>,
         body: &[u8],
         on_behalf_of: &[u8],
         record_runs: &super::record_changes::RecordRuns,
-    ) -> Result<crate::apps::services::ResourceAnswer, BrokerError> {
+    ) -> Result<super::wire::Answer<tilo_resource_store::wire::Reply>, BrokerError> {
         if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
                 "a resource command exceeds the wire bound".into(),
@@ -317,14 +319,6 @@ impl JoinedChannel {
                 "resources are written and read on a certified app and workspace route".into(),
             ));
         }
-        if command.writes() {
-            // A refused run ends its write: the next run starts another.
-            self.may_write(&current, &route).inspect_err(|_| {
-                if let tilo_resource_store::wire::Command::RecordChange { record, .. } = &command {
-                    drop(record_runs.borrow_mut().remove(record));
-                }
-            })?;
-        }
         let Some(command) = super::record_changes::gathered(record_runs, command) else {
             return Ok(Box::pin(std::future::ready(Ok(
                 tilo_resource_store::wire::Reply::Written,
@@ -333,7 +327,27 @@ impl JoinedChannel {
         let service = self.state.services.resources.clone().ok_or_else(|| {
             BrokerError::failed("this device keeps no store for apps' resources".into())
         })?;
-        let record = self.record_of(&command, &current, &route)?;
+        let channel = std::rc::Rc::clone(self);
+        Ok(Box::pin(async move {
+            channel
+                .store_command(service, command, current, route)
+                .await
+        }))
+    }
+
+    /// `command`, decided for this channel's caller (`current`) at `route`, answered by the
+    /// device's one store `service`.
+    async fn store_command(
+        &self,
+        service: std::sync::Arc<dyn crate::apps::services::ResourceServices>,
+        command: tilo_resource_store::wire::Command,
+        current: AdmittedJoinIdentity,
+        route: CrdtRoute,
+    ) -> Result<tilo_resource_store::wire::Reply, BrokerError> {
+        if command.writes() {
+            self.may_write(&current, &route).await?;
+        }
+        let record = self.record_of(&command, &current, &route).await?;
         let caller = current.certified_caller(&route.cluster_id, false);
         let mut context = crate::apps::services::ResourceRequestContext::authenticated(
             route.app_id.clone(),
@@ -353,11 +367,12 @@ impl JoinedChannel {
         }
         let changes = command.writes() && context.record().is_some();
         let answer = service.command(&context, command);
-        Ok(if changes {
-            self.telling_record_changed(answer, route)
+        if changes {
+            self.telling_record_changed(answer, route).await
         } else {
-            answer
-        })
+            answer.await
+        }
+        .map_err(BrokerError::failed)
     }
 
     /// Opens the query `body` in the device's one store, for this route's app in its workspace:

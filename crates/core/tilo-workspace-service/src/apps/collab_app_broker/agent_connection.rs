@@ -98,40 +98,38 @@ struct SessionRecords {
 }
 
 impl tilo_actions::remote::ResourceReads for SessionRecords {
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        self.connection.check(caller)?;
-        self.reads
-            .as_ref()
-            .ok_or(ActionCallError::NotPermitted)?
-            .read(&self.connection.0.caller, address)
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            self.connection.check(caller)?;
+            self.reads
+                .as_ref()
+                .ok_or(ActionCallError::NotPermitted)?
+                .read(&self.connection.0.caller, address)
+                .await
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
-        // Every reading is answered through `read`, which checks the session goes and reads as
-        // its caller.
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
+    // Every reading is answered through `read` (the default `answer_read`), which checks the
+    // session goes and reads as its caller.
 
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        self.connection.check(caller)?;
-        self.reads
-            .as_ref()
-            .ok_or(ActionCallError::NotPermitted)?
-            .watch(&self.connection.0.caller, address, wake)
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+        wake: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        tilo_actions::remote::reads_answer(async move {
+            self.connection.check(caller)?;
+            self.reads
+                .as_ref()
+                .ok_or(ActionCallError::NotPermitted)?
+                .watch(&self.connection.0.caller, address, wake)
+                .await
+        })
     }
 }
 

@@ -73,10 +73,7 @@ async fn reading(
         wait_ms: None,
         answer: ReadAnswer::Reading,
     };
-    let answer = Arc::clone(reads)
-        .answer_read(caller, 0, request)
-        .await
-        .expect("the device answers the read");
+    let answer = Arc::clone(reads).answer_read(caller, 0, request).await;
     let remote::RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };
@@ -101,10 +98,7 @@ async fn revision(
         wait_ms: None,
         answer: ReadAnswer::Reading,
     };
-    let answer = Arc::clone(reads)
-        .answer_read(caller, 0, request)
-        .await
-        .expect("the device answers the read");
+    let answer = Arc::clone(reads).answer_read(caller, 0, request).await;
     let remote::RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };
@@ -136,6 +130,7 @@ async fn a_device_reads_writes_and_follows_its_own_setting_before_anyone_claims_
     assert_eq!(
         reads
             .read(&caller, &address)
+            .await
             .expect("the device reads its records"),
         ResourceCopy::Absent
     );
@@ -192,10 +187,8 @@ async fn a_device_reads_writes_and_follows_its_own_setting_before_anyone_claims_
         .await
         .expect("the device answers the call")
         .expect("the second write is taken");
-    let remote::RemoteActionMessage::ResourceReading { result, .. } = follow
-        .await
-        .expect("the follow ran")
-        .expect("the follow is answered")
+    let remote::RemoteActionMessage::ResourceReading { result, .. } =
+        follow.await.expect("the follow ran")
     else {
         panic!("a follow is answered by a reading");
     };
@@ -216,6 +209,7 @@ async fn a_device_reads_writes_and_follows_its_own_setting_before_anyone_claims_
     assert_eq!(
         reads
             .read(&caller, &address)
+            .await
             .expect("the device reads its records"),
         ResourceCopy::Absent
     );
@@ -223,6 +217,7 @@ async fn a_device_reads_writes_and_follows_its_own_setting_before_anyone_claims_
     // A stranger reads nothing, before or after the device is claimed.
     let refused = reads
         .read(&Caller::authenticated(STRANGER, [2; 32]), &address)
+        .await
         .expect_err("a stranger reads no setting of this device");
     assert!(
         matches!(refused, ActionCallError::Refused { .. }),
@@ -268,15 +263,18 @@ async fn the_same_setting_is_read_in_the_persons_workspace_once_they_found_it() 
     };
     let refused = reads
         .read(&Caller::authenticated(STRANGER, [2; 32]), &in_workspace)
+        .await
         .expect_err("a stranger reads nothing in the person's workspace either");
     assert!(
         matches!(refused, ActionCallError::Refused { .. }),
         "a stranger is refused: {refused:?}"
     );
-    let refused = reads.read(
-        &Caller::authenticated(PERSON, device_key()),
-        &device_record_address(&device_key(), "network"),
-    );
+    let refused = reads
+        .read(
+            &Caller::authenticated(PERSON, device_key()),
+            &device_record_address(&device_key(), "network"),
+        )
+        .await;
     assert!(
         refused.is_ok(),
         "the person reads the device's own space as its device: {refused:?}"

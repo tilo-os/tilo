@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReads as _,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
@@ -674,6 +674,16 @@ struct Records {
 }
 
 impl Records {
+    /// The copy of the record this provider reads, as it stands: a reading it publishes itself,
+    /// naming the revision it stands at.
+    fn copied(&self) -> tilo_actions::remote::ResourceCopy {
+        let writes = *self.writes.lock().unwrap();
+        tilo_actions::remote::ResourceCopy::reading(
+            serde_json::json!({"writes": writes}),
+            Some(format!("r{writes}")),
+        )
+    }
+
     fn reading(&self, correlation: u64) -> RemoteActionMessage {
         // The answer every reader of a record is given, from the copy the provider reads: an
         // answer built here would test the shape against itself.
@@ -685,13 +695,12 @@ impl Records {
             },
             joined: false,
         }];
-        let caller = Caller::local_person("ada");
         let result = if self.refuses.load(Ordering::SeqCst) {
             Err(ActionCallError::Refused {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             })
         } else {
-            tilo_actions::remote::readings_of(&asks, |address| self.read(&caller, address))
+            tilo_actions::remote::readings_of(&asks, |_| Ok(self.copied()))
                 .and_then(|readings| {
                     readings
                         .readable()
@@ -727,18 +736,14 @@ impl Records {
 }
 
 impl tilo_actions::remote::ResourceReads for Records {
-    fn read(
-        &self,
-        _: &Caller,
-        _: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
         // A reading its provider publishes itself, naming the revision it stands at: the follow
         // shows it as it shows a document, and asks again when it moves.
-        let writes = *self.writes.lock().unwrap();
-        Ok(tilo_actions::remote::ResourceCopy::reading(
-            serde_json::json!({"writes": writes}),
-            Some(format!("r{writes}")),
-        ))
+        Box::pin(std::future::ready(Ok(self.copied())))
     }
 
     fn answer_read(
@@ -746,16 +751,22 @@ impl tilo_actions::remote::ResourceReads for Records {
         _: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> tilo_actions::remote::ReadingAnswer {
         let at = format!("r{}", *self.writes.lock().unwrap());
         let waits = read.wait_ms.is_some() && read.after.as_deref() == Some(at.as_str());
         self.asked.lock().unwrap().push(read);
         if waits && self.holds.load(Ordering::SeqCst) && !self.refuses.load(Ordering::SeqCst) {
             let (answer, held) = tilo_actions::remote::pending();
             self.held.lock().unwrap().push((correlation, answer));
-            return held;
+            return Box::pin(async move {
+                held.await.unwrap_or(RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: Err(ActionCallError::Unanswered),
+                })
+            });
         }
-        Pending::ready(self.reading(correlation))
+        let reading = self.reading(correlation);
+        Box::pin(std::future::ready(reading))
     }
 }
 

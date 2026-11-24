@@ -343,7 +343,7 @@ fn session_searching(
                 index: Some(std::sync::Arc::new(
                     tilo_workspace_service::search::IndexSearch::new(
                         index,
-                        std::sync::Arc::new(|_, _| true),
+                        tilo_workspace_service::search::deciding(|_, _| true),
                     ),
                 )),
                 ..tilo_session::SearchOptions::default()

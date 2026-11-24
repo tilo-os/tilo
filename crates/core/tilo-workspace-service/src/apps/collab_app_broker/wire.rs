@@ -310,7 +310,7 @@ impl ChannelSession {
                         .map_err(failed)
                         .map(|reply| -> Answering {
                             Box::pin(async move {
-                                let reply = reply.await?;
+                                let reply = reply.await.map_err(failed)?;
                                 serde_json::to_vec(&reply)
                                     .map_err(|_| "the store's answer cannot be encoded".to_owned())
                             })

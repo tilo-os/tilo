@@ -68,22 +68,24 @@ impl NativeDocumentReads for Service {
         known: Option<[u8; 32]>,
         _: usize,
     ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
-        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
-        self.authorize(context)?;
-        self.captures.fetch_add(1, Ordering::AcqRel);
-        Ok(match self.owner() {
-            Owner::At(revision) if Some(revision) == known => {
-                NativeDocumentRead::Unchanged(revision)
-            }
-            Owner::At(revision) => NativeDocumentRead::Captured {
-                revision,
-                heads: Vec::new(),
-                body: Box::new(Bytes(vec![1])),
-            },
-            Owner::Pending => NativeDocumentRead::Pending,
-            Owner::Absent => NativeDocumentRead::Absent,
-        })
-    })()))
+        Box::pin(std::future::ready(
+            (|| -> Result<NativeDocumentRead, String> {
+                self.authorize(context)?;
+                self.captures.fetch_add(1, Ordering::AcqRel);
+                Ok(match self.owner() {
+                    Owner::At(revision) if Some(revision) == known => {
+                        NativeDocumentRead::Unchanged(revision)
+                    }
+                    Owner::At(revision) => NativeDocumentRead::Captured {
+                        revision,
+                        heads: Vec::new(),
+                        body: Box::new(Bytes(vec![1])),
+                    },
+                    Owner::Pending => NativeDocumentRead::Pending,
+                    Owner::Absent => NativeDocumentRead::Absent,
+                })
+            })(),
+        ))
     }
     fn unchanged(
         &self,
@@ -91,15 +93,15 @@ impl NativeDocumentReads for Service {
         known: Option<[u8; 32]>,
     ) -> crate::apps::collab_app_broker::ReadAnswering<'_, Option<bool>> {
         Box::pin(std::future::ready((|| -> Result<Option<bool>, String> {
-        if !self.cheap {
-            return Ok(None);
-        }
-        self.authorize(context)?;
-        Ok(match (self.owner(), known) {
-            (Owner::At(revision), Some(known)) => Some(revision == known),
-            _ => None,
-        })
-    })()))
+            if !self.cheap {
+                return Ok(None);
+            }
+            self.authorize(context)?;
+            Ok(match (self.owner(), known) {
+                (Owner::At(revision), Some(known)) => Some(revision == known),
+                _ => None,
+            })
+        })()))
     }
 }
 
@@ -136,6 +138,7 @@ fn context(ownership: &Arc<AtomicBool>) -> NativeDocumentReadContext {
                 Err("committed read launcher ownership ended".into())
             }
         }),
+        still_reads: super::reads_still(),
     }
 }
 
@@ -301,10 +304,12 @@ async fn an_announced_wait_checks_again_only_when_woken() {
         &wake,
         None,
         || {},
-        || std::future::ready((|| {
-            checks.set(checks.get() + 1);
-            Ok((!stale.get()).then_some(true))
-        })()),
+        || {
+            std::future::ready((|| {
+                checks.set(checks.get() + 1);
+                Ok((!stale.get()).then_some(true))
+            })())
+        },
     );
     tokio::pin!(held);
     // A minute of idle time: one check, no clock.
@@ -340,11 +345,13 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
         &wake,
         None,
         || {},
-        || std::future::ready((|| {
-            checks.set(checks.get() + 1);
-            // Revoked on the sixth look, which a 200 ms clock reaches at 1 s.
-            Ok((checks.get() < 6).then_some(false))
-        })()),
+        || {
+            std::future::ready((|| {
+                checks.set(checks.get() + 1);
+                // Revoked on the sixth look, which a 200 ms clock reaches at 1 s.
+                Ok((checks.get() < 6).then_some(false))
+            })())
+        },
     );
     assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 6);
@@ -362,16 +369,18 @@ async fn a_change_while_checking_is_not_missed() {
         &wake,
         None,
         || {},
-        || std::future::ready((|| {
-            checks.set(checks.get() + 1);
-            if checks.get() == 1 {
-                // An announcement lands after the watch was armed and while
-                // the check runs: it must wake the next turn.
-                wake.notify_one();
-                return Ok(Some(true));
-            }
-            Ok(None)
-        })()),
+        || {
+            std::future::ready((|| {
+                checks.set(checks.get() + 1);
+                if checks.get() == 1 {
+                    // An announcement lands after the watch was armed and while
+                    // the check runs: it must wake the next turn.
+                    wake.notify_one();
+                    return Ok(Some(true));
+                }
+                Ok(None)
+            })())
+        },
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), held).await,
@@ -388,12 +397,14 @@ async fn a_replaced_wait_is_refused() {
         &wake,
         None,
         || {},
-        || std::future::ready((|| {
-            if replaced.get() {
-                return Err("committed read wait was replaced".into());
-            }
-            Ok(Some(true))
-        })()),
+        || {
+            std::future::ready((|| {
+                if replaced.get() {
+                    return Err("committed read wait was replaced".into());
+                }
+                Ok(Some(true))
+            })())
+        },
     );
     tokio::pin!(held);
     assert!(
@@ -475,12 +486,14 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
         &wake,
         Some(&keys),
         || {},
-        || std::future::ready((|| {
-            if keys_here() {
-                *service.owner.lock().unwrap() = Owner::At([2; 32]);
-            }
-            Ok(holds(&service, &ownership, None, false).then_some(true))
-        })()),
+        || {
+            std::future::ready((|| {
+                if keys_here() {
+                    *service.owner.lock().unwrap() = Owner::At([2; 32]);
+                }
+                Ok(holds(&service, &ownership, None, false).then_some(true))
+            })())
+        },
     );
     tokio::pin!(held);
     assert!(

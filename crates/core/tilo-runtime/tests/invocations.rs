@@ -37,15 +37,11 @@ async fn reading(
         app: workspace_invocations::PROVIDER.to_owned(),
         record: record.to_owned(),
     };
-    let caller = caller.clone();
-    tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-        .await
-        .expect("the read ends")
-        .map(|copy| match copy {
-            ResourceCopy::Reading { value, .. } => value,
-            ResourceCopy::Absent => Value::Null,
-            other => panic!("the invocations are a reading, not {other:?}"),
-        })
+    reads.read(caller, &address).await.map(|copy| match copy {
+        ResourceCopy::Reading { value, .. } => value,
+        ResourceCopy::Absent => Value::Null,
+        other => panic!("the invocations are a reading, not {other:?}"),
+    })
 }
 
 /// Every invocation the reading of the workspace's record names, newest first.
@@ -312,6 +308,7 @@ fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
         let (wake, woken) = ResourceWake::new();
         reads
             .watch(&caller, &address, &wake)
+            .await
             .expect("the invocations can be followed");
         let second = ran(&key, &path).await;
         tilo_test_env::within("the next call wakes the reader", woken)
@@ -342,9 +339,7 @@ fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
                 app: workspace_invocations::PROVIDER.to_owned(),
                 record: String::new(),
             };
-            tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-                .await
-                .expect("the read ends")
+            reads.read(&caller, &address).await
         };
         assert!(
             matches!(other, Err(ActionCallError::Refused { .. })),
