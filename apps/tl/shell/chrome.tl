@@ -18,6 +18,18 @@ enum Edge {
     right
 }
 
+/// The corner of the display the cards of what is live dock in.
+enum CardCorner {
+    /// Top left
+    top_leading
+    /// Top right
+    top_trailing
+    /// Bottom left
+    bottom_leading
+    /// Bottom right
+    bottom_trailing
+}
+
 /// How a bar or dock sits in its edge: inset with rounded corners, floating over what it
 /// covers, or edge to edge and square.
 enum Fit {
@@ -131,6 +143,9 @@ type Shell {
     dock_showing: Showing = .always
     dock_size: Size = .regular
     dock_items: Collection<DockItem>
+    /// The corner of the display in use the cards of what is live dock in: the person's choice,
+    /// on every device they use.
+    cards_corner: CardCorner = .bottom_trailing
     /// The dock shows the apps running even when nobody pinned them.
     dock_running: Bool = true
     /// The dock has a launcher entry.
@@ -423,6 +438,15 @@ action dock_on(s: Shell, edge: Edge) (
 ) {
     s.dock_edge = edge
     s.tuned = true
+}
+
+/// Docks the cards of what is live in the corner `corner` of the display in use.
+action dock_cards(s: Shell, corner: CardCorner) (
+    icon: .layout_grid,
+    label: "Cards at the {corner}",
+    group: "Cards",
+) {
+    s.cards_corner = corner
 }
 
 action set_dock_fit(s: Shell, fit: Fit) (label: "Dock: {fit}", group: "Dock") {

@@ -198,7 +198,7 @@ fn live_on_bar() -> Bool {
 
 /// The cards over the windows: what is live and stands as a card (`r.card`, which its app asks for
 /// or the person pulls out of the pill), docked in a column in the corner of the display this
-/// device's person chose (`device.live.corner`), the one touched last nearest the corner. A
+/// device's person chose (`shell.cards_corner`, the person's own), the one touched last nearest the corner. A
 /// phone-width display has room for one card only, the one the person pulled out of the pill,
 /// dropped full width from under the bar. The column changes at the shared pace, so a card that
 /// comes slides in and one that goes slides out. A card stands on the display in use only.
@@ -217,12 +217,13 @@ view live_cards() {
             // One room, the band under the bar, holds every card: a docked card stands in the
             // column at the chosen corner, and a card the person moved stands where they left
             // it, in the same room it is dragged in.
-            let top = device.live.corner == "top_leading" or device.live.corner == "top_trailing"
+            let corner = shell.cards_corner
+            let top = corner == .top_leading or corner == .top_trailing
             stack(
                 fill,
                 padding: .group,
                 gap: .related,
-                align: if device.live.corner == "top_leading" or device.live.corner == "bottom_leading" {
+                align: if corner == .top_leading or corner == .bottom_leading {
                     .start
                 } else { .end },
                 motion: .standard,
@@ -286,17 +287,10 @@ view live_card(r: device.LiveItem) {
                             }
                             ui.MenuSeparator()
                         }
-                        ui.MenuItem("Cards at the top left", checked: device.live.corner == "top_leading") {
-                            on choose: device.dock_live(device.live, corner: "top_leading")
-                        }
-                        ui.MenuItem("Cards at the top right", checked: device.live.corner == "top_trailing") {
-                            on choose: device.dock_live(device.live, corner: "top_trailing")
-                        }
-                        ui.MenuItem("Cards at the bottom left", checked: device.live.corner == "bottom_leading") {
-                            on choose: device.dock_live(device.live, corner: "bottom_leading")
-                        }
-                        ui.MenuItem("Cards at the bottom right", checked: device.live.corner == "bottom_trailing") {
-                            on choose: device.dock_live(device.live, corner: "bottom_trailing")
+                        for c in cases(CardCorner) {
+                            ui.MenuItem("Cards at the {c.label().lower()}", checked: shell.cards_corner == c) {
+                                on choose: dock_cards(shell, c)
+                            }
                         }
                     }
                 }

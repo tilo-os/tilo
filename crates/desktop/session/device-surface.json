@@ -5328,22 +5328,6 @@
               }
             }
           ]
-        },
-        {
-          "id": "dock-live",
-          "label": "Dock the cards",
-          "description": "Dock this device's cards in a corner of each display: `top_leading`, `top_trailing`,",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "corner",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
         }
       ],
       "fields": [
@@ -5355,12 +5339,6 @@
               "named": "LiveItem"
             }
           },
-          "readonly": true
-        },
-        {
-          "path": "corner",
-          "stored": "value",
-          "type": "text",
           "readonly": true
         }
       ],

@@ -35,10 +35,6 @@ pub fn surface() -> tilo_resource::surface::Surface {
 )]
 pub(crate) struct Live {
     pub rows: Vec<LiveItem>,
-    /// The corner of each of this device's displays its cards dock in: `top_leading`,
-    /// `top_trailing`, `bottom_leading` or `bottom_trailing`. It is the person's choice on this
-    /// device, never shared.
-    pub corner: String,
 }
 
 /// One live thing.
@@ -113,16 +109,8 @@ pub(crate) struct LiveItem {
 /// when another comes.
 pub(crate) const MAX_CARDS: usize = 3;
 
-/// The corners a device's cards may dock in.
-const CORNERS: [&str; 4] = [
-    "top_leading",
-    "top_trailing",
-    "bottom_leading",
-    "bottom_trailing",
-];
-
 /// The cards this device stands over its windows, as the person left them.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Cards {
     /// The rows the person pulled out of the pill.
     expanded: std::collections::BTreeSet<String>,
@@ -132,19 +120,6 @@ pub(crate) struct Cards {
     touched: Vec<String>,
     /// Where the person left a card, by row.
     loose: std::collections::BTreeMap<String, (i64, i64)>,
-    corner: String,
-}
-
-impl Default for Cards {
-    fn default() -> Self {
-        Self {
-            expanded: std::collections::BTreeSet::new(),
-            folded: std::collections::BTreeSet::new(),
-            touched: Vec::new(),
-            loose: std::collections::BTreeMap::new(),
-            corner: "bottom_trailing".to_owned(),
-        }
-    }
 }
 
 impl Cards {
@@ -286,14 +261,6 @@ pub(crate) enum LiveEffect {
         x: Option<i64>,
         /// Its top edge, in pixels from the display's.
         y: Option<i64>,
-    },
-    /// Dock this device's cards in a corner of each display: `top_leading`, `top_trailing`,
-    /// `bottom_leading` or `bottom_trailing`.
-    #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-dock")]
-    DockLive {
-        /// The corner.
-        corner: String,
     },
 }
 
@@ -514,12 +481,8 @@ impl Sources {
             row.collapsed = collapsed.contains(&row.key);
         }
         drop(collapsed);
-        let mut cards = self.cards.borrow_mut();
-        cards.mark(&mut rows);
-        Live {
-            rows,
-            corner: cards.corner.clone(),
-        }
+        self.cards.borrow_mut().mark(&mut rows);
+        Live { rows }
     }
 
     /// Do what `effect` asks of the rows.
@@ -546,17 +509,6 @@ impl Sources {
                 cards.touch(key);
             }),
             LiveEffect::SeekLive { key, fraction } => self.seek(&key, fraction),
-            LiveEffect::DockLive { corner } => {
-                if !CORNERS.contains(&corner.as_str()) {
-                    return Err(ApiError::InvalidArguments(format!(
-                        "cards dock in {}, not `{corner}`",
-                        CORNERS.join(", ")
-                    )));
-                }
-                self.cards.borrow_mut().corner = corner;
-                self.revision.set(self.revision.get().wrapping_add(1));
-                Ok(Started::Done(tilo_actions::ActionOutput::default()))
-            }
         }
     }
 
@@ -999,7 +951,7 @@ mod tests {
 
     /// What asks to float is a card; what the person pulls out of the pill becomes one, and folds
     /// back; at most three stand, the ones touched last; a card the person moves keeps its place
-    /// until it is docked again, and the corner the cards dock in is this device's choice.
+    /// until it is docked again.
     #[test]
     fn cards_stand_as_their_apps_ask_and_as_the_person_leaves_them() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1088,18 +1040,6 @@ mod tests {
             Err(ApiError::InvalidArguments(_))
         ));
 
-        // The corner is this device's.
-        assert_eq!(live.read().corner, "bottom_trailing");
-        live.act(LiveEffect::DockLive {
-            corner: "top_leading".into(),
-        })
-        .expect("docked there");
-        assert_eq!(live.read().corner, "top_leading");
-        assert!(live
-            .act(LiveEffect::DockLive {
-                corner: "middle".into()
-            })
-            .is_err());
     }
 
     /// An activity its app cannot end from outside goes away when the person puts it away, until
