@@ -1140,6 +1140,13 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   signature: a person's device signs for its person, an agent with its own
   key, a visitor with theirs, and an app's call travels as the signed call it
   serves. The receiver never runs a forwarded call as the device that brought it.
+  The caller's signed invocation travels with the call as its proof and is never
+  stored as a copy: the receiver checks the signature, the caller's current access
+  and that the forwarding device holds the connection's lease, and checks lease and
+  access again at each step that has an effect. A call an app makes while serving
+  an invocation carries that invocation and its id, signed by the device running
+  the app; it runs as the original caller, bounded by both the caller's access and
+  the app's grants, and only while that invocation is live.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
