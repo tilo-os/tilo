@@ -71,6 +71,9 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         // filter and a view then agree on it.
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
+        // A file a record was never given reads as a file of nothing: a view that shows its
+        // name before an action put one there shows no name rather than failing to open.
+        Ty::File => Value::File(Rc::new(crate::blob::FileValue::new("", "", 0, ""))),
         Ty::Option(_) => Value::none(),
         // A map reads as the map it is, here as where a field's store gives one.
         Ty::Map(_) => Value::Map(Vec::new()),
@@ -92,7 +95,6 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Bytes
         | Ty::Response
         | Ty::Json
-        | Ty::File
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }

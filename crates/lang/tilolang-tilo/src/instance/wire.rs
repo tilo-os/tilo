@@ -161,6 +161,10 @@ impl Convert<'_> {
             (Type::Option(inner), Value::Opt(Some(held))) => {
                 wire::Value::Opt(Some(Box::new(self.typed(held, inner))))
             }
+            // A prop of an option type holds the value itself when it has one: the checker sets
+            // the prop only when the option is some, so the node carries the inner value. Read it
+            // as that type, or the record `link_to` names never becomes the link it shows.
+            (Type::Option(inner), held) => self.typed(held, inner),
             _ => self.value(value),
         }
     }
@@ -430,6 +434,66 @@ mod tests {
             children,
             ..wire::Node::empty("stack", key)
         }
+    }
+
+    /// A person no workspace named.
+    struct Names;
+
+    impl crate::runtime::NameHost for Names {
+        fn name(&self, _: &crate::runtime::Actor) -> String {
+            String::new()
+        }
+    }
+
+    /// The converter over a workspace of nothing.
+    fn converter<'a>(
+        names: &'a Names,
+        link: &'a dyn Fn(&crate::runtime::ResourceRef) -> (String, String),
+    ) -> Convert<'a> {
+        Convert {
+            names,
+            field_name: &|_| String::new(),
+            cases: &|_| Vec::new(),
+            toggles: &|_, _| None,
+            invokes: &|_, _| None,
+            embeds: &|_| rich_wire::InlineView::Elsewhere,
+            preview: &|_| None,
+            link,
+            published: &|_| None,
+        }
+    }
+
+    /// A prop of an option type holds its value itself when it has one: the checker sets the prop
+    /// only when the option is some. The record there is read as the type the prop declares, so
+    /// `link_to` reaches the window as the link it shows rather than as a bare reference the
+    /// window refuses.
+    #[test]
+    fn an_optional_link_prop_holding_a_record_reaches_the_window_as_its_link() {
+        let names = Names;
+        let link = |_: &crate::runtime::ResourceRef| {
+            ("tl.it.pages:the-page".to_owned(), "The page".to_owned())
+        };
+        let convert = converter(&names, &link);
+        let mut node = crate::runtime::UiNode::empty("ui.BlockEditor", "editor");
+        node.props.insert(
+            "link_to".to_owned(),
+            Value::Ref(crate::runtime::RefValue {
+                target: std::rc::Rc::new(crate::runtime::ResourceRef {
+                    doc: "root".to_owned(),
+                    item: Some("the-page".to_owned()),
+                    ty: "a-page".to_owned(),
+                }),
+                author: None,
+            }),
+        );
+        assert_eq!(
+            convert.node(&node).props.get("link_to"),
+            Some(&wire::Value::Link {
+                reference: "tl.it.pages:the-page".to_owned(),
+                title: "The page".to_owned(),
+            }),
+            "the record the view named, read as the link the window shows"
+        );
     }
 
     /// `old` patched by the diff to `new` is `new`.
