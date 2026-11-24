@@ -726,7 +726,9 @@ impl FontCatalog {
         let mut canonical = HashSet::new();
         let mut required = Vec::new();
         for asset in &manifest.font {
-            if !(asset.scope.standalone() || self.fixtures) || !include(asset) {
+            if !(asset.scope.standalone() || self.fixtures && asset.scope.fixtures())
+                || !include(asset)
+            {
                 continue;
             }
             let path = root.join(&asset.file);
@@ -969,7 +971,7 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
     let mut reserved = HashSet::new();
     let mut required = Vec::new();
     for asset in &manifest.font {
-        if asset.scope == Scope::Fixture && !fixtures {
+        if asset.scope == Scope::Fixture && !fixtures || !asset.scope.fixtures() {
             continue;
         }
         if asset.scope == Scope::Os && !fixtures && !asset.path_in(root)?.exists() {

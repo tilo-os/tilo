@@ -6,11 +6,14 @@ the commit it was built from), complete SHA-256 values, metadata, and exact
 license mappings. Every file was copied without modification except Tilo
 Sans, built from its own source repository at a recorded tag, and the Cyrillic fallback
 subset, which `tools/font-fallback-subsets.py` derives reproducibly from a
-pinned upstream file (below). Scopes are independent of whether a font
+pinned upstream file, and the web page's Tilo Sans cuts, which
+`tools/font-web-cuts.py` derives reproducibly from the catalog's own Tilo Sans
+files (both below). Scopes are independent of whether a font
 happens to be installed on a host. The 35 `product` fonts, the SDK's
 standalone catalog, total 54,113,192 bytes; the `os` font New Computer
 Modern Regular brings the Tilo OS catalog to 54,830,780 bytes; Adwaita adds
-879,796 fixture bytes.
+879,796 fixture bytes. The four `web` cuts, which only a page's host
+serves and no catalog installs, total 158,704 bytes.
 
 ## Tilo Sans (UI face)
 
@@ -216,6 +219,38 @@ condition 3 does not apply). The subset is distributed under the OFL with the
 unmodified license text and copyright notice (conditions 2 and 5); its
 name-ID 0, 13 and 14 records are appended to
 `LICENSES/FONT-COPYRIGHT-NOTICES.txt`. It is not sold by itself (condition 1).
+
+## Web page cuts (Tilo Sans)
+
+A browser that opens a workspace's page has no Tilo Sans, so the host that
+serves the page serves these WOFF2 cuts beside it (`scope = "web"`: no
+catalog installs them, and no native text is set in them). Each style is cut
+in two by script, so a page in English or German loads only its Latin file:
+
+| file | bytes | SHA-256 | source |
+|---|---:|---|---|
+| `TiloSans-Latin.woff2` | 44980 | `f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46` | `TiloSans[wdth,wght].ttf` |
+| `TiloSans-Extended.woff2` | 32120 | `2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837` | `TiloSans[wdth,wght].ttf` |
+| `TiloSans-Italic-Latin.woff2` | 47680 | `76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a` | `TiloSans-Italic[wdth,wght].ttf` |
+| `TiloSans-Italic-Extended.woff2` | 33924 | `d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d` | `TiloSans-Italic[wdth,wght].ttf` |
+
+`tools/font-web-cuts.py` reads the pinned source from the prepared catalog,
+pins the `wdth` axis at its default 100 (a page never condenses text), keeps
+the `wght` axis, all layout features, the name table and the source's `head`
+timestamp, and splits the source's characters into basic Latin with Latin-1
+(the `Latin` file) and everything else it covers: Latin Extended,
+Vietnamese and Greek (the `Extended` file). A rerun reproduces the bytes
+(`--check` verifies the catalog). The page's `@font-face` rules
+(`crates/ui/ui-core/src/composition/page.css`) carry the `unicode-range` the
+script prints for each file.
+
+License review of the modification: Tilo Sans is OFL 1.1 and declares no
+Reserved Font Name (above), so a modified version may keep its name (OFL
+condition 3 does not apply). The cuts are distributed under the OFL with the
+unmodified license text and copyright notices (conditions 2 and 5); their
+name tables are the source's, whose name-ID 0, 13 and 14 records
+`LICENSES/FONT-COPYRIGHT-NOTICES.txt` already carries. They are not sold by
+themselves (condition 1).
 
 ## Atkinson Hyperlegible Next (Hyperlegible UI face)
 

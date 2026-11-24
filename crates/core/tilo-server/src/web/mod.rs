@@ -1206,6 +1206,12 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         );
         return response;
     }
+    // The page's face, which the page's stylesheet names on this origin.
+    if request.method() == Method::GET
+        && let Some(response) = page::font(request.uri().path())
+    {
+        return response;
+    }
     // A workspace's app as a web page: the document its script opens the
     // page from, over the device's own session.
     if request.method() == Method::GET

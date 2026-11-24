@@ -24,58 +24,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // cache, a prewarmed catalog (TILO_FONT_CATALOG_ROOT), the network or the interpreter
         // only decides where the pinned bytes are read from, and every byte is checked against
         // its pin, so it leaves the catalog as it was and doesn't run this script again.
-        for prepared in [
+        for input in [
             "manifest.toml",
             "PROVENANCE.md",
             "LICENSES/UPSTREAM.md",
             "artifacts.json",
         ] {
-            println!(
-                "cargo::rerun-if-changed={}",
-                source.join(prepared).display()
-            );
+            println!("cargo::rerun-if-changed={}", source.join(input).display());
         }
         println!("cargo::rerun-if-changed={}", tool.display());
-        let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
-        let mut command = Command::new(&python);
-        command
-            // Isolated, as the CI helpers in `tools/ci` are run: without it Python puts the
-            // script's directory on `sys.path` and lists it looking its imports up, so this
-            // build would read the whole `tools/` tree — and an edit to any file in it would
-            // rebuild every package below this one. The tool imports nothing of its own.
-            .arg("-I")
-            .arg(&tool)
-            .arg("root")
-            .arg(&source)
-            .args(["--scope", "fixtures"])
-            .arg("--catalogs")
-            .arg(&catalogs);
-        // Offline only when asked by TILO_FONT_ASSETS_OFFLINE, which the tool reads itself.
-        // CARGO_NET_OFFLINE says cargo has its crates already; it says nothing about whether
-        // the pinned fonts are in the cache, and a build with network access fetches them.
-        let output = command.output().map_err(|error| {
-            format!(
-                "could not launch `{}` to prepare fonts with {}: {error}; \
-                 source builds require Python 3.11+ (Fedora: dnf install python3, \
-                 macOS: brew install python); set PYTHON to its executable if it is not on PATH",
-                python.to_string_lossy(),
-                tool.display()
-            )
-        })?;
-        if !output.status.success() {
-            return Err(format!(
-                "font preparation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
+        let root = prepared(&tool, &source, "fixtures", &catalogs)?;
+        if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
+            write_web_cuts(&prepared(&tool, &source, "web", &catalogs)?)?;
         }
-        // The tool named the catalog it verified; the directory is the one this script asked it
-        // to publish in, so the path stays inside this build's own view of the target directory.
-        let published = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
-        let name = published
-            .file_name()
-            .ok_or("the tool names the catalog it prepared")?;
-        let root = catalogs.join(name);
         // A build directory can hold the script's fingerprint without the tree it wrote: one
         // carried from another machine, or one whose profile directory was cleaned. Such a build
         // would otherwise stay fresh forever with no catalog compiled in, and every binary it
@@ -89,6 +50,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         root
     } else {
+        if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
+            return Err(
+                "the `web` feature embeds the page's cuts, which only a source \
+                        checkout's pinned catalog prepares"
+                    .into(),
+            );
+        }
         source
     };
     // A catalog is named from the profile directory up (`font-catalogs/<manifest>`), which
@@ -99,6 +67,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT={}",
         named.display()
     );
+    Ok(())
+}
+
+/// Prepare the catalog of `scope` from `source`, published in `catalogs`, and answer its root.
+fn prepared(
+    tool: &std::path::Path,
+    source: &std::path::Path,
+    scope: &str,
+    catalogs: &std::path::Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
+    let mut command = Command::new(&python);
+    command
+        // Isolated, as the CI helpers in `tools/ci` are run: without it Python puts the
+        // script's directory on `sys.path` and lists it looking its imports up, so this
+        // build would read the whole `tools/` tree — and an edit to any file in it would
+        // rebuild every package below this one. The tool imports nothing of its own.
+        .arg("-I")
+        .arg(tool)
+        .arg("root")
+        .arg(source)
+        .args(["--scope", scope])
+        .arg("--catalogs")
+        .arg(catalogs);
+    // Offline only when asked by TILO_FONT_ASSETS_OFFLINE, which the tool reads itself.
+    // CARGO_NET_OFFLINE says cargo has its crates already; it says nothing about whether
+    // the pinned fonts are in the cache, and a build with network access fetches them.
+    let output = command.output().map_err(|error| {
+        format!(
+            "could not launch `{}` to prepare fonts with {}: {error}; \
+             source builds require Python 3.11+ (Fedora: dnf install python3, \
+             macOS: brew install python); set PYTHON to its executable if it is not on PATH",
+            python.to_string_lossy(),
+            tool.display()
+        )
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "font preparation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    // The tool named the catalog it verified; the directory is the one this script asked it
+    // to publish in, so the path stays inside this build's own view of the target directory.
+    let published = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
+    let name = published
+        .file_name()
+        .ok_or("the tool names the catalog it prepared")?;
+    Ok(catalogs.join(name))
+}
+
+/// The page's cuts as a Rust table (`OUT_DIR/web.rs`, which [`web::CUTS`] reads): each file's
+/// name and its bytes, from the verified web catalog at `root`.
+fn write_web_cuts(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    use toml::Value;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("manifest.toml");
+    let table: toml::Table = std::fs::read_to_string(&path)?.parse()?;
+    let mut out = String::from("&[\n");
+    for font in table
+        .get("font")
+        .and_then(Value::as_array)
+        .ok_or("manifest.toml: no fonts")?
+        .iter()
+        .filter(|font| font.get("scope").and_then(Value::as_str) == Some("web"))
+    {
+        let file = font
+            .get("file")
+            .and_then(Value::as_str)
+            .ok_or("manifest.toml: a font has no `file`")?;
+        let bytes = root.join(file);
+        println!("cargo::rerun-if-changed={}", bytes.display());
+        writeln!(
+            out,
+            "({file:?}, include_bytes!({:?})),",
+            bytes.display().to_string()
+        )?;
+    }
+    out += "]\n";
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR")?);
+    std::fs::write(out_dir.join("web.rs"), out)?;
     Ok(())
 }
 
@@ -152,6 +202,7 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
             Some("product") => "Product",
             Some("os") => "Os",
             Some("fixture") => "Fixture",
+            Some("web") => "Web",
             other => return Err(format!("manifest.toml: unknown scope {other:?}").into()),
         };
         let mut faces = Vec::new();

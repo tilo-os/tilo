@@ -11,7 +11,12 @@ fn the_compiled_in_manifest_parses() {
 fn the_checkout_holds_the_pinned_catalog() {
     let root = checkout_root();
     check_manifest(&root).unwrap();
-    for asset in &manifest().unwrap().font {
+    for asset in manifest()
+        .unwrap()
+        .font
+        .iter()
+        .filter(|a| a.scope.fixtures())
+    {
         asset.verify(&root).unwrap();
     }
 }

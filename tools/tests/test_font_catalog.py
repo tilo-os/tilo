@@ -232,7 +232,8 @@ class CacheLockTest(unittest.TestCase):
             self.assertEqual(len(roots), 2)
             self.assertEqual(roots[0], roots[1])
             self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771564))
-            self.assertEqual(set(store.asked), {row["file"] for row in pinned()},
+            self.assertEqual(set(store.asked),
+                             {font["file"] for font in fc.selected(fc.manifest(FONTS), "fixtures")},
                              "every font came from the store")
             self.assertEqual(max(store.asked.values()), 1, store.asked)
 

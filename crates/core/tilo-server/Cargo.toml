@@ -20,7 +20,7 @@ test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (the daemon's `agents` build):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
 agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
-web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
+web = ["tilo-workspace-service/device-keys", "dep:tilo-font-catalog", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 # The host / server daemon.
 #
@@ -150,6 +150,8 @@ sha2 = { workspace = true, optional = true }
 # Web Push to a person's browsers (`web_push`): P-256 agreement and signing,
 # HKDF and AES-GCM, from the crate TLS already builds.
 ring = { version = "0.17", optional = true }
+# The page's face (Tilo Sans), whose web cuts a page's host serves beside it.
+tilo-font-catalog = { path = "../../ui/font-catalog", features = ["web"], optional = true }
 # The fetch proxy a page's apps reach the web through, and the mail the entry
 # page sends over HTTPS.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }

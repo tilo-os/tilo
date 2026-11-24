@@ -23,6 +23,14 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
+/// The web page's cuts of Tilo Sans, which the host serving a page serves beside it.
+#[cfg(feature = "web")]
+pub mod web {
+    /// Each `Web` file of the manifest: its name and its bytes, verified against their pins
+    /// where the build prepared them.
+    pub static CUTS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web.rs"));
+}
+
 /// The manifest this build was made against: a copy of the checkout
 /// catalog's `manifest.toml` inside this crate, so a published crate carries
 /// it. `the_checkout_holds_the_pinned_catalog` keeps the two identical.
@@ -151,6 +159,11 @@ impl Error {
 /// | `Product` | yes | yes | yes |
 /// | `Os` | yes | no | yes |
 /// | `Fixture` | no | no | yes |
+/// | `Web` | no | no | no |
+///
+/// `Web` files are WOFF2 cuts of the UI face that the host serving a
+/// workspace's web page serves beside it (the `web` feature embeds them as
+/// [`web::CUTS`]); no catalog installs them and no native text is set in them.
 ///
 /// The standalone catalog is the one the SDK ships next to a third-party
 /// app's Windows, macOS, Android and web builds. It carries only fonts whose
@@ -163,6 +176,7 @@ pub enum Scope {
     Product,
     Os,
     Fixture,
+    Web,
 }
 
 impl Scope {
@@ -177,6 +191,13 @@ impl Scope {
     #[must_use]
     pub const fn os(self) -> bool {
         matches!(self, Self::Product | Self::Os)
+    }
+
+    /// Whether the test fixture catalog carries fonts of this scope: every
+    /// font text is set in, which is all but the web page's cuts.
+    #[must_use]
+    pub const fn fixtures(self) -> bool {
+        !matches!(self, Self::Web)
     }
 }
 

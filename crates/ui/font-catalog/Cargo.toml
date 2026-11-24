@@ -13,6 +13,10 @@ homepage.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["toml"]
 
+[features]
+# Embed the web page's Tilo Sans cuts (`web::CUTS`), for the host that serves a page.
+web = []
+
 [dependencies]
 sha2.workspace = true
 hex.workspace = true

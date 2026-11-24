@@ -3,6 +3,7 @@ catalog_id = "tilo-fonts-fedora44-tilo-sans-reading-2026-10-04"
 product_bytes = 54174180
 os_bytes = 54891768
 fixture_bytes = 55771564
+web_bytes = 158704
 
 [[font]]
 scope = "product"
@@ -32,6 +33,66 @@ source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.002/TiloS
 source_tag = "tilo/tilo-sans v1.002"
 source_commit = "025d4613d723e0da70d0d2d99e39fbb781f9f45f"
 source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.002; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek, the distinct I/l and slashed zero features; Cyrillic held back)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Italic"
+style = "italic"
+
+[[font]]
+scope = "web"
+file = "TiloSans-Latin.woff2"
+bytes = 44980
+sha256 = "f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46"
+source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.002; `wght` 400/400/700, `wdth` pinned at 100; WOFF2 of basic Latin and Latin-1, cut by tools/font-web-cuts.py from the catalog's TiloSans[wdth,wght].ttf (SHA-256 903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Regular"
+style = "normal"
+
+[[font]]
+scope = "web"
+file = "TiloSans-Extended.woff2"
+bytes = 32120
+sha256 = "2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837"
+source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.002; `wght` 400/400/700, `wdth` pinned at 100; WOFF2 of Latin Extended, Vietnamese and Greek, cut by tools/font-web-cuts.py from the catalog's TiloSans[wdth,wght].ttf (SHA-256 903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Regular"
+style = "normal"
+
+[[font]]
+scope = "web"
+file = "TiloSans-Italic-Latin.woff2"
+bytes = 47680
+sha256 = "76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a"
+source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.002; `wght` 400/400/700, `wdth` pinned at 100; WOFF2 of basic Latin and Latin-1, cut by tools/font-web-cuts.py from the catalog's TiloSans-Italic[wdth,wght].ttf (SHA-256 72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Italic"
+style = "italic"
+
+[[font]]
+scope = "web"
+file = "TiloSans-Italic-Extended.woff2"
+bytes = 33924
+sha256 = "d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d"
+source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.002; `wght` 400/400/700, `wdth` pinned at 100; WOFF2 of Latin Extended, Vietnamese and Greek, cut by tools/font-web-cuts.py from the catalog's TiloSans-Italic[wdth,wght].ttf (SHA-256 72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
 license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]

@@ -14,6 +14,30 @@
       "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743/font-72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743.ttf"
     },
     {
+      "file": "TiloSans-Latin.woff2",
+      "bytes": 44980,
+      "sha256": "f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46/font-f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46.woff2"
+    },
+    {
+      "file": "TiloSans-Extended.woff2",
+      "bytes": 32120,
+      "sha256": "2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837/font-2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837.woff2"
+    },
+    {
+      "file": "TiloSans-Italic-Latin.woff2",
+      "bytes": 47680,
+      "sha256": "76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a/font-76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a.woff2"
+    },
+    {
+      "file": "TiloSans-Italic-Extended.woff2",
+      "bytes": 33924,
+      "sha256": "d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d/font-d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d.woff2"
+    },
+    {
       "file": "AtkinsonHyperlegibleNext[wght].ttf",
       "bytes": 114552,
       "sha256": "5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745",

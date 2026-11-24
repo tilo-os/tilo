@@ -16,6 +16,13 @@ fc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fc)
 SOURCE = ROOT / "crates/ui/ui-core/assets/fonts"
 REVIEWED = fc.prepared_root(SOURCE, "fixtures")
+# The page's cuts are in no installed catalog, only in their own.
+REVIEWED_WEB = fc.prepared_root(SOURCE, "web")
+
+
+def reviewed(row):
+    """The reviewed copy of the pinned file `row` names."""
+    return (REVIEWED_WEB if row["file"].endswith(".woff2") else REVIEWED) / row["file"]
 
 
 class FontArtifactsTest(unittest.TestCase):
@@ -34,7 +41,7 @@ class FontArtifactsTest(unittest.TestCase):
         for row in rows.values():
             target = cache / row["sha256"] / row["file"]
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(REVIEWED / row["file"], target)
+            shutil.copyfile(reviewed(row), target)
 
     def test_full_offline_catalog_without_source_fonts_preserves_licenses_and_scopes(self):
         _, rows = fc.artifact_entries(SOURCE)
@@ -54,7 +61,8 @@ class FontArtifactsTest(unittest.TestCase):
                     for entry in fc.manifest(SOURCE)["license"]:
                         self.assertEqual((dest / entry["file"]).read_bytes(), (SOURCE / entry["file"]).read_bytes())
                     self.assertEqual((dest / "PROVENANCE.md").read_bytes(), (SOURCE / "PROVENANCE.md").read_bytes())
-                    self.assertEqual((dest / "NewCM10-Regular.otf").exists(), scope != "product")
+                    self.assertEqual((dest / "NewCM10-Regular.otf").exists(), scope in {"os", "fixtures"})
+                    self.assertEqual((dest / "TiloSans-Latin.woff2").exists(), scope == "web")
 
     def test_parallel_builds_publish_one_verified_catalog_and_reject_corruption(self):
         _, rows = fc.artifact_entries(SOURCE)
@@ -193,7 +201,7 @@ class FontArtifactsTest(unittest.TestCase):
     def test_truncated_excessive_and_changed_downloads_are_not_published(self):
         _, rows = fc.artifact_entries(SOURCE)
         row = min(rows.values(), key=lambda item: item["bytes"])
-        original = (REVIEWED / row["file"]).read_bytes()
+        original = reviewed(row).read_bytes()
         for data in (original[:-1], original + b"x", bytes([original[0] ^ 1]) + original[1:]):
             with self.subTest(length=len(data)), tempfile.TemporaryDirectory() as temporary:
                 response = io.BytesIO(data)
@@ -206,7 +214,7 @@ class FontArtifactsTest(unittest.TestCase):
     def test_verified_download_is_reused_offline_and_existing_destination_is_preserved(self):
         _, rows = fc.artifact_entries(SOURCE)
         row = min(rows.values(), key=lambda item: item["bytes"])
-        data = (REVIEWED / row["file"]).read_bytes()
+        data = reviewed(row).read_bytes()
         with tempfile.TemporaryDirectory() as temporary:
             cache = Path(temporary)
             response = io.BytesIO(data)
@@ -228,7 +236,7 @@ class FontArtifactsTest(unittest.TestCase):
             self.warm_cache(root / "cache", rows)
             self.warm_cache(root / "seed", rows)
             with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
-                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 37)
+                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 41)
                 with patch.object(fc, "IMAGE_SEED", root / "seed"):
                     fresh = root / "fresh"
                     found = fc.prepared_root(SOURCE, "fixtures", fresh, True)
@@ -258,7 +266,7 @@ class FontArtifactsTest(unittest.TestCase):
             root = Path(temporary)
             self.warm_cache(root / "seed", rows)
             with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
-                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 37)
+                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 41)
                 row = next(iter(rows.values()))
                 (root / "seed" / row["sha256"] / "stray.ttf").write_bytes(b"x")
                 with self.assertRaisesRegex(ValueError, "no pin names: " + re.escape(row["sha256"])):

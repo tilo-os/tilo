@@ -240,6 +240,34 @@ async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std:
     write_frame(send, &bytes).await
 }
 
+/// Where a page's face is served from: `/fonts/<file>`, the address the shared page stylesheet's
+/// `@font-face` rules name.
+const FONTS_PREFIX: &str = "/fonts/";
+
+/// One of the catalog's web cuts of the page's face, by the path the page's stylesheet names it
+/// at, or `None` for a path that names none. A browser has no Tilo Sans of its own; the page's
+/// host serves it from its own origin, so no font host learns who opened a page.
+pub(super) fn font(path: &str) -> Option<hyper::Response<super::Body>> {
+    let file = path.strip_prefix(FONTS_PREFIX)?;
+    let &(_, bytes) = tilo_font_catalog::web::CUTS
+        .iter()
+        .find(|(name, _)| *name == file)?;
+    let mut response =
+        hyper::Response::new(super::Body::Full(Some(bytes::Bytes::from_static(bytes))));
+    let headers = response.headers_mut();
+    headers.insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("font/woff2"),
+    );
+    // The name stays when a rebuilt cut replaces the bytes, so a week, not forever: a page drawn
+    // in last week's cut of the same face is no harm.
+    headers.insert(
+        hyper::header::CACHE_CONTROL,
+        hyper::header::HeaderValue::from_static("public, max-age=604800"),
+    );
+    Some(response)
+}
+
 /// What a page's address answers: [`document`], kept by no cache, since the
 /// script in it is this server's.
 pub(super) fn answer(

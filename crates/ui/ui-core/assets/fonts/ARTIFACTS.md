@@ -4,7 +4,7 @@ Font bytes live in immutable artifact storage. Source checkouts retain their
 reviewed metadata, license notices and provenance. Native builds and packaging
 materialize a verified catalog outside the source tree before using its fonts.
 
-The artifacts.json inventory pins all 37 font files by size, SHA-256 and public
+The artifacts.json inventory pins all 41 font files by size, SHA-256 and public
 immutable URL. Each URL uses the full SHA-256 as both its package version and part
 of its filename. The manifest remains authoritative for face selection, scope and
 licensing. PROVENANCE.md records upstream versions, corresponding source,
@@ -38,8 +38,12 @@ preparation never publishes a partial destination. Destinations must be new.
 
 The product scope continues to carry 35 fonts under OFL or LPPL; the OS carries
 36, including New Computer Modern Regular under its GPL font exception; fixtures
-carry 37. No font is subset, converted, renamed internally or replaced. Installed
-catalogs retain all selected font bytes and notices and need no runtime fetch.
+carry 37. No installed font is subset, converted, renamed internally or replaced
+beyond what PROVENANCE.md records. Installed catalogs retain all selected font
+bytes and notices and need no runtime fetch. The `web` scope's four WOFF2 cuts
+of Tilo Sans (tools/font-web-cuts.py) are in no installed catalog: tilo-server's
+`web` feature embeds them, through tilo-font-catalog's `web` feature, and serves
+them beside a workspace's page.
 
 Cargo source builds prepare the fixture catalog through tilo-font-catalog's
 build script, into the crate's OUT_DIR: the catalog is part of the build's

@@ -289,3 +289,32 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
         "nothing was opened"
     );
 }
+
+#[test]
+fn every_face_the_page_stylesheet_names_is_served_from_the_page_s_own_origin() {
+    let css = ui::composition::page::PAGE_CSS;
+    let named: Vec<&str> = css
+        .split("url(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('"').map(|(url, _)| url))
+        .collect();
+    assert_eq!(
+        named.len(),
+        tilo_font_catalog::web::CUTS.len(),
+        "every cut the host serves is one the stylesheet names: {named:?}"
+    );
+    for url in named {
+        assert!(url.starts_with('/'), "{url} is on the page's own origin");
+        let response = super::font(url).unwrap_or_else(|| panic!("{url} is served"));
+        assert_eq!(
+            response.headers()[hyper::header::CONTENT_TYPE],
+            "font/woff2"
+        );
+        let super::super::Body::Full(Some(bytes)) = response.body() else {
+            panic!("{url} answers its bytes whole");
+        };
+        assert!(bytes.starts_with(b"wOF2"), "{url} is WOFF2");
+    }
+    assert!(super::font("/fonts/TiloSans[wdth,wght].ttf").is_none());
+    assert!(super::font("/fonts/../manifest.toml").is_none());
+}

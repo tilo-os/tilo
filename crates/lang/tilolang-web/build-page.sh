@@ -2,7 +2,8 @@
 # The page module and what it runs: `tilolang_web.js`, `tilolang_web_bg.wasm` and
 # `tilolang_web.d.ts` (wasm-bindgen's `web` target); `apps.json`, every file of the apps in
 # `apps/tl` by its path, which `open_app` and `compile_package` take as they are; and `fonts/`,
-# the product catalog's startup fonts a page hands over (`add_font`) before it opens an app.
+# the product catalog's startup fonts a page hands over (`add_font`) before it opens an app and
+# the web cuts of Tilo Sans the page's stylesheet names (`/fonts/*.woff2`).
 #
 #   crates/lang/tilolang-web/build-page.sh [OUT]     (default: target/tilolang-web)
 #
@@ -36,4 +37,6 @@ for font in manifest["font"]:
     if font["scope"] == "product" and font.get("browser_startup"):
         shutil.copyfile(pathlib.Path(sys.argv[1]) / font["file"], pathlib.Path(sys.argv[2]) / font["file"])
 PY
+web="$(python3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope web)"
+cp "$web"/*.woff2 "$out/fonts/"
 ls -l "$out" "$out/fonts"

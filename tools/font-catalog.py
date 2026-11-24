@@ -33,11 +33,13 @@ STANDALONE_LICENSES = {"OFL-1.1", "LPPL-1.3c"}
 # The manifest scopes each staged catalog carries, its file count, and the
 # manifest field that totals its bytes. `product` is the SDK's standalone
 # catalog; `os` is what the Tilo OS image installs; `fixtures` is the
-# checked-in test catalog.
+# checked-in test catalog; `web` is the WOFF2 cuts a page's host serves,
+# which no catalog installs and no native text is set in.
 SCOPES = {
     "product": ({"product"}, 35, "product_bytes"),
     "os": ({"product", "os"}, 36, "os_bytes"),
     "fixtures": ({"product", "os", "fixture"}, 37, "fixture_bytes"),
+    "web": ({"web"}, 4, "web_bytes"),
 }
 
 AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/ui/ui-core/assets/fonts/manifest.toml"

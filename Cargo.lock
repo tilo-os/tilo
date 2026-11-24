@@ -20160,6 +20160,7 @@ dependencies = [
  "tilo-device-identity",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-font-catalog",
  "tilo-fs",
  "tilo-fs-client",
  "tilo-fs-content",
