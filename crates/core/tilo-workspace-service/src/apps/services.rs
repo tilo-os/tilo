@@ -644,6 +644,11 @@ pub struct ResourceRequestContext {
     /// its dispatch: a write the app makes outside an invocation it serves is theirs, limited
     /// to what they may do, and a read answers only what they may read.
     opened_for: Option<tilo_actions::remote::Caller>,
+    /// The record the route's channel opened, whose changes `RecordChanges` reads and
+    /// `RecordChange` makes.
+    record: Option<String>,
+    /// Why the caller may not found the route's record in a workspace this device governs.
+    founding_refusal: Option<String>,
 }
 
 impl ResourceRequestContext {
@@ -658,7 +663,36 @@ impl ResourceRequestContext {
             caller,
             serving: Vec::new(),
             opened_for: None,
+            record: None,
+            founding_refusal: None,
         }
+    }
+
+    /// The context of a route whose caller may not found its record where this device governs
+    /// the workspace, and why.
+    #[must_use]
+    pub fn refusing_founding(mut self, refusal: Option<String>) -> Self {
+        self.founding_refusal = refusal;
+        self
+    }
+
+    /// Why the caller may not found the route's record where this device governs the workspace.
+    #[must_use]
+    pub fn founding_refusal(&self) -> Option<&str> {
+        self.founding_refusal.as_deref()
+    }
+
+    /// The context of a route whose channel opened the record `record`.
+    #[must_use]
+    pub fn on_record(mut self, record: impl Into<String>) -> Self {
+        self.record = Some(record.into());
+        self
+    }
+
+    /// The record the route's channel opened, when it opened one.
+    #[must_use]
+    pub fn record(&self) -> Option<&str> {
+        self.record.as_deref()
     }
 
     /// The context of a view the device opened for `opened_for`, when it opened it for a caller
@@ -764,6 +798,9 @@ pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// Whether `app` may found a record of the resource kind `kind`.
+pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// The shell's link to the device's daemon ([`ProcessServices::device_daemon`]), or why it has
 /// none.
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
@@ -835,6 +872,9 @@ pub struct ProcessServices {
     pub app_action_access: Option<crate::apps::app_actions::AppActionAccessResolver>,
     /// The resource kinds each application declared; without it no app's reach is known.
     pub app_resource_kinds: Option<crate::apps::app_actions::AppResourceKindsResolver>,
+    /// Which kinds an app may found records in, in a workspace this device governs; without it
+    /// an app founds records in any kind.
+    pub record_founding: Option<RecordFounding>,
     /// Where this host records the answers a person gave for its workspaces'
     /// grants.
     pub workspace_grants: Option<Arc<dyn WorkspaceGrants>>,
@@ -914,6 +954,7 @@ impl ProcessServices {
         "file_clipboard",
         "app_action_access",
         "app_resource_kinds",
+        "record_founding",
         "workspace_grants",
         "launchable_catalogue",
         "document_content",

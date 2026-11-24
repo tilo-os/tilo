@@ -602,23 +602,6 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for DaemonReceipts {
         self.0.link().map(drop)
     }
 
-    /// An app's writes go to the daemon on the app's own connection there, never through the
-    /// desktop.
-    fn document(
-        &self,
-        _workspace: String,
-        _app: String,
-        _document: String,
-        _readers: Option<String>,
-        _envelope: collab_types::SignedOp,
-        _resource_type: Option<String>,
-    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-        Box::pin(std::future::ready(Err(
-            "an app writes its documents at the device's daemon, on its own connection there"
-                .to_owned(),
-        )))
-    }
-
     fn effect(
         &self,
         workspace: String,

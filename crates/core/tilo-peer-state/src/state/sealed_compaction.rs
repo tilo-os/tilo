@@ -16,6 +16,11 @@ type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
 pub type SealCheckpoint<'a> =
     dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
 
+/// The action a sealed write, opened to the plaintext given, waits for the rest of
+/// ([`StatePeer::sealed_action_waits`]).
+pub(super) type WaitsForAction<'a> =
+    dyn Fn(&SignedOp, &[u8]) -> Result<Option<String>, String> + 'a;
+
 /// Writes a sealed history must hold before it is compacted to make workspace in
 /// a full exact admission index: fewer would fold little for the work.
 pub(super) const PRESSED_HISTORY: usize = 64;
@@ -899,6 +904,12 @@ pub enum UnmergedReason {
         /// The refused changes it builds on, hex.
         on: Vec<String>,
     },
+    /// It, or a write before it, is one write of an action whose writes to other records are not
+    /// all here yet: the records change together once they are.
+    WaitsForAction {
+        /// The action, named.
+        action: String,
+    },
 }
 
 impl std::fmt::Display for UnmergedReason {
@@ -922,6 +933,9 @@ impl std::fmt::Display for UnmergedReason {
             UnmergedReason::Refused { refusal } => write!(f, "is refused: {refusal}"),
             UnmergedReason::BuiltOnRefused { on } => {
                 write!(f, "builds on a refused change: {}", on.join(", "))
+            }
+            UnmergedReason::WaitsForAction { action } => {
+                write!(f, "waits for the rest of {action}")
             }
         }
     }
@@ -1385,7 +1399,8 @@ pub(super) fn open_sealed(
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     check: &mut CheckOpened<'_>,
 ) -> Result<OpenedDocument, String> {
-    open_sealed_after(document, open, None, check, &|_| false).map(|(opened, _)| opened)
+    open_sealed_after(document, open, None, check, &|_| false, &|_, _| Ok(None))
+        .map(|(opened, _)| opened)
 }
 
 /// `open_sealed` over what `prior`, an earlier opening of the document, merged: where the
@@ -1402,6 +1417,7 @@ pub(super) fn open_sealed_after(
     prior: Option<MergedDocument>,
     check: &mut CheckOpened<'_>,
     settled: &dyn Fn(&SignedOp) -> bool,
+    waits: &WaitsForAction<'_>,
 ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let base = document.doc.committed_document().get_heads();
@@ -1430,8 +1446,22 @@ pub(super) fn open_sealed_after(
     // history, so named apart.
     let mut beside = Vec::new();
     let mut transfers = crate::document_frame::Transfers::default();
+    // From a write whose action is not whole here on, the record reads without its writes, as a
+    // read in turns does ([`super::document_capture`]).
+    let mut waiting: Option<String> = None;
     for (index, write) in sealed.iter().enumerate().skip(from) {
-        match open(write).and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
+        let opened = open(write).and_then(|plain| {
+            if waiting.is_none() {
+                waiting = waits(write, &plain)?;
+            }
+            Ok(plain)
+        });
+        if let Some(action) = &waiting {
+            let action = action.clone();
+            unmerged.push((index, UnmergedReason::WaitsForAction { action }));
+            continue;
+        }
+        match opened.and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
             Ok(Some(mutation)) if write.kind == OpKind::Compaction => {
                 let read = super::checkpoints::read_checkpoint(
                     document,
@@ -1613,6 +1643,7 @@ impl HeldDocument {
             None,
             &mut |write, mutation| self.check(write, mutation),
             &|checkpoint| self.settled(checkpoint),
+            &|write, plaintext| self.waits(write, plaintext),
         )
         .map(|(opened, _)| opened)
     }
@@ -1622,6 +1653,12 @@ impl HeldDocument {
     fn settled(&self, checkpoint: &SignedOp) -> bool {
         self.peer
             .checkpoint_settled((&self.route.app, &self.route.record), checkpoint)
+    }
+
+    /// The action `write`, opened as `plaintext`, waits for the rest of.
+    fn waits(&self, write: &SignedOp, plaintext: &[u8]) -> Result<Option<String>, String> {
+        self.peer
+            .sealed_action_waits((&self.route.app, &self.route.record), write, plaintext)
     }
 
     /// Decide `write`, opened as `mutation`, as every reader of the document does.
@@ -1655,6 +1692,7 @@ impl HeldDocument {
             prior,
             &mut |write, mutation| self.check(write, mutation),
             &|checkpoint| self.settled(checkpoint),
+            &|write, plaintext| self.waits(write, plaintext),
         )
     }
 

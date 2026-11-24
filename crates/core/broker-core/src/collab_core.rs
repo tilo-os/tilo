@@ -88,10 +88,6 @@ pub struct BrokerChannels {
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<crate::collab_history::CollabHistoryStore>,
-    /// History pages this device asked its peers for, by artifact: the
-    /// `before_seq` bound and when the request left. Answers are accepted
-    /// only while a request is outstanding.
-    pub peer_history_requests: HashMap<ArtifactId, (u64, tilo_clock::time::Instant)>,
     /// The route (app, workspace, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
@@ -99,11 +95,6 @@ pub struct BrokerChannels {
     /// one in the clear is a downgrade ([`Self::document_order_allowed`]).
     pub sealed: std::collections::HashSet<ArtifactId>,
 }
-
-/// How long a peer history request stays open for answers.
-const PEER_HISTORY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
-/// Minimum spacing between repeats of the same peer history request.
-const PEER_HISTORY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl BrokerChannels {
     pub fn state_for(&mut self, artifact: ArtifactId) -> &mut InboundState {
@@ -156,9 +147,8 @@ impl BrokerChannels {
         }
     }
 
-    /// Append an op validated on `route` to durable history when it belongs
-    /// there, bound to its record and workspace. Failure is logged, never fatal:
-    /// the op is still delivered live. The caller syncs what this wrote once
+    /// Bind the record of an op validated on `route` to its workspace, when the op is sealed
+    /// history. Failure is logged, never fatal: the op is still delivered live. The caller syncs what this wrote once
     /// it has released the channels' lock, and before it delivers the op
     /// ([`Unsynced`]).
     pub fn document_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) -> Unsynced {
@@ -168,74 +158,15 @@ impl BrokerChannels {
         let Some(history) = self.history.as_mut() else {
             return Unsynced::default();
         };
-        let mut unsynced = Unsynced::default();
-        if crate::collab_history::CollabHistoryStore::retains(op) {
-            match history.bind_document(
-                op.artifact,
-                &route.cluster_id,
-                &route.app_id,
-                &route.document_id,
-            ) {
-                Ok(binding) => unsynced = unsynced.join(binding),
-                Err(error) => {
-                    tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
-                }
-            }
+        if !crate::collab_history::CollabHistoryStore::retains(op) {
+            return Unsynced::default();
         }
-        match history.record(op) {
-            Ok(appended) => unsynced.join(appended),
-            Err(error) => {
-                tracing::warn!(%error, artifact = ?op.artifact, "collab history: append failed");
-                unsynced
-            }
-        }
-    }
-
-    /// One scrollback page for `artifact`: the in-memory window merged with
-    /// durable history, newest `max` ops below `before_seq`, ascending, plus
-    /// whether nothing older remains. Redacted ops keep their marker.
-    pub fn scrollback_page(
-        &mut self,
-        artifact: ArtifactId,
-        before_seq: u64,
-        max: u16,
-    ) -> (Vec<SignedOp>, bool) {
-        let (memory, memory_exhausted) = self
-            .state_for(artifact)
-            .scrollback_for(artifact, before_seq, max);
-        let Some(history) = self.history.as_mut() else {
-            return (memory, memory_exhausted);
-        };
-        let (durable, durable_exhausted) = match history.page_before(artifact, before_seq, max) {
-            Ok(page) => page,
-            Err(error) => {
-                tracing::warn!(%error, ?artifact, "collab history: read failed");
-                return (memory, memory_exhausted);
-            }
-        };
-        let mut seen = std::collections::HashSet::new();
-        let union: Vec<SignedOp> = memory
-            .into_iter()
-            .chain(durable)
-            .filter(|op| seen.insert((op.author.0, op.seq)))
-            .collect();
-        let (mut page, union_exhausted) =
-            collab_types::history::page_before(&union, artifact, before_seq, max);
-        if let Some(state) = self.states.get(&artifact)
-            && let Ok(marker) = collab_types::RedactedMarker::v1().canonical()
-        {
-            for op in &mut page {
-                if state.is_redacted(OpId::from_op(op))
-                    && op.kind != collab_types::OpKind::Redaction
-                {
-                    op.payload.clone_from(&marker);
-                }
-            }
-        }
-        (
-            page,
-            union_exhausted && memory_exhausted && durable_exhausted,
-        )
+        history
+            .bind_document(op.artifact, &route.cluster_id, &route.app_id, &route.document_id)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
+                Unsynced::default()
+            })
     }
 
     /// The records of trees ([`collab_types::document::DocumentId::tree`]: a chain's
@@ -289,78 +220,6 @@ impl BrokerChannels {
                     .as_ref()
                     .and_then(|history| history.workspace_of(artifact))
             })
-    }
-
-    /// Whether to ask peers for history of `artifact` below `before_seq`:
-    /// only with durable history to receive it into, and not again while an
-    /// identical request is fresh. Records the request when it says yes.
-    pub fn request_peer_history(&mut self, artifact: ArtifactId, before_seq: u64) -> bool {
-        if self.history.is_none() {
-            return false;
-        }
-        let now = tilo_clock::now();
-        if let Some((bound, at)) = self.peer_history_requests.get(&artifact)
-            && *bound == before_seq
-            && now.saturating_duration_since(*at) < PEER_HISTORY_RETRY
-        {
-            return false;
-        }
-        self.peer_history_requests
-            .insert(artifact, (before_seq, now));
-        true
-    }
-
-    /// Take history ops a peer sent in answer to an outstanding request into
-    /// durable history. Only signed content-key ciphertext of the requested
-    /// artifact below the requested bound is kept; returns how many ops were
-    /// new. The broker still holds no key: these are opaque to it. The
-    /// caller syncs what this wrote once it has released the channels' lock
-    /// ([`Unsynced`]).
-    pub fn accept_peer_history(
-        &mut self,
-        artifact: ArtifactId,
-        ops: &[SignedOp],
-    ) -> (usize, Unsynced) {
-        let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
-            return (0, Unsynced::default());
-        };
-        if tilo_clock::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
-            self.peer_history_requests.remove(&artifact);
-            return (0, Unsynced::default());
-        }
-        let workspace = self
-            .routes
-            .get(&artifact)
-            .map(|route| route.cluster_id.clone());
-        let Some(history) = self.history.as_mut() else {
-            return (0, Unsynced::default());
-        };
-        let mut unsynced = Unsynced::default();
-        if let Some(workspace) = workspace {
-            match history.bind_workspace(artifact, &workspace) {
-                Ok(binding) => unsynced = binding,
-                Err(error) => {
-                    tracing::warn!(%error, ?artifact, "collab history: workspace binding failed");
-                }
-            }
-        }
-        let page: Vec<&SignedOp> = ops
-            .iter()
-            .filter(|op| {
-                op.artifact == artifact
-                    && op.seq < bound
-                    && crate::collab_history::CollabHistoryStore::retains(op)
-                    && collab_types::verify_op(op).is_ok()
-            })
-            .collect();
-        // One data sync for the whole page rather than one per op.
-        match history.record_all_if_new(artifact, &page) {
-            Ok((stored, appended)) => (stored, unsynced.join(appended)),
-            Err(error) => {
-                tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
-                (0, unsynced)
-            }
-        }
     }
 }
 

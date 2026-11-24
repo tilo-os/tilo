@@ -23,8 +23,8 @@
 //! The manager speaks to exactly one [`CollabTransport`], driven from the
 //! owner thread's frame loop: commands go in through
 //! [`CollabTransport::submit`], events come out of
-//! [`CollabTransport::drain`]. The transport owns authentication, signing
-//! and verification; the manager never holds a transport key. Durable
+//! [`CollabTransport::drain`]. The transport owns authentication; the device's
+//! store signs what the app writes, and the manager never holds a key for it. Durable
 //! traffic fails the transport closed on overload; only transient presence
 //! may be shed; a document change the transport cannot take is refused
 //! with a [`CollabSendError`] instead. Without a transport the manager is
@@ -100,7 +100,6 @@
 
 pub mod action_directory;
 pub mod document;
-pub mod document_routes;
 pub mod history_source;
 mod incoming;
 pub use incoming::Incoming;
@@ -116,14 +115,8 @@ pub mod state;
 // names them by (`ui::time`, `ui::wake`, `ui::process`), without the toolkit's
 // host services.
 pub(crate) mod time {
-    // The broker's tests stamp records with it.
     pub use tilo_clock::now;
-    #[cfg(all(test, feature = "broker-transport"))]
-    pub use tilo_clock::time::SystemTime;
     pub use tilo_clock::time::{Duration, Instant};
-    // The broker stamps the documents it publishes with the wall clock.
-    #[cfg(feature = "broker-transport")]
-    pub use tilo_clock::wall;
 }
 pub(crate) use tilo_rt::wake;
 pub(crate) use wake::WakeHandle;
@@ -167,13 +160,9 @@ pub mod browser_service_sessions;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
-pub mod commit_log;
-#[cfg(feature = "broker-transport")]
-pub mod commits;
 #[cfg(feature = "broker-transport")]
 pub mod external_moderation;
 pub mod handoff;
-mod history;
 #[cfg(feature = "broker-transport")]
 mod route_endpoints;
 
@@ -258,14 +247,12 @@ mod portable_committed {
         }
     }
 }
-pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
 /// zero upward; the broker never assigns this sentinel.
 pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
-use collab_types::SignedOp;
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
@@ -476,21 +463,19 @@ pub enum CollabRequest {
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
     },
-    /// A typed complete snapshot or incremental change set. The SDK wraps the
-    /// mutation in a signed envelope from the certified launcher identity.
-    /// Keeping the kind in `DocumentMutation` avoids parallel request and wire
-    /// enums drifting apart.
+    /// The app's own changes of the route's record: the record whole (every
+    /// change it holds, for a record's first write) or the changes since what
+    /// the store last took. The device's store takes them as the app's
+    /// changes (`tilo_resource_store::wire::Command::RecordChange`) and signs
+    /// them itself.
     Document {
         mutation: DocumentMutation,
         /// The action this mutation is one part of, when the caller made it
         /// as part of an action that writes more than one unit: every part
-        /// carries the same commit, and a peer applies them all together or
-        /// not at all. `None` publishes a commit for this unit alone.
+        /// carries the same commit, and every device applies them all
+        /// together or not at all. `None` for a write of this unit alone.
         commit: Option<collab_types::WorkspaceCommit>,
     },
-    /// Ask the broker to select one existing holder of this exact route as a
-    /// snapshot responder. Safe to retry while no holder is available.
-    RequestDocumentSnapshot,
     /// Content this route's record references, which the app stored: the
     /// host keeps it where the record's readers are served from.
     OfferContent {
@@ -509,28 +494,6 @@ pub enum CollabRequest {
     Presence {
         key: PresenceKey,
         payload: PresencePayload,
-    },
-    /// Signed incremental CRDT mutation. The broker validates against the
-    /// channel's role table before fanning out; invalid envelopes are
-    /// dropped and logged, never reaching peers.
-    ///
-    /// `Box`ed to keep the discriminant thin on the stack — `SignedOp` is
-    /// large (32-byte pubkey + 64-byte sig + payload + UUIDs).
-    SignedOperation {
-        envelope: Box<SignedOp>,
-    },
-    /// Late-join scrollback fetch: up to `max` ops with `seq < before_seq`,
-    /// answered with one [`CollabEvent::ScrollbackBatch`].
-    ///
-    /// Apps page by repeating with `before_seq` set to the lowest seq from
-    /// the previous batch until `exhausted == true`, then fall back to the
-    /// cooperative path (the broker asks the workspace's other members).
-    FetchScrollback {
-        artifact: collab_types::ArtifactId,
-        /// Exclusive upper bound on `seq`.
-        before_seq: u64,
-        /// Page size cap; chrome UX bounds pages to ~50 ops.
-        max: u16,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new
@@ -660,9 +623,8 @@ impl CollabRequest {
     }
 
     /// One part of the action `commit` names: the changes this unit made,
-    /// carrying the action across every unit it wrote, so a peer applies all
-    /// of it or none. The commit's device is stamped by the transport that
-    /// signs the frame.
+    /// carrying the action across every unit it wrote, so every device
+    /// applies all of it or none.
     pub fn document_action(
         mutation: DocumentMutation,
         commit: collab_types::WorkspaceCommit,
@@ -1269,15 +1231,13 @@ impl CollaborationManager {
             .accepted
             .as_ref()
             .map(|observation| observation.route.channel_id());
-        let unpublishable = matches!(
-            req,
-            CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-        ) && match &self.backend {
-            Backend::Transport(transport) => {
-                !transport.document_publishable(primary_channel.as_deref())
-            }
-            Backend::Disabled(_) => false,
-        };
+        let unpublishable = matches!(req, CollabRequest::Document { .. })
+            && match &self.backend {
+                Backend::Transport(transport) => {
+                    !transport.document_publishable(primary_channel.as_deref())
+                }
+                Backend::Disabled(_) => false,
+            };
         if unpublishable {
             // Committed-document ownership: nothing is published on a route
             // whose original history has not been applied locally.
@@ -1444,10 +1404,8 @@ impl CollaborationManager {
 
     /// Install an already-provisioned MLS endpoint for `route`.
     ///
-    /// From this point the route is fail-closed: locally generated document
-    /// mutations are encrypted and encrypted inbound envelopes are decrypted
-    /// before becoming [`CollabEvent::Document`].  The group must be the
-    /// route's workspace's.  Group
+    /// From this point the content the route's record references is sealed
+    /// under the group's keys.  The group must be the route's workspace's.  Group
     /// provisioning and durable secret storage intentionally remain outside
     /// the UI process; callers should obtain the group from the workspace
     /// identity service and must reinstall it after a process restart.
@@ -1613,15 +1571,13 @@ impl CollaborationManager {
                 .then_some(())
                 .ok_or(CollabSendError::Unavailable);
         }
-        let unpublishable = matches!(
-            req,
-            CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-        ) && match &self.backend {
-            Backend::Transport(transport) => {
-                !transport.document_publishable(Some(&route.channel_id()))
-            }
-            Backend::Disabled(_) => false,
-        };
+        let unpublishable = matches!(req, CollabRequest::Document { .. })
+            && match &self.backend {
+                Backend::Transport(transport) => {
+                    !transport.document_publishable(Some(&route.channel_id()))
+                }
+                Backend::Disabled(_) => false,
+            };
         let known_pending_document = matches!(&req, CollabRequest::Document { .. })
             && matches!(&self.backend, Backend::Transport(transport)
                 if transport.committed_document_required(&route.channel_id()));

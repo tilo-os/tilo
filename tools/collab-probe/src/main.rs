@@ -2,36 +2,36 @@
 //! descriptor the launcher supplies (`TILO_SVC_COLLAB_FD`), never a socket path.
 //!
 //! ```text
-//! tilo-collab-probe write:<text>      # author an edit, publish it
+//! tilo-collab-probe write:<text>      # author an edit, write it
 //! tilo-collab-probe read:<seconds>    # wait for one, print it
 //! tilo-collab-probe routes:<app>,...  # what this launch may do on each app's route
 //! ```
 //!
-//! The workspace comes from `TILO_WORKSPACE_ID`. `write` publishes a signed Automerge change through
-//! the broker, and `read` loads the change into its own document. Exit status is zero only when the
-//! requested operation succeeds.
+//! The workspace comes from `TILO_WORKSPACE_ID`. `write` hands the device's store an Automerge
+//! change of the probe's record, and `read` asks the store for the record's changes, as it opens and
+//! each time the store says the record changed, loading them into its own document. Exit status is
+//! zero only when the requested operation succeeds.
 //!
 //! `routes` asks, as the attested launch of the package the probe was launched as
 //! (`TILO_PACKAGE_ID`), to join each named app's route and to write on it, and prints one
-//! `probe: ROUTE` line per app with what the broker and the identity service answered. The write it
-//! offers another app's route is not a valid operation, so only a broker that admits writes there
-//! would look at it. A package whose entrypoint is the probe and that the shell launches without
+//! `probe: ROUTE` line per app with what the broker and the store answered. The write it offers
+//! another app's route is no valid change, so only a store that admits writes there would look at it. A package whose entrypoint is the probe and that the shell launches without
 //! arguments reads the instruction from `probe-routes` in its payload (`TILO_APP_MODULE`).
 
 use std::process::ExitCode;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
 use tilo_identity_client::BrokerSigningIdentity;
+use tilo_resource_store::wire::{Bytes, Command, Reply};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use collab_types::{CommitNamed, DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
+use collab_types::CommitNamed;
 
 /// The key the probe reads and writes: one flat string is enough, since the probe proves delivery
 /// and not a document model.
 const FIELD: &str = "text";
 const APP_ID: &str = "so.tilo.collab-probe";
-const RECORD_ID: &str = "";
 /// The record kind the probe's one field edit is named as.
 const RECORD_KIND: &str = "probe";
 
@@ -163,67 +163,67 @@ async fn join(
     Ok((handle, identity))
 }
 
-fn signed_incremental(
-    identity: &BrokerSigningIdentity,
-    workspace_id: &str,
-    bytes: Vec<u8>,
-) -> Result<Vec<u8>, String> {
-    let payload = DocumentMutation::Incremental(bytes)
-        .encode()
-        .map_err(|error| format!("typed mutation would not encode: {error}"))?;
-    let now = std::time::SystemTime::now();
-    let seq = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-        });
-    let mut op = SignedOp::new_unsigned(
-        payload,
-        collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
-        Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
-        collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-        OpKind::Change,
-        now,
-        seq,
-    );
-    let unsigned = postcard::to_stdvec(&op)
-        .map_err(|error| format!("unsigned operation would not encode: {error}"))?;
-    let signature = identity
-        .sign_collaboration_op(workspace_id, APP_ID, RECORD_ID, &unsigned)
-        .map_err(|error| format!("workspace policy denied the operation: {error}"))?;
-    op.signature = Signature::from_bytes(signature);
-    postcard::to_stdvec(&op).map_err(|error| format!("signed operation would not encode: {error}"))
+/// Ask the device's store `command` about the probe's record, and read its answer.
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
+async fn ask(handle: &runtime_collab::ChannelHandle, command: &Command) -> Result<Reply, String> {
+    let bytes = serde_json::to_vec(command).map_err(|error| error.to_string())?;
+    let reply = handle
+        .resource_command(&bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::from_slice(&reply)
+        .map_err(|error| format!("the store's answer does not read: {error}"))
 }
 
-fn apply_signed_document(
-    doc: &mut AutoCommit,
-    workspace_id: &str,
-    bytes: &[u8],
-) -> Result<Option<String>, String> {
-    let envelope: SignedOp =
-        postcard::from_bytes(bytes).map_err(|error| format!("invalid signed envelope: {error}"))?;
-    collab_types::verify_op(&envelope)
-        .map_err(|error| format!("invalid operation signature: {error}"))?;
-    if envelope.artifact != collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID)
-        || envelope.attestation_id
-            != collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID)
-    {
-        return Err("signed operation belongs to another document route".to_string());
-    }
-    let mutation = DocumentMutation::decode(&envelope.payload)
-        .map_err(|error| format!("untyped document operation: {error}"))?;
-    match mutation {
-        DocumentMutation::Incremental(bytes) => doc
-            .load_incoming(&bytes)
-            .map(|_| ())
-            .map_err(|error| format!("incremental document bytes did not load: {error}"))?,
-        DocumentMutation::Snapshot(bytes) => {
-            let mut incoming = AutoCommit::load(&bytes)
-                .map_err(|error| format!("document snapshot did not load: {error}"))?;
-            doc.merge_incoming(&mut incoming)
-                .map_err(|error| format!("document snapshot did not merge: {error}"))?;
+/// The record's changes past `after`, joined from every page of one answer, and the heads they
+/// bring the probe to.
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
+async fn changes_after(
+    handle: &runtime_collab::ChannelHandle,
+    after: &[String],
+) -> Result<(Vec<u8>, Vec<String>), String> {
+    'answer: loop {
+        let (mut changes, mut first, mut from) = (Vec::new(), None, 0);
+        loop {
+            let command = Command::RecordChanges {
+                after: after.to_vec(),
+                from,
+            };
+            let Reply::RecordChanges {
+                changes: page,
+                heads,
+                next,
+            } = ask(handle, &command).await?
+            else {
+                return Err("the store answered a read with no changes".to_owned());
+            };
+            match &first {
+                // A newer answer began: read it from its start.
+                Some(first) if *first != heads => continue 'answer,
+                Some(_) => {}
+                None => first = Some(heads),
+            }
+            changes.extend(page.0);
+            match next {
+                Some(next) => from = next,
+                None => return Ok((changes, first.unwrap_or_default())),
+            }
         }
     }
+}
+
+/// Load `changes` into `doc` and read the probe's field.
+fn apply_changes(doc: &mut AutoCommit, changes: &[u8]) -> Result<Option<String>, String> {
+    doc.load_incoming(changes)
+        .map_err(|error| format!("the record's changes did not load: {error}"))?;
     doc.get(&ROOT, FIELD)
         .map(|value| value.map(|(value, _)| value.as_str().unwrap_or_default().to_string()))
         .map_err(|error| format!("document field could not be read: {error}"))
@@ -249,25 +249,25 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
         return ExitCode::from(6);
     }
     // Every change names the action it ran and the person whose certified
-    // device signs it: here, an edit of the text.
+    // device's store signs it: here, an edit of the text.
     doc.commit_edit(RECORD_KIND, FIELD, &identity.metadata().group_public_key());
-    let bytes = doc.save_incremental();
-    let signed = match signed_incremental(&identity, workspace_id, bytes) {
-        Ok(signed) => signed,
-        Err(error) => {
-            eprintln!("probe: FAIL {error}");
+    let command = Command::RecordChange {
+        changes: Bytes(doc.save_after(&[])),
+        more: false,
+        commit: None,
+    };
+    match ask(&handle, &command).await {
+        Ok(Reply::Written) => {}
+        Ok(other) => {
+            eprintln!("probe: FAIL the store answered {other:?}");
             return ExitCode::from(7);
         }
-    };
-
-    if let Err(e) = handle.send(&signed).await {
-        eprintln!("probe: FAIL sending signed operation: {e}");
-        return ExitCode::from(7);
+        Err(error) => {
+            eprintln!("probe: FAIL writing the change: {error}");
+            return ExitCode::from(7);
+        }
     }
-    println!("probe: WROTE {} signed bytes: {text:?}", signed.len());
-    // The broker's publish is fire-and-forget onto an actor queue and
-    // this process is about to exit — give the frame a moment to leave rather than racing teardown.
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    println!("probe: WROTE {text:?}");
     ExitCode::SUCCESS
 }
 
@@ -277,15 +277,15 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
               never spawned across threads"
 )]
 async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
-    let (handle, _identity) = match join(workspace_id).await {
+    let (handle, _) = match join(workspace_id).await {
         Ok(joined) => joined,
         Err(error) => {
             eprintln!("probe: FAIL {error}");
             return ExitCode::from(5);
         }
     };
-    let stream = match handle.subscribe().await {
-        Ok(s) => s,
+    let notices = match handle.subscribe_context().await {
+        Ok(notices) => notices,
         Err(e) => {
             eprintln!("probe: FAIL subscribe: {e}");
             return ExitCode::from(8);
@@ -296,15 +296,27 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
     let deadline = std::time::Duration::from_secs(timeout_secs);
     let mut doc = AutoCommit::new();
     let found = tokio::time::timeout(deadline, async {
+        let mut after = Vec::new();
         loop {
-            let Ok(event) = stream.read().await else {
-                return None;
-            };
-            match apply_signed_document(&mut doc, workspace_id, &event.op) {
-                Ok(Some(text)) => return Some(text),
-                Ok(None) => {}
-                Err(error) => {
-                    eprintln!("probe: received an operation that was not applicable: {error}");
+            // What the store holds past what this probe has, now and after each change.
+            match changes_after(&handle, &after).await {
+                Ok((changes, heads)) => {
+                    after = heads;
+                    match apply_changes(&mut doc, &changes) {
+                        Ok(Some(text)) => return Some(text),
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("probe: the record's changes did not apply: {error}")
+                        }
+                    }
+                }
+                Err(error) => eprintln!("probe: the record could not be read: {error}"),
+            }
+            loop {
+                match notices.read().await {
+                    Ok(context) if context.record_changed => break,
+                    Ok(_) => {}
+                    Err(_) => return None,
                 }
             }
         }
@@ -317,13 +329,13 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(None) => {
-            eprintln!("probe: FAIL the op stream closed before anything arrived");
+            eprintln!("probe: FAIL the record's notices closed before anything arrived");
             ExitCode::from(9)
         }
         Err(_) => {
             eprintln!(
                 "probe: FAIL nothing arrived in {timeout_secs}s. Either no peer \
-                 published, or what they published never left their machine."
+                 wrote, or what they wrote never reached this device."
             );
             ExitCode::from(10)
         }
@@ -340,7 +352,7 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
 async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> ExitCode {
     let launched_as = std::env::var("TILO_PACKAGE_ID").unwrap_or_default();
     println!("probe: launched as {launched_as:?}");
-    let (presentation, identity) = match certified_join(workspace_id) {
+    let (presentation, _identity) = match certified_join(workspace_id) {
         Ok(joined) => joined,
         Err(error) => {
             eprintln!("probe: FAIL {error}");
@@ -363,35 +375,19 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
                 continue;
             }
         };
-        // The identity service lends the device signature only to changes of
-        // the launch's own route.
-        let signing = match identity.sign_collaboration_op(workspace_id, app, "", b"probe") {
-            Ok(_) => "SIGN-LENT".to_owned(),
-            Err(error) => format!("SIGN-REFUSED {error}"),
+        // Bytes that are no change: what the store answers is whether this launch may change
+        // that route's record at all, and it never takes them.
+        let command = Command::RecordChange {
+            changes: Bytes(b"probe".to_vec()),
+            more: false,
+            commit: None,
         };
-        // A well-formed change of the joined route, left unsigned: what the
-        // broker answers is whether this launch may change that route at all.
-        let unsigned = SignedOp::new_unsigned(
-            b"probe".to_vec(),
-            collab_types::document_artifact_id(app, workspace_id, ""),
-            Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
-            collab_types::document_attestation_id(app, workspace_id, ""),
-            OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        let op = match postcard::to_stdvec(&unsigned) {
-            Ok(op) => op,
-            Err(error) => {
-                eprintln!("probe: FAIL the change would not encode: {error}");
-                return ExitCode::from(5);
-            }
-        };
-        let write = match handle.send(&op).await {
-            Ok(()) => "WRITE-ADMITTED".to_owned(),
+        let write = match ask(&handle, &command).await {
+            Ok(Reply::Written) => "WRITE-ADMITTED".to_owned(),
+            Ok(other) => format!("WRITE-ANSWERED {other:?}"),
             Err(error) => format!("WRITE-REFUSED {error}"),
         };
-        println!("probe: ROUTE {app} JOINED; {write}; {signing}");
+        println!("probe: ROUTE {app} JOINED; {write}");
     }
     ExitCode::SUCCESS
 }
@@ -400,52 +396,19 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
 mod tests {
     use super::*;
 
-    fn signed_change(workspace_id: &str, text: &str) -> Vec<u8> {
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, FIELD, text).unwrap();
-        doc.commit_edit(RECORD_KIND, FIELD, &[1; 32]);
-        let payload = DocumentMutation::Incremental(doc.save_incremental())
-            .encode()
-            .unwrap();
-        let (key, author) = collab_types::generate_keypair();
-        let mut op = SignedOp::new_unsigned(
-            payload,
-            collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
-            author,
-            collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-            OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        collab_types::sign_op(&mut op, &key).unwrap();
-        postcard::to_stdvec(&op).unwrap()
-    }
-
-    /// A typed, signed, incremental change applies; a valid operation for another route is rejected.
+    /// The record's changes, as the store joins them, bring the probe the text.
     #[test]
-    fn the_probe_applies_only_signed_changes_for_its_route() {
-        // Phase: applies_a_typed_signed_incremental_change.
-        {
-            let mut doc = AutoCommit::new();
-            let text = apply_signed_document(
-                &mut doc,
-                "workspace-a",
-                &signed_change("workspace-a", "hello"),
-            )
-            .unwrap();
-            assert_eq!(text.as_deref(), Some("hello"));
-        }
-
-        // Phase: rejects_a_valid_operation_for_another_route.
-        {
-            let mut doc = AutoCommit::new();
-            let error = apply_signed_document(
-                &mut doc,
-                "workspace-b",
-                &signed_change("workspace-a", "hello"),
-            )
-            .unwrap_err();
-            assert!(error.contains("another document route"));
-        }
+    fn the_probe_reads_the_text_from_the_records_changes() {
+        let mut author = AutoCommit::new();
+        author.put(&ROOT, FIELD, "hello").unwrap();
+        author.commit_edit(RECORD_KIND, FIELD, &[1; 32]);
+        let mut doc = AutoCommit::new();
+        assert_eq!(apply_changes(&mut doc, &[]).unwrap(), None);
+        let changes = author.save_after(&[]);
+        assert_eq!(
+            apply_changes(&mut doc, &changes).unwrap().as_deref(),
+            Some("hello")
+        );
+        assert!(apply_changes(&mut doc, b"probe").is_err());
     }
 }

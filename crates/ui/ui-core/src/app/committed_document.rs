@@ -148,21 +148,12 @@ impl App {
             if lacks_base {
                 // The change is built on history this replica does not hold (a record it founded
                 // its own empty copy of, a peer that was away too long): the record whole is what
-                // repairs that, so this replica asks its route for one. A change that arrives out
+                // repairs that, and refusing the changes reads it whole. A change that arrives out
                 // of order is repaired the same way.
                 tracing::warn!(
                     channel = %route.channel_id(),
-                    "committed changes arrived without their history: asking for the record whole"
+                    "committed changes arrived without their history: reading the record whole"
                 );
-                if self
-                    .document_routes
-                    .take_snapshot_ask(&route, crate::time::now())
-                {
-                    self.collaboration.manager.send_to_route(
-                        route.clone(),
-                        crate::collaboration::CollabRequest::RequestDocumentSnapshot,
-                    );
-                }
                 read.refuse();
                 continue;
             }

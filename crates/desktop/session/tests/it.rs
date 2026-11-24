@@ -217,6 +217,8 @@ mod region_formats;
 mod repl_api;
 #[path = "rotation.rs"]
 mod rotation;
+#[path = "scratchpad_between_devices.rs"]
+mod scratchpad_between_devices;
 #[path = "search.rs"]
 mod search;
 #[path = "second_device.rs"]

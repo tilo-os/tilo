@@ -108,6 +108,7 @@ mod policy_turn_tests;
 mod process_binding;
 mod published;
 mod published_invocation;
+mod record_changes;
 mod resolved_invocation;
 mod route_holds;
 mod router;
@@ -160,28 +161,20 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
-use collab_types::inbound::OpAdmission;
 use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
-use collab_types::{
-    ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
-    validate_admitted_inbound_op,
-};
-#[cfg(test)]
-use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, WorkspacePolicy, roles};
+use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, roles};
+#[cfg(test)]
+use tilo_desktop_model::Layout;
 
-use crate::apps::collab_broker::{
-    AuditEntry, BrokerChannels, CrdtRoute, FanoutState, apply_redaction_from_envelope,
-};
+use crate::apps::collab_broker::{BrokerChannels, CrdtRoute, FanoutState};
 use crate::apps::collab_outbound::PeerPublisher;
 use crate::apps::services::{ProcessServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::Role as CapRole;
 #[cfg(test)]
 use tilo_action_policy::Grantee;
-use tilo_desktop_model::Layout;
 
 #[cfg(test)]
 mod realtime_service_boundary_tests;

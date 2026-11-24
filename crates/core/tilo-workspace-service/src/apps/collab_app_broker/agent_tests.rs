@@ -7,7 +7,7 @@ use crate::apps::certificate_authority::CertificateAuthority;
 use crate::apps::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::apps::services::{WorkspaceAuthority, WorkspaceMemberships};
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
+use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[path = "agent_session_tests.rs"]
@@ -145,39 +145,6 @@ impl WorkspaceCommits for Native {
             return Err("the native record is still opening; try again in a moment".into());
         }
         self.owner.health()
-    }
-
-    fn document(
-        &self,
-        workspace: String,
-        app: String,
-        document: String,
-        readers: Option<String>,
-        envelope: collab_types::SignedOp,
-        _resource_type: Option<String>,
-    ) -> DocumentFuture {
-        let owner = self.owner.clone();
-        Box::pin(async move {
-            // A real record commits asynchronously: let other requests run
-            // first, as they do while a commit is on its way.
-            tokio::task::yield_now().await;
-            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
-                .ok_or_else(|| "invalid workspace".to_owned())?;
-            let answered = envelope.clone();
-            owner
-                .admit_writes(
-                    workspace,
-                    vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
-                        app,
-                        document,
-                        readers,
-                        envelope,
-                    }],
-                    std::time::SystemTime::now(),
-                )
-                .map_err(|refusal| refusal.to_string())?;
-            Ok(answered)
-        })
     }
 
     fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
@@ -413,7 +380,7 @@ impl Fixture {
         let (state, rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::with_optional_commits(None, native.clone()),
+            PeerPublisher::with_commits(native.clone()),
             Some(native.clone()),
             None,
             Some(&config),

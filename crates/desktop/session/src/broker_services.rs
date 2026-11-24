@@ -144,6 +144,7 @@ broker_services! {
     file_clipboard: Arc<dyn FileClipboardServices>,
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
+    record_founding: tilo_workspace_service::apps::services::RecordFounding,
     workspace_grants: Arc<dyn WorkspaceGrants>,
     launchable_catalogue: PathBuf,
     document_content: Arc<tilo_workspace_service::content::RouteContent>,

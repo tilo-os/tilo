@@ -1,12 +1,11 @@
-//! A local change reaches the transport before the route's frontier moves,
-//! whatever its size. A change the transport can never carry is reported
+//! A local change reaches the record's store before the route's frontier
+//! moves, whatever its size. A change the transport can never carry is reported
 //! and kept, and collaboration stays connected.
 #![cfg(unix)]
 
 use super::*;
 use automerge::transaction::Transactable;
 use collab_types::CommitNamed as _;
-use std::time::Instant;
 
 const MIB: usize = 1024 * 1024;
 
@@ -23,7 +22,10 @@ fn bytes(len: usize, seed: u64) -> Vec<u8> {
     out
 }
 
-fn connected_app() -> (App, Box<dyn Fn() -> Vec<collab_types::SignedOp>>) {
+/// Each write of record changes the store took, in order: the changes it carried.
+type Writes = Box<dyn Fn() -> Vec<Vec<Vec<u8>>>>;
+
+fn connected_app() -> (App, Writes) {
     let (manager, probe) = CollaborationManager::capturing_for_test();
     let mut app =
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
@@ -34,38 +36,11 @@ fn connected_app() -> (App, Box<dyn Fn() -> Vec<collab_types::SignedOp>>) {
     (app, probe)
 }
 
-/// Rebuild the complete mutations a broker received, exactly as a peer's
-/// endpoint does: single frames pass through, segments are reassembled and
-/// checked against their signed digest.
-fn received(ops: &[collab_types::SignedOp]) -> Vec<collab_types::DocumentMutation> {
-    let mut reassembler = collab_types::DocumentReassembler::default();
-    let mut out = Vec::new();
-    for op in ops {
-        collab_types::verify_op(op).expect("every frame is individually signed");
-        match collab_types::DocumentFrame::decode(&op.payload).expect("typed frame") {
-            collab_types::DocumentFrame::Whole(mutation) => out.push(mutation),
-            collab_types::DocumentFrame::Segment(segment) => {
-                if let Some(done) = reassembler
-                    .accept(op, segment, Instant::now())
-                    .expect("consistent transfer")
-                {
-                    out.push(collab_types::DocumentMutation::decode(&done.payload).unwrap());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// The next complete mutation after the `seen` the broker had already
-/// carried: a change still arriving as segments is not one yet.
-fn wait_for_mutation(
-    probe: &dyn Fn() -> Vec<collab_types::SignedOp>,
-    seen: usize,
-) -> collab_types::DocumentMutation {
-    tilo_test_env::wait_for("the broker to receive the complete change", || {
-        let all = received(&probe());
-        (all.len() > seen).then(|| all.into_iter().next_back())?
+/// The changes of the next write after the `seen` the store had already
+/// taken, as one run.
+fn wait_for_write(probe: &dyn Fn() -> Vec<Vec<Vec<u8>>>, seen: usize) -> Vec<u8> {
+    tilo_test_env::wait_for("the store to take the complete change", || {
+        probe().get(seen).map(|write| write.concat())
     })
 }
 
@@ -97,13 +72,9 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
         app.pending_primary_document().unwrap().is_none(),
         "an accepted change advances the frontier"
     );
-    let collab_types::DocumentMutation::Snapshot(snapshot) = wait_for_mutation(&*probe, 0) else {
-        panic!("a route's first publication is the record whole");
-    };
-    let sent = probe().len();
-    assert!(sent > 1, "it travelled as several signed segments");
+    let whole = wait_for_write(&*probe, 0);
     let mut peer = automerge::AutoCommit::new();
-    peer.load_incremental(&snapshot).unwrap();
+    peer.load_incremental(&whole).unwrap();
     assert_eq!(
         automerge::ReadDoc::get(&peer, automerge::ROOT, "body")
             .unwrap()
@@ -112,8 +83,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
         "the peer receives the whole record"
     );
 
-    // The edit made once the route holds the record travels on as a change,
-    // assembled from as many signed segments as it takes.
+    // The edit made once the route holds the record travels on as a change.
     let edited = bytes(7 * MIB / 2, 12);
     app.state
         .doc
@@ -139,13 +109,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
         app.pending_primary_document().unwrap().is_none(),
         "an accepted change advances the frontier"
     );
-    let collab_types::DocumentMutation::Incremental(delta) = wait_for_mutation(&*probe, 1) else {
-        panic!("a live edit travels as an incremental change");
-    };
-    assert!(
-        probe().len() > sent + 1,
-        "it travelled as several signed segments"
-    );
+    let delta = wait_for_write(&*probe, 1);
     peer.load_incremental(&delta).unwrap();
     assert_eq!(
         automerge::ReadDoc::get(&peer, automerge::ROOT, "body")
@@ -153,12 +117,6 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
             .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec)),
         Some(edited),
         "the peer receives the whole change"
-    );
-    assert!(
-        probe()
-            .iter()
-            .all(|op| op.kind == collab_types::OpKind::Change),
-        "app document changes carry the one coarse class the collaboration docs describe"
     );
     assert!(app.collaboration.manager.is_connected());
     assert!(
@@ -197,8 +155,11 @@ fn an_over_limit_change_is_reported_and_kept_without_disconnecting() {
     // Ordinary traffic still flows on the same bridge, and the bridge keeps
     // order: what the broker sees first is the ordinary change, so no part
     // of the refused one went ahead of it.
+    let mut ordinary = automerge::AutoCommit::new();
+    ordinary.put(automerge::ROOT, "ordinary", 1).unwrap();
+    ordinary.commit();
     assert!(app.collaboration.manager.send(
-        crate::collaboration::CollabRequest::document_incremental(vec![1; 16])
+        crate::collaboration::CollabRequest::document_incremental(ordinary.save_after(&[]))
     ));
     tilo_test_env::wait_until("the ordinary change reaches the broker", || {
         !probe().is_empty()

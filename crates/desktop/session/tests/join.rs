@@ -1,6 +1,6 @@
 //! An app of a headless session joins its workspace's channel with the device's certified
 //! presentation, as the person's own device does, and another of their devices is in the same
-//! channel: each reads the change the other wrote. A presentation this device's identity does not
+//! channel: each reads, from the device's store, the change the other wrote. A presentation this device's identity does not
 //! certify, and one of another person, are refused.
 
 #![cfg(target_os = "linux")]
@@ -189,53 +189,65 @@ fn change(key: &str, value: &str) -> Vec<u8> {
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Native.change_message()),
     );
-    collab_types::DocumentMutation::Incremental(document.save_after(&[]))
-        .encode()
-        .expect("a mutation encodes")
+    document.save_after(&[])
 }
 
-/// A signed change of the channel's record, authored by `device` .
-fn op(device: &ed25519_dalek::SigningKey, key: &str, value: &str, seq: u64) -> Vec<u8> {
-    let author = collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-    let mut op = collab_types::SignedOp::new_unsigned(
-        change(key, value),
-        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
-        author,
-        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::now(),
-        seq,
+/// The device's store's answer to `command` about the channel's record.
+async fn ask(
+    channel: &runtime_collab::ChannelHandle,
+    command: &tilo_resource_store::wire::Command,
+) -> tilo_resource_store::wire::Reply {
+    let command = serde_json::to_vec(command).expect("a store command encodes");
+    let reply = channel
+        .resource_command(&command)
+        .await
+        .expect("the store answers the app");
+    serde_json::from_slice(&reply).expect("the store's reply reads")
+}
+
+/// Hand the store the app's own change writing `value` under `key` .
+async fn write(channel: &runtime_collab::ChannelHandle, key: &str, value: &str) {
+    let reply = ask(
+        channel,
+        &tilo_resource_store::wire::Command::RecordChange {
+            changes: tilo_resource_store::wire::Bytes(change(key, value)),
+            more: false,
+            commit: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(reply, tilo_resource_store::wire::Reply::Written),
+        "the session takes the app's change: {reply:?}"
     );
-    collab_types::sign_op(&mut op, device).expect("the app signs its change");
-    postcard::to_stdvec(&op).expect("an op encodes for the wire")
 }
 
-/// The next change `stream` delivers that `device` wrote: the channel also carries what this device
-/// wrote itself.
-async fn written_by(
-    stream: &runtime_collab::OpStream,
-    device: &ed25519_dalek::SigningKey,
-) -> collab_types::SignedOp {
-    loop {
-        let event = stream.read().await.expect("the channel's changes");
-        let op: collab_types::SignedOp =
-            postcard::from_bytes(&event.op).expect("a signed change is on the wire");
-        if *op.author.as_bytes() == device.verifying_key().to_bytes() {
-            return op;
-        }
-    }
-}
-
-/// What `op` wrote under `key` .
-fn written(op: &collab_types::SignedOp, key: &str) -> Option<String> {
-    use automerge::ReadDoc as _;
-    let collab_types::DocumentMutation::Incremental(bytes) =
-        collab_types::DocumentMutation::decode(&op.payload).expect("a mutation decodes")
+/// The record as the store holds it, every change of it read.
+async fn record(channel: &runtime_collab::ChannelHandle) -> automerge::AutoCommit {
+    let tilo_resource_store::wire::Reply::RecordChanges {
+        changes,
+        next: None,
+        ..
+    } = ask(
+        channel,
+        &tilo_resource_store::wire::Command::RecordChanges {
+            after: Vec::new(),
+            from: 0,
+        },
+    )
+    .await
     else {
-        panic!("a change carries an incremental mutation");
+        panic!("the store answers a small record's read with all its changes at once");
     };
     let mut document = automerge::AutoCommit::new();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut document, &bytes).expect("the change loads");
+    tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes.0)
+        .expect("the changes load");
+    document
+}
+
+/// What `document` holds under `key` .
+fn written(document: &automerge::AutoCommit, key: &str) -> Option<String> {
+    use automerge::ReadDoc as _;
     document
         .get(automerge::ROOT, key)
         .expect("the record reads")
@@ -390,8 +402,8 @@ fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Valu
 /// What the apps found: the changes each read from the other, and how the identity store's refusals
 /// read.
 struct Joined {
-    first_reads: collab_types::SignedOp,
-    second_reads: collab_types::SignedOp,
+    first_reads: automerge::AutoCommit,
+    second_reads: automerge::AutoCommit,
     uncertified: String,
     wrong_person: String,
 }
@@ -419,24 +431,10 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
             .join_channel(&channel(), &second)
             .await
             .expect("the other device joins it too");
-        let this_reads = this_channel
-            .subscribe()
-            .await
-            .expect("the channel's changes");
-        let other_reads = other_channel
-            .subscribe()
-            .await
-            .expect("the channel's changes");
-        this_channel
-            .send(&op(&person.device, "from-this-device", "hello", 1))
-            .await
-            .expect("the session admits this device's change");
-        let heard = written_by(&other_reads, &person.device).await;
-        other_channel
-            .send(&op(&person.other_device, "from-the-phone", "there", 1))
-            .await
-            .expect("the session admits the other device's change");
-        let answered = written_by(&this_reads, &person.other_device).await;
+        write(&this_channel, "from-this-device", "hello").await;
+        let heard = record(&other_channel).await;
+        write(&other_channel, "from-the-phone", "there").await;
+        let answered = record(&this_channel).await;
 
         // A presentation this device's identity never certified: the certificate is real, the proof
         // is another key's.
@@ -500,25 +498,15 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
 
     let heard = joined.first_reads;
     assert_eq!(
-        heard.author.as_bytes(),
-        &person.keys.other_device.verifying_key().to_bytes(),
-        "this device reads the change the other wrote"
-    );
-    assert_eq!(
         written(&heard, "from-the-phone").as_deref(),
         Some("there"),
-        "what the other device wrote"
+        "this device reads the change the other wrote"
     );
     let answered = joined.second_reads;
     assert_eq!(
-        answered.author.as_bytes(),
-        &person.keys.device.verifying_key().to_bytes(),
-        "and the other device reads this one's"
-    );
-    assert_eq!(
         written(&answered, "from-this-device").as_deref(),
         Some("hello"),
-        "what this device wrote"
+        "and the other device reads this one's"
     );
     assert!(
         joined.uncertified.contains("proof"),

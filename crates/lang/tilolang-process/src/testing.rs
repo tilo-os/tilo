@@ -243,19 +243,13 @@ impl Bus {
 
     /// Delivers `mutation`, which `from` sent on `route`, to the other connections joined on that
     /// route.
-    fn relay(
-        &self,
-        route: &RouteSpec,
-        from: &Inbox,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        let delivery = delivered(route, mutation)?;
+    fn relay(&self, route: &RouteSpec, from: &Inbox, mutation: &DocumentMutation) {
+        let delivery = delivered(route, mutation);
         for (joined, _, inbox) in self.joined.borrow().iter() {
             if joined == route && !Rc::ptr_eq(inbox, from) {
                 inbox.borrow_mut().push_back(delivery.clone());
             }
         }
-        Ok(())
     }
 
     /// The workspace's store moved, here or in another window of it: every other connection reads
@@ -299,29 +293,14 @@ impl Bus {
     }
 }
 
-/// `mutation` sent on `route`, as the document envelope the broker delivers to the route's other
-/// replicas.
-///
-/// # Errors
-///
-/// Returns the error a mutation too large to carry encodes to, as the connection reports it.
-pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> Result<CollabEvent, String> {
-    let record = route.document.as_deref().unwrap_or("");
-    let workspace = route.cluster_id.to_string();
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().map_err(|error| error.to_string())?,
-        collab_types::document_artifact_id(&route.app_id, &workspace, record),
-        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::document_attestation_id(&route.app_id, &workspace, record),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::UNIX_EPOCH,
-        0,
-    );
-    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-    Ok(CollabEvent::Document {
-        envelope: Box::new(envelope),
-        decrypted_payload: None,
-    })
+/// `mutation` sent on `route`, as the device's store delivers the record's changes to the
+/// route's other windows.
+#[must_use]
+pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> CollabEvent {
+    CollabEvent::Document {
+        route: route.clone(),
+        mutation: mutation.clone(),
+    }
 }
 
 /// The broker's end of one connection: the route it joins, what it sends, what the test delivers
@@ -422,7 +401,7 @@ impl PeerTransport for Broker {
                 self.bus.tell_members(&self.person, &self.inbox);
             }
             CollabRequest::Document { mutation, .. } => {
-                self.bus.relay(&self.route, &self.inbox, mutation)?;
+                self.bus.relay(&self.route, &self.inbox, mutation);
             }
             CollabRequest::ResourceCommand {
                 request_id,
@@ -483,7 +462,7 @@ impl PeerTransport for Broker {
     /// connections joined there.
     fn send_to_route(&mut self, route: RouteSpec, request: CollabRequest) -> Result<(), String> {
         if let CollabRequest::Document { mutation, .. } = &request {
-            self.bus.relay(&route, &self.inbox, mutation)?;
+            self.bus.relay(&route, &self.inbox, mutation);
         }
         self.routed.borrow_mut().push((route, request));
         Ok(())

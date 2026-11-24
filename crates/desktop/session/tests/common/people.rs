@@ -619,7 +619,7 @@ pub const FILES_APP: &str = "so.tilo.file-explorer";
 
 /// The two people's laptops in the site's workspace, each carrying what `install` puts in its
 /// store before its session starts, and the workspace letting `authored` author its records.
-fn two_people_at_a_site_carrying(
+pub fn two_people_at_a_site_carrying(
     authored: &[&str],
     install: impl Fn(&Device),
 ) -> (Site, Person, Person, Device, Device) {
@@ -1953,6 +1953,12 @@ impl Device {
         self.install("so.tilo.file-explorer", files_install());
     }
 
+    /// Install Scratchpad in this device's store: the Rust app whose one note is the workspace's
+    /// record, so what either device writes the other's window shows.
+    pub fn install_scratchpad(&self) {
+        self.install(tilo_app_id::apps::SCRATCHPAD, scratchpad_install());
+    }
+
     /// What this device publishes now, every page of it: its resources and their actions.
     pub fn actions(&self) -> Vec<CatalogueRow> {
         let mut query = CatalogueQuery {
@@ -2242,6 +2248,21 @@ impl Drop for Device {
 fn files_install() -> &'static (PathBuf, String) {
     static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
     INSTALL.get_or_init(|| stage("file-explorer", &[]))
+}
+
+/// The payload Scratchpad is installed from here ([`stage`]), with the digest of its signed root:
+/// the Rust app this run built, under the manifest its package ships.
+fn scratchpad_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "scratchpad",
+            &[(
+                tilo_test_env::sibling_binary("scratchpad", "scratchpad"),
+                "scratchpad",
+            )],
+        )
+    })
 }
 
 /// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.

@@ -21,6 +21,9 @@ use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
 pub use tilo_workspace_join::{DocumentRow, Member, MemberId, MemberList};
 use web_time::{Duration, SystemTime};
+mod action_parts;
+#[cfg(test)]
+mod action_parts_tests;
 mod backend;
 mod document_capture;
 mod documents;

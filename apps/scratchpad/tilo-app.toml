@@ -1,4 +1,5 @@
-# Scratchpad stores its note in the app's private data directory.
+# The note is the workspace's record, so other devices and members read the same one; opened
+# without a workspace (a data directory of its own) it is kept there.
 [package]
 id = "so.tilo.scratchpad"
 name = "Scratchpad"
@@ -39,6 +40,11 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.portals]
+
+[sandbox.services]
+# The note's record lives in the workspace: the app reaches it, and the other members'
+# and devices' changes to it, over the session's collaboration service.
+collab = "optional@37"
 
 [entrypoint]
 bin = "bin/scratchpad"

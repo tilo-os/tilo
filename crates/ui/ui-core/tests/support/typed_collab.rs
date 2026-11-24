@@ -1,10 +1,11 @@
 //! Test-only collaboration host.
 //!
 //! This is deliberately a transport harness, not a second policy broker: it
-//! speaks the collaboration wire, routes signed changes and presence to the
-//! other subscribers on the same channel, and lets integration tests exercise
-//! the real UI SDK shovel without a shell process or process-global
-//! service-fd variables.
+//! speaks the collaboration wire, keeps each channel's record as the device's
+//! store does (an endpoint reads the changes past what it holds and writes its
+//! own), tells the other subscribers on the channel when the record changed,
+//! routes presence to them, and lets integration tests exercise the real UI
+//! SDK shovel without a shell process or process-global service-fd variables.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -14,23 +15,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use collab_types::PeerPresence;
-use runtime_collab::OpAdmission;
 use runtime_collab::wire::{
-    Call, ContextUpdate, Event, FRAMING, Handle, HostFrame, Operation, Publication, Read, Reply,
-    Service, Topic,
+    Call, ContextUpdate, Event, FRAMING, Handle, HostFrame, Operation, Publication, Reply, Service,
+    Topic,
 };
+use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
-
-#[derive(Clone)]
-struct Op {
-    bytes: Vec<u8>,
-    author: String,
-}
 
 #[derive(Clone)]
 struct Presence {
@@ -45,10 +40,13 @@ struct Subscription<T> {
 
 #[derive(Default)]
 struct Channel {
-    ops: Vec<Subscription<Op>>,
+    /// The channel's record, as the device's store keeps it.
+    record: automerge::Automerge,
+    /// Each connection's runs of a write whose last run has not arrived.
+    incoming: HashMap<u64, Vec<u8>>,
+    /// Each connection told when the record changed, on its context feed.
+    notices: Vec<Subscription<()>>,
     presence: Vec<Subscription<Presence>>,
-    /// Directed snapshot requests, one stream per connection.
-    snapshot_requests: Vec<Subscription<()>>,
 }
 
 #[derive(Default)]
@@ -58,33 +56,49 @@ struct Hub {
 }
 
 impl Hub {
-    /// Mirror the production broker: ask exactly one existing holder of the
-    /// route (the lowest other connection) to publish a snapshot.
-    fn request_snapshot(&self, channel: &str, requester: u64) {
-        let mut channels = self.channels.lock().unwrap();
-        let subscribers = &mut channels
-            .entry(channel.to_owned())
-            .or_default()
-            .snapshot_requests;
-        subscribers.retain(|sub| !sub.tx.is_closed());
-        if let Some(holder) = subscribers
+    /// The page from `from` of the changes of `channel`'s record past `after`, and the heads
+    /// they bring a reader to.
+    fn changes(&self, channel: &str, after: &[String], from: u64) -> Result<Store, String> {
+        let after = after
             .iter()
-            .filter(|sub| sub.peer != requester)
-            .min_by_key(|sub| sub.peer)
-        {
-            let _ = holder.tx.send(());
-        }
-        drop(channels);
+            .map(|head| head.parse().map_err(|error| format!("{error:?}")))
+            .collect::<Result<Vec<automerge::ChangeHash>, _>>()?;
+        let mut channels = self.channels.lock().unwrap();
+        let record = &channels.entry(channel.to_owned()).or_default().record;
+        let changes: Vec<u8> = record
+            .get_changes(&after)
+            .iter()
+            .flat_map(|change| change.raw_bytes().iter().copied())
+            .collect();
+        let from = usize::try_from(from).map_err(|error| error.to_string())?;
+        let end = changes.len().min(from + RECORD_PAGE_BYTES);
+        Ok(Store::RecordChanges {
+            changes: Bytes(changes.get(from..end).ok_or("no such page")?.to_vec()),
+            heads: record.get_heads().iter().map(ToString::to_string).collect(),
+            next: (end < changes.len()).then(|| u64::try_from(end).unwrap()),
+        })
     }
 
-    fn fanout_op(&self, channel: &str, source: u64, value: &Op) {
-        self.channels
-            .lock()
-            .unwrap()
-            .entry(channel.to_owned())
-            .or_default()
-            .ops
-            .retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
+    /// Take `source`'s own run of changes into `channel`'s record once its last run arrives, and
+    /// tell every other connection on it that the record changed.
+    fn write(&self, channel: &str, source: u64, run: Vec<u8>, more: bool) -> Result<Store, String> {
+        let mut channels = self.channels.lock().unwrap();
+        let state = channels.entry(channel.to_owned()).or_default();
+        let incoming = state.incoming.entry(source).or_default();
+        incoming.extend(run);
+        if more {
+            return Ok(Store::Written);
+        }
+        let changes = std::mem::take(incoming);
+        state.incoming.remove(&source);
+        state
+            .record
+            .load_incremental(&changes)
+            .map_err(|error| format!("not a change: {error}"))?;
+        state
+            .notices
+            .retain(|sub| sub.peer == source || sub.tx.send(()).is_ok());
+        Ok(Store::Written)
     }
 
     fn fanout_presence(&self, channel: &str, source: u64, value: &Presence) {
@@ -146,7 +160,7 @@ impl TypedBroker {
     /// Connect a production `CollaborationManager` to the shared test workspace.
     ///
     /// Returns once the manager's route is admitted and this service holds
-    /// its document and presence subscriptions, so traffic sent from then on
+    /// its record and presence subscriptions, so traffic sent from then on
     /// reaches it without any settling time.
     pub fn manager(&self, user_id: &str) -> CollaborationManager {
         let (peer, fd) = self.connect_peer(user_id);
@@ -166,13 +180,13 @@ impl TypedBroker {
         manager
     }
 
-    /// Wait until `peer` holds document and presence subscriptions on the
+    /// Wait until `peer` holds record and presence subscriptions on the
     /// `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
         let channel =
             tilo_ui::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
         tilo_test_env::wait_until(
-            format!("{user_id}'s document and presence subscriptions on {channel}"),
+            format!("{user_id}'s record and presence subscriptions on {channel}"),
             || {
                 self.hub
                     .channels
@@ -180,7 +194,7 @@ impl TypedBroker {
                     .unwrap()
                     .get(&channel)
                     .is_some_and(|workspace| {
-                        workspace.ops.iter().any(|sub| sub.peer == peer)
+                        workspace.notices.iter().any(|sub| sub.peer == peer)
                             && workspace.presence.iter().any(|sub| sub.peer == peer)
                     })
             },
@@ -213,14 +227,6 @@ struct Connection {
     channels: RefCell<HashMap<Handle, String>>,
     subscriptions: RefCell<HashMap<u64, tokio::task::AbortHandle>>,
     next_handle: Cell<u64>,
-}
-
-fn verify_routed_envelope(channel: &str, envelope: &collab_types::SignedOp) -> Result<(), String> {
-    collab_types::verify_op(envelope).map_err(|error| format!("bad signature: {error:?}"))?;
-    let (app_id, cluster_id, document_id) = tilo_ui::collaboration::channel_key::parse(channel);
-    collab_types::validate_document_payload_route(&app_id, &cluster_id, &document_id, envelope)
-        .map(|_| ())
-        .map_err(|error| format!("envelope does not match its route: {error}"))
 }
 
 impl Connection {
@@ -308,25 +314,6 @@ impl Connection {
             }
             Operation::Publish {
                 channel,
-                publication: Publication::Document(envelope),
-            } => {
-                let channel = self.channel(channel)?;
-                // Route only what a production broker would accept: every
-                // frame is an individually signed envelope bound to this
-                // exact route.
-                verify_routed_envelope(&channel, &envelope)?;
-                self.hub.fanout_op(
-                    &channel,
-                    self.peer,
-                    &Op {
-                        bytes: postcard::to_stdvec(&*envelope).unwrap(),
-                        author: self.user_id.clone(),
-                    },
-                );
-                Ok(Reply::Done)
-            }
-            Operation::Publish {
-                channel,
                 publication: Publication::Presence(presence),
             } => {
                 let channel = self.channel(channel)?;
@@ -340,17 +327,30 @@ impl Connection {
                 );
                 Ok(Reply::Done)
             }
-            Operation::Read {
+            Operation::Command {
                 channel,
-                read: Read::Document,
+                service: Service::Resources,
+                body,
+                ..
             } => {
                 let channel = self.channel(channel)?;
-                self.hub.request_snapshot(&channel, self.peer);
-                Ok(Reply::Done)
+                let reply = match serde_json::from_slice(&body).map_err(|e| e.to_string())? {
+                    Command::RecordChanges { after, from } => {
+                        self.hub.changes(&channel, &after, from)?
+                    }
+                    Command::RecordChange { changes, more, .. } => {
+                        self.hub.write(&channel, self.peer, changes.0, more)?
+                    }
+                    other => {
+                        return Err(format!("the typed test host's store answers no {other:?}"));
+                    }
+                };
+                serde_json::to_vec(&reply)
+                    .map(Reply::Answer)
+                    .map_err(|error| error.to_string())
             }
             // This harness stores no committed history: answer every open
-            // with the explicit legacy mode so the route uses the
-            // incremental op stream.
+            // with the explicit legacy mode so the route follows its record.
             Operation::Command {
                 service: Service::CommittedDocument,
                 ..
@@ -380,21 +380,6 @@ impl Connection {
         let mut channels = self.hub.channels.lock().unwrap();
         let state = channels.entry(channel.to_owned()).or_default();
         let task = match topic {
-            Topic::Ops => {
-                let (tx, mut rx) = mpsc::unbounded_channel();
-                state.ops.push(Subscription {
-                    peer: self.peer,
-                    tx,
-                });
-                tokio::task::spawn_local(async move {
-                    while let Some(op) = rx.recv().await {
-                        deliver(Event::Op {
-                            op: op.bytes,
-                            admission: OpAdmission::CleartextAdmitted,
-                        });
-                    }
-                })
-            }
             Topic::Presence => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 state.presence.push(Subscription {
@@ -410,17 +395,17 @@ impl Connection {
                     }
                 })
             }
-            // Only directed snapshot requests: this harness has no roster or
+            // Only the record's change notices: this harness has no roster or
             // permission snapshots to publish.
             Topic::Context => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
-                state.snapshot_requests.push(Subscription {
+                state.notices.push(Subscription {
                     peer: self.peer,
                     tx,
                 });
                 tokio::task::spawn_local(async move {
                     while rx.recv().await.is_some() {
-                        deliver(Event::Context(ContextUpdate::SnapshotRequested));
+                        deliver(Event::Context(ContextUpdate::RecordChanged));
                     }
                 })
             }

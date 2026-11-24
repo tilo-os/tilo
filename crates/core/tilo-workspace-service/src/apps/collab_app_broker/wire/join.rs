@@ -229,10 +229,6 @@ impl AppConnection {
         phases.mark("retain-worker");
         state.ensure_channel(&ensured);
         phases.mark("ensure-channel");
-        state
-            .publisher()
-            .local_route(&crate::apps::route::CrdtRoute::from_channel_key(&ensured));
-        phases.mark("publish-route");
         phases.report(&ensured);
         Ok(handle)
     }

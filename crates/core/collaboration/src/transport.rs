@@ -16,9 +16,9 @@
 //!
 //! # Contract
 //!
-//! - **Authority stays in the transport.** It authenticates joins, signs
-//!   outbound document mutations and verifies inbound envelopes before they
-//!   become [`CollabEvent`]s. The manager never holds a transport key.
+//! - **Authority stays out of the app.** The transport authenticates joins;
+//!   the device's store decides, seals and signs the record changes it takes.
+//!   The manager never holds a key for them.
 //! - **Durable traffic fails closed.** A command or event the transport
 //!   cannot retain must turn [`CollabTransport::status`] into
 //!   [`TransportStatus::Closed`], never be dropped silently. Only transient
@@ -114,8 +114,7 @@ pub enum TransportCommand {
     /// ordered behind every command submitted before it.
     ConfirmPrimaryRoute,
     /// Install an already-provisioned MLS endpoint for `route`. From then on
-    /// the route is fail-closed: outbound document mutations are encrypted
-    /// and inbound encrypted envelopes are decrypted at this endpoint.
+    /// the content its record references is sealed under the group's keys.
     /// Exactly one result must be sent on `reply`.
     InstallDocumentEncryption {
         route: RouteSpec,

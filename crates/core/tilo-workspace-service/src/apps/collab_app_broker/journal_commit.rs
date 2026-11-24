@@ -270,32 +270,6 @@ impl AppBrokerState {
             BrokerError::failed(reason)
         })
     }
-    /// Commit a document write of this device through the owner: the signed
-    /// write as the record took it. A write the owner refuses is its writer's alone: it
-    /// is answered the refusal and takes the write back out, and nothing else
-    /// waits on it. An answer that does not prove the write leaves the owner
-    /// unknown, as a dropped wait does.
-    pub(super) async fn commit_document(
-        &self,
-        workspace: String,
-        app: String,
-        document: String,
-        readers: Option<String>,
-        envelope: SignedOp,
-        resource_type: Option<String>,
-    ) -> Result<SignedOp, BrokerError> {
-        self.owner_health().map_err(BrokerError::failed)?;
-        let waiting = OwnerWait::on(&self.owner_commit_failure);
-        let answered = self
-            .publisher
-            .commit_document(workspace, app, document, readers, envelope, resource_type)
-            .await;
-        waiting.answered();
-        answered.map_err(|reason| {
-            self.retain_owner_failure(&reason);
-            BrokerError::failed(reason)
-        })
-    }
     pub(super) fn retain_owner_failure(&self, reason: &str) {
         if let Ok(mut failure) = self.owner_commit_failure.lock() {
             failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));

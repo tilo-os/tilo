@@ -5,7 +5,7 @@
 
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
-use super::{CollabEvent, CollabRequest, Member, PresencePayload, SdkCommand, SignedOp};
+use super::{CollabEvent, CollabRequest, Member, PresencePayload, SdkCommand};
 
 #[derive(Default)]
 pub(crate) struct ByteMeter(Option<usize>);
@@ -108,17 +108,14 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.bytes(data)
             }
         },
-        CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
         }
-        CollabRequest::FetchScrollback { .. }
-        | CollabRequest::OpenWorkspaceControl { .. }
+        CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
         | CollabRequest::CloseResources { .. }
-        | CollabRequest::ClearContinuation
-        | CollabRequest::RequestDocumentSnapshot => {}
+        | CollabRequest::ClearContinuation => {}
         CollabRequest::LaunchInstalledApplication {
             app_id,
             package_root,
@@ -389,23 +386,6 @@ pub(super) async fn remote_action_round_trip(
     })
 }
 
-fn scrollback_batch_bytes(
-    ops: &[Box<SignedOp>],
-    op_capacity: usize,
-    decrypted_payloads: &[Option<Vec<u8>>],
-    payload_capacity: usize,
-    meter: &mut ByteMeter,
-) {
-    meter.add_product(op_capacity, std::mem::size_of::<Box<SignedOp>>());
-    for op in ops {
-        meter.bytes(&op.payload);
-    }
-    meter.add_product(payload_capacity, std::mem::size_of::<Option<Vec<u8>>>());
-    for payload in decrypted_payloads.iter().flatten() {
-        meter.bytes(payload);
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
@@ -480,13 +460,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "ResourceUnavailable"
         }
-        CollabEvent::DocumentSnapshotRequested { route } => {
-            meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.document {
-                meter.string_capacity(record);
-            }
-            "DocumentSnapshotRequested"
-        }
         CollabEvent::KeyAccess { route, .. } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.document {
@@ -508,29 +481,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
         }
-        CollabEvent::Document {
-            envelope,
-            decrypted_payload,
-        } => {
-            meter.bytes(&envelope.payload);
-            if let Some(payload) = decrypted_payload {
-                meter.bytes(payload);
+        CollabEvent::Document { route, mutation } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.document {
+                meter.string_capacity(record);
             }
+            meter.add(mutation.data().len());
             "Document"
-        }
-        CollabEvent::ScrollbackBatch {
-            ops,
-            decrypted_payloads,
-            ..
-        } => {
-            scrollback_batch_bytes(
-                ops,
-                ops.capacity(),
-                decrypted_payloads,
-                decrypted_payloads.capacity(),
-                &mut meter,
-            );
-            "ScrollbackBatch"
         }
         CollabEvent::Invocation {
             resource,

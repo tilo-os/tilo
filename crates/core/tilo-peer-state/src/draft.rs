@@ -40,6 +40,9 @@ pub struct LocalWrite<'a> {
     pub snapshot: bool,
     /// The keys that seal it, where the workspace seals its documents.
     pub sealed: Option<&'a key_group::ContentKeys>,
+    /// The action it is one part of, when that action wrote more than one record: carried inside
+    /// the signed write, so every device takes the action's parts together.
+    pub commit: Option<&'a collab_types::WorkspaceCommit>,
     /// When the device makes it.
     pub now: SystemTime,
 }
@@ -56,6 +59,7 @@ impl LocalWrite<'_> {
             founding: self.founding,
             snapshot: self.snapshot,
             sealed: self.sealed.cloned(),
+            commit: self.commit.cloned(),
             now: self.now,
         }
     }
@@ -72,6 +76,7 @@ struct OwnedWrite {
     founding: bool,
     snapshot: bool,
     sealed: Option<key_group::ContentKeys>,
+    commit: Option<collab_types::WorkspaceCommit>,
     now: SystemTime,
 }
 
@@ -85,13 +90,16 @@ impl OwnedWrite {
             founding: self.founding,
             snapshot: self.snapshot,
             sealed: self.sealed.as_ref(),
+            commit: self.commit.as_ref(),
             now: self.now,
         }
     }
 }
 
-/// The `write` as `device` makes it to `workspace`: the signed-shaped op to sign and admit, and
-/// the author's access in the workspace. Nothing is signed or admitted here.
+/// The `write` as `device` makes it to `workspace`: the signed-shaped ops to sign and admit, in
+/// order, and the author's access in the workspace. A write too large for one frame is cut into
+/// segments, each an op of its own, which its readers put back together; every one carries the
+/// write's commit. Nothing is signed or admitted here.
 ///
 /// # Errors
 ///
@@ -101,7 +109,7 @@ pub fn draft_local_write(
     workspace: &str,
     device: &[u8; 32],
     write: LocalWrite<'_>,
-) -> Result<(collab_types::SignedOp, MemberAccess), WriteRefusal> {
+) -> Result<(Vec<collab_types::SignedOp>, MemberAccess), WriteRefusal> {
     let LocalWrite {
         app,
         document,
@@ -110,6 +118,7 @@ pub fn draft_local_write(
         founding,
         snapshot,
         sealed,
+        commit,
         now,
     } = write;
     if founding && peer.holds_document(app, document) {
@@ -129,12 +138,17 @@ pub fn draft_local_write(
     }
     let author = peer.permissions(*device, now)?;
     let artifact = document_artifact_id(app, workspace, document);
-    let frame = if snapshot {
+    let mutation = if snapshot {
         DocumentMutation::Snapshot(changes.to_vec())
     } else {
         DocumentMutation::Incremental(changes.to_vec())
+    };
+    // One frame where the write fits one, as every write that fits has always gone.
+    let frames = if changes.len() <= collab_types::MAX_DOCUMENT_MUTATION_BYTES {
+        mutation.encode().map(|frame| vec![frame])
+    } else {
+        mutation.encode_frames()
     }
-    .encode()
     .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
     let mut seal = sealed.map(|keys| {
         move |plaintext: &[u8]| {
@@ -142,21 +156,32 @@ pub fn draft_local_write(
                 .map_err(|error| error.to_string())
         }
     });
-    let envelope = peer
-        .draft_checked_write(
-            (app, document),
-            readers,
-            &frame,
-            seal.as_mut().map(|seal| seal as &mut SealCheckpoint<'_>),
-            *device,
-            0,
-            now,
-        )
-        .map_err(|refusal| match refusal {
-            crate::state::DraftRefusal::Change(change) => WriteRefusal::ChangeRefused(change),
-            crate::state::DraftRefusal::Refused(reason) => WriteRefusal::Refused(reason),
-        })?;
-    Ok((envelope, author))
+    let envelopes = frames
+        .into_iter()
+        .zip(0u64..)
+        .map(|(frame, drafted)| {
+            let frame = match commit {
+                Some(commit) => commit
+                    .frame(&frame)
+                    .map_err(|error| WriteRefusal::Refused(error.to_string()))?,
+                None => frame,
+            };
+            peer.draft_checked_write(
+                (app, document),
+                readers,
+                &frame,
+                seal.as_mut().map(|seal| seal as &mut SealCheckpoint<'_>),
+                *device,
+                drafted,
+                now,
+            )
+            .map_err(|refusal| match refusal {
+                crate::state::DraftRefusal::Change(change) => WriteRefusal::ChangeRefused(change),
+                crate::state::DraftRefusal::Refused(reason) => WriteRefusal::Refused(reason),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((envelopes, author))
 }
 
 /// Draft `write` against `replica` as it stands, sign it as `device` by `signer`, and admit it
@@ -229,37 +254,45 @@ async fn signed_local_write(
     write: &OwnedWrite,
 ) -> Result<AppWrite, WriteRefusal> {
     let drafted = replica.read(StatePeer::clone);
-    let (mut envelope, author) =
+    let (envelopes, author) =
         draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
-    let bytes = envelope
-        .signing_bytes()
-        .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
     // The write is drafted against the replica as it stands and signed outside its lock: a page's
     // signer answers through a promise, and no link admits in between the draft and the admission.
     drop(drafted);
-    let signature = signer
-        .sign(bytes)
-        .await
-        .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-    envelope.signature = collab_types::Signature(signature);
-    replica
-        .write(|peer| {
-            peer.admit_new_local_document_read_by(
-                (&write.app, &write.document),
-                write.readers.as_deref(),
-                envelope.clone(),
-                write.now,
-            )
-        })
-        .map_err(|refused| match refused {
-            NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
-            NotAdmitted::HistoryFull => WriteRefusal::HistoryFull {
-                app: write.app.clone(),
-                record: write.document.clone(),
-            },
-            NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
-            NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
-        })?;
+    let mut last = None;
+    for mut envelope in envelopes {
+        let bytes = envelope
+            .signing_bytes()
+            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+        let signature = signer
+            .sign(bytes)
+            .await
+            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+        envelope.signature = collab_types::Signature(signature);
+        replica
+            .write(|peer| {
+                peer.admit_new_local_document_read_by(
+                    (&write.app, &write.document),
+                    write.readers.as_deref(),
+                    envelope.clone(),
+                    write.now,
+                )
+            })
+            .map_err(|refused| match refused {
+                NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
+                NotAdmitted::HistoryFull => WriteRefusal::HistoryFull {
+                    app: write.app.clone(),
+                    record: write.document.clone(),
+                },
+                NotAdmitted::Refused { reason, detail } => {
+                    WriteRefusal::Declined { reason, detail }
+                }
+                NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
+            })?;
+        last = Some(envelope);
+    }
+    let envelope =
+        last.ok_or_else(|| WriteRefusal::Refused("a write that carries no frame".into()))?;
     Ok(AppWrite {
         peer: neighbour_wire::peer_handle(&device),
         app_id: write.app.clone(),

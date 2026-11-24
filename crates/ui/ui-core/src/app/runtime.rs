@@ -698,11 +698,6 @@ pub(super) struct CollaborationRuntime {
     /// checked-out record route.
     pub(super) workspace_manager: Option<CollaborationManager>,
     pub(super) local_author: crate::permissions::MemberId,
-    /// A record checkout asks its new route for the current document once
-    /// that route is acknowledged.
-    pub(super) snapshot_on_ready: bool,
-    /// On-demand paging of document op history.
-    pub(super) history: crate::collaboration::DocumentHistory,
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
     pub(super) key_access: Option<crate::collaboration::KeyAccessState>,
@@ -726,8 +721,6 @@ impl CollaborationRuntime {
             manager,
             workspace_manager: None,
             local_author,
-            snapshot_on_ready: false,
-            history: crate::collaboration::DocumentHistory::default(),
             key_access: None,
             shown_sync_status: None,
             held_requests: std::collections::VecDeque::new(),

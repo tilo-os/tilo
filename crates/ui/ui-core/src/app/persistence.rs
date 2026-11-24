@@ -147,8 +147,6 @@ impl App {
         if let Some(scope) = self.presence.broadcast_scope.clone() {
             self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
         }
-        self.collaboration.snapshot_on_ready = true;
-        self.request_checkout_snapshot();
         true
     }
 
@@ -263,15 +261,12 @@ impl App {
                 );
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
-                // Presence announces the location; document catch-up is an
-                // independently directed broker request on the new route.
-                // Both go out once the new route is acknowledged; the manager
-                // connects in the background.
+                // Presence announces the location once the new route is
+                // acknowledged, and the route reads its record as it opens;
+                // the manager connects in the background.
                 if let Some(scope) = self.presence.broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
-                self.collaboration.snapshot_on_ready = true;
-                self.request_checkout_snapshot();
                 true
             }
             None => false,

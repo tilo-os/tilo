@@ -20,7 +20,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
+use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -436,28 +436,6 @@ pub mod writes {
                 return Err("the record's mailbox closed; outcome unknown".into());
             }
             Ok(())
-        }
-
-        fn document(
-            &self,
-            _workspace: String,
-            app: String,
-            document: String,
-            _readers: Option<String>,
-            envelope: SignedOp,
-            _resource_type: Option<String>,
-        ) -> DocumentFuture {
-            let this = self.clone();
-            Box::pin(async move {
-                let answered = envelope.clone();
-                this.apply(Change::Document {
-                    app,
-                    document,
-                    envelope,
-                })
-                .await?;
-                Ok(answered)
-            })
         }
 
         fn effect(&self, _workspace: String, redacted: Vec<u8>) -> EffectFuture {

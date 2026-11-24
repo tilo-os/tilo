@@ -23,6 +23,9 @@ pub const RESOURCE_READS_UNAVAILABLE: &str = "this provider reads no records out
 /// What a caller is told about a record it may not read.
 pub const RESOURCE_READ_REFUSED: &str = "not allowed to read this record";
 
+/// What a caller is told about a record it may not change.
+pub const RESOURCE_WRITE_REFUSED: &str = "not allowed to change this record";
+
 /// What a caller that is neither a person nor an agent acting for its person is told.
 pub const RESOURCE_READS_FOR_AGENTS: &str = "only a person, an app acting for its person, or an agent \
      acting for the person who admitted it, reads records outside their app; a session a person's \
@@ -94,7 +97,8 @@ impl ResourceCopy {
     }
 }
 
-/// Whether a caller may read a record: allowed, or why not ([`ResourceReads::may_read`]).
+/// Whether a caller may read or change a record: allowed, or why not
+/// ([`ResourceReads::may_read`], [`ResourceReads::may_write`]).
 pub type Decided = Result<(), ActionCallError>;
 
 /// A provider's API for reading records outside their app.
@@ -126,6 +130,15 @@ pub trait ResourceReads: Send + Sync {
     /// what a reader that keeps the record another way (an app's live route to it) asks first.
     /// [`ActionCallError::ConfirmationRequired`] where the person is to be asked first.
     fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> super::Pending<Decided> {
+        super::Pending::ready(self.read(caller, address).map(|_| ()))
+    }
+
+    /// Whether `caller` may change `address` now, decided there as a write is: what a reader that
+    /// keeps the record another way (an app's live route to it) asks before it changes it. An app
+    /// changes its own records; another app's record it changes only where the caller's grants
+    /// there allow a change, so a grant that reads alone answers [`ActionCallError::Refused`].
+    /// [`ActionCallError::ConfirmationRequired`] where the person is to be asked first.
+    fn may_write(&self, caller: &Caller, address: &ResourceAddress) -> super::Pending<Decided> {
         super::Pending::ready(self.read(caller, address).map(|_| ()))
     }
 
@@ -465,7 +478,8 @@ fn serve_readings(
 ) -> super::Pending<Result<String, ActionCallError>> {
     let (answer, answered) = super::pending();
     let caller = caller.clone();
-    if read.answer == super::ReadAnswer::Decision {
+    let write = read.answer == super::ReadAnswer::WriteDecision;
+    if write || read.answer == super::ReadAnswer::Decision {
         let address = ResourceAddress {
             workspace: read.workspace,
             app: read.app,
@@ -475,7 +489,12 @@ fn serve_readings(
         let _ = std::thread::Builder::new()
             .name("resource-decision".into())
             .spawn(move || {
-                reads.may_read(&caller, &address).then(move |decided| {
+                let decided = if write {
+                    reads.may_write(&caller, &address)
+                } else {
+                    reads.may_read(&caller, &address)
+                };
+                decided.then(move |decided| {
                     answer.complete(
                         decided
                             .unwrap_or(Err(ActionCallError::Unanswered))

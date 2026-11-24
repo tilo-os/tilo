@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
+use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 
 struct NativeEffects {
     owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
@@ -24,18 +24,6 @@ impl WorkspaceCommits for NativeEffects {
             tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                 .unwrap();
         self.owner.with_current(workspace, |_| Ok(()))
-    }
-
-    fn document(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        _: Option<String>,
-        _: collab_types::SignedOp,
-        _: Option<String>,
-    ) -> DocumentFuture {
-        Box::pin(async { Err("this fixture records receipts alone".into()) })
     }
 
     fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
@@ -115,14 +103,11 @@ fn fixture() -> Fixture {
     let membership = tree.shared();
     let held = Arc::new(tokio::sync::Semaphore::new(1));
     let submitted = Arc::new(tokio::sync::Notify::new());
-    let publisher = PeerPublisher::with_optional_commits(
-        None,
-        Arc::new(NativeEffects {
-            owner: owner.clone(),
-            held: held.clone(),
-            submitted: submitted.clone(),
-        }),
-    );
+    let publisher = PeerPublisher::with_commits(Arc::new(NativeEffects {
+        owner: owner.clone(),
+        held: held.clone(),
+        submitted: submitted.clone(),
+    }));
     let config = crate::apps::NativePeerBrokerConfig {
         journal_root: directory.path().join("journal"),
         certificate_authority: Arc::new(NativeAuthority(owner.clone())),

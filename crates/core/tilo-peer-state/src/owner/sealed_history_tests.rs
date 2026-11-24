@@ -102,6 +102,7 @@ async fn write(
                 founding: false,
                 snapshot: false,
                 sealed: Some(keys),
+                commit: None,
                 now,
             },
         )
@@ -439,7 +440,7 @@ async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_o
             .unwrap()
             .get(ROOT, "topic")
             .unwrap()
-            .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            .and_then(|(value, _)| value.as_str().map(str::to_owned)),
         Some("forged".to_owned()),
         "nothing of the refused change reads"
     );

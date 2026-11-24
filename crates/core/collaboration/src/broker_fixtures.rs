@@ -326,7 +326,7 @@ impl CollaborationManager {
         let probe = JoiningProbe {
             answer: std::sync::Mutex::new(Some(answer)),
             workspace: workspace_status,
-            sent: Box::new(move || captures.lock().unwrap().signed_ops.len()),
+            sent: Box::new(move || captures.lock().unwrap().record_writes.len()),
         };
         (manager, probe)
     }

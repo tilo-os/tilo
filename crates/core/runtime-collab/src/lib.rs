@@ -621,16 +621,6 @@ impl NearbyTransferReply {
     }
 }
 
-/// A signed op as delivered by [`OpStream::read`].
-#[derive(Debug, Clone)]
-pub struct OpEvent {
-    pub op: Vec<u8>,
-    /// The broker's verdict for the op on its channel.
-    pub admission: OpAdmission,
-}
-
-pub use collab_types::inbound::OpAdmission;
-
 /// One invocation off an [`InvocationStream`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
@@ -767,9 +757,9 @@ pub struct ChannelContext {
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.
     pub follow_changed: Option<Option<tilo_actions::MemberId>>,
-    /// True only on a directed broker request to publish current document
-    /// state. It is not a roster update and must not replace local context.
-    pub snapshot_requested: bool,
+    /// True only when the record this channel opened changed past what the endpoint was sent:
+    /// it asks the changes from its own heads. Not a roster update either.
+    pub record_changed: bool,
     /// `Some` only on a session-local handoff request addressed to this
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
@@ -782,17 +772,6 @@ pub struct ChannelContext {
     /// workspace's store (`recordsMoved`); empty otherwise. What a window that
     /// reads the store read of them is read again. Not a roster update either.
     pub records_moved: Vec<String>,
-}
-
-/// A page of previously-validated signed ops returned by
-/// [`ChannelHandle::fetch_scrollback_for`].
-#[derive(Debug, Clone)]
-pub struct ScrollbackBatch {
-    /// Postcard-encoded `SignedOp` blobs in ascending `seq` order.
-    pub ops: Vec<Vec<u8>>,
-    /// True iff the broker has no further in-memory history in the
-    /// requested range.
-    pub done: bool,
 }
 
 #[cfg(test)]

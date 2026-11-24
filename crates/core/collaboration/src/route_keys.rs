@@ -1,43 +1,24 @@
-//! What one route's endpoint can seal and open.
+//! The keys one route's endpoint holds for the content its record references.
 //!
-//! Every collaboration route of a certified app is an encrypted channel.
-//! The endpoint asks the workspace identity service for the route's content
-//! keys when it joins and keeps asking until they arrive; until then the
-//! route is *waiting*: nothing the app writes leaves the endpoint in the
-//! clear, and ciphertext that arrives is held rather than shown as garbage
-//! or dropped. When the keys arrive the held edits are sealed and sent and
-//! the held ciphertext is opened, in order.
+//! The record's changes go to the device's store, which seals and signs them.
+//! What the record references (a picture's bytes) is stored by the app, sealed
+//! under a key derived from the content secret of the members who read the
+//! record, and private fields are sealed under the record's document keys. A
+//! route of a certified app asks the workspace identity service for those keys
+//! when it joins and keeps asking until they arrive; until then the route is
+//! *waiting*, and what it stores is sealed under a key of its own.
 //!
 //! Once a route holds keys it asks again only when told its channel changed
-//! (`groupKeysChanged`), when ciphertext arrives that its keys can't open,
-//! or when the broker refuses an edit sealed under them; see
-//! `broker::key_schedule::KeySchedule`.
+//! (`groupKeysChanged`); see `broker::key_schedule::KeySchedule`.
 //!
 //! Only an endpoint with no identity service at all (an explicit test
-//! harness) stays plaintext, and only until a group is installed on it.
-
-use std::collections::VecDeque;
-
-use collab_types::inbound::{InboundHold, OpKey};
-use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
-use runtime_collab::OpAdmission;
-use zeroize::Zeroizing;
+//! harness) holds none, and only until a group is installed on it.
 
 use super::KeyAccessState;
 
-/// Most edits held while waiting for access, and most bytes.
-const MAX_HELD_OUTBOUND: usize = 4096;
-const MAX_HELD_OUTBOUND_BYTES: usize = 64 * 1024 * 1024;
-/// Most ops held while waiting for keys or a verdict; past it the oldest is
-/// owed by history.
-const MAX_HELD_INBOUND: usize = 4096;
-
 pub(super) enum Keys {
-    /// No identity service: plaintext.
+    /// No identity service: no keys.
     Plain,
-    /// The workspace seals every write and this endpoint has no channel keys to
-    /// ask for: every write is refused, none is sent unencrypted.
-    Unsealable,
     /// Channel keys requested and not held.
     Pending(KeyAccessState),
     /// A group installed explicitly on this endpoint.
@@ -49,69 +30,10 @@ pub(super) enum Keys {
     },
 }
 
-/// Outcome of sealing one frame.
-pub(super) enum Sealed {
-    /// Send this payload with this metadata.
-    Ready(Vec<u8>, Option<EncryptionMetadata>),
-    /// Hold the frame until keys arrive.
-    Hold,
-    /// The frame cannot be sent.
-    Refused(String),
-}
-
-/// Why an inbound envelope did not open.
-#[derive(Debug)]
-pub(super) enum Unopened {
-    /// No key for it yet: hold and retry when keys change.
-    Later,
-    /// It never will.
-    Never(Never),
-}
-
-/// Why an inbound envelope never opens on this route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Never {
-    /// Its ciphertext is malformed, or the route's keys reject it.
-    Undecryptable,
-    /// Cleartext the broker says must be sealed: a broker that fanned out
-    /// what its own check refuses.
-    Downgrade,
-    /// Sealed, on a route that is cleartext.
-    SealedOnPlain,
-}
-
-impl std::fmt::Display for Never {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Undecryptable => "ciphertext the route's keys reject",
-            Self::Downgrade => "cleartext the broker says must be sealed",
-            Self::SealedOnPlain => "sealed on a cleartext route",
-        })
-    }
-}
-
-/// A frame waiting for keys, with the claims its op will carry.
-pub(super) type HeldFrame = (Vec<u8>, Vec<collab_types::ChangeClaim>);
-
-/// An inbound op as the broker delivered it, with its verdict.
-#[derive(Debug, Clone)]
-pub(super) struct Arrived {
-    pub(super) envelope: SignedOp,
-    pub(super) admission: OpAdmission,
-}
-
-/// A route's keys plus what waits on them.
+/// A route's keys, and what the app was last told of them.
 pub(super) struct RouteKeys {
     pub(super) keys: Keys,
-    held_outbound: VecDeque<HeldFrame>,
-    held_outbound_bytes: usize,
-    held_inbound: InboundHold<Arrived>,
-    /// The state and key generation held ops were last decided under.
-    decided_under: Option<(KeyAccessState, u64)>,
     reported: Option<KeyAccessState>,
-    /// The generation of the keys that last failed to open held ciphertext
-    /// and asked for newer ones: asked once per generation.
-    asked_for_held: Option<u64>,
     /// The channel service answered the last question about these keys, so
     /// it tells the route when that answer may change. False until the
     /// first answer, and after a question the identity service refused or
@@ -130,21 +52,10 @@ impl RouteKeys {
         Self::with(Keys::Plain)
     }
 
-    /// Keys of a route in a workspace that seals every write, on an endpoint
-    /// with no identity service to ask for the channel's keys.
-    pub(super) fn unsealable() -> Self {
-        Self::with(Keys::Unsealable)
-    }
-
     fn with(keys: Keys) -> Self {
         Self {
             keys,
-            held_outbound: VecDeque::new(),
-            held_outbound_bytes: 0,
-            held_inbound: InboundHold::new(MAX_HELD_INBOUND),
-            decided_under: None,
             reported: None,
-            asked_for_held: None,
             answered: false,
         }
     }
@@ -177,20 +88,6 @@ impl RouteKeys {
         self.answered = answered;
     }
 
-    /// Whether held ciphertext should make the endpoint ask for newer keys
-    /// now: the route holds keys, they failed to open what arrived (sealed
-    /// under an epoch they lack), and this generation has not asked yet.
-    pub(super) fn wants_keys_for_held(&mut self) -> bool {
-        let Keys::Content { generation, .. } = self.keys else {
-            return false;
-        };
-        if self.held_inbound.is_empty() || self.asked_for_held == Some(generation) {
-            return false;
-        }
-        self.asked_for_held = Some(generation);
-        true
-    }
-
     /// The service generation of the keys held, 0 when none.
     pub(super) fn generation(&self) -> u64 {
         match &self.keys {
@@ -202,7 +99,6 @@ impl RouteKeys {
     pub(super) fn state(&self) -> KeyAccessState {
         match &self.keys {
             Keys::Plain => KeyAccessState::Unencrypted,
-            Keys::Unsealable => KeyAccessState::Unavailable,
             Keys::Pending(state) => *state,
             Keys::Group(_) | Keys::Content { .. } => KeyAccessState::Encrypted,
         }
@@ -215,7 +111,7 @@ impl RouteKeys {
         match &self.keys {
             Keys::Content { keys, .. } => keys.document_content_secret().ok(),
             Keys::Group(group) => group.content_keys().ok()?.document_content_secret().ok(),
-            Keys::Plain | Keys::Unsealable | Keys::Pending(_) => None,
+            Keys::Plain | Keys::Pending(_) => None,
         }
     }
 
@@ -224,7 +120,7 @@ impl RouteKeys {
         match &self.keys {
             Keys::Content { keys, .. } => Some(keys.clone()),
             Keys::Group(group) => group.content_keys().ok(),
-            Keys::Plain | Keys::Unsealable | Keys::Pending(_) => None,
+            Keys::Plain | Keys::Pending(_) => None,
         }
     }
 
@@ -266,503 +162,5 @@ impl RouteKeys {
             Wire::Unavailable => self.keys = Keys::Pending(KeyAccessState::Unavailable),
             Wire::NoSecretStore => self.keys = Keys::Pending(KeyAccessState::NoSecretStore),
         }
-    }
-
-    /// Seal one cleartext document frame, or say to hold it.
-    pub(super) fn seal(
-        &self,
-        artifact: ArtifactId,
-        retention: ContentRetention,
-        cleartext: Vec<u8>,
-    ) -> Sealed {
-        let sealed = match &self.keys {
-            Keys::Plain => return Sealed::Ready(cleartext, None),
-            Keys::Unsealable => {
-                return Sealed::Refused(
-                    "this workspace seals every write and this connection holds no channel keys"
-                        .into(),
-                );
-            }
-            Keys::Pending(KeyAccessState::Removed) => {
-                return Sealed::Refused("this device was removed from the channel".into());
-            }
-            Keys::Pending(_) => return Sealed::Hold,
-            Keys::Group(group) => group.seal_content(artifact, retention, &cleartext),
-            Keys::Content { keys, .. } => keys.seal_content(artifact, retention, &cleartext),
-        };
-        match sealed {
-            Ok((metadata, ciphertext)) => Sealed::Ready(ciphertext, Some(metadata)),
-            // The epoch's key has not reached this device (yet), or a commit
-            // is being processed: waiting fixes it, so the edit is held and
-            // sent once keys arrive rather than failing the whole channel.
-            Err(key_group::Error::MissingContentKey(_)) => Sealed::Hold,
-            Err(error) => Sealed::Refused(format!("content encryption failed: {error}")),
-        }
-    }
-
-    /// Open an envelope's payload under the broker's `admission` for it.
-    /// Whether cleartext belongs on the channel is the broker's call alone:
-    /// cleartext it admitted applies whatever this route's keys, cleartext
-    /// it says must be sealed is refused, and cleartext with no verdict
-    /// waits for one.
-    pub(super) fn open(
-        &mut self,
-        envelope: &SignedOp,
-        admission: OpAdmission,
-    ) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
-        let Some(metadata) = envelope.encryption else {
-            return match admission.admits_cleartext() {
-                Some(true) => Ok(None),
-                Some(false) => Err(Unopened::Never(Never::Downgrade)),
-                None => Err(Unopened::Later),
-            };
-        };
-        let ciphertext = collab_types::sealed_ciphertext(envelope)
-            .map_err(|_| Unopened::Never(Never::Undecryptable))?;
-        match &mut self.keys {
-            Keys::Plain | Keys::Unsealable => Err(Unopened::Never(Never::SealedOnPlain)),
-            Keys::Pending(_) => Err(Unopened::Later),
-            Keys::Group(group) => opened(
-                group.open_content(envelope.artifact, &metadata, &ciphertext),
-                false,
-            ),
-            Keys::Content { keys, .. } => {
-                if !keys.holds_key_for(&metadata) {
-                    return Err(Unopened::Later);
-                }
-                opened(
-                    keys.open_content(envelope.artifact, &metadata, &ciphertext),
-                    true,
-                )
-            }
-        }
-    }
-
-    /// Keep a frame until keys arrive. `false` when the hold is full.
-    pub(super) fn hold_outbound(
-        &mut self,
-        frame: Vec<u8>,
-        claims: Vec<collab_types::ChangeClaim>,
-    ) -> bool {
-        let bytes = self.held_outbound_bytes.saturating_add(frame.len());
-        if self.held_outbound.len() >= MAX_HELD_OUTBOUND || bytes > MAX_HELD_OUTBOUND_BYTES {
-            return false;
-        }
-        self.held_outbound_bytes = bytes;
-        self.held_outbound.push_back((frame, claims));
-        true
-    }
-
-    /// Take every held frame, oldest first, once keys are held.
-    pub(super) fn take_held_outbound(&mut self) -> Vec<HeldFrame> {
-        if !self.state().is_open() {
-            return Vec::new();
-        }
-        self.held_outbound_bytes = 0;
-        self.held_outbound.drain(..).collect()
-    }
-
-    /// Keep an envelope that could not be opened yet, until the route's
-    /// state changes or history supplies it. When the hold is full its
-    /// oldest is owed by history instead ([`Self::owed_pages`]).
-    pub(super) fn hold_inbound(&mut self, arrived: Arrived) {
-        if let Some(owed) = self
-            .held_inbound
-            .hold(OpKey::of(&arrived.envelope), arrived)
-        {
-            tracing::info!(op = %owed, "collab: inbound hold full; history owes its oldest op");
-        }
-    }
-
-    /// Every held envelope, oldest first, once per change of the route's
-    /// state or keys, to decide again; what still cannot open is held again.
-    pub(super) fn take_held_inbound(&mut self) -> Vec<Arrived> {
-        let now = (self.state(), self.generation());
-        if self.decided_under == Some(now) {
-            return Vec::new();
-        }
-        self.decided_under = Some(now);
-        self.held_inbound
-            .take()
-            .into_iter()
-            .map(|(_, arrived)| arrived)
-            .collect()
-    }
-
-    /// History supplied this op: it no longer waits here.
-    pub(super) fn settle(&mut self, envelope: &SignedOp) {
-        self.held_inbound.settle(&OpKey::of(envelope));
-    }
-
-    /// Whether history owes this route the op.
-    pub(super) fn owes(&self, envelope: &SignedOp) -> bool {
-        self.held_inbound.is_owed(&OpKey::of(envelope))
-    }
-
-    /// Where to page history for what the full hold let go of, once the
-    /// route can open it.
-    pub(super) fn owed_pages(&self) -> Vec<(ArtifactId, u64)> {
-        if self.state().is_open() {
-            self.held_inbound.owed_pages()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// History has nothing older for `artifact`: the ops it never supplied.
-    pub(super) fn give_up_owed(&mut self, artifact: ArtifactId) -> Vec<OpKey> {
-        self.held_inbound.give_up_owed(artifact)
-    }
-}
-
-/// What an attempt to open a sealed payload came to: its plaintext, a wait for
-/// a key that can still arrive, or content no key of the channel's opens.
-///
-/// An epoch can have a key per branch of a channel whose groups forked before
-/// they settled, and a payload sealed under a branch this device did not
-/// follow does not open until that branch's key is handed over with its next
-/// commit, which the identity service then passes on. That key can still
-/// arrive, so the op waits like one of a missing epoch; held ciphertext makes
-/// the route ask for keys again.
-fn opened(
-    opened: Result<Zeroizing<Vec<u8>>, key_group::Error>,
-    branch_keys: bool,
-) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
-    match opened {
-        Ok(plaintext) => Ok(Some(plaintext)),
-        Err(key_group::Error::MissingContentKey(_)) => Err(Unopened::Later),
-        Err(key_group::Error::ContentCrypto(_)) if branch_keys => Err(Unopened::Later),
-        Err(_) => Err(Unopened::Never(Never::Undecryptable)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, WorkspaceId};
-    use tilo_identity_client::wire::KeyAccess as Wire;
-
-    fn keys(workspace: WorkspaceId) -> (key_group::KeyGroup, Vec<u8>) {
-        let group = key_group::KeyGroup::create(
-            workspace,
-            key_group::MemberKey::generate("device").unwrap(),
-        )
-        .unwrap();
-        let bytes = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
-        (group, bytes)
-    }
-
-    tilo_test_env::scenario! {
-        /// What a route holds while it waits for keys, each case on a route and a workspace of its own.
-        fn a_route_without_its_keys_holds_ops_and_releases_them_once;
-
-        phase an_op_history_supplied_while_held_is_not_released_again;
-        {
-            let workspace = WorkspaceId::new();
-            let (group, encoded) = keys(workspace);
-            let (metadata, sealed) = group
-                .seal_content(
-                    ArtifactId(uuid::Uuid::from_bytes([1; 16])),
-                    ContentRetention::Delta,
-                    b"from a peer",
-                )
-                .unwrap();
-            let arrived = envelope(sealed, Some(metadata));
-            let mut route = RouteKeys::requested();
-            route.hold_inbound(held(arrived.clone()));
-            route.settle(&arrived);
-            route.update(Wire::Ready, 1, Some(&encoded));
-            assert!(route.take_held_inbound().is_empty());
-        }
-
-        phase held_ops_are_decided_again_only_when_the_route_changes;
-        {
-            let workspace = WorkspaceId::new();
-            let (_, encoded) = keys(workspace);
-            let mut route = RouteKeys::requested();
-            route.hold_inbound(held(envelope(vec![1], None)));
-            let again = route.take_held_inbound();
-            assert_eq!(again.len(), 1);
-            route.hold_inbound(again.into_iter().next().unwrap());
-            assert!(route.take_held_inbound().is_empty());
-            route.update(Wire::Ready, 1, Some(&encoded));
-            assert_eq!(route.take_held_inbound().len(), 1);
-        }
-
-        phase a_waiting_route_holds_both_directions_and_releases_them_in_order;
-        {
-            let workspace = WorkspaceId::new();
-            let (group, encoded) = keys(workspace);
-            let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-            let (metadata, sealed) = group
-                .seal_content(artifact, ContentRetention::Delta, b"from a peer")
-                .unwrap();
-            let mut route = RouteKeys::requested();
-            assert_eq!(
-                route.take_state_change(),
-                Some(KeyAccessState::WaitingForAccess)
-            );
-            assert_eq!(route.take_state_change(), None);
-            assert!(matches!(
-                route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
-                Sealed::Hold
-            ));
-            assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
-            assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
-            let arrived = envelope(sealed, Some(metadata));
-            assert!(matches!(
-                route.open(&arrived, OpAdmission::EncryptionRequired),
-                Err(Unopened::Later)
-            ));
-            route.hold_inbound(held(arrived));
-            assert!(
-                route.take_held_outbound().is_empty(),
-                "nothing leaves while waiting"
-            );
-
-            route.update(Wire::Ready, 7, Some(&encoded));
-            assert_eq!(
-                route.take_state_change(),
-                Some(KeyAccessState::Encrypted)
-            );
-            assert_eq!(route.generation(), 7);
-            assert_eq!(
-                route.take_held_outbound(),
-                vec![
-                    (b"first".to_vec(), Vec::new()),
-                    (b"second".to_vec(), Vec::new())
-                ]
-            );
-            let held = route.take_held_inbound();
-            assert_eq!(held.len(), 1);
-            assert_eq!(
-                route
-                    .open(&held[0].envelope, held[0].admission)
-                    .unwrap()
-                    .unwrap()
-                    .as_slice(),
-                b"from a peer"
-            );
-            let Sealed::Ready(ciphertext, Some(metadata)) =
-                route.seal(artifact, ContentRetention::Delta, b"mine".to_vec())
-            else {
-                panic!("an admitted route seals");
-            };
-            assert_ne!(ciphertext, b"mine");
-            let mut group = group;
-            assert_eq!(
-                group
-                    .open_content(artifact, &metadata, &ciphertext)
-                    .unwrap()
-                    .as_slice(),
-                b"mine"
-            );
-        }
-    }
-
-    fn held(envelope: SignedOp) -> Arrived {
-        Arrived {
-            envelope,
-            admission: OpAdmission::EncryptionRequired,
-        }
-    }
-
-    fn envelope(payload: Vec<u8>, metadata: Option<EncryptionMetadata>) -> SignedOp {
-        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-        match metadata {
-            Some(metadata) => SignedOp::new_unsigned_with_encryption(
-                payload,
-                artifact,
-                Ed25519PublicKey::from_bytes([2; 32]),
-                AttestationId::default(),
-                OpKind::Change,
-                std::time::SystemTime::UNIX_EPOCH,
-                1,
-                metadata,
-            ),
-            None => SignedOp::new_unsigned(
-                payload,
-                artifact,
-                Ed25519PublicKey::from_bytes([2; 32]),
-                AttestationId::default(),
-                OpKind::Change,
-                std::time::SystemTime::UNIX_EPOCH,
-                1,
-            ),
-        }
-    }
-
-    #[test]
-    fn a_payload_sealed_under_another_branch_waits_for_its_key() {
-        let workspace = WorkspaceId::new();
-        let (_mine, mine_keys) = keys(workspace);
-        let (theirs, theirs_keys) = keys(workspace);
-        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-        let (metadata, sealed) = theirs
-            .seal_content(artifact, ContentRetention::Delta, b"from their branch")
-            .unwrap();
-        let mut route = RouteKeys::requested();
-        route.update(Wire::Ready, 1, Some(&mine_keys));
-        let arrived = envelope(sealed, Some(metadata));
-        assert!(
-            matches!(
-                route.open(&arrived, OpAdmission::EncryptionRequired),
-                Err(Unopened::Later)
-            ),
-            "a branch key not handed over yet is waited for"
-        );
-        route.hold_inbound(held(arrived));
-        // The losing branch hands its key over; the op that waited opens.
-        route.update(Wire::Ready, 2, Some(&theirs_keys));
-        let held = route.take_held_inbound();
-        assert_eq!(held.len(), 1);
-        assert_eq!(
-            route
-                .open(&held[0].envelope, held[0].admission)
-                .unwrap()
-                .unwrap()
-                .as_slice(),
-            b"from their branch"
-        );
-    }
-
-    #[test]
-    fn a_sealed_compaction_opens_like_a_sealed_snapshot() {
-        let workspace = WorkspaceId::new();
-        let (group, encoded) = keys(workspace);
-        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-        let (write_metadata, write) = group
-            .seal_content(artifact, ContentRetention::Delta, b"an edit")
-            .unwrap();
-        let superseded = envelope(write, Some(write_metadata));
-        let (metadata, sealed) = group
-            .seal_content(artifact, ContentRetention::Checkpoint, b"merged record")
-            .unwrap();
-        let payload = collab_types::SealedCompaction::new(&[superseded], sealed)
-            .unwrap()
-            .encode()
-            .unwrap();
-        let mut compaction = envelope(payload, Some(metadata));
-        compaction.kind = OpKind::Compaction;
-        let mut route = RouteKeys::requested();
-        route.update(Wire::Ready, 1, Some(&encoded));
-        assert_eq!(
-            route
-                .open(&compaction, OpAdmission::EncryptionRequired)
-                .unwrap()
-                .unwrap()
-                .as_slice(),
-            b"merged record"
-        );
-        let mut grouped = RouteKeys::plain();
-        grouped.install_group(group);
-        assert_eq!(
-            grouped
-                .open(&compaction, OpAdmission::EncryptionRequired)
-                .unwrap()
-                .unwrap()
-                .as_slice(),
-            b"merged record"
-        );
-        compaction.payload.push(0);
-        assert!(matches!(
-            route.open(&compaction, OpAdmission::EncryptionRequired),
-            Err(Unopened::Never(_))
-        ));
-    }
-
-    tilo_test_env::scenario! {
-        /// What a route opens, each case on a route and a workspace of its own.
-        fn a_route_opens_only_what_its_keys_or_the_broker_admit;
-
-        phase cleartext_opens_exactly_when_the_broker_admits_it;
-        {
-            let workspace = WorkspaceId::new();
-            let (_, encoded) = keys(workspace);
-            let mut route = RouteKeys::requested();
-            let old = envelope(b"from before encryption".to_vec(), None);
-            assert!(matches!(
-                route.open(&old, OpAdmission::CleartextAdmitted),
-                Ok(None)
-            ));
-            route.update(Wire::Ready, 1, Some(&encoded));
-            assert!(matches!(
-                route.open(&old, OpAdmission::CleartextAdmitted),
-                Ok(None)
-            ));
-            assert!(matches!(
-                route.open(&old, OpAdmission::EncryptionRequired),
-                Err(Unopened::Never(Never::Downgrade))
-            ));
-            assert!(matches!(
-                route.open(&old, OpAdmission::Unstated),
-                Err(Unopened::Later)
-            ));
-        }
-
-        phase unopenable_ciphertext_asks_for_newer_keys_once_per_generation;
-        // Ciphertext the held keys can't open (sealed under a newer epoch) asks
-        // for newer keys once per generation, and never while keys are awaited
-        // (those routes are asked anyway).
-        {
-            let workspace = WorkspaceId::new();
-            let (_, encoded) = keys(workspace);
-            let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-            let mut route = RouteKeys::requested();
-            assert!(route.awaiting_keys());
-            route.hold_inbound(held(envelope(vec![1], None)));
-            assert!(
-                !route.wants_keys_for_held(),
-                "a waiting route is asked anyway"
-            );
-
-            route.update(Wire::Ready, 1, Some(&encoded));
-            assert!(!route.awaiting_keys());
-            assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
-            assert!(
-                !route.wants_keys_for_held(),
-                "nothing held asks for nothing"
-            );
-            let newer = keys(workspace).0;
-            let (metadata, sealed) = newer
-                .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
-                .unwrap();
-            route.hold_inbound(held(envelope(sealed, Some(metadata))));
-            assert!(route.wants_keys_for_held());
-            assert!(
-                !route.wants_keys_for_held(),
-                "asked once for this generation"
-            );
-
-            route.update(Wire::Ready, 2, Some(&encoded));
-            assert!(route.wants_keys_for_held(), "newer keys may still lack it");
-            assert!(!route.wants_keys_for_held());
-        }
-    }
-
-    #[test]
-    fn removal_refuses_new_edits_and_other_states_hold_them() {
-        let mut route = RouteKeys::requested();
-        route.update(Wire::Removed, 3, None);
-        assert_eq!(route.state(), KeyAccessState::Removed);
-        assert!(matches!(
-            route.seal(ArtifactId::new(), ContentRetention::Delta, vec![1]),
-            Sealed::Refused(_)
-        ));
-        route.update(Wire::Unavailable, 4, None);
-        assert!(matches!(
-            route.seal(ArtifactId::new(), ContentRetention::Delta, vec![1]),
-            Sealed::Hold
-        ));
-        let mut plain = RouteKeys::plain();
-        assert!(!plain.asks_identity_service());
-        assert!(matches!(
-            plain.seal(ArtifactId::new(), ContentRetention::Delta, vec![1]),
-            Sealed::Ready(_, None)
-        ));
-        assert!(matches!(
-            plain.open(&envelope(vec![1], None), OpAdmission::CleartextAdmitted),
-            Ok(None)
-        ));
     }
 }

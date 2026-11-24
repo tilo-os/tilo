@@ -517,15 +517,9 @@ pub enum NeighbourMsg {
         /// an app's own document, which every member reads.
         readers: Option<String>,
     },
-    /// Cooperative scrollback request, published on the workspace when a peer's
-    /// local broker has no in-memory scrollback for a range an app asked for.
-    /// Any peer holding the range replies with
-    /// [`NeighbourMsg::ScrollbackResponse`].
-    ///
-    /// `requester` is the local peer hash used to target the response
-    /// (`ScrollbackResponse::responder`). v1 doesn't dedupe concurrent identical
-    /// requests — the case is rare/single-shot, so amplification isn't a
-    /// concern.
+    /// A page of a record's signed history, asked of the workspace's other devices. No device
+    /// sends it any more, and a receiver acts on none: it keeps its place because the variant
+    /// order is the wire discriminant.
     ScrollbackRequest {
         /// The artifact whose log to fetch.
         artifact: collab_types::ArtifactId,
@@ -539,12 +533,9 @@ pub enum NeighbourMsg {
         /// own echoed requests.
         requester: PeerId,
     },
-    /// Response to a [`NeighbourMsg::ScrollbackRequest`]: the responding broker
-    /// forwards `ops` from its local op log; the requester delivers them via
-    /// `CollabEvent::ScrollbackBatch`.
-    ///
-    /// `responder` is for audit/replay diagnostics only — it plays no role in
-    /// validation, since every envelope in `ops` is independently signed.
+    /// The answer to a [`NeighbourMsg::ScrollbackRequest`]. No device sends it any more, and a
+    /// receiver acts on none: it keeps its place because the variant order is the wire
+    /// discriminant.
     ScrollbackResponse {
         /// Same as the request's `artifact`, repeated so the receiver can route
         /// without matching on a request-id.

@@ -783,7 +783,7 @@ impl GovernedWorkspace {
         } else {
             write.change.raw_bytes().to_vec()
         };
-        let (mut envelope, _) = tilo_peer_state::owner::draft_local_write(
+        let (envelopes, _) = tilo_peer_state::owner::draft_local_write(
             peer,
             self.workspace(),
             &device.device(),
@@ -795,10 +795,15 @@ impl GovernedWorkspace {
                 founding,
                 snapshot: founding,
                 sealed: Some(&keys),
+                commit: None,
                 now: tilo_clock::wall(),
             },
         )
         .map_err(|error| error.to_string())?;
+        // A store's change of one record is one change, and its record names its kinds by it:
+        // one frame holds it.
+        let [mut envelope] = <[_; 1]>::try_from(envelopes)
+            .map_err(|_| "a resource change is larger than one frame".to_owned())?;
         if envelope.encryption.is_some() && !founding {
             let kinds =
                 std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
@@ -1238,6 +1243,16 @@ impl Workspaces {
                 record,
             )));
         }
+        let opened = || {
+            context
+                .record()
+                .ok_or("this route opened no record to change")
+        };
+        if let tilo_resource_store::wire::Command::RecordChanges { after, from } = &command {
+            return self
+                .opened_record_changes(workspace, (context.app_id(), opened()?), after, *from)
+                .await;
+        }
         let device = self.member_identity()?;
         let writing = command.writes();
         // What a view's caller writes outside an invocation: each write's resource type and verb.
@@ -1272,6 +1287,26 @@ impl Workspaces {
                 &otherwise,
                 &mut unserved,
             );
+        }
+        if let tilo_resource_store::wire::Command::RecordChange {
+            changes,
+            more,
+            commit,
+        } = &command
+        {
+            // The broker gathers a write's runs and hands the store the write whole.
+            if *more {
+                return Err("the record's changes reach this device only as a whole write".into());
+            }
+            self.opened_record_change(
+                workspace,
+                (context.app_id(), opened()?),
+                &changes.0,
+                commit.as_ref(),
+                context.founding_refusal(),
+            )
+            .await?;
+            return Ok(tilo_resource_store::wire::Reply::Written);
         }
         let state = self
             .workspace(workspace)
@@ -1617,7 +1652,9 @@ fn stamp_resource_invoker(
         | Command::Contents { .. }
         | Command::Fields { .. }
         | Command::Turn { .. }
-        | Command::Reach { .. } => return,
+        | Command::Reach { .. }
+        | Command::RecordChanges { .. }
+        | Command::RecordChange { .. } => return,
     };
     let invoker = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
@@ -1685,6 +1722,9 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
         !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
     }
 }
+
+#[cfg(feature = "apps")]
+mod record_changes;
 
 // The tests write and read a device's resources through the store (`apps`) and
 // the members around it (`agents`, for the device the sealed fixtures make).

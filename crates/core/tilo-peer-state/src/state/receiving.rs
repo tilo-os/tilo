@@ -749,9 +749,33 @@ impl StatePeer {
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         let written = written_route(&message);
-        let mut outcome = self
-            .admit_document(source, message, now, false, retained_replay, strict_report)
-            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
+        // A write that is one part of an action across several records is taken in with the
+        // action's other parts ([`super::action_parts`]).
+        let mut outcome = match super::action_parts::action_of(&message) {
+            Ok(Some(commit)) => self.admit_action_part(
+                source,
+                message,
+                &commit,
+                now,
+                retained_replay,
+                strict_report,
+            ),
+            Ok(None) => {
+                self.admit_document(source, message, now, false, retained_replay, strict_report)
+            }
+            Err(error) => Err(error),
+        }
+        .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
+        if let (
+            Some((route, sequence)),
+            InputDisposition::Accepted(_) | InputDisposition::MetadataOnly,
+        ) = (&written, &outcome.primary)
+            && !outcome.deferred
+            && !outcome.duplicate
+        {
+            let let_go = self.let_go_overtaken_actions(route, source, *sequence);
+            outcome.summary.dropped.extend(let_go);
+        }
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }

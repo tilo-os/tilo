@@ -243,6 +243,7 @@ fn a_device_refuses_its_own_sealed_change_for_a_caller_who_never_signed() {
                         founding: false,
                         snapshot: false,
                         sealed: Some(&keys),
+                        commit: None,
                         now: joined.now,
                     },
                 )

@@ -1260,36 +1260,6 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for Engine {
         self.owner.health()
     }
 
-    fn document(
-        &self,
-        workspace: String,
-        app: String,
-        document: String,
-        readers: Option<String>,
-        envelope: collab_types::SignedOp,
-        _resource_type: Option<String>,
-    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-        let owner = self.owner.clone();
-        let now = tilo_clock::wall();
-        Box::pin(async move {
-            let workspace_id = WorkspaceId::parse(&workspace)
-                .ok_or_else(|| format!("{workspace} is not a workspace"))?;
-            owner
-                .admit_writes(
-                    workspace_id,
-                    vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
-                        app,
-                        document,
-                        readers,
-                        envelope: envelope.clone(),
-                    }],
-                    now,
-                )
-                .map_err(|refusal| refusal.to_string())?;
-            Ok(envelope)
-        })
-    }
-
     fn effect(
         &self,
         workspace: String,
@@ -1514,6 +1484,7 @@ mod tests {
                 founding: false,
                 snapshot: true,
                 sealed: Some(keys),
+                commit: None,
                 now,
             },
         ))

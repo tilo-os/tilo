@@ -442,8 +442,8 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
         "the record route names its resource kind for the owner; the launch route none"
     );
     assert!(
-        captures.lock().unwrap().signed_ops.is_empty(),
-        "no default was signed or sent"
+        captures.lock().unwrap().record_writes.is_empty(),
+        "no default was written"
     );
     tilo_test_env::wait_until("the primary route to become publishable", || {
         document_reads_publishable(&manager, manager.primary_route().unwrap().route())
@@ -519,8 +519,8 @@ fn switching_to_a_record_still_joining_joins_its_route_once() {
         document_reads_publishable(&manager, manager.primary_route().unwrap().route())
     });
     assert!(
-        captures.lock().unwrap().signed_ops.is_empty(),
-        "no default was signed or sent"
+        captures.lock().unwrap().record_writes.is_empty(),
+        "no default was written"
     );
 }
 

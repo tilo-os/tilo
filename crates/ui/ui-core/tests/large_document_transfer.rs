@@ -1,9 +1,10 @@
 //! Document size must not be a cliff. Edits and snapshots far larger than
-//! one signed frame travel through the production SDK shovel as several
-//! individually signed segments and arrive at the peer byte-for-byte, with
-//! both bridges still connected afterwards.
+//! one frame travel through the production SDK shovel to the record's store
+//! and arrive at the peer byte-for-byte, with both bridges still connected
+//! afterwards.
 
 use crate::support::typed_collab::TypedBroker;
+use crate::support::{change_carrying, changes_of};
 use collab_types::CommitNamed as _;
 use tilo_ui::collaboration::{CollabRequest, CollaborationManager};
 
@@ -27,11 +28,9 @@ fn payload(len: usize, seed: u64) -> Vec<u8> {
 /// The next document mutation `peer` receives, which `what` describes.
 fn receive(peer: &mut CollaborationManager, what: &str) -> collab_types::DocumentMutation {
     tilo_test_env::wait_for(what, || {
-        peer.poll().into_iter().find_map(|event| {
-            event
-                .document_mutation()
-                .map(|result| result.expect("a delivered document event decodes"))
-        })
+        peer.poll()
+            .into_iter()
+            .find_map(|event| event.document_mutation().cloned())
     })
 }
 
@@ -44,8 +43,8 @@ fn connected_pair(broker: &TypedBroker) -> (CollaborationManager, CollaborationM
 }
 
 /// A peer that joins after the document outgrew one frame is onboarded by
-/// the production late-join path: its SDK asks the broker for a snapshot,
-/// the holder's app answers, and the segmented snapshot merges into the
+/// the production path: the writer's app writes the record whole to its
+/// store, and the joiner's route reads it as it opens and merges it into the
 /// joiner's document.
 #[test]
 fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
@@ -115,13 +114,13 @@ fn an_over_limit_mutation_is_refused_explicitly_and_collaboration_continues() {
         "the refusal is not a bridge shutdown"
     );
 
-    let after = payload(2 * MIB, 3);
+    let after = change_carrying(payload(2 * MIB, 3));
     sender
         .try_send(CollabRequest::document_incremental(after.clone()))
         .expect("later changes still flow");
     assert_eq!(
-        receive(&mut receiver, "the change after the refused one"),
-        collab_types::DocumentMutation::Incremental(after),
+        changes_of(receive(&mut receiver, "the change after the refused one").data()),
+        changes_of(&after),
         "the peer sees the next change and nothing of the refused one"
     );
 }
@@ -137,7 +136,7 @@ fn large_edits_and_snapshots_replicate_between_two_peers() {
     {
         for snapshot in [false, true] {
             let seed = (index as u64) << 1 | u64::from(snapshot);
-            let data = payload(len, seed);
+            let data = change_carrying(payload(len, seed));
             let request = if snapshot {
                 CollabRequest::document_snapshot(data.clone())
             } else {
@@ -151,14 +150,12 @@ fn large_edits_and_snapshots_replicate_between_two_peers() {
                 &mut receiver,
                 &format!("the {len}-byte mutation (snapshot: {snapshot})"),
             );
-            match (snapshot, arrived) {
-                (true, collab_types::DocumentMutation::Snapshot(bytes))
-                | (false, collab_types::DocumentMutation::Incremental(bytes)) => {
-                    assert_eq!(bytes.len(), len, "no bytes are lost or added");
-                    assert!(bytes == data, "the {len}-byte payload arrives intact");
-                }
-                (_, other) => panic!("mutation kind changed in transit: {other:?}"),
-            }
+            let bytes = arrived.data();
+            assert_eq!(bytes.len(), data.len(), "no bytes are lost or added");
+            assert!(
+                changes_of(bytes) == changes_of(&data),
+                "the {len}-byte payload arrives intact"
+            );
             assert!(
                 sender.is_connected() && receiver.is_connected(),
                 "a large mutation must not shut collaboration down"

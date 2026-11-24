@@ -263,23 +263,21 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 lease: None,
                 _hold: None,
             });
-            let route = &workspace.route;
-            let op = collab_types::SignedOp::new_unsigned(
-                b"any op".to_vec(),
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
-                collab_types::Ed25519PublicKey::from_bytes(
-                    workspace.key.verifying_key().to_bytes(),
-                ),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-                collab_types::OpKind::Change,
-                std::time::SystemTime::now(),
-                1,
-            );
+            let change = serde_json::to_vec(&tilo_resource_store::wire::Command::RecordChange {
+                changes: tilo_resource_store::wire::Bytes(automerge::AutoCommit::new().save()),
+                more: false,
+                commit: None,
+            })
+            .unwrap();
             let refused = channel
-                .send(&postcard::to_stdvec(&op).unwrap())
+                .resource_command(&change)
                 .await
                 .expect_err("a write is refused");
-            assert!(refused.to_string().contains("changes nothing"), "{refused}");
+            assert!(
+                refused.to_string().contains("may not change the record")
+                    && refused.to_string().contains("changes nothing"),
+                "{refused}"
+            );
             let refused = channel
                 .publish_action_directory(signed_worker::directory_server(
                     &signed_worker::directory_state("read-only-r1"),

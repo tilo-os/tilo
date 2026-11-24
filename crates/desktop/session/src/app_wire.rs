@@ -707,15 +707,14 @@ pub fn serve(
     // An app's writes go to the device's daemon on its own connection there; the receipts of the
     // effects the actions this session runs had are recorded by the daemon too.
     let publisher = match hosted.daemon.clone() {
-        Ok(link) => PeerPublisher::with_optional_commits(
-            None,
-            std::sync::Arc::new(tilo_session_client::daemon_documents::DaemonReceipts(
+        Ok(link) => PeerPublisher::with_commits(std::sync::Arc::new(
+            tilo_session_client::daemon_documents::DaemonReceipts(
                 tilo_session_client::daemon_documents::DaemonShell::new(
                     Ok(link),
                     tilo_rt::app().handle().clone(),
                 ),
-            )),
-        ),
+            ),
+        )),
         Err(reason) => {
             tracing::warn!(%reason, "no daemon records the effects of this session's actions");
             PeerPublisher::disabled()
@@ -1627,6 +1626,9 @@ fn broker_services(
         file_clipboard: BrokerService::served(file_clipboard),
         app_action_access: BrokerService::served(app_action_access),
         app_resource_kinds: BrokerService::served(app_resource_kinds),
+        record_founding: BrokerService::unserved(
+            "a session governs no workspace: the device's daemon decides what kinds its records are",
+        ),
         // An answer the person gives "allow for this issue" is recorded in the
         // workspace's own governance, which this session's engine writes.
         workspace_grants: BrokerService::when(engine.clone().map(|engine| {
@@ -2683,7 +2685,7 @@ mod tests {
             None,
             Hosted {
                 shortcuts: Some(std::sync::Arc::new(library)),
-                    ..hosted()
+                ..hosted()
             },
             None,
             None,

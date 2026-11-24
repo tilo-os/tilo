@@ -116,19 +116,12 @@ tilo_test_env::scenario! {
             peer.put(&pm, "b", 20).unwrap();
             let incoming = peer.save();
 
-            let envelope = collab_types::SignedOp::new_unsigned(
-                collab_types::DocumentMutation::Snapshot(incoming)
-                    .encode()
-                    .unwrap(),
-                collab_types::document_artifact_id(&route.app_id, &route.cluster_id.to_string(), ""),
-                collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-                collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
-                collab_types::OpKind::Change,
-                crate::time::SystemTime::UNIX_EPOCH,
-                0,
-            );
+            let envelope = CollabEvent::Document {
+                route: route.clone(),
+                mutation: collab_types::DocumentMutation::Snapshot(incoming),
+            };
             app.state.commit_action(None, None);
-            app.apply_signed_document_envelope(&envelope, None);
+            app.apply_document_event(&envelope);
 
             // A replace would drop "a".
             let doc = &mut app.state_mut_for_test().doc;

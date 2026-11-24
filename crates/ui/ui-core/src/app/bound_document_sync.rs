@@ -14,7 +14,7 @@ pub(super) struct BoundDocumentSync {
 
 /// A primary document's unsent changes, the heads they leave, and the
 /// commit of the action they travel under.
-pub(super) type PrimaryPublication = (
+pub(super) type PrimaryChanges = (
     collab_types::DocumentMutation,
     Vec<automerge::ChangeHash>,
     Option<collab_types::WorkspaceCommit>,
@@ -80,12 +80,10 @@ impl App {
     }
 
     /// What of the window's own document the route has not been sent, the
-    /// heads it leaves, and the commit it travels under. A record a component
-    /// is bound to has none here: its owner's route publishes it, and a second
-    /// publication would send every change twice.
-    pub(super) fn pending_primary_document(
-        &mut self,
-    ) -> Result<Option<PrimaryPublication>, String> {
+    /// heads it leaves, and the commit it travels under. A record a component is bound to has none here:
+    /// its owner's route sends it, and sending it here too would send every
+    /// change twice.
+    pub(super) fn pending_primary_document(&mut self) -> Result<Option<PrimaryChanges>, String> {
         if self.prepare_primary_document()? {
             return Ok(None);
         }
@@ -129,16 +127,6 @@ impl App {
     pub(super) fn advance_primary_document(&mut self, heads: Vec<automerge::ChangeHash>) {
         self.document_routes.primary_whole = true;
         self.state.advance_outbound(heads);
-    }
-
-    /// The window's own document whole, for a peer that asked for it; `None`
-    /// when a component's record is the document, which its owner's route
-    /// sends whole instead.
-    pub(super) fn primary_document_snapshot(&mut self) -> Result<Option<Vec<u8>>, String> {
-        if self.prepare_primary_document()? {
-            return Ok(None);
-        }
-        Ok(Some(self.state.save()))
     }
 
     #[cfg(test)]

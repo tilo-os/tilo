@@ -21,8 +21,7 @@ const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
 
 /// What makes an endpoint ask the identity service about a route's keys.
 pub(super) enum KeySignal {
-    /// The route's channel changed, or ciphertext arrived its keys can't
-    /// open: ask for the route's keys now.
+    /// The route's channel changed: ask for the route's keys now.
     Changed(String),
     /// The broker does not say when keys change: ask on a timer.
     Unpushed,
@@ -51,9 +50,8 @@ impl KeyRound {
 ///
 /// A route holding keys is asked only when told to: the broker resolves the
 /// route's pending `groupKeysChanged` the moment its channel's keys or
-/// this device's access change, ciphertext arrives its keys can't open, or
-/// the broker refuses an edit sealed under them (`send_document_frame`). An
-/// endpoint whose routes all hold keys therefore never wakes for them.
+/// this device's access change. An endpoint whose routes all hold keys
+/// therefore never wakes for them.
 ///
 /// Every channel change the identity service would answer differently is a
 /// commit a key holder of the channel makes within its reconcile interval (about a
@@ -147,7 +145,7 @@ impl KeySchedule {
     }
 
     /// The round a route that just joined starts: it learns its keys, or
-    /// that it waits, before its first edit.
+    /// that it waits, before the content it stores first.
     pub(super) fn join_round(&mut self) -> KeyRound {
         self.restart();
         KeyRound {

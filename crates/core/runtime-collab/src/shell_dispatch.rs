@@ -217,8 +217,9 @@ fn named(caller: &Caller) -> Option<Box<tilo_actions::remote::KeptCaller>> {
     (!person && !caller.is_system()).then(|| Box::new(caller.kept()))
 }
 
-/// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides
-/// it there as the caller reading: the person, or an app or an agent acting for them.
+/// A read or a change of a record outside its app, asked of the daemon, which holds the
+/// workspaces and decides it there as the caller asking: the person, or an app or an agent acting
+/// for them.
 impl ResourceReads for ShellDispatch {
     /// Asked of the daemon as a read that answers only its decision, and followed as every call
     /// on the link is: the record's copy never crosses the link for it.
@@ -240,6 +241,36 @@ impl ResourceReads for ShellDispatch {
             .answer_read(caller, 0, read)
             .map(|reply| match reply {
                 RemoteActionMessage::ResourceReading { result, .. } => result.map(|_| ()),
+                _ => Err(unexpected()),
+            })
+    }
+
+    /// Asked of the daemon as a change's decision alone, as [`Self::may_read`] asks a read's: the
+    /// record's copy never crosses the link for it.
+    fn may_write(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Pending<tilo_actions::remote::Decided> {
+        let read = ResourceReadRequest {
+            workspace: address.workspace.clone(),
+            app: address.app.clone(),
+            record: address.record.clone(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            answer: tilo_actions::remote::ReadAnswer::WriteDecision,
+        };
+        Arc::new(self.clone())
+            .answer_read(caller, 0, read)
+            .map(|reply| match reply {
+                RemoteActionMessage::ResourceReading { result, .. } => match result {
+                    // A decision answers `null`; a reader that read the record instead cannot
+                    // say whether it may be changed, so its copy is no answer.
+                    Ok(answer) if answer.trim() == "null" => Ok(()),
+                    Ok(_) => Err(unexpected()),
+                    Err(error) => Err(error),
+                },
                 _ => Err(unexpected()),
             })
     }

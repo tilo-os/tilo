@@ -3,10 +3,10 @@
 //! passes the bound ends with a reason the app shows.
 
 use super::{
-    BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand,
-    SdkJoinContext, SdkRoute, broker_member_kind, change_waits, committed_document,
-    follow_channel_keys, native_media, spawn_action_catalogue_stream, spawn_content_stream,
-    spawn_context_stream, spawn_op_stream, spawn_presence_stream, spawn_realtime_stream,
+    BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
+    SdkRoute, broker_member_kind, change_waits, committed_document, follow_channel_keys,
+    native_media, record_sync, spawn_action_catalogue_stream, spawn_content_stream,
+    spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
     take_invocations_once_current, tokio_mpsc,
 };
 use crate::time::Duration;
@@ -101,8 +101,8 @@ pub(super) fn refuse_unjoined(command: SdkCommand, reason: &str, state: &BridgeS
     }
 }
 
-/// Join `spec`'s route: the broker's channel, its committed read, its writes'
-/// sealing and its streams. The caller keeps the route it answers.
+/// Join `spec`'s route: the broker's channel, its committed read, its
+/// content's sealing, its record's changes and its streams. The caller keeps the route it answers.
 // Not `Send`: the route state it builds stays on the shovel thread's
 // `LocalSet` (see `run_shovel`).
 #[allow(
@@ -187,6 +187,7 @@ pub(super) async fn join_route(
             document: DocumentRoute {
                 spec: spec.clone(),
                 channel,
+                frontier: record_sync::Frontier::default(),
                 encryption: std::sync::Arc::new(std::sync::Mutex::new(
                     super::super::route_keys::RouteKeys::plain(),
                 )),
@@ -195,7 +196,7 @@ pub(super) async fn join_route(
             workspace_controls: std::collections::HashMap::new(),
             resource_queries: std::collections::HashMap::new(),
             shown_actions: None,
-            committed: false,
+            _record: None,
         });
     }
     let committed = committed_document::install(
@@ -246,46 +247,31 @@ pub(super) async fn join_route(
             .bind_private_window(&channel_id, instance)?;
     }
 
-    // A workspace that seals its records takes every write encrypted under the
-    // record channel's keys, whoever reads the record for the app. A route
-    // whose endpoint has no keys to ask for refuses each write there.
+    // The record's changes go to the device's store, which seals and signs
+    // them; the content the record references is sealed here, under the
+    // record channel's keys, so a route of a certified endpoint asks for them.
     //
     // A cluster-scope route (an empty app id: discovery and presence for
     // every app of the workspace, as an agent joins to learn the catalogue)
     // names no app of its own, so the identity service can never grant it
     // keys: it refuses the question, and a route left waiting for an
     // answer it cannot get asks again on the timer for the whole life of the
-    // connection. It carries no record and writes nothing, so it asks for no
-    // keys and reads nothing about sealing: it stays plaintext, and its
-    // timer is never armed for it. Nor does it follow the workspace's
-    // changes: the broker hands a route of no app every app's changes, sealed
-    // under keys it never holds, so it takes no op stream and asks for no
-    // snapshot. Each app's own routes carry them.
+    // connection. It carries no record and stores no content, so it asks for
+    // no keys and its timer is never armed for it. Nor does it follow the
+    // workspace's changes: each app's own routes carry them.
     let cluster_route = spec.app_id.is_empty();
-    let sealed = if cluster_route {
-        false
-    } else {
-        matches!(
+    let sealed = !cluster_route
+        && matches!(
             channel
                 .committed_document(&runtime_collab::committed_document::Request::Writes)
                 .await,
             Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
-        )
-    };
-    // A committed route's owner admits and applies each edit itself, and a
-    // committing host holds no channel keys: it could neither open a sealed
-    // edit nor accept cleartext on the route after one. Committed routes
-    // therefore stay cleartext end to end.
+        );
+    // A committed route's content stays as its committing host keeps it,
+    // unless the workspace seals what it keeps.
     let encrypted = asks_channel_keys && !cluster_route && (sealed || !committed);
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
         super::super::route_keys::RouteKeys::requested()
-    } else if sealed {
-        tracing::warn!(
-            app = %spec.app_id,
-            workspace = %spec.cluster_id,
-            "collab: this workspace seals every write and this connection holds no channel keys; its writes are refused"
-        );
-        super::super::route_keys::RouteKeys::unsealable()
     } else {
         super::super::route_keys::RouteKeys::plain()
     }));
@@ -294,36 +280,32 @@ pub(super) async fn join_route(
     }
     tilo_startup_metrics::startup_mark("collab-join-window-binding");
     change_waits::follow(&spec.app_id, &channel, inbound_tx);
+    // A route whose record arrives as committed reads follows it through them;
+    // any other reads what the store holds of its record as it opens, and again
+    // each time the store says it changed.
+    let frontier = record_sync::Frontier::default();
+    let record = (!committed && !cluster_route).then(|| {
+        record_sync::follow(
+            channel.clone(),
+            spec.clone(),
+            frontier.clone(),
+            inbound_tx.clone(),
+        )
+    });
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), presence) = tokio::join!(
-        async {
-            if !committed && !cluster_route {
-                spawn_op_stream(
-                    &channel,
-                    RouteLabel::of(spec),
-                    inbound_tx,
-                    std::sync::Arc::clone(&encryption),
-                    encrypted.then(|| (channel_id.clone(), key_signals.clone())),
-                )
-                .await;
-            }
-        },
-        spawn_context_stream(&channel, spec.clone(), inbound_tx),
+    let ((), (), (), presence) = tokio::join!(
+        spawn_context_stream(
+            &channel,
+            record.as_ref().map(record_sync::Follower::changed),
+            inbound_tx
+        ),
         spawn_realtime_stream(&channel, inbound_tx),
         spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );
     tilo_startup_metrics::startup_mark("collab-join-streams");
     take_invocations_once_current(channel.clone(), spec.clone(), inbound_tx.clone());
-    // Subscriptions are installed first so an existing holder's response
-    // cannot race ahead of our document stream.
-    if !committed
-        && !cluster_route
-        && let Err(error) = channel.request_document_snapshot().await
-    {
-        tracing::warn!(%error, "collab: late-join snapshot request failed");
-    }
 
     // Each of these queues is optional: without it the channel runs, and the
     // warn the `map_err` closure writes says which feature it lost and why.
@@ -356,12 +338,13 @@ pub(super) async fn join_route(
         document: DocumentRoute {
             spec: spec.clone(),
             channel,
+            frontier,
             encryption,
         },
         presence,
         workspace_controls: std::collections::HashMap::new(),
         resource_queries: std::collections::HashMap::new(),
         shown_actions: None,
-        committed,
+        _record: record,
     })
 }

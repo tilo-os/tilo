@@ -65,6 +65,7 @@ impl DeviceWrites for EngineWrites {
                 founding: writing.founding,
                 snapshot: writing.snapshot,
                 sealed: writing.sealed,
+                commit: None,
                 now: crate::clock::system_time(tilo_clock::unix_now_ns()),
             },
         )

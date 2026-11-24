@@ -321,7 +321,6 @@ impl Router {
                 let documents = matches!(
                     publication,
                     Publication::Presence(_)
-                        | Publication::Document(_)
                         | Publication::Content { .. }
                         | Publication::Report(Report::SearchIndex(_))
                 );
@@ -353,7 +352,7 @@ impl Router {
             Operation::Subscribe { channel, topic } => {
                 let documents = matches!(
                     topic,
-                    Topic::Presence | Topic::Ops | Topic::Content | Topic::Resources(_)
+                    Topic::Presence | Topic::Content | Topic::Resources(_)
                 );
                 self.on_channel(id, channel, documents, true, |channel| {
                     Operation::Subscribe { channel, topic }

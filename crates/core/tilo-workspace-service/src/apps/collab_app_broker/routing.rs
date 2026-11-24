@@ -4,21 +4,6 @@
 )]
 use super::*;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AuthorizedDocumentRoute {
-    pub(super) artifact: ArtifactId,
-    pub(super) payload: collab_types::RoutedDocumentPayload,
-}
-
-/// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
-/// makes the queue readable: signed, delta and whole-document share
-/// this type and are indistinguishable from the bytes alone.
-#[derive(Clone, Debug)]
-pub(super) struct OpEnvelope {
-    pub(super) op_bytes: Vec<u8>,
-    pub(super) admission: OpAdmission,
-}
-
 /// Envelope pushed onto a [`PresenceStreamServer`]'s queue. Carries
 /// every presence variant; the cursor stream filters to pointers.
 #[derive(Clone, Debug)]
@@ -26,14 +11,6 @@ pub(super) struct PresenceEnvelope {
     pub(super) member: collab_types::MemberId,
     pub(super) key_bytes: Vec<u8>,
     pub(super) payload: PresencePayload,
-}
-
-/// One subscription onto the broker fanout. Slot-indexed inside a
-/// [`ChannelSubscribers`] table so it can be dropped en masse when
-/// the connection tears down.
-pub(super) struct OpSub {
-    pub(super) peer_id: u64,
-    pub(super) tx: mpsc::UnboundedSender<OpEnvelope>,
 }
 
 pub(super) struct PresenceSub {
@@ -66,189 +43,8 @@ pub(super) struct NativeContext {
 /// [`CrdtRoute::from_channel_key`]; delivery is [`CrdtRoute::delivers_to`].
 #[derive(Default)]
 pub(super) struct ChannelSubscribers {
-    pub(super) op: Vec<OpSub>,
     pub(super) presence: Vec<PresenceSub>,
     pub(super) context: Vec<ContextSub>,
-}
-
-/// Apply a signed op arriving via the wire's `send`: same validation /
-/// audit / redaction / compaction pipeline, then
-/// fans out via the shared [`FanoutState`].
-#[cfg(test)]
-pub(super) fn handle_signed_op_send(
-    state: &Arc<AppBrokerState>,
-    peer_id: u64,
-    route: &CrdtRoute,
-    verified_identity: &AdmittedJoinIdentity,
-    envelope: SignedOp,
-) {
-    let artifact = envelope.artifact;
-    handle_signed_op_send_for_artifact(
-        state,
-        peer_id,
-        route,
-        verified_identity,
-        artifact,
-        envelope,
-    );
-}
-
-/// The broker's current policy time as a wall-clock instant.
-pub(super) fn policy_system_time(state: &AppBrokerState) -> Option<std::time::SystemTime> {
-    let now = state.policy_now_ns().ok()?;
-    std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(now))
-}
-
-/// `envelope` validated against its author's current authority in the workspace
-/// and the channel's state, or `None` when either is unavailable.
-pub(super) fn validate_signed_op(
-    state: &Arc<AppBrokerState>,
-    route: &CrdtRoute,
-    verified_identity: &AdmittedJoinIdentity,
-    artifact: ArtifactId,
-    envelope: &SignedOp,
-) -> Option<Result<(), ValidationError>> {
-    use super::authority::{Deciding, callers_of};
-    let now = policy_system_time(state)?;
-    let validation = verified_identity.with_current_authority(
-        state.membership.as_ref(),
-        &route.cluster_id,
-        |author| {
-            let record = collab_types::WrittenDocument {
-                workspace: &route.cluster_id,
-                app: &route.app_id,
-                document: &route.document_id,
-            };
-            // The callers the write was made for on another device, each
-            // carried call checked: a change naming one of them is decided
-            // within both its grants and the author's ([`Deciding`]).
-            let now_ns = state.policy_now_ns().ok()?;
-            let callers =
-                match callers_of(state.membership.as_ref(), author, &record, envelope, now_ns) {
-                    Ok(callers) => callers,
-                    Err(reason) => return Some(Err(ValidationError::NotGranted(reason))),
-                };
-            let deciding = Deciding {
-                signer: author,
-                callers: &callers,
-            };
-            let Ok(mut ch) = state.broker_channels.lock() else {
-                return None;
-            };
-            let ch_state = ch.state_for(artifact);
-            ch_state.workspace.clone_from(&route.cluster_id);
-            ch_state.artifacts.insert(artifact, ArtifactKind::Note);
-            ch_state
-                .artifact_apps
-                .insert(artifact, route.app_id.clone());
-            ch_state
-                .artifact_resources
-                .insert(artifact, route.document_id.clone());
-
-            Some(validate_admitted_inbound_op(
-                envelope,
-                &deciding,
-                ch_state,
-                now,
-                Duration::from_secs(300),
-            ))
-        },
-    );
-    match validation {
-        Ok(Some(validation)) => Some(validation),
-        Ok(None) => None,
-        Err(error) => Some(Err(ValidationError::NotGranted(error))),
-    }
-}
-
-pub(super) fn handle_signed_op_send_for_artifact(
-    state: &Arc<AppBrokerState>,
-    peer_id: u64,
-    route: &CrdtRoute,
-    verified_identity: &AdmittedJoinIdentity,
-    artifact: ArtifactId,
-    envelope: SignedOp,
-) {
-    let Some(validation) = validate_signed_op(state, route, verified_identity, artifact, &envelope)
-    else {
-        return;
-    };
-    match validation {
-        Ok(()) => {
-            let unsynced = state.broker_channels.lock().ok().map(|mut ch| {
-                let unsynced = ch.document_history(route, &envelope);
-                let ch_state = ch.state_for(artifact);
-                ch_state.record_validated_op(envelope.clone());
-                if envelope.kind == collab_types::OpKind::Compaction
-                    && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
-                {
-                    let _ = ch_state.apply_compaction(&cp);
-                }
-                unsynced
-            });
-            // Synced outside the channels' lock, which the main loop takes
-            // too, and before the op is republished or fanned out.
-            if let Some(unsynced) = unsynced {
-                unsynced.finish();
-            }
-            if envelope.kind == collab_types::OpKind::Redaction {
-                apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
-            }
-            // Republishing is not vouching.
-            if !state.durable_owner_required {
-                state.publisher().signed_document(route, envelope.clone());
-            }
-            let event = CollabEvent::Document {
-                envelope: Box::new(envelope),
-                decrypted_payload: None,
-            };
-            if let Some(t) = state.fanout.upgrade() {
-                t.fanout_to_route(&event, peer_id, route);
-            }
-        }
-        Err(ValidationError::OpAlreadyRedacted { target }) => {
-            tracing::warn!(
-                artifact = ?artifact,
-                seq = envelope.seq,
-                target = ?target,
-                "wire send: late-arriving op was already redacted; storing marker",
-            );
-            if let Ok(mut ch) = state.broker_channels.lock() {
-                let ch_state = ch.state_for(artifact);
-                let mut marker_envelope = envelope.clone();
-                if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
-                    marker_envelope.payload = marker_bytes;
-                }
-                ch_state.record_validated_op(marker_envelope);
-                ch.audit.record(
-                    artifact,
-                    AuditEntry {
-                        envelope: Box::new(envelope),
-                        rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                        at: tilo_clock::wall(),
-                    },
-                );
-            }
-        }
-        Err(reason) => {
-            tracing::warn!(
-                artifact = ?artifact,
-                author = ?envelope.author,
-                seq = envelope.seq,
-                "wire send: dropping invalid signed op: {reason}",
-            );
-            if let Ok(mut ch) = state.broker_channels.lock() {
-                ch.audit.record(
-                    artifact,
-                    AuditEntry {
-                        envelope: Box::new(envelope),
-                        rejection: Some(reason),
-                        at: tilo_clock::wall(),
-                    },
-                );
-            }
-        }
-    }
 }
 
 /// An owner commit being waited for: dropping the wait before the owner
@@ -283,50 +79,6 @@ impl Drop for OwnerWait<'_> {
     }
 }
 
-pub(super) fn handle_authorized_signed_op_send(
-    state: &Arc<AppBrokerState>,
-    peer_id: u64,
-    route: &CrdtRoute,
-    verified_identity: &AdmittedJoinIdentity,
-    authorized: &AuthorizedDocumentRoute,
-    envelope: SignedOp,
-) {
-    debug_assert_eq!(authorized.artifact, envelope.artifact);
-    handle_signed_op_send_for_artifact(
-        state,
-        peer_id,
-        route,
-        verified_identity,
-        authorized.artifact,
-        envelope,
-    );
-}
-
-/// Read a page of scrollback ops for `artifact`, each encoded as postcard
-/// bytes as the wire carries them, with the oldest sequence in it: where the
-/// channel's other devices are asked to go on from.
-pub(super) fn read_scrollback(
-    broker_channels: &Arc<Mutex<BrokerChannels>>,
-    artifact: ArtifactId,
-    before_seq: u64,
-    max: u32,
-) -> (Vec<Vec<u8>>, Option<u64>, bool) {
-    let Ok(mut ch) = broker_channels.lock() else {
-        return (Vec::new(), None, true);
-    };
-    // `max` is a peer-supplied page size; clamp rather than wrap so an
-    // oversized request degrades to "as many as the u16 cap allows"
-    // instead of silently truncating to an unrelated smaller number.
-    let capped_max = u16::try_from(max).unwrap_or(u16::MAX);
-    let (ops, exhausted) = ch.scrollback_page(artifact, before_seq, capped_max);
-    let oldest = ops.iter().map(|op| op.seq).min();
-    let encoded: Vec<Vec<u8>> = ops
-        .into_iter()
-        .filter_map(|op| postcard::to_stdvec(&op).ok())
-        .collect();
-    (encoded, oldest, exhausted)
-}
-
 // Presence handle + streams
 
 // Stream servers
@@ -339,27 +91,16 @@ pub(super) fn read_scrollback(
 // second reader wait its turn — the two calls serialize instead of racing.
 
 impl AppBrokerState {
-    pub(super) fn publisher(&self) -> &Arc<PeerPublisher> {
-        &self.publisher
-    }
-    /// Converts once into the transport-neutral peer presence envelope.
-    /// Peer replication does not embed either local RPC dialect.
-    pub(super) fn publish_presence(
+    /// What a window with no native endpoint on `channel_id` is told, as `peer_id`.
+    #[cfg(test)]
+    pub(crate) fn watch_context(
         &self,
-        route: &CrdtRoute,
-        key: &PresenceKey,
-        payload: &PresencePayload,
-    ) {
-        let Some(presence) = crate::apps::collab_presence::to_peer(key, payload) else {
-            tracing::warn!(
-                channel = %route.channel_key(),
-                "collaboration broker: presence would not encode; peers will \
-                 not see this person move",
-            );
-            return;
-        };
-        self.publisher().presence(route, presence);
+        channel_id: &str,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<ContextUpdate> {
+        self.subscribe_context(channel_id, peer_id, None)
     }
+
     /// Delegates to the shared fanout registry for typed connection ids.
     pub(super) fn next_peer_id(&self) -> u64 {
         // Peer table torn down: racing with shutdown. Hand out a
@@ -410,7 +151,6 @@ impl AppBrokerState {
         if route.cluster_id.is_empty() {
             return;
         }
-        let admission = Self::admission_of(event);
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };
@@ -419,10 +159,6 @@ impl AppBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         match event {
-            CollabEvent::Document { envelope, .. } => {
-                self.wake_committed_reads(route);
-                Self::fanout_signed_incremental(channels, except, envelope, admission);
-            }
             CollabEvent::RemoteCursorMoved { member, x, y } => {
                 Self::fanout_cursor_moved(channels, except, member, *x, *y);
             }
@@ -457,8 +193,7 @@ impl AppBrokerState {
                     &ContextUpdate::RecordsMoved(records.clone()),
                 );
             }
-            CollabEvent::ScrollbackBatch { .. }
-            | CollabEvent::DocumentSnapshotRequested { .. }
+            CollabEvent::Document { .. }
             | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }
             | CollabEvent::ResourceUnavailable { .. }
@@ -486,33 +221,6 @@ impl AppBrokerState {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
             }
-        }
-    }
-    /// One arm of [`Self::fanout_to_route`]: a validated signed op.
-    pub(super) fn fanout_signed_incremental<'a>(
-        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
-        except: u64,
-        envelope: &SignedOp,
-        admission: OpAdmission,
-    ) {
-        let op_bytes = match postcard::to_stdvec(envelope) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "collaboration fanout: postcard(SignedOp) failed");
-                return;
-            }
-        };
-        let env = OpEnvelope {
-            op_bytes,
-            admission,
-        };
-        for subs in channels {
-            subs.op.retain(|s| {
-                if s.peer_id == except {
-                    return true;
-                }
-                s.tx.send(env.clone()).is_ok()
-            });
         }
     }
     /// One arm of [`Self::fanout_to_route`]: a keyless cursor move, translated
@@ -630,28 +338,11 @@ impl AppBrokerState {
     /// Session-local handoff control for the instance(s) on the addressed
     /// primary route. Like Follow, it rides the context stream tagged so the
     /// client never mistakes it for a roster.
-    pub(super) fn ensure_channel(&self, channel_id: &str) {
+    pub(crate) fn ensure_channel(&self, channel_id: &str) {
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default);
         }
-    }
-    /// Subscribe to `channel_id`'s ops, after what was admitted before
-    /// ([`subscriptions::admitted_ops`]).
-    pub(super) fn subscribe_ops(
-        &self,
-        channel_id: &str,
-        peer_id: u64,
-    ) -> mpsc::UnboundedReceiver<OpEnvelope> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        subscriptions::admitted_ops(&self.broker_channels, channel_id, &tx);
-        if let Ok(mut m) = self.channels.lock() {
-            m.entry(channel_id.to_owned())
-                .or_insert_with(ChannelSubscribers::default)
-                .op
-                .push(OpSub { peer_id, tx });
-        }
-        rx
     }
     pub(super) fn subscribe_presence(
         &self,
@@ -1242,34 +933,5 @@ impl AppBrokerState {
             capabilities.into_iter().chain(certificates).min(),
             reads_fleet,
         ))
-    }
-    /// Direct a late-join snapshot request to one established subscriber on
-    /// the exact route. Lowest broker peer id makes selection deterministic;
-    /// the requester is excluded so it never snapshots its own empty state.
-    pub(super) fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
-        let Ok(mut channels) = self.channels.lock() else {
-            return false;
-        };
-        let Some(channel) = channels.get_mut(channel_id) else {
-            return false;
-        };
-        channel.context.sort_by_key(|subscriber| subscriber.peer_id);
-        let Some(index) = channel
-            .context
-            .iter()
-            .position(|subscriber| subscriber.peer_id != requester)
-        else {
-            return false;
-        };
-        if channel
-            .context
-            .get(index)
-            .is_some_and(|subscriber| subscriber.tx.send(ContextUpdate::SnapshotRequested).is_ok())
-        {
-            true
-        } else {
-            channel.context.remove(index);
-            false
-        }
     }
 }

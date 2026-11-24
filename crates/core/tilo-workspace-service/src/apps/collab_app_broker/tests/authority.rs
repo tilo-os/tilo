@@ -287,30 +287,6 @@ tilo_test_env::scenario! {
             .expect("a certified editor is admitted");
         assert_eq!(admitted.actor_key, actor);
         assert_eq!(admitted.role, CapRole::Editor);
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([42; 32]),
-            )
-            .is_ok(),
-            "signed ops are device-authored under the certificate's device key"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            )
-            .is_err(),
-            "the user root certifies the device but does not author this device's ops"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([43; 32]),
-            )
-            .is_err(),
-            "a member cannot submit another device's envelope through this session"
-        );
     }
 
     phase certified_join_admission_rejects_wrong_or_removed_root;
@@ -797,138 +773,9 @@ tilo_test_env::scenario! {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the typed document publication test retains its full authorization and payload assertions as one scenario"
-)]
-#[test]
-fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
-    let root = SigningKey::from_bytes(&[24; 32]);
-    let device = SigningKey::from_bytes(&[25; 32]);
-    let actor = person_id_for_root(root.verifying_key().to_bytes());
-    let mut workspace = crate::apps::test_support::Workspace::new(
-        crate::apps::test_support::WorkspaceId::from_u128(5),
-        "Typed document workspace",
-    );
-    workspace.policy.set_owner(&actor);
-    let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
-    let mut tree = WorkspaceTree::default();
-    tree.workspaces.push(workspace);
-    let membership = tree.shared();
-    let admitted = admit_verified_join(
-        &membership.read(),
-        &route,
-        VerifiedJoinIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            capped: false,
-        },
-    )
-    .expect("owner is admitted");
-
-    let fanout = Arc::new(FanoutState::new());
-    let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
-    let sink = Arc::new(RecordingSink::default());
-    let publisher =
-        PeerPublisher::new(sink.clone() as Arc<dyn crate::apps::collab_outbound::PeerPublishSink>);
-    let (state, _bridge_rx) = AppBrokerState::new(
-        &fanout,
-        Arc::clone(&broker_channels),
-        publisher,
-        Some(membership.clone()),
-        None,
-    );
-    fanout.attach_app_broker(Arc::clone(&state));
-    state.ensure_channel(&route.channel_key());
-    let mut received = state.subscribe_ops(&route.channel_key(), 2);
-
-    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
-    let mut op = SignedOp::new_unsigned(
-        DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
-            .encode()
-            .expect("typed snapshot"),
-        artifact,
-        Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-        document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-        collab_types::OpKind::Change,
-        tilo_clock::wall(),
-        1,
-    );
-    sign_op(&mut op, &device).expect("device signs document op");
-    let authorized = state
-        .authorize_certified_document(&route, &admitted, &op)
-        .expect("live owner may edit the joined document");
-    handle_authorized_signed_op_send(&state, 1, &route, &admitted, &authorized, op.clone());
-
-    let delivered = received.try_recv().expect("snapshot fanout");
-    assert_eq!(
-        postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
-        op
-    );
-    assert_eq!(
-        broker_channels
-            .lock()
-            .expect("broker channels")
-            .state_for(artifact)
-            .op_log
-            .len(),
-        1,
-        "the admitted validator records the certified op without a role attestation"
-    );
-    assert_published_snapshot(&sink, &route);
-
-    let mut encrypted = SignedOp::new_unsigned_with_encryption(
-        b"opaque MLS application frame".to_vec(),
-        artifact,
-        Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-        document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-        collab_types::OpKind::Change,
-        tilo_clock::wall(),
-        2,
-        collab_types::EncryptionMetadata::mls_application(7),
-    );
-    sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
-    let authorized = state
-        .authorize_certified_document(&route, &admitted, &encrypted)
-        .expect("broker authorizes signed clear metadata without decrypting");
-    assert!(matches!(
-        authorized.payload,
-        collab_types::RoutedDocumentPayload::Encrypted { epoch: 7 }
-    ));
-    handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
-    let delivered = received.try_recv().expect("opaque MLS fanout");
-    assert_eq!(
-        postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
-        encrypted,
-        "broker must relay ciphertext byte-for-byte"
-    );
-
-    assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
-
-    downgrade_member_to_viewer(&membership, &actor, &route.cluster_id);
-    let viewer = state
-        .revalidate_admission(&route, &admitted)
-        .expect("member still admitted");
-    assert_eq!(viewer.role, Role::Viewer);
-    assert!(
-        state
-            .authorize_certified_document(&route, &viewer, &op)
-            .is_err(),
-        "a live downgrade must take effect before the next send"
-    );
-    let other_document = CrdtRoute::record(route.app_id.clone(), route.cluster_id, "other-record");
-    assert!(
-        state
-            .authorize_certified_document(&other_document, &admitted, &op)
-            .is_err(),
-        "a signed envelope cannot be replayed through another record route"
-    );
-}
-
 /// The person's own workspace is admitted from the joiner's own root alone, with no
-/// workspace in the tree, and its documents reach the other local
-/// connections on the record and the peer publisher. Nobody else's root
-/// enters it, and nobody enters another person's workspace.
+/// workspace in the tree, and stays admitted without one. Nobody else's root enters it, and
+/// nobody enters another person's workspace.
 #[test]
 fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
     let root = SigningKey::from_bytes(&[26; 32]);
@@ -991,52 +838,17 @@ fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
     );
 
     let fanout = Arc::new(FanoutState::new());
-    let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
-    let sink = Arc::new(RecordingSink::default());
-    let publisher =
-        PeerPublisher::new(sink.clone() as Arc<dyn crate::apps::collab_outbound::PeerPublishSink>);
     let (state, _bridge_rx) = AppBrokerState::new(
         &fanout,
-        Arc::clone(&broker_channels),
-        publisher,
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
         Some(membership),
         None,
     );
-    fanout.attach_app_broker(Arc::clone(&state));
-    state.ensure_channel(&route.channel_key());
-    let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
     let current = state
         .revalidate_admission(&route, &admitted)
         .expect("the own workspace stays admitted without a workspace");
     assert_eq!(current.role, CapRole::Owner);
-
-    let mut op = SignedOp::new_unsigned(
-        DocumentMutation::Snapshot(b"watched".to_vec())
-            .encode()
-            .expect("typed snapshot"),
-        document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
-        Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-        document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-        collab_types::OpKind::Change,
-        tilo_clock::wall(),
-        1,
-    );
-    sign_op(&mut op, &device).expect("device signs document op");
-    let authorized = state
-        .authorize_certified_document(&route, &current, &op)
-        .expect("the owner writes their own records");
-    handle_authorized_signed_op_send(&state, 1, &route, &current, &authorized, op.clone());
-
-    let delivered = other_window.try_recv().expect("local fanout");
-    assert_eq!(
-        postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
-        op
-    );
-    assert!(matches!(
-        sink.snapshot().as_slice(),
-        [Sent::Signed { cluster_id, document_id, .. }]
-            if *cluster_id == route.cluster_id && document_id == "watch-history"
-    ));
 }
 
 /// A device a harness lists is still refused once the workspace's authority

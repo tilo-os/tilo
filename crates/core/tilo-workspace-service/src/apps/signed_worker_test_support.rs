@@ -435,8 +435,7 @@ impl OriginalWorkspace {
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
             crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
-        let publisher =
-            PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(owner_handle));
+        let publisher = PeerPublisher::with_commits(Arc::new(owner_handle));
         let mut services = membership.services();
         services.document_content = document_content;
         let (state, bridge_rx) = AppBrokerState::new_configured(

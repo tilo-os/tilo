@@ -634,9 +634,6 @@ impl AppBrokerState {
         };
         let key = PresenceKey::resource(&route.app_id, &shown.key.0, &shown.key.1);
         let payload = PresencePayload::Interaction(Box::new(interaction));
-        // Peers see it too; their ingress keeps the actor only as far as
-        // this device's certified person vouches for it.
-        self.publish_presence(route, &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
             member,
             key,

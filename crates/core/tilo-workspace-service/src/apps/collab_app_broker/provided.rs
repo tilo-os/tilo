@@ -633,18 +633,6 @@ pub(crate) mod signed_test_support {
             self.owner.with_current(workspace, |_| Ok(()))
         }
 
-        fn document(
-            &self,
-            _: String,
-            _: String,
-            _: String,
-            _: Option<String>,
-            _: collab_types::SignedOp,
-            _: Option<String>,
-        ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-            Box::pin(async { Err("this fixture records receipts alone".into()) })
-        }
-
         fn effect(
             &self,
             workspace: String,
@@ -752,8 +740,7 @@ pub(crate) mod signed_test_support {
             );
             tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate)
                 .unwrap();
-            let publisher =
-                PeerPublisher::with_optional_commits(None, Arc::new(NativeOwnerReceipts { owner }));
+            let publisher = PeerPublisher::with_commits(Arc::new(NativeOwnerReceipts { owner }));
             let person = person_id_for_root(certificate.user_public_key);
             workspace.policy.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();

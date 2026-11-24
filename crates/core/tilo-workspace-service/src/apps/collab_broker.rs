@@ -269,6 +269,17 @@ impl FanoutState {
 
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
+    /// Tell every window open on `route`'s record that another device changed it: each asks the
+    /// device's store for the changes past what it holds.
+    pub fn record_changed(&self, route: &CrdtRoute) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(app_broker) = self.app_broker() {
+            app_broker.record_changed(route, u64::MAX);
+        }
+    }
+
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
         if self.stopped.load(Ordering::Acquire) {
             return;
@@ -1072,11 +1083,6 @@ pub fn spawn_native_peer_with_services(
     config: crate::apps::NativePeerBrokerConfig,
     services: crate::apps::services::ProcessServices,
 ) -> std::io::Result<BrokerHandle> {
-    if !publisher.is_wired() {
-        return Err(std::io::Error::other(
-            "peer broker requires an attached signed-document publisher",
-        ));
-    }
     spawn_with_services(
         socket,
         Some(membership),

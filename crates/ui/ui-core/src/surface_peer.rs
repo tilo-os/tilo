@@ -542,7 +542,5 @@ mod tests {
         .expect("a surface joins");
         let joined = peer.take_primary_route_result().expect("acknowledged");
         assert_eq!(joined.expect("no refusal").app_id, "so.tilo.topbar");
-        peer.send(CollabRequest::RequestDocumentSnapshot)
-            .expect("dropped, not fatal");
     }
 }

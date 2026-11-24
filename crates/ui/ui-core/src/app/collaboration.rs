@@ -517,35 +517,12 @@ impl App {
         self.drain_local_input_capture();
     }
 
-    /// Apply a document envelope received on the unqualified workspace route.
-    /// The broker authenticated the route; discovery still validates and
-    /// bounds its names before exposing them to the app.
-    fn apply_workspace_index_document_envelope(
+    /// Apply a change of the workspace index, the record of the unqualified
+    /// workspace route.
+    fn apply_workspace_index_mutation(
         &mut self,
-        route: &crate::collaboration::RouteSpec,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
+        mutation: collab_types::DocumentMutation,
     ) -> bool {
-        let Some(payload) = crate::app::document_routes::validated_route_payload_with(
-            route,
-            envelope,
-            decrypted_payload,
-        ) else {
-            tracing::warn!(
-                "collab: broker delivered a workspace-index op outside its joined route"
-            );
-            return false;
-        };
-        let mutation = match crate::app::document_routes::decode_routed_mutation(
-            payload,
-            decrypted_payload,
-        ) {
-            Ok(mutation) => mutation,
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an invalid workspace-index mutation");
-                return false;
-            }
-        };
         let Some(workspace) = self.persistence.workspace_index.as_mut() else {
             return false;
         };
@@ -576,12 +553,9 @@ impl App {
         let Some(manager) = self.collaboration.workspace_manager.as_mut() else {
             return false;
         };
-        let Some(route) = manager
-            .primary_route()
-            .map(|observation| observation.route().clone())
-        else {
+        if manager.primary_route().is_none() {
             return false;
-        };
+        }
         let events = manager.poll();
         let mut any = false;
         for event in events {
@@ -589,44 +563,8 @@ impl App {
                 CollabEvent::CommittedDocument { route, read } => {
                     self.queue_committed_document(route, read)
                 }
-                CollabEvent::Document {
-                    envelope,
-                    decrypted_payload,
-                    ..
-                } => {
-                    any |= self.apply_workspace_index_document_envelope(
-                        &route,
-                        &envelope,
-                        decrypted_payload.as_deref(),
-                    );
-                }
-                CollabEvent::ScrollbackBatch {
-                    ops,
-                    decrypted_payloads,
-                    ..
-                } => {
-                    for (index, envelope) in ops.into_iter().enumerate() {
-                        any |= self.apply_workspace_index_document_envelope(
-                            &route,
-                            &envelope,
-                            decrypted_payloads
-                                .get(index)
-                                .and_then(|payload| payload.as_deref()),
-                        );
-                    }
-                }
-                CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(workspace)) = (
-                        self.collaboration.workspace_manager.as_mut(),
-                        self.persistence.workspace_index.as_mut(),
-                    ) {
-                        let snapshot = workspace.document_mut().save();
-                        if let Err(error) = manager.try_send(
-                            crate::collaboration::CollabRequest::document_snapshot(snapshot),
-                        ) {
-                            tracing::warn!(%error, "collab: workspace-index snapshot not sent");
-                        }
-                    }
+                CollabEvent::Document { mutation, .. } => {
+                    any |= self.apply_workspace_index_mutation(mutation);
                 }
                 _ => {}
             }
@@ -805,7 +743,6 @@ impl App {
                     payload: crate::collaboration::PresencePayload::Arrived,
                 });
             }
-            self.request_checkout_snapshot();
             // Only a window on its own instance route has an owner view to
             // replay; a window showing a sealed record has none to ask for.
             if self.private_continuity_route().is_some() {
@@ -819,19 +756,6 @@ impl App {
             self.publish_action_surface();
         }
         true
-    }
-
-    /// Ask a freshly checked-out record route for its document, once the
-    /// route can carry the request.
-    pub(super) fn request_checkout_snapshot(&mut self) {
-        if self.collaboration.snapshot_on_ready
-            && self
-                .collaboration
-                .manager
-                .send(CollabRequest::RequestDocumentSnapshot)
-        {
-            self.collaboration.snapshot_on_ready = false;
-        }
     }
 
     /// Applies every queued collaboration event. Returns whether presentation
@@ -974,9 +898,6 @@ impl App {
                 Some(peer) => self.follow(peer),
                 None => self.unfollow(),
             },
-            CollabEvent::DocumentSnapshotRequested { route } => {
-                self.respond_document_snapshot(&route);
-            }
             CollabEvent::DocumentContent { route, hash, bytes } => {
                 // The record's content reaches every content link carrying it, the
                 // windows' own included: a window's store reads the content link it
@@ -1000,8 +921,8 @@ impl App {
             } => {
                 self.apply_remote_presence(member, key, payload);
             }
-            event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
-                self.apply_document_collab_event(event);
+            CollabEvent::Document { route, mutation } => {
+                self.apply_document_collab_event(&route, mutation);
                 self.observe_primary_retirement();
             }
             CollabEvent::Handoff { request } => self.apply_handoff(request),
@@ -1061,107 +982,19 @@ impl App {
         }
     }
 
-    fn apply_document_collab_event(&mut self, event: CollabEvent) {
-        match event {
-            CollabEvent::Document {
-                envelope,
-                decrypted_payload,
-                ..
-            } => {
-                // The broker already validated the envelope (signature +
-                // role table + replay defence); the toolkit trusts it.
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_receive",
-                    bytes = envelope.payload.len(),
-                    author = ?envelope.author,
-                    sequence = envelope.seq,
-                    encrypted = envelope.encryption.is_some(),
-                    "applying document mutation"
-                );
-                self.collaboration
-                    .history
-                    .observe_live(envelope.artifact, envelope.seq);
-                self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
-            }
-            CollabEvent::ScrollbackBatch {
-                artifact,
-                ops,
-                decrypted_payloads,
-                oldest_seq,
-                exhausted,
-            } => {
-                self.continue_document_history(artifact, oldest_seq, exhausted);
-                // Broker pre-validated each envelope, trusted the same
-                // way as a live document mutation.
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_scrollback",
-                    operations = ops.len(),
-                    "applying document scrollback"
-                );
-                self.apply_document_scrollback(ops, &decrypted_payloads);
-            }
-            _ => {}
-        }
-    }
-
-    fn continue_document_history(
+    fn apply_document_collab_event(
         &mut self,
-        artifact: collab_types::ArtifactId,
-        oldest_seq: Option<u64>,
-        exhausted: bool,
+        route: &crate::collaboration::RouteSpec,
+        mutation: collab_types::DocumentMutation,
     ) {
-        if let Some(request) = self
-            .collaboration
-            .history
-            .on_batch(artifact, oldest_seq, exhausted)
-        {
-            self.send_history_request(request);
-        }
-    }
-
-    fn send_history_request(&mut self, request: crate::collaboration::CollabRequest) {
-        if let Err(error) = self.collaboration.manager.try_send(request) {
-            tracing::debug!(
-                ?error,
-                "collab: history page request not sent; retried on next trigger"
-            );
-            self.collaboration.history.reset_in_flight();
-        }
-    }
-
-    /// Answer a request for the whole document on `route`: a record an
-    /// owner holds on that route is published whole on it with the next
-    /// publication; any other request is the window's own document's.
-    fn respond_document_snapshot(&mut self, route: &crate::collaboration::RouteSpec) {
-        if let Some(entry) = self
-            .document_routes
-            .owners
-            .iter_mut()
-            .find(|entry| entry.route == *route)
-        {
-            entry.needs_snapshot = true;
-            return;
-        }
-        let data = match self.primary_document_snapshot() {
-            Ok(Some(data)) => data,
-            Ok(None) => return,
-            Err(error) => {
-                tracing::warn!(%error, "collab: primary snapshot refused");
-                return;
-            }
-        };
-        let result = self
-            .collaboration
-            .manager
-            .try_send(crate::collaboration::CollabRequest::document_snapshot(data));
-        if let Err(error) = &result {
-            // The requester keeps asking while no holder answers, so
-            // a busy transport delays onboarding rather than losing it.
-            tracing::warn!(%error, "collab: primary snapshot not sent");
-        }
-        self.note_document_send(&result);
+        tracing::debug!(
+            target: "tilo.state",
+            event = "document_receive",
+            bytes = mutation.data().len(),
+            app = %route.app_id,
+            "applying document mutation"
+        );
+        self.apply_routed_document(route, mutation);
     }
 
     /// Route an answer from the session action host to the local request

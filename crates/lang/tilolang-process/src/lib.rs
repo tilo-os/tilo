@@ -1316,7 +1316,6 @@ fn arrived_early(
             early,
             collaboration::CollabEvent::Invocation { .. }
                 | collaboration::CollabEvent::Handoff { .. }
-                | collaboration::CollabEvent::DocumentSnapshotRequested { .. }
         ) {
             tracing::warn!(
                 app,

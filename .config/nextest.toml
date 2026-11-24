@@ -112,6 +112,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilolang-process:tilolang-process", "launcher:tilo-launcher",
+    "scratchpad:scratchpad",
 ]
 
 [[profile.default.scripts]]

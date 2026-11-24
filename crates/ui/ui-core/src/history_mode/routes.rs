@@ -260,9 +260,6 @@ pub(crate) struct OwnerDocumentRoutes {
     /// Why local changes on the primary or workspace-index route are not reaching peers.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
-    /// When each route was last asked for its record whole, for a peer's change that arrived
-    /// without the history it is built on ([`Self::take_snapshot_ask`]).
-    snapshot_asked: std::collections::HashMap<RouteSpec, crate::time::Instant>,
     /// The records held as part of a live owner's tree ([`DocumentId::tree`]) that no view owns: each
     /// keeps its route while its store has it open.
     tree: Vec<TreeRecord>,
@@ -274,27 +271,6 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
-    /// Whether `route` should now be asked for its record whole: a peer's change to it arrived
-    /// that this replica cannot apply because it lacks the history the change is built on, and the
-    /// record whole is the one read that repairs that. Asked at most once a second per route, so a
-    /// run of changes from the same peer asks once.
-    pub(crate) fn take_snapshot_ask(
-        &mut self,
-        route: &RouteSpec,
-        now: crate::time::Instant,
-    ) -> bool {
-        const RETRY: crate::time::Duration = crate::time::Duration::from_secs(1);
-        if self
-            .snapshot_asked
-            .get(route)
-            .is_some_and(|asked| now.duration_since(*asked) < RETRY)
-        {
-            return false;
-        }
-        self.snapshot_asked.insert(route.clone(), now);
-        true
-    }
-
     /// Give every record of a live owner's tree its own owner: a chat's message parts, a container's
     /// child records. Without this a part only one device wrote never left it.
     fn hold_trees(&mut self, current: &mut Vec<(HistoryOwner, bool)>) {
@@ -481,37 +457,6 @@ impl OwnerDocumentRoutes {
             }
         }
         joins
-    }
-}
-
-#[cfg(test)]
-mod snapshot_ask_tests {
-    use super::*;
-
-    /// A peer's change this replica cannot apply is answered by asking its route for the record
-    /// whole: once for a run of changes to it, again a second later, and per route.
-    #[test]
-    fn a_route_is_asked_for_its_record_whole_once_a_second() {
-        let mut routes = OwnerDocumentRoutes::default();
-        let route = RouteSpec::app("so.tilo.settings", uuid::Uuid::new_v4());
-        let now = crate::time::Instant::now();
-        assert!(
-            routes.take_snapshot_ask(&route, now),
-            "the first change asks"
-        );
-        assert!(
-            !routes.take_snapshot_ask(&route, now),
-            "a run of changes to it asks once"
-        );
-        assert!(
-            routes.take_snapshot_ask(&route, now + crate::time::Duration::from_secs(2)),
-            "a route still short of the history asks again"
-        );
-        let other = RouteSpec::app("so.tilo.notes", uuid::Uuid::new_v4());
-        assert!(
-            routes.take_snapshot_ask(&other, now),
-            "each route is asked for on its own"
-        );
     }
 }
 

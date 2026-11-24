@@ -112,29 +112,13 @@ fn snapshots(app: &mut App) -> Vec<(crate::collaboration::RouteSpec, Vec<u8>)> {
         .collect()
 }
 
-fn from_device(
-    route: &crate::collaboration::RouteSpec,
-    document: Vec<u8>,
-) -> collab_types::SignedOp {
-    collab_types::SignedOp::new_unsigned(
-        collab_types::DocumentMutation::Snapshot(document)
-            .encode()
-            .unwrap(),
-        collab_types::document_artifact_id(
-            &route.app_id,
-            &route.cluster_id.to_string(),
-            route.document.as_deref().unwrap_or(""),
-        ),
-        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::document_attestation_id(
-            &route.app_id,
-            &route.cluster_id.to_string(),
-            route.document.as_deref().unwrap_or(""),
-        ),
-        collab_types::OpKind::Change,
-        crate::time::SystemTime::UNIX_EPOCH,
-        0,
-    )
+/// `document` whole on `route`, as the device's store sends what it holds of
+/// the record.
+fn from_device(route: &crate::collaboration::RouteSpec, document: Vec<u8>) -> CollabEvent {
+    CollabEvent::Document {
+        route: route.clone(),
+        mutation: collab_types::DocumentMutation::Snapshot(document),
+    }
 }
 
 tilo_test_env::scenario! {
@@ -202,7 +186,7 @@ tilo_test_env::scenario! {
         let mut phone_app = app_holding(&phone);
         laptop_app.publish_owned_documents();
         let (route, first) = snapshots(&mut laptop_app).into_iter().next().unwrap();
-        phone_app.apply_signed_document_envelope(&from_device(&route, first), None);
+        phone_app.apply_document_event(&from_device(&route, first));
         phone_app.publish_owned_documents();
         phone_app.document_routes.sent.clear();
 
@@ -224,23 +208,10 @@ tilo_test_env::scenario! {
         );
         assert!(!watched(&phone).contains(&"while-away".to_owned()));
 
-        // A request on a route the app does not keep a person's record on is
-        // not this record's to answer.
-        laptop_app.apply_collab_event_for_test(CollabEvent::DocumentSnapshotRequested {
-            route: crate::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "elsewhere"),
-        });
-        laptop_app.publish_owned_documents();
-        assert!(snapshots(&mut laptop_app).is_empty());
-
-        // The phone's route returns: the laptop is asked for the record whole,
-        // and the phone, merging it, has everything.
-        laptop_app.apply_collab_event_for_test(CollabEvent::DocumentSnapshotRequested {
-            route: route.clone(),
-        });
-        laptop_app.publish_owned_documents();
-        let (sent, whole) = snapshots(&mut laptop_app).into_iter().next().unwrap();
-        assert_eq!(sent, route);
-        phone_app.apply_signed_document_envelope(&from_device(&route, whole), None);
+        // The phone's route returns: it reads what the store holds of the
+        // record, which took the laptop's change, and, merging it, has
+        // everything.
+        phone_app.apply_document_event(&from_device(&route, laptop.document().unwrap()));
         assert_eq!(watched(&phone), watched(&laptop));
         assert!(watched(&phone).contains(&"while-away".to_owned()));
     }
@@ -278,13 +249,13 @@ tilo_test_env::scenario! {
         let laptop = personal_device();
         watch(&laptop, "kept-by-the-host");
         second_app
-            .apply_signed_document_envelope(&from_device(&route, laptop.document().unwrap()), None);
+            .apply_document_event(&from_device(&route, laptop.document().unwrap()));
         assert_eq!(watched(&second), ["kept-by-the-host"]);
 
         // What the first window publishes on the route reaches it as well.
         watch(&first, "in-the-first-window");
         second_app
-            .apply_signed_document_envelope(&from_device(&route, first.document().unwrap()), None);
+            .apply_document_event(&from_device(&route, first.document().unwrap()));
         assert_eq!(
             watched(&second),
             ["in-the-first-window", "kept-by-the-host"]

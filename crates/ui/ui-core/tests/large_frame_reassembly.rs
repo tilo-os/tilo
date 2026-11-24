@@ -1,8 +1,9 @@
-//! A large document snapshot payload (the late-join
-//! reply) does not fit in one socket read, so it arrives split across
-//! reads. The typed RPC transport must reassemble it without truncation.
+//! A large record change does not fit in one socket read, so it arrives
+//! split across reads. The typed RPC transport must reassemble it without
+//! truncation.
 
 use crate::support::typed_collab::TypedBroker;
+use crate::support::{change_carrying, changes_of};
 use tilo_ui::collaboration::CollabRequest;
 
 #[test]
@@ -15,24 +16,26 @@ fn large_frame_survives_split_reads() {
 
     // 256 KB — far larger than a single socket read, so it MUST span
     // multiple reads on B's side.
-    let big = vec![0xABu8; 256 * 1024];
+    let big = change_carrying(vec![0xABu8; 256 * 1024]);
     a.send(CollabRequest::document_snapshot(big.clone()));
 
     // Poll B until the frame arrives, accumulating it across reads.
     let mut got: Option<Vec<u8>> = None;
     tilo_test_env::wait_until("the large snapshot at B", || {
         for e in b.poll() {
-            if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
-            {
-                got = Some(data);
+            if let Some(mutation) = e.document_mutation() {
+                got = Some(mutation.data().to_vec());
             }
         }
         got.is_some()
     });
 
-    let data = got.expect("B must receive the large document snapshot");
+    let data = got.expect("B must receive the large change");
     assert_eq!(data.len(), big.len(), "payload length must match");
-    assert!(data == big, "payload must round-trip byte-for-byte");
+    assert!(
+        changes_of(&data) == changes_of(&big),
+        "payload must round-trip byte-for-byte"
+    );
 
     drop(a);
     drop(b);

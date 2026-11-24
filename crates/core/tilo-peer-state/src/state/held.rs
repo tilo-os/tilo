@@ -88,7 +88,7 @@ fn in_the_clear(message: &NeighbourMsg) -> bool {
     matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
 }
 
-fn dropped_input(
+pub(super) fn dropped_input(
     author: &[u8; 32],
     message: &NeighbourMsg,
     waiting_for: Option<MissingPrerequisite>,
@@ -215,6 +215,14 @@ impl StatePeer {
                     self.remember_missed(&input, in_the_clear(&oldest));
                     dropped.push(input);
                 }
+            }
+        }
+        // An action one of whose writes was let go is never whole: its other writes go with it.
+        for input in dropped.clone() {
+            if let Some(waiting @ MissingPrerequisite::ActionParts { action, .. }) =
+                &input.waiting_for
+            {
+                dropped.extend(self.let_go_action(action, waiting, &input.reason));
             }
         }
         self.core.pending_bytes = self.core.pending_bytes.saturating_add(bytes);

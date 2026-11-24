@@ -189,24 +189,9 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(verified.capped || restricted)
     }
 
-    /// Run `decide` with what this identity may do in `workspace` (its person
-    /// workspace, or a workspace in `tree`).
-    /// [`Self::with_authority`] over the committed authority of
-    /// `membership`, borrowed for the one decision.
-    pub(super) fn with_current_authority<T>(
-        &self,
-        membership: Option<&WorkspaceTreeHandle>,
-        workspace: &str,
-        decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
-    ) -> Result<T, String> {
-        match membership {
-            Some(membership) => membership
-                .decide_in_tree(|tree| self.with_authority(Some(tree), workspace, decide))
-                .and_then(std::convert::identity),
-            None => self.with_authority(None, workspace, decide),
-        }
-    }
-
+    /// Run `decide` with what this identity may do in `workspace_id` (its person workspace, or a
+    /// workspace in `tree`).
+    #[cfg(test)]
     pub(super) fn with_authority<T>(
         &self,
         tree: Option<&Layout>,
@@ -219,7 +204,8 @@ impl AdmittedJoinIdentity {
             // The own workspace's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
-            let policy = WorkspacePolicy::new(workspace_id, self.actor_key.clone());
+            let policy =
+                tilo_action_policy::WorkspacePolicy::new(workspace_id, self.actor_key.clone());
             let access =
                 tilo_action_policy::MemberAccess::new(policy, self.broker_actor().acting());
             return Ok(decide(&access));
@@ -347,16 +333,6 @@ pub(super) fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), S
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
         ));
-    }
-    Ok(())
-}
-
-pub(super) fn verify_session_author(
-    admitted: &AdmittedJoinIdentity,
-    author: collab_types::Ed25519PublicKey,
-) -> Result<(), String> {
-    if author.as_bytes() != &admitted.verified.device_public_key {
-        return Err("signed op author does not match the certified device for this session".into());
     }
     Ok(())
 }

@@ -140,9 +140,9 @@ pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
     DEVICE_SETTINGS, Decided, HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
-    RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges,
-    ResourceCopy, ResourceReadings, ResourceReads, ResourceWake, answer_read, answered,
-    device_record_address, device_record_space, read_resources, readings_of,
+    RESOURCE_READS_UNAVAILABLE, RESOURCE_WRITE_REFUSED, ResourceAddress, ResourceAsk,
+    ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings, ResourceReads, ResourceWake,
+    answer_read, answered, device_record_address, device_record_space, read_resources, readings_of,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]
@@ -2017,7 +2017,9 @@ pub enum RemoteActionMessage {
     /// Read a record of the workspace `read` names through the one record API
     /// ([`ResourceReads`]), decided there as every reader of it is; continuing
     /// `on_behalf_of`, an invocation the provider delivered to the caller, it is
-    /// that invocation's caller's read.
+    /// that invocation's caller's read. Where its answer is a decision
+    /// ([`ReadAnswer::Decision`], [`ReadAnswer::WriteDecision`]), it asks only whether the caller
+    /// may read or change the record.
     ResourceRead {
         correlation: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2114,6 +2116,9 @@ pub enum ReadAnswer {
     /// Only whether the caller may read the record now, decided as its read is, without the copy
     /// ([`ResourceReads::may_read`]): what a reader that keeps the record another way asks.
     Decision,
+    /// Only whether the caller may change the record now, decided as its write is, without the
+    /// change ([`ResourceReads::may_write`]): what a route asks before it changes the record.
+    WriteDecision,
 }
 
 impl ReadAnswer {

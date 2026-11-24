@@ -14,11 +14,7 @@ fn terminal_bridge_failure_withdraws_reads_before_disconnected_health() {
             committed_private_binding: Some(7),
             ..Captures::default()
         })),
-        op_backlog: vec![],
-        presence_backlog: vec![],
-        context_backlog: vec![],
-        terminate_context_stream: false,
-        scrollback_response: None,
+        ..FakeBroker::default()
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
     let mut manager =
@@ -115,11 +111,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
             committed_private_binding: Some(7),
             ..Captures::default()
         })),
-        op_backlog: vec![],
-        presence_backlog: vec![],
-        context_backlog: vec![],
-        terminate_context_stream: false,
-        scrollback_response: None,
+        ..FakeBroker::default()
     };
     let (fd, captures, thread) = stand_up_fake_broker(broker);
     let mut manager =
@@ -338,11 +330,7 @@ impl ReadyReader {
                 committed_changes: changes,
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            terminate_context_stream: false,
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let manager =

@@ -1,35 +1,22 @@
-//! The broker's writes for every session that holds this device's workspaces.
-//!
-//! What an app writes in a workspace is committed through this device's
-//! workspace service, which holds the one copy of every workspace the device
-//! takes part in and carries the write to the workspace's other devices. The
-//! receipt of every effect an app's action had is recorded in the workspace's
-//! own document.
+//! The broker's effect receipts for every session that holds this device's workspaces: the
+//! receipt of every effect an app's action had is recorded in the workspace's own document,
+//! through this device's workspace service.
 
-use std::sync::Arc;
-
-use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
+use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner::WriteRefusal;
 
-/// The broker's writes: documents through the workspace service, effects in the workspace's own
-/// document.
+/// The broker's effect receipts, kept in the workspace's own document.
 #[derive(Clone)]
 pub struct ServiceCommits {
-    /// Where documents and receipts are committed: this device's workspace service.
+    /// Where receipts are committed: this device's workspace service.
     service: crate::service::ServiceSlot,
-    /// What hears of a record committed here: search reads it again.
-    changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
 }
 
 impl ServiceCommits {
-    /// Effect receipts kept in the workspace `service` holds, and documents through it.
+    /// Effect receipts kept in the workspaces `service` holds.
     #[must_use]
-    pub fn new(
-        service: crate::service::ServiceSlot,
-        changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
-    ) -> Self {
-        Self { service, changes }
+    pub fn new(service: crate::service::ServiceSlot) -> Self {
+        Self { service }
     }
 }
 
@@ -45,48 +32,6 @@ impl WorkspaceCommits for ServiceCommits {
             .service()
             .map(|_| ())
             .ok_or_else(|| "this device's workspace service is not open".to_owned())
-    }
-
-    fn document(
-        &self,
-        workspace: String,
-        app: String,
-        document: String,
-        readers: Option<String>,
-        envelope: collab_types::SignedOp,
-        _resource_type: Option<String>,
-    ) -> DocumentFuture {
-        let (copies, runtime) = self.service.service().map_or((None, None), |service| {
-            (Some(service.workspaces().clone()), service.writes_runtime())
-        });
-        let changes = self.changes.clone();
-        Box::pin(async move {
-            let copies = copies.ok_or("this device's workspace service is not open")?;
-            let committing = workspace.clone();
-            let (written_app, written_document, written_envelope) =
-                (app.clone(), document.clone(), envelope.clone());
-            super::service_resources::on_the_service(
-                runtime,
-                Box::pin(async move {
-                    copies
-                        .commit_local_document(
-                            &committing,
-                            &written_app,
-                            &written_document,
-                            readers.as_deref(),
-                            written_envelope,
-                        )
-                        .await
-                        .map_err(|refusal: WriteRefusal| refusal.to_string())
-                }),
-            )
-            .await?;
-            // What search holds of the record is read again from what it now holds.
-            if let Some(changes) = &changes {
-                changes.changed(&workspace, &app, &document);
-            }
-            Ok(envelope)
-        })
     }
 
     fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {

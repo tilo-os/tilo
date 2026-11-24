@@ -1,8 +1,5 @@
-//! Native owner-route bridge. SDK retains signing, encryption and transport.
+//! Native owner-route bridge: each route's record changes, to and from the device's store.
 use super::*;
-pub(super) use crate::collaboration::document_routes::{
-    decode_routed_mutation, validated_route_payload_with,
-};
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"
@@ -111,32 +108,11 @@ impl App {
         // A mutable widget callback is not a read-only notification boundary.
         if !matches!(
             event,
-            CollabEvent::Document { .. }
-                | CollabEvent::ScrollbackBatch { .. }
-                | CollabEvent::CommittedDocument { .. }
+            CollabEvent::Document { .. } | CollabEvent::CommittedDocument { .. }
         ) {
             crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
         }
     }
-    #[allow(
-        clippy::vec_box,
-        reason = "consume the existing SDK event envelope representation without copying it"
-    )]
-    pub(super) fn apply_document_scrollback(
-        &mut self,
-        ops: Vec<Box<collab_types::SignedOp>>,
-        decrypted_payloads: &[Option<Vec<u8>>],
-    ) {
-        for (index, envelope) in ops.into_iter().enumerate() {
-            self.apply_signed_document_envelope(
-                &envelope,
-                decrypted_payloads
-                    .get(index)
-                    .and_then(|payload| payload.as_deref()),
-            );
-        }
-    }
-
     /// Local queue state, not an acknowledgement of remote delivery/durability.
     ///
     /// Distinguishes pending or unsigned action history from remote document
@@ -598,10 +574,12 @@ impl App {
         self.drain_document_routes_after_refresh();
         let _ = self.queue_owned_documents_after_refresh();
     }
-    pub(super) fn apply_signed_document_envelope(
+    /// Merge `mutation`, the changes of `route`'s record the device's store
+    /// sent, into the record the route belongs to.
+    pub(super) fn apply_routed_document(
         &mut self,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
+        route: &crate::collaboration::RouteSpec,
+        mutation: collab_types::DocumentMutation,
     ) {
         // Before the first record checkout the launcher's unqualified route
         // carries workspace-index discovery, never the editable record document.
@@ -609,69 +587,44 @@ impl App {
             && self.collaboration.workspace_manager.is_none()
             && self.native_workspace_route.is_none()
         {
-            if let Some(route) = self
-                .collaboration
-                .manager
-                .primary_route()
-                .map(|observation| observation.route().clone())
-            {
-                let _ = self.apply_workspace_index_document_envelope(
-                    &route,
-                    envelope,
-                    decrypted_payload,
-                );
-            }
+            let _ = self.apply_workspace_index_mutation(mutation);
             return;
         }
         self.refresh_document_routes();
         if self.document_routes.observation.is_none() {
             return;
         }
-        // Signature/role/replay verification remains the SDK's responsibility.
-        // This API additionally checks deterministic artifact, attestation and
-        // encrypted channel against the actual installed route before decoding.
-        if let Some(refused) = self
-            .document_routes
-            .admit_owned(envelope, decrypted_payload)
-        {
-            if refused {
-                self.layout.layout_dirty = true;
+        let mutation = match self.document_routes.admit_owned(route, mutation) {
+            Ok(refused) => {
+                if refused {
+                    self.layout.layout_dirty = true;
+                }
+                self.drain_document_routes_after_refresh();
+                return;
             }
-            self.drain_document_routes_after_refresh();
-            return;
-        }
+            Err(mutation) => mutation,
+        };
         let Some(observation) = self.document_routes.observation.as_ref() else {
             return;
         };
-        let primary =
-            validated_route_payload_with(observation.route(), envelope, decrypted_payload)
-                .and_then(|payload| {
-                    let active = !self.document_routes.retired_route(observation.route())
-                        && match observation.route().document.as_deref() {
-                            Some(record) => self
-                                .persistence
-                                .records
-                                .as_ref()
-                                .and_then(|set| set.active())
-                                .is_some_and(|id| id.as_str() == record),
-                            None => self
-                                .persistence
-                                .records
-                                .as_ref()
-                                .is_none_or(|set| set.active().is_none()),
-                        };
-                    active.then_some(payload)
-                });
-        let Some(payload) = primary else {
+        let active = observation.route() == route
+            && !self.document_routes.retired_route(route)
+            && match route.document.as_deref() {
+                Some(record) => self
+                    .persistence
+                    .records
+                    .as_ref()
+                    .and_then(|set| set.active())
+                    .is_some_and(|id| id.as_str() == record),
+                None => self
+                    .persistence
+                    .records
+                    .as_ref()
+                    .is_none_or(|set| set.active().is_none()),
+            };
+        if !active {
             return;
-        };
-        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
-            Ok(mutation) => mutation,
-            Err(error) => {
-                tracing::warn!(%error, "collab: invalid routed document mutation");
-                return;
-            }
-        };
+        }
         let queue = &mut self.document_routes.primary;
         let accepted = queue.admit(mutation);
         if !accepted {
@@ -715,13 +668,13 @@ struct Part {
 }
 
 /// The commit each part of the pass travels under: the units one action
-/// wrote share one, so a peer applies all of it or none. `None` for a part
-/// that carries no commit of its own — a whole document, or a change the
+/// wrote share one, so every device applies all of it or none. `None` for a
+/// part that carries no commit of its own — a whole document, or a change the
 /// record's own ownership carries.
 ///
 /// A commit names one workspace, so the parts of another workspace's route
 /// are committed to apart. The author's device is left as zeros: the
-/// transport signs the frame and stamps the device it signs with.
+/// device's store stamps the device it writes with.
 fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::WorkspaceCommit>> {
     let mut commits = vec![None; parts.len()];
     // Every unit of the pass, by the workspace it belongs to.
@@ -761,14 +714,13 @@ pub(super) fn unit_commits(
         device: [0; 32],
     };
     collab_types::WorkspaceCommit::of_units(workspace, &author, units).unwrap_or_else(|error| {
-        tracing::warn!(%error, "collab: a published change commits to no action");
+        tracing::warn!(%error, "collab: a written change commits to no action");
         vec![None; units.len()]
     })
 }
 
 /// What one part of the pass sends: its changes under the commit of the
-/// action that made them, or as the transport carries them when the part is
-/// no action's.
+/// action that made them, or alone when the part is no action's.
 pub(super) fn part_request(
     mutation: collab_types::DocumentMutation,
     commit: Option<collab_types::WorkspaceCommit>,
@@ -996,31 +948,33 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         changed
     }
 
-    /// Queue `envelope` for the held record whose route it came on, if any:
-    /// `Some` whether its queue refused it, `None` when no held record's
-    /// route carried it.
+    /// Queue `mutation` for the owned record whose route it came on, if any:
+    /// `Ok` whether its queue refused it, `Err` giving it back when no owned
+    /// record's route carried it.
     pub(super) fn admit_owned(
         &mut self,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
-    ) -> Option<bool> {
-        let (index, payload) = self.owners.iter().enumerate().find_map(|(index, entry)| {
-            validated_route_payload_with(&entry.route, envelope, decrypted_payload)
-                .map(|payload| (index, payload))
-        })?;
-        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
-            Ok(mutation) => mutation,
-            Err(error) => {
-                tracing::warn!(%error, "collab: invalid routed document mutation");
-                return Some(false);
-            }
+        route: &crate::collaboration::RouteSpec,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<bool, collab_types::DocumentMutation> {
+        let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == *route) else {
+            return Err(mutation);
         };
-        let entry = self.owners.get_mut(index)?;
         let refused = !entry.pending.admit(mutation);
         if refused {
             tracing::warn!(status = ?entry.pending.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
-        Some(refused)
+        Ok(refused)
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Apply `event`, a record's changes as the transport delivers them.
+    pub(super) fn apply_document_event(&mut self, event: &CollabEvent) {
+        let CollabEvent::Document { route, mutation } = event else {
+            panic!("a record's changes, not {event:?}");
+        };
+        self.apply_routed_document(route, mutation.clone());
     }
 }
 
@@ -1121,7 +1075,7 @@ mod tests {
             assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
             assert_eq!(
                 action.author.device, [0; 32],
-                "the transport stamps the device"
+                "the device's store stamps the device"
             );
 
             let single = commits[2]

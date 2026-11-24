@@ -36,15 +36,53 @@ impl Workspaces {
         snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> Result<AppWrite, WriteRefusal> {
+        self.write_as_device(
+            workspace,
+            (app, document),
+            readers,
+            changes,
+            (founding, snapshot),
+            sealed,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::own_write`], as one part of the action `commit` names when it has one: the commit,
+    /// naming this device as its author, travels inside the signed write, so every device takes
+    /// the action's parts together.
+    pub(in crate::workspaces) async fn write_as_device(
+        &self,
+        workspace: &str,
+        (app, document): (&str, &str),
+        readers: Option<&str>,
+        changes: &[u8],
+        (founding, snapshot): (bool, bool),
+        sealed: Option<&key_group::ContentKeys>,
+        commit: Option<&collab_types::WorkspaceCommit>,
+    ) -> Result<AppWrite, WriteRefusal> {
         let device = self.signing_device();
         let now = tilo_clock::wall();
+        let commit = match commit {
+            Some(commit) if !commit.covers(app, document) => {
+                return Err(WriteRefusal::Refused(format!(
+                    "the action's commit names no change of {document} of {app}"
+                )));
+            }
+            Some(commit) => {
+                let mut commit = commit.clone();
+                commit.author.device = device.device();
+                Some(commit)
+            }
+            None => None,
+        };
         // A workspace this device does not hold yet is one it is still joining or opening: the
         // write is made once it holds it, and nobody is told of a refusal.
         let state = crate::timing::said_if_long("opening the workspace", self.workspace(workspace))
             .await
             .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
         let drafting = crate::timing::start();
-        let (mut envelope, author) = {
+        let (envelopes, author) = {
             let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
             let picked = match sealed {
                 Some(_) => None,
@@ -69,22 +107,30 @@ impl Workspaces {
                     founding,
                     snapshot,
                     sealed,
+                    commit: commit.as_ref(),
                     now,
                 },
             )?
         };
         crate::timing::event("own_write.draft", drafting, changes.len() as u64);
-        let signing = crate::timing::start();
-        sign_op(&mut envelope, &*device.signer)
-            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-        crate::timing::event("own_write.sign", signing, 0);
-        let committing = crate::timing::start();
-        crate::timing::said_if_long(
-            "the commit to the workspace",
-            self.commit_local_document(workspace, app, document, readers, envelope.clone()),
-        )
-        .await?;
-        crate::timing::event("own_write.commit", committing, 0);
+        // A write too large for one frame is committed a segment at a time, in order.
+        let mut last = None;
+        for mut envelope in envelopes {
+            let signing = crate::timing::start();
+            sign_op(&mut envelope, &*device.signer)
+                .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+            crate::timing::event("own_write.sign", signing, 0);
+            let committing = crate::timing::start();
+            crate::timing::said_if_long(
+                "the commit to the workspace",
+                self.commit_local_document(workspace, app, document, readers, envelope.clone()),
+            )
+            .await?;
+            crate::timing::event("own_write.commit", committing, 0);
+            last = Some(envelope);
+        }
+        let envelope =
+            last.ok_or_else(|| WriteRefusal::Refused("a write that carries no frame".into()))?;
         Ok(AppWrite {
             peer: neighbour_wire::peer_handle(&device.device()),
             app_id: app.to_owned(),

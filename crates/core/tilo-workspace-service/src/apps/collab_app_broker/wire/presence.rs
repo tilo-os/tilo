@@ -79,8 +79,6 @@ impl PresenceSession {
             other => other,
         };
         let route = self.route();
-        self.state
-            .publish_presence(&self.full_route(), &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
             member: AppBrokerState::member_id(&self.verified_identity),
             key,

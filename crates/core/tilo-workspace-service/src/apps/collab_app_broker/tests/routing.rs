@@ -527,35 +527,17 @@ fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
     let other_document = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-b");
     let other_app = CrdtRoute::record("so.tilo.files", "workspace-1", "note-a");
     let other_workspace = CrdtRoute::record("so.tilo.notes", "workspace-2", "note-a");
-    let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
-    let mut other_document_rx = state.subscribe_ops(&other_document.channel_key(), 3);
-    let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
-    let mut other_workspace_rx = state.subscribe_ops(&other_workspace.channel_key(), 5);
+    let mut target_rx = state.subscribe_context(&target.channel_key(), 2, None);
+    let mut other_document_rx = state.subscribe_context(&other_document.channel_key(), 3, None);
+    let mut other_app_rx = state.subscribe_context(&other_app.channel_key(), 4, None);
+    let mut other_workspace_rx = state.subscribe_context(&other_workspace.channel_key(), 5, None);
 
-    let (_signing, author) = collab_types::generate_keypair();
-    let envelope = SignedOp::new_unsigned(
-        DocumentMutation::Incremental(vec![7, 9])
-            .encode()
-            .expect("typed incremental mutation"),
-        document_artifact_id(&target.app_id, &target.cluster_id, &target.document_id),
-        author,
-        document_attestation_id(&target.app_id, &target.cluster_id, &target.document_id),
-        collab_types::OpKind::Change,
-        tilo_clock::wall(),
-        1,
-    );
-    state.fanout_to_route(
-        &CollabEvent::Document {
-            envelope: Box::new(envelope),
-            decrypted_payload: None,
-        },
-        1,
-        &target,
-    );
+    fanout.record_changed(&target);
 
-    assert!(
-        target_rx.try_recv().is_ok(),
-        "the addressed record receives the op"
+    assert_eq!(
+        target_rx.try_recv(),
+        Ok(ContextUpdate::RecordChanged),
+        "the addressed record is told it changed"
     );
     for (label, received) in [
         ("another record", other_document_rx.try_recv()),
@@ -1094,39 +1076,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase late_join_snapshot_request_selects_exactly_one_existing_holder;
-    {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let channel = "dev.tilo.notes#workspace:test#document:daily";
-        let mut first = state.subscribe_context(channel, 7, None);
-        let mut second = state.subscribe_context(channel, 9, None);
-        let _requester = state.subscribe_context(channel, 12, None);
-
-        assert!(state.request_document_snapshot(channel, 12));
-        assert!(matches!(
-            first.try_recv(),
-            Ok(ContextUpdate::SnapshotRequested)
-        ));
-        assert!(second.try_recv().is_err(), "only one holder may respond");
-        let requester_only_channel = "dev.tilo.notes#workspace:test#document:empty";
-        let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
-        assert!(
-            !state.request_document_snapshot(requester_only_channel, 12),
-            "the requester cannot answer from its own empty state"
-        );
-        assert!(requester_only.try_recv().is_err());
-        assert!(
-            !state.request_document_snapshot("missing", 12),
-            "a route without a holder is retryable, not falsely acknowledged"
-        );
-    }
 }
 
 /// The roster an app reads names each member as they set themselves: the picture a person keeps

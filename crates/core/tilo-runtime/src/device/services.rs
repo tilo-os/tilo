@@ -1974,11 +1974,8 @@ fn start_broker(
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.sockets.join(COLLAB_SOCKET),
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
-        PeerPublisher::with_optional_commits(
-            None,
-            ServiceCommits::new(parts.workspaces, Arc::clone(&parts.creation))
-                as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>,
-        ),
+        PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
+            as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
         None,
         broker_services(parts, policy_time)?,
         channels,
@@ -2085,6 +2082,10 @@ fn broker_services(
         launcher: Some(Arc::clone(parts.apps) as Arc<dyn LauncherServices>),
         app_action_access: Some(parts.apps.access_resolver()),
         app_resource_kinds: Some(parts.apps.resource_kinds_resolver()),
+        record_founding: Some({
+            let creation = Arc::clone(&parts.creation);
+            Arc::new(move |app: &str, kind: &str| creation.allows(app, kind))
+        }),
         workspace_grants: Some(Arc::new(MemberListGrants {
             workspaces: Arc::clone(parts.workspaces),
             person: parts.person,

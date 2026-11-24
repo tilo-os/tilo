@@ -17,7 +17,8 @@ tilo-identity-client = { path = "../../crates/core/tilo-identity-client" }
 runtime-portal = { path = "../../crates/core/runtime-portal" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-postcard.workspace = true
+serde_json.workspace = true
+tilo-resource-store = { path = "../../crates/core/resource-store" }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

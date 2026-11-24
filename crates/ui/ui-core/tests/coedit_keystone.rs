@@ -283,22 +283,19 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         let a_text = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
         a_doc.splice_text(&a_text, 0, 0, "SEED").unwrap();
 
-        // Late-join handshake: A ships a full snapshot, B adopts it. This is
-        // exactly the document snapshot path the App drives on join.
+        // Late join: A writes its document whole, and B reads the record's
+        // changes from the store as it would on opening the route.
         a.send(CollabRequest::document_snapshot(a_doc.save()));
         a_doc.commit_edit("fixture", "text", &[1; 32]);
         let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
         let mut b_doc = AutoCommit::new();
         b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-        let adopted = poll_until("B must receive A's snapshot", &mut b, |ev| {
-            match ev.document_mutation()? {
-                Ok(collab_types::DocumentMutation::Snapshot(data)) => Some(data),
-                _ => None,
-            }
+        let adopted = poll_until("B must receive A's document", &mut b, |ev| {
+            ev.document_mutation()
+                .map(|mutation| mutation.data().to_vec())
         });
-        let mut incoming = AutoCommit::load(&adopted).unwrap();
-        b_doc.merge(&mut incoming).unwrap();
+        b_doc.load_incremental(&adopted).unwrap();
         assert_eq!(text_of(&b_doc), "SEED", "B adopts A's seed text");
 
         let b_text = text_obj(&b_doc).expect("B's doc has the shared Text object");
@@ -322,8 +319,8 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         let got = poll_until("B must receive A's incremental edit", &mut b, |ev| match ev
             .document_mutation()?
         {
-            Ok(collab_types::DocumentMutation::Incremental(data)) => Some(data),
-            _ => None,
+            collab_types::DocumentMutation::Incremental(data) => Some(data.clone()),
+            collab_types::DocumentMutation::Snapshot(_) => None,
         });
         b_doc.load_incremental(&got).unwrap();
 

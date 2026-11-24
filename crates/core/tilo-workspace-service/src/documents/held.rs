@@ -245,6 +245,7 @@ impl DeviceWrites for HeldDocuments {
                 founding: writing.founding,
                 snapshot: writing.snapshot,
                 sealed: writing.sealed,
+                commit: None,
                 now: tilo_clock::wall(),
             },
         )

@@ -3,7 +3,7 @@
 //! over bounded queues ([`CollabTransport::submit`] / [`CollabTransport::drain`]).
 //! Overload never closes the bridge: durable commands wait in the owner's
 //! ordered spill, documents defer (`Busy`) or are refused (`TooLarge`), and
-//! presence waits there with only its newest word per key. Signing and verification happen on the worker.
+//! presence waits there with only its newest word per key.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the shovel thread bridges a blocking socket"
@@ -11,14 +11,12 @@
 
 #[cfg(test)]
 use super::channel_key;
-use super::route_keys::Arrived;
 use super::{
     ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
     CollabTransport, CollaborationManager, DocumentMutation, DocumentPublicationError,
     DocumentPublicationReceipt, Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
 };
-use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
 
 #[cfg(feature = "audio")]
@@ -39,15 +37,13 @@ pub use published::SessionResource;
 mod change_waits;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
-#[path = "held_inbound.rs"]
-mod held_inbound;
 #[path = "inbound_bridge.rs"]
 mod inbound_bridge;
 use inbound_bridge::InboundBridge;
-#[path = "inbound_document.rs"]
-mod inbound_document;
 #[path = "realtime_stream.rs"]
 mod realtime_stream;
+#[path = "record_sync.rs"]
+mod record_sync;
 use realtime_stream::spawn_realtime_stream;
 #[path = "broker_key_fetch.rs"]
 mod key_fetch;
@@ -75,14 +71,8 @@ pub use native_join::NativeJoin;
 #[path = "native_media.rs"]
 mod native_media;
 pub use committed_document::CommittedDocument;
-#[cfg(test)]
-use inbound_document::Refusal;
-use inbound_document::{
-    DecryptFailure, UndeliveredDocument, decrypt_document_payload, signed_document_event,
-};
 
 use crate::time::Duration;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -104,16 +94,6 @@ async fn publish_presence(
         tracing::warn!(%error, presence = what, "collab: presence publish refused");
     }
 }
-/// Whether the identity service answered and declined to sign, as opposed to
-/// being unreachable: it reports a refusal as permission denied.
-fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
-    matches!(
-        error,
-        runtime_portal::NotAvailable::ConnectionFailed(error)
-            if error.kind() == std::io::ErrorKind::PermissionDenied
-    )
-}
-
 /// Commands waiting behind a slow broker. Capped by count, not bytes: the
 /// protocol already bounds every payload.
 const SDK_COMMAND_QUEUE: usize = 256;
@@ -1137,10 +1117,6 @@ pub(crate) struct BridgeState {
         >,
     >,
     document_reads: committed_document::Reads,
-    /// The workspace commits this endpoint has seen, and the parts of
-    /// actions still waiting for the rest of them: what the app applies as
-    /// one action, and what history reads.
-    commits: Arc<std::sync::Mutex<crate::commits::Commits>>,
     /// Why each route whose last join failed failed, by route key: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
@@ -1362,7 +1338,6 @@ impl BridgeState {
         Self {
             connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
-            commits: Arc::default(),
             route_join_failures: Arc::default(),
             unpublished_routes: Arc::default(),
             route_resource_types: Arc::default(),
@@ -1399,12 +1374,6 @@ impl BridgeState {
 
     fn is_healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
-    }
-
-    /// The workspace commits this endpoint has seen. A poisoned lock is a
-    /// panic in the check: the endpoint goes on with what it has.
-    pub(crate) fn commits(&self) -> std::sync::MutexGuard<'_, crate::commits::Commits> {
-        self.commits.lock_recover()
     }
 
     fn connect_phase(&self) -> ConnectPhase {
@@ -1488,17 +1457,6 @@ impl BridgeState {
             self.fail_closed(context);
         }
         failure
-    }
-
-    /// The identity service declined to sign a change on the workspace's
-    /// behalf. Later changes build on the declined one, so publication stops
-    /// as it does for any failure; but the reason is kept apart, so nobody is
-    /// told they are offline when the workspace said no.
-    fn publication_refused(&self, error: impl std::fmt::Display) -> DocumentPublicationError {
-        let refusal = DocumentPublicationError::Refused(error.to_string());
-        self.record_publication_failure(refusal.clone());
-        self.fail_closed("document signing refused");
-        refusal
     }
 
     /// The peer answered one change with a definite refusal: it will not take
@@ -1793,87 +1751,6 @@ fn admit_sdk_command(
     }
 }
 
-/// Endpoint reassembly of segmented document mutations, shared by every
-/// route of one manager so the memory bound covers them all. Live traffic
-/// and history pages are tracked separately because history arrives newest
-/// page first.
-#[derive(Default)]
-struct DocumentReassembly {
-    live: std::sync::Mutex<collab_types::DocumentReassembler>,
-    history: std::sync::Mutex<collab_types::DocumentReassembler>,
-}
-
-impl DocumentReassembly {
-    /// Feed one validated document envelope and its endpoint payload (MLS
-    /// plaintext, or `None` for cleartext). A single-frame mutation passes
-    /// through unchanged as `Some(payload)`. A segment is held until its
-    /// transfer completes; the complete typed payload is then returned
-    /// exactly once as `Some(Some(bytes))`. `None` means nothing to deliver.
-    #[allow(
-        clippy::option_option,
-        reason = "nothing to deliver, a pass-through payload, or a completed transfer are distinct outcomes"
-    )]
-    fn complete(
-        reassembler: &std::sync::Mutex<collab_types::DocumentReassembler>,
-        envelope: &SignedOp,
-        payload: Option<Vec<u8>>,
-    ) -> Option<Option<Vec<u8>>> {
-        let frame = match collab_types::DocumentFrame::decode(
-            payload.as_deref().unwrap_or(&envelope.payload),
-        ) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(%error, "collab: document frame does not decode; dropping");
-                return None;
-            }
-        };
-        let segment = match frame {
-            collab_types::DocumentFrame::Whole(_) => return Some(payload),
-            collab_types::DocumentFrame::Segment(segment) => segment,
-        };
-        let Ok(mut reassembler) = reassembler.lock() else {
-            tracing::error!("collab: document reassembly state is poisoned; dropping segment");
-            return None;
-        };
-        let result = reassembler.accept(envelope, segment, crate::time::now());
-        for abandoned in reassembler.take_abandoned() {
-            tracing::warn!(
-                artifact = ?abandoned.artifact,
-                bytes = abandoned.total_len,
-                received = abandoned.received_segments,
-                segments = abandoned.segment_count,
-                reason = ?abandoned.reason,
-                "collab: incomplete document transfer abandoned; a fresh snapshot is required"
-            );
-        }
-        drop(reassembler);
-        match result {
-            // Every segment carries the claims of the whole mutation: what it
-            // opened to must say what they say, as a whole frame's must.
-            Ok(Some(done))
-                if let Err(refusal) = collab_types::check_reassembled(envelope, &done.payload) =>
-            {
-                tracing::warn!(%refusal, "collab: refused a segmented document op");
-                None
-            }
-            Ok(Some(done)) => {
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_reassembled",
-                    bytes = done.len,
-                    "reassembled segmented document mutation"
-                );
-                Some(Some(done.payload))
-            }
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(%error, "collab: segmented document transfer rejected");
-                None
-            }
-        }
-    }
-}
-
 /// How the shovel thread reaches the broker. `Env` is production: the
 /// launcher passed `TILO_SVC_COLLAB_FD`. `Fd` is an already-connected typed
 /// endpoint, used by tests and headless diagnostics without environment races.
@@ -1948,8 +1825,9 @@ struct SdkJoinIdentity {
     /// when the named agent is admitted and this certified user may operate
     /// it; ordinary applications always leave this as `person`.
     member_kind: &'static str,
-    /// Retained on the shovel thread so document signing stays off the UI
-    /// thread and the workspace broker connection is not consumed at join.
+    /// Retained on the shovel thread so the identity service is asked off the
+    /// UI thread: for a join proof in the person's own workspace, and for the
+    /// channel keys the record's content is sealed under.
     signer: SdkDocumentSigner,
 }
 
@@ -1969,35 +1847,17 @@ pub type EndpointChannelKeys = std::sync::Arc<
 >;
 
 /// Certified identity for a client connecting to an explicit collaboration
-/// endpoint rather than through a launcher-inherited identity service.
+/// endpoint rather than through a launcher-inherited identity service. It
+/// holds the presentation only: the device's store signs what the app writes.
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
-    device_key: ed25519_dalek::SigningKey,
-    /// The channel keys `with_channel_keys` gave it, if any.
-    channel_keys: Option<EndpointChannelKeys>,
 }
 
 impl CertifiedEndpointIdentity {
-    pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
-        Self {
-            presentation,
-            device_key,
-            channel_keys: None,
-        }
-    }
-
-    /// The same identity, encrypting its writes under the channel keys
-    /// `keys` answers, as an endpoint with an identity service does. Without
-    /// them its writes are plaintext, and refused in a workspace that seals them.
     #[must_use]
-    pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
-        self.channel_keys = Some(keys);
-        self
-    }
-
-    fn document_signer(&self) -> SdkDocumentSigner {
-        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()), self.channel_keys.clone())
+    pub const fn new(presentation: Vec<u8>) -> Self {
+        Self { presentation }
     }
 }
 
@@ -2008,7 +1868,6 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
                 "presentation",
                 &format_args!("{} bytes", self.presentation.len()),
             )
-            .field("device_key", &"<redacted>")
             .finish_non_exhaustive()
     }
 }
@@ -2032,17 +1891,9 @@ trait SdkCertifiedIdentity: Send + Sync {
         known_generation: u64,
     ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
-    fn signing_public_key(&self) -> [u8; 32];
     fn sign_collaboration_join(
         &self,
         workspace_id: &str,
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
-    fn sign_collaboration_op(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        document_id: &str,
-        unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
@@ -2065,9 +1916,6 @@ impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigning
     fn device_certificate(&self) -> Option<&[u8]> {
         self.metadata().device_certificate()
     }
-    fn signing_public_key(&self) -> [u8; 32] {
-        self.metadata().signing_public_key()
-    }
     fn sign_collaboration_join(
         &self,
         workspace_id: &str,
@@ -2075,21 +1923,6 @@ impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigning
         tilo_identity_client::BrokerSigningIdentity::sign_collaboration_join(
             self.as_ref(),
             workspace_id,
-        )
-    }
-    fn sign_collaboration_op(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        document_id: &str,
-        unsigned_op: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_op(
-            self.as_ref(),
-            workspace_id,
-            app_id,
-            document_id,
-            unsigned_op,
         )
     }
 }
@@ -2104,11 +1937,10 @@ impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigning
 enum SdkDocumentSigner {
     /// Shared so the identity service can be asked off the shovel thread.
     Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
-    /// Explicit-FD harnesses have no launcher identity service. Their
-    /// in-process broker accepts this ephemeral signer; a production broker
-    /// still rejects the uncertified join before any op reaches policy.
-    /// With channel keys to ask, its routes encrypt as a certified one's do.
-    Harness(Box<ed25519_dalek::SigningKey>, Option<EndpointChannelKeys>),
+    /// Explicit-FD harnesses have no launcher identity service; a production
+    /// broker rejects their uncertified join. With channel keys to ask, their
+    /// routes seal content as a certified one's do.
+    Harness(Option<EndpointChannelKeys>),
 }
 
 /// Identity state after the shovel thread has entered its `LocalSet`. The host
@@ -2134,11 +1966,8 @@ impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
     }
 }
 
-fn harness_document_signer() -> SdkDocumentSigner {
-    SdkDocumentSigner::Harness(
-        Box::new(ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng))),
-        None,
-    )
+const fn harness_document_signer() -> SdkDocumentSigner {
+    SdkDocumentSigner::Harness(None)
 }
 
 /// What a harness joins with: a certified presentation in form, so a host
@@ -2424,7 +2253,7 @@ impl CollaborationManager {
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
                 member_kind: "person",
-                signer: identity.document_signer(),
+                signer: harness_document_signer(),
             }),
             "person",
         )
@@ -2951,8 +2780,8 @@ impl CollaborationManager {
         }
     }
 
-    /// Real socket-backed SDK transport plus a probe returning every signed
-    /// envelope the broker accepted, in order.
+    /// Real socket-backed SDK transport plus a probe returning every write
+    /// of record changes the store took, in order: the changes each carried.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
     #[allow(
@@ -2961,7 +2790,7 @@ impl CollaborationManager {
         clippy::panic,
         reason = "a fixture for the toolkit's tests"
     )]
-    pub fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
+    pub fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<Vec<Vec<u8>>>>) {
         tests::capturing_manager()
     }
 
@@ -3458,11 +3287,12 @@ async fn drive_shovel(
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
-    // come from the identity service. A harness with no such service and no
-    // channel keys of its own stays plaintext.
+    // come from the identity service: the record's content is sealed under
+    // them. A harness with no such service and no channel keys of its own
+    // seals each item under a key of its own.
     let asks_channel_keys = !matches!(
         signer,
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None))
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(None))
     );
     // When to ask for keys: see `KeySchedule`. Each encrypted route follows
     // its channel's changes and marks itself on `key_signals`.
@@ -3476,7 +3306,7 @@ async fn drive_shovel(
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
     let person = PersonWorkspace::of(&presentation, &signer).map(std::rc::Rc::new);
-    let queue = DocumentQueue::start(signer.clone(), inbound_tx.clone());
+    let queue = DocumentQueue::start(inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut member_handle: Option<String> = None;
@@ -3572,9 +3402,9 @@ async fn drive_shovel(
                         inbound_tx.state.notify_events();
                         if asks_channel_keys {
                             // The route learns its keys (or that it waits)
-                            // before the edits that waited for it go out.
+                            // before the content that waited for it is stored.
                             if let Some(fetch) = key_fetch.take() {
-                                Box::pin(apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx))
+                                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx))
                                     .await;
                             }
                             let round = key_schedule.join_round();
@@ -3582,7 +3412,7 @@ async fn drive_shovel(
                             if let Some(fetch) =
                                 Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
                             {
-                                Box::pin(apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx))
+                                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx))
                                     .await;
                             }
                         }
@@ -3690,7 +3520,7 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                if Box::pin(apply_fetched_keys(&routes, fetched, &mut *signer.lock().await, &inbound_tx)).await {
+                if Box::pin(apply_fetched_keys(&routes, fetched, &inbound_tx)).await {
                     key_schedule.restart();
                 }
                 // Routes told to ask while the round was out ask now.
@@ -3846,10 +3676,7 @@ async fn drive_shovel(
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
-                } else if matches!(
-                    request,
-                    CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-                ) {
+                } else if matches!(request, CollabRequest::Document { .. }) {
                     // Document ownership fails closed without a joined primary.
                     inbound_tx
                         .state
@@ -4082,13 +3909,7 @@ async fn drive_shovel(
             #[cfg(test)]
             SdkCommand::KeyScheduleProbe(reply) => {
                 if let Some(fetch) = key_fetch.take()
-                    && apply_fetched_keys(
-                        &routes,
-                        fetch.await,
-                        &mut *signer.lock().await,
-                        &inbound_tx,
-                    )
-                    .await
+                    && apply_fetched_keys(&routes, fetch.await, &inbound_tx).await
                 {
                     key_schedule.restart();
                 }
@@ -4108,29 +3929,17 @@ async fn drive_shovel(
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
-            // before its first edit rather than at the next round. Only
-            // sending waits for that; the routes keep receiving.
+            // rather than at the next round, so the content it stores is
+            // sealed under them. The routes keep receiving meanwhile.
             if let Some(fetch) = key_fetch.take() {
-                Box::pin(apply_fetched_keys(
-                    &routes,
-                    fetch.await,
-                    &mut *signer.lock().await,
-                    &inbound_tx,
-                ))
-                .await;
+                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx)).await;
             }
             let round = key_schedule.join_round();
             let mut signing = signer.lock().await;
             if let Some(fetch) =
                 Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
             {
-                Box::pin(apply_fetched_keys(
-                    &routes,
-                    fetch.await,
-                    &mut signing,
-                    &inbound_tx,
-                ))
-                .await;
+                Box::pin(apply_fetched_keys(&routes, fetch.await, &inbound_tx)).await;
             }
         }
     }
@@ -4323,15 +4132,20 @@ struct SdkRoute {
     resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
     /// The task carrying what the host says of the actions the window last named.
     shown_actions: Option<tokio::task::AbortHandle>,
-    committed: bool,
+    /// Reads the record's changes as it opens and each time it changed elsewhere, while the
+    /// route lives; `None` on a route whose changes arrive as committed reads, or that carries
+    /// no record.
+    _record: Option<record_sync::Follower>,
 }
 
-/// What publishing a route's document takes: its broker connection and its keys,
+/// What publishing a route's document takes: its broker connection, what the
+/// store already holds of its record, and the keys its content is sealed under,
 /// shared with the connection's [`DocumentQueue`].
 #[derive(Clone)]
 struct DocumentRoute {
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
+    frontier: record_sync::Frontier,
     encryption: SharedRouteKeys,
 }
 
@@ -4367,8 +4181,7 @@ struct DocumentQueue {
     unpublished: std::rc::Rc<std::cell::RefCell<Option<String>>>,
 }
 
-/// The signer a connection's routes and its document queue share; a document
-/// holds it only while it signs and sends.
+/// The identity a connection's routes ask the identity service with.
 type SharedSigner = std::rc::Rc<tokio::sync::Mutex<LocalSdkDocumentSigner>>;
 
 enum QueuedJob {
@@ -4388,7 +4201,7 @@ enum QueuedJob {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 impl DocumentQueue {
-    fn start(signer: SharedSigner, inbound: InboundBridge) -> Self {
+    fn start(inbound: InboundBridge) -> Self {
         let (jobs, mut received) = tokio_mpsc::unbounded_channel();
         let queued = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let unpublished = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -4402,7 +4215,7 @@ impl DocumentQueue {
                         role,
                         _reservation,
                     } => {
-                        if !publish_document(&route, &signer, request, &inbound, role).await {
+                        if !publish_document(&route, request, &inbound, role).await {
                             failed.borrow_mut().get_or_insert_with(|| {
                                 "a document mutation did not reach the broker".to_owned()
                             });
@@ -4465,7 +4278,6 @@ fn orders_after_documents(command: &SdkCommand) -> bool {
             if matches!(
                 request,
                 CollabRequest::Document { .. }
-                    | CollabRequest::SignedOperation { .. }
                     | CollabRequest::ReportLocalDocumentAction { .. }
                     | CollabRequest::Presence { .. }
                     | CollabRequest::PublishSearchIndex { .. }
@@ -4481,7 +4293,6 @@ fn orders_after_documents(command: &SdkCommand) -> bool {
 )]
 async fn publish_document(
     route: &DocumentRoute,
-    signer: &SharedSigner,
     request: CollabRequest,
     inbound_tx: &InboundBridge,
     role: RouteRole,
@@ -4489,9 +4300,9 @@ async fn publish_document(
     match wait_for_document_publication(route, &inbound_tx.state, role).await {
         PublicationWait::Open => {}
         PublicationWait::Stopped => return false,
-        // A document beside the app's own can wait on another device (it,
-        // or its keys, come from one that holds them): only that document
-        // waits, and its owner sends it whole once the route opens.
+        // A document beside the app's own can wait on another device (it
+        // comes from one that holds it): only that document waits, and its
+        // owner sends it whole once the route opens.
         PublicationWait::HeldBack(why) => {
             tracing::warn!(%why, "collab: a document's route is not open to publish to");
             inbound_tx.state.route_unpublished(route.spec.channel_id());
@@ -4504,40 +4315,19 @@ async fn publish_document(
             return false;
         }
     }
-    match request {
-        CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
-            Ok(bytes) => match route.channel.send(&bytes).await {
-                Ok(()) => inbound_tx.state.change_sent(&route.spec),
-                // A definite refusal is the peer's answer about this signed
-                // change: it alone is not accepted and the bridge stays open.
-                Err(error) if refused_by_peer(&error) => inbound_tx.state.note_refused_change(
-                    &route.spec,
-                    "signed document commit RPC",
-                    &error,
-                ),
-                Err(error) => {
-                    inbound_tx
-                        .state
-                        .publication_failed("signed document commit RPC", error, true);
-                }
-            },
-            Err(error) => {
-                inbound_tx
-                    .state
-                    .publication_failed("signed document encoding", error, true);
-            }
-        },
-        // The helper records every failure, including a policy denial that
-        // leaves the identity connection usable, before returning its result.
-        CollabRequest::Document { mutation, commit } => {
-            let mut signer = signer.lock().await;
-            return send_document_mutation(route, &mut signer, mutation, commit, inbound_tx)
-                .await
-                .is_ok();
-        }
-        _ => {}
-    }
-    true
+    let CollabRequest::Document { mutation, commit } = request else {
+        return true;
+    };
+    record_sync::write(
+        &route.channel,
+        &route.spec,
+        &route.frontier,
+        &mutation,
+        commit,
+        &inbound_tx.state,
+    )
+    .await
+    .is_ok()
 }
 
 // Not `Send`: the route state it holds stays on the shovel thread's
@@ -4604,132 +4394,6 @@ async fn spawn_content_stream(
     });
 }
 
-/// Which route an inbound op arrived on, as its refusal names it.
-struct RouteLabel {
-    app: String,
-    workspace: String,
-    record: String,
-    channel: String,
-}
-
-impl RouteLabel {
-    fn of(spec: &RouteSpec) -> Self {
-        Self {
-            app: spec.app_id.clone(),
-            workspace: spec.cluster_id.to_string(),
-            record: spec.document.clone().unwrap_or_default(),
-            channel: spec.channel_id(),
-        }
-    }
-}
-
-/// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
-/// `inbound_tx`, spawned as a `LocalSet` task so it doesn't block the
-/// caller's route setup.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn spawn_op_stream(
-    channel: &runtime_collab::ChannelHandle,
-    label: RouteLabel,
-    inbound_tx: &InboundBridge,
-    encryption: SharedRouteKeys,
-    key_signals: Option<(String, tokio_mpsc::UnboundedSender<KeySignal>)>,
-) {
-    if let Ok(stream) = channel.subscribe().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(event) = stream.read().await {
-                let envelope = match postcard::from_bytes::<SignedOp>(&event.op) {
-                    Ok(envelope) => envelope,
-                    Err(error) => {
-                        tracing::warn!(
-                            "collab: signed op is not postcard SignedOp ({error}); dropping"
-                        );
-                        continue;
-                    }
-                };
-                let (author, seq) = (envelope.author, envelope.seq);
-                let arrived = Arrived {
-                    envelope,
-                    admission: event.admission,
-                };
-                let signed = match signed_document_event(arrived, &encryption) {
-                    Ok(signed) => signed,
-                    Err(UndeliveredDocument::Held) => {
-                        // Sealed under an epoch the held keys lack:
-                        // ask for newer keys, once per generation.
-                        if let Some((route, signals)) = key_signals.as_ref()
-                            && encryption
-                                .lock()
-                                .is_ok_and(|mut keys| keys.wants_keys_for_held())
-                        {
-                            let _ = signals.send(KeySignal::Changed(route.clone()));
-                        }
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            app = %label.app,
-                            workspace = %label.workspace,
-                            record = %label.record,
-                            route = %label.channel,
-                            author = %hex::encode(author.as_bytes()),
-                            seq,
-                            "collab: refused a live document op"
-                        );
-                        continue;
-                    }
-                };
-                let Some(complete) = complete_document_event(signed.event, &tx.reassembly.live)
-                else {
-                    continue;
-                };
-                let claims: Vec<[u8; 32]> = match &complete {
-                    CollabEvent::Document { envelope, .. } => {
-                        envelope.claims.iter().map(|claim| claim.change).collect()
-                    }
-                    _ => Vec::new(),
-                };
-                let events = match crate::commits::check(
-                    &tx.state,
-                    signed.commit,
-                    &claims,
-                    (label.app.as_str(), label.record.as_str()),
-                    complete,
-                ) {
-                    crate::commits::Delivery::Now(event) => vec![event],
-                    crate::commits::Delivery::Waiting => continue,
-                    crate::commits::Delivery::Complete(events) => events,
-                    crate::commits::Delivery::Refused(reason) => {
-                        tracing::warn!(
-                            reason,
-                            app = %label.app,
-                            workspace = %label.workspace,
-                            record = %label.record,
-                            author = %hex::encode(author.as_bytes()),
-                            "collab: refused a document part that is not the action it names"
-                        );
-                        continue;
-                    }
-                };
-                let mut open = true;
-                for event in events {
-                    if !tx.send_document(event).await {
-                        open = false;
-                        break;
-                    }
-                }
-                if !open {
-                    break;
-                }
-            }
-        });
-    }
-}
-
 /// Bridge `channel`'s member/permissions context stream into
 /// [`CollabEvent::Context`] on `inbound_tx`.
 #[allow(
@@ -4738,7 +4402,7 @@ async fn spawn_op_stream(
 )]
 async fn spawn_context_stream(
     channel: &runtime_collab::ChannelHandle,
-    route: RouteSpec,
+    record_changed: Option<std::rc::Rc<tokio::sync::Notify>>,
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_context().await {
@@ -4751,14 +4415,10 @@ async fn spawn_context_stream(
             let _private_context_lifetime = PrivateContextLifetime;
             let mut private_person_basis = None;
             while let Ok(context) = stream.read().await {
-                if context.snapshot_requested {
-                    if !tx
-                        .send_durable(CollabEvent::DocumentSnapshotRequested {
-                            route: route.clone(),
-                        })
-                        .await
-                    {
-                        return;
+                if context.record_changed {
+                    // Notices that come while a read is out are one more read.
+                    if let Some(changed) = record_changed.as_ref() {
+                        changed.notify_one();
                     }
                     continue;
                 }
@@ -5428,24 +5088,6 @@ fn link_settings(
     })
 }
 
-/// The ops of a history page the local broker sent for `artifact`. One
-/// that does not decode is left out of the page and logged: the broker
-/// pages only what it admitted, so it is a fault on that side.
-pub(super) fn decode_paged_ops(
-    artifact: collab_types::ArtifactId,
-    ops: &[Vec<u8>],
-) -> Vec<SignedOp> {
-    ops.iter()
-        .filter_map(|bytes| match postcard::from_bytes::<SignedOp>(bytes) {
-            Ok(op) => Some(op),
-            Err(error) => {
-                tracing::warn!(artifact = %artifact.0, %error, "collab: history page op does not decode");
-                None
-            }
-        })
-        .collect()
-}
-
 fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionContext> {
     if json.trim().is_empty() {
         return None;
@@ -5736,417 +5378,6 @@ async fn wait_for_document_publication(
     }
 }
 
-/// Sign on the shovel thread through the workspace identity service, then use
-/// the one signed publication. Missing or denied certification never
-/// downgrades the document to unsigned traffic. A mutation larger than one
-/// frame is sent as consecutive segments, each encrypted (on MLS routes),
-/// signed and validated by the broker as its own envelope.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn send_document_mutation(
-    route: &DocumentRoute,
-    signer: &mut LocalSdkDocumentSigner,
-    mutation: collab_types::DocumentMutation,
-    commit: Option<collab_types::WorkspaceCommit>,
-    inbound: &InboundBridge,
-) -> Result<(), DocumentPublicationError> {
-    let frames = match mutation.encode_frames() {
-        Ok(frames) => frames,
-        Err(error) => {
-            // The size was checked before the change was queued, so this
-            // is unreachable for SDK callers; never send a partial change.
-            tracing::error!(%error, "collab: typed document mutation would not encode; dropping");
-            return Err(inbound.state.publication_failed(
-                "document signing or encoding",
-                error,
-                true,
-            ));
-        }
-    };
-    let claims = origin_claims(&route.spec.app_id, &mutation);
-    let commit = origin_commit(route, signer, commit, &mutation);
-    let count = frames.len();
-    for (index, frame) in frames.into_iter().enumerate() {
-        let frame = match &commit {
-            Some(commit) => match commit.frame(&frame) {
-                Ok(framed) => framed,
-                Err(error) => {
-                    return Err(inbound.state.publication_failed(
-                        "workspace commit",
-                        error.to_string(),
-                        true,
-                    ));
-                }
-            },
-            None => frame,
-        };
-        if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
-        {
-            if count > 1 {
-                tracing::warn!(
-                    segment = index,
-                    segments = count,
-                    "collab: segmented document transfer stopped; receivers will discard it"
-                );
-            }
-            return Err(error);
-        }
-    }
-    if let Some(commit) = commit {
-        inbound.state.commits().record(commit);
-    }
-    Ok(())
-}
-
-/// The commit this publication carries: the action across every unit its
-/// caller made it as, or one this unit alone. A caller that names a commit
-/// that does not cover this unit publishes its change without one: the change
-/// must not be lost because its action was described wrong.
-///
-/// The device is the one this transport signs with: a publisher holds no
-/// signing key, so the commit a caller declares names the device as zeros and
-/// the broker stamps it here. The device signature over the payload then
-/// signs the commit, and a receiver reads the author off that signature.
-fn origin_commit(
-    route: &DocumentRoute,
-    signer: &LocalSdkDocumentSigner,
-    declared: Option<collab_types::WorkspaceCommit>,
-    mutation: &collab_types::DocumentMutation,
-) -> Option<collab_types::WorkspaceCommit> {
-    let app = route.spec.app_id.as_str();
-    let record = route.spec.document.as_deref().unwrap_or("");
-    let device = signer_device(signer);
-    if let Some(mut commit) = declared {
-        if commit.covers(app, record) {
-            commit.author.device = device;
-            return Some(commit);
-        }
-        tracing::error!(
-            app,
-            record,
-            "collab: refusing to publish an action commit this unit is not part of; sending the change alone"
-        );
-        return None;
-    }
-    match collab_types::WorkspaceCommit::of_mutation(
-        route.spec.cluster_id,
-        app,
-        record,
-        &collab_types::CommitAuthor {
-            actor: None,
-            device,
-        },
-        mutation,
-    ) {
-        Ok(commit) => commit,
-        Err(error) => {
-            tracing::warn!(%error, app, record, "collab: a published change commits to no action");
-            None
-        }
-    }
-}
-
-/// The claims a mutation's op carries: what each of its changes is, read
-/// from the history entry the executor wrote into it. A change something
-/// other than the executor wrote cannot be claimed; its op then carries no
-/// claims, which a receiver deciding claims refuses.
-#[cfg_attr(
-    debug_assertions,
-    expect(
-        clippy::panic,
-        reason = "a debug build's check that every change this device makes is claimed"
-    )
-)]
-fn origin_claims(
-    app_id: &str,
-    mutation: &collab_types::DocumentMutation,
-) -> Vec<collab_types::ChangeClaim> {
-    collab_types::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
-        #[cfg(debug_assertions)]
-        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
-            && collab_types::parse_changes(bytes).is_ok()
-            && let Err(unnamed) = collab_types::claim::named_changes(bytes)
-        {
-            panic!("a document change this device made names no action: {unnamed}");
-        }
-        tracing::warn!(%error, "collab: a document change carries no claim");
-        Vec::new()
-    })
-}
-
-/// Encrypt, sign and send one typed document frame, or hold it on the
-/// device while the route waits for its channel keys. A frame the broker
-/// refuses is sent once more after a key refresh that found newer keys: a
-/// membership change moves the channel to a new epoch, and the broker refuses
-/// content sealed under an older one.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn send_document_frame(
-    route: &DocumentRoute,
-    signer: &mut LocalSdkDocumentSigner,
-    cleartext: Vec<u8>,
-    claims: &[collab_types::ChangeClaim],
-    state: &BridgeState,
-) -> Result<(), DocumentPublicationError> {
-    match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
-        FrameSend::Sent | FrameSend::Held => {
-            state.change_sent(&route.spec);
-            Ok(())
-        }
-        FrameSend::Failed(error) => Err(error),
-        FrameSend::Refused(refusal) => {
-            if !refresh_route_keys(route, signer).await || !refusal.is_definite() {
-                return Err(frame_refused(state, &route.spec, &refusal));
-            }
-            match try_send_frame(route, signer, cleartext, claims, state).await {
-                FrameSend::Sent | FrameSend::Held => {
-                    state.change_sent(&route.spec);
-                    Ok(())
-                }
-                FrameSend::Failed(error) => Err(error),
-                FrameSend::Refused(refusal) => Err(frame_refused(state, &route.spec, &refusal)),
-            }
-        }
-    }
-}
-
-/// What a commit the broker would not take means. A definite refusal — the
-/// peer answered about this very change — fails that change alone; anything
-/// else (a lost call, an overload) leaves the outcome unknown and ends the
-/// bridge as it always has.
-fn frame_refused(
-    state: &BridgeState,
-    route: &RouteSpec,
-    refusal: &FrameRefusal,
-) -> DocumentPublicationError {
-    match refusal {
-        FrameRefusal::Definite(reason) => {
-            state.note_refused_change(route, "document commit RPC", reason);
-            DocumentPublicationError::Refused(format!("document commit RPC: {reason}"))
-        }
-        FrameRefusal::Unknown(reason) => {
-            state.publication_failed("document commit RPC", reason, true)
-        }
-    }
-}
-
-/// The device key a signed publication will carry.
-fn signer_device(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
-    match signer {
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            identity.signing_public_key()
-        }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
-            key.verifying_key().to_bytes()
-        }
-    }
-}
-
-#[allow(
-    clippy::future_not_send,
-    clippy::too_many_lines,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn try_send_frame(
-    route: &DocumentRoute,
-    signer: &mut LocalSdkDocumentSigner,
-    cleartext: Vec<u8>,
-    claims: &[collab_types::ChangeClaim],
-    state: &BridgeState,
-) -> FrameSend {
-    let workspace_id = route.spec.cluster_id.to_string();
-    let document_id = route.spec.document.as_deref().unwrap_or("");
-    let artifact =
-        collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, document_id);
-    let (payload, encryption_metadata) =
-        match prepare_document_payload(&route.encryption, artifact, cleartext, claims) {
-            PreparedFrame::Ready(payload, metadata) => (payload, metadata),
-            PreparedFrame::Held => return FrameSend::Held,
-            PreparedFrame::Failed(reason) => {
-                return FrameSend::Failed(state.publication_failed(
-                    "document encryption",
-                    reason,
-                    true,
-                ));
-            }
-        };
-    let now = crate::time::wall();
-    let author = collab_types::Ed25519PublicKey::from_bytes(signer_device(signer));
-    let attestation =
-        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, document_id);
-    let seq = collab_types::next_unordered_document_sequence(now);
-    let mut op = match encryption_metadata {
-        Some(metadata) => SignedOp::new_unsigned_with_encryption(
-            payload,
-            artifact,
-            author,
-            attestation,
-            collab_types::OpKind::Change,
-            now,
-            seq,
-            metadata,
-        ),
-        None => SignedOp::new_unsigned(
-            payload,
-            artifact,
-            author,
-            attestation,
-            collab_types::OpKind::Change,
-            now,
-            seq,
-        ),
-    };
-    // Only a sealed op carries its changes' claims: a server cannot read the
-    // changes, and a cleartext receiver reads each claim from its change.
-    if op.encryption.is_some() {
-        op = op.with_claims(claims.to_vec());
-    }
-    op = op.with_surface(collab_types::app_surface::hash_of(&route.spec.app_id));
-    let unsigned_op = match postcard::to_stdvec(&op) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return FrameSend::Failed(state.publication_failed(
-                "document signing or encoding",
-                error,
-                true,
-            ));
-        }
-    };
-    let signature = match signer {
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
-            .sign_collaboration_op(&workspace_id, &route.spec.app_id, document_id, &unsigned_op)
-        {
-            Ok(signature) => signature,
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "collab: identity service denied document operation; dropping"
-                );
-                if signing_refused(&error) {
-                    return FrameSend::Failed(state.publication_refused(error));
-                }
-                return FrameSend::Failed(state.publication_failed(
-                    "document signing or encoding",
-                    error,
-                    true,
-                ));
-            }
-        },
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
-            use ed25519_dalek::Signer as _;
-            let signing_bytes = match op.signing_bytes() {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    return FrameSend::Failed(state.publication_failed(
-                        "document signing or encoding",
-                        error,
-                        true,
-                    ));
-                }
-            };
-            key.sign(&signing_bytes).to_bytes()
-        }
-    };
-    op.signature = collab_types::Signature::from_bytes(signature);
-    match postcard::to_stdvec(&op) {
-        Ok(bytes) => match route.channel.send(&bytes).await {
-            Ok(()) => FrameSend::Sent,
-            Err(error) if refused_by_peer(&error) => {
-                tracing::warn!(
-                    %error,
-                    "collab: the broker refused this document change; it alone is not accepted"
-                );
-                FrameSend::Refused(FrameRefusal::Definite(error.to_string()))
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: document commit failed; outcome unknown");
-                FrameSend::Refused(FrameRefusal::Unknown(error.to_string()))
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
-            FrameSend::Failed(state.publication_failed("document encoding", error, true))
-        }
-    }
-}
-
-/// Seal one frame under the route's current channel content key, so every
-/// member — including one added later — can read it from history. A route
-/// still waiting for its keys keeps the frame on the device instead.
-fn prepare_document_payload(
-    encryption: &SharedRouteKeys,
-    artifact: collab_types::ArtifactId,
-    cleartext: Vec<u8>,
-    claims: &[collab_types::ChangeClaim],
-) -> PreparedFrame {
-    let Ok(mut keys) = encryption.lock() else {
-        return PreparedFrame::Failed("route key state lock poisoned".into());
-    };
-    let retention = collab_types::ContentRetention::of_frame(&cleartext);
-    match keys.seal(artifact, retention, cleartext.clone()) {
-        super::route_keys::Sealed::Ready(payload, metadata) => {
-            PreparedFrame::Ready(payload, metadata)
-        }
-        super::route_keys::Sealed::Hold => {
-            if keys.hold_outbound(cleartext, claims.to_vec()) {
-                PreparedFrame::Held
-            } else {
-                PreparedFrame::Failed("too many edits waiting for channel access".into())
-            }
-        }
-        super::route_keys::Sealed::Refused(reason) => PreparedFrame::Failed(reason),
-    }
-}
-
-enum PreparedFrame {
-    Ready(Vec<u8>, Option<collab_types::EncryptionMetadata>),
-    Held,
-    /// Why the frame can neither be sent nor held. Carried into the logged
-    /// failure: the reason is what tells an operator what to fix.
-    Failed(String),
-}
-
-/// How one frame's send ended.
-enum FrameSend {
-    Sent,
-    Held,
-    /// Not sealed or not signed; retrying cannot help. Already recorded.
-    Failed(DocumentPublicationError),
-    /// The broker would not take it, possibly because its keys were stale.
-    /// Not yet recorded: a retry under refreshed keys may still succeed.
-    Refused(FrameRefusal),
-}
-
-/// Why a commit call did not go through, as far as this side can tell.
-enum FrameRefusal {
-    /// The peer read the change and would not accept it.
-    Definite(String),
-    /// No answer: the call was lost, cancelled or overloaded.
-    Unknown(String),
-}
-
-impl FrameRefusal {
-    /// Whether the peer answered about this change rather than the call
-    /// failing on its way.
-    fn is_definite(&self) -> bool {
-        matches!(self, Self::Definite(_))
-    }
-}
-
-impl std::fmt::Display for FrameRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Definite(reason) | Self::Unknown(reason) => f.write_str(reason),
-        }
-    }
-}
-
 /// Ask the identity service for `route`'s current keys. Returns whether
 /// the route's state or keys changed.
 #[allow(
@@ -6174,7 +5405,7 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
                 .next()
                 .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation))
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(Some(keys))) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
                 .await
@@ -6183,7 +5414,7 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
                 .next()
                 .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation))
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None)) => false,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(None)) => false,
     }
 }
 
@@ -6213,7 +5444,7 @@ async fn refresh_keys(
                 },
             )
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(Some(keys))) => {
             std::sync::Arc::clone(keys)
         }
         _ => {
@@ -6242,8 +5473,8 @@ async fn refresh_keys(
     Some(Box::pin(endpoint_channel_keys(keys, queries)))
 }
 
-/// Take a finished round's answers, then deliver what waited on them.
-/// Returns whether any route's state or keys changed.
+/// Take a finished round's answers, and tell the app what each route's
+/// access became. Returns whether any route's state or keys changed.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -6251,7 +5482,6 @@ async fn refresh_keys(
 async fn apply_fetched_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     fetched: FetchedKeys,
-    signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
 ) -> bool {
     let mut changed = false;
@@ -6268,16 +5498,31 @@ async fn apply_fetched_keys(
         {
             changed |= update_route_keys(route, reply, asked);
         }
-        if !Box::pin(held_inbound::deliver_waiting(route, signer, inbound_tx)).await {
+        if !report_key_access(route, inbound_tx) {
             return changed;
         }
     }
     changed
 }
 
-/// Bring the keys of the routes `round` names up to date, report access
-/// changes to the app, then send the edits and deliver the ciphertext that
-/// waited on them.
+/// Tell the app what `route`'s access became, once per change. `false` once
+/// the app side is gone.
+fn report_key_access(route: &SdkRoute, inbound_tx: &InboundBridge) -> bool {
+    let state = route
+        .encryption
+        .lock()
+        .ok()
+        .and_then(|mut keys| keys.take_state_change());
+    state.is_none_or(|state| {
+        inbound_tx.send_reply(CollabEvent::KeyAccess {
+            route: route.spec.clone(),
+            state,
+        })
+    })
+}
+
+/// Bring the keys of the routes `round` names up to date, and report access
+/// changes to the app.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -6296,7 +5541,7 @@ async fn refresh_all_route_keys(
         {
             refresh_route_keys(route, signer).await;
         }
-        if !Box::pin(held_inbound::deliver_waiting(route, signer, inbound_tx)).await {
+        if !report_key_access(route, inbound_tx) {
             return;
         }
     }
@@ -6448,7 +5693,7 @@ async fn dispatch_sdk_request(
                 .await;
         }
         CollabRequest::Hello { .. } => {}
-        request @ (CollabRequest::SignedOperation { .. } | CollabRequest::Document { .. }) => {
+        request @ CollabRequest::Document { .. } => {
             queue.publish(route, request, role, reservation);
         }
         CollabRequest::OfferContent { hash, bytes } => {
@@ -6459,16 +5704,6 @@ async fn dispatch_sdk_request(
         CollabRequest::WantContent { hash } => {
             if let Err(error) = route.channel.want_blob(&hash).await {
                 tracing::warn!(%error, %hash, "collab: asking for record content failed");
-            }
-        }
-        CollabRequest::RequestDocumentSnapshot => {
-            if route.committed {
-                return true;
-            }
-            if route.channel.request_document_snapshot().await.is_err() {
-                inbound_tx
-                    .state
-                    .fail_closed("document snapshot request RPC");
             }
         }
         CollabRequest::Presence { key, payload } => {
@@ -6542,70 +5777,6 @@ async fn dispatch_sdk_request(
                     .await;
                 }
             }
-        }
-        CollabRequest::FetchScrollback {
-            artifact,
-            before_seq,
-            max,
-        } => {
-            let (ops, decrypted_payloads, oldest_seq, exhausted) = match route
-                .channel
-                .fetch_scrollback_for(artifact.0.as_bytes(), before_seq, u32::from(max))
-                .await
-            {
-                Ok(batch) => {
-                    let mut payloads = Vec::new();
-                    let decoded = decode_paged_ops(artifact, &batch.ops);
-                    let oldest_seq = decoded.iter().map(|op| op.seq).min();
-                    let ops = decoded
-                        .into_iter()
-                        // The local broker pages what it admitted.
-                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption, OpAdmission::CleartextAdmitted) {
-                            // History pages arrive newest first, so a
-                            // transfer split across pages completes when its
-                            // oldest segment arrives.
-                            Ok(payload) => {
-                                if let Ok(mut keys) = route.encryption.lock() {
-                                    keys.settle(&op);
-                                }
-                                DocumentReassembly::complete(
-                                &inbound_tx.reassembly.history,
-                                &op,
-                                payload,
-                            )
-                            .map(|payload| {
-                                payloads.push(payload);
-                                Box::new(op)
-                            })
-                            }
-                            Err(DecryptFailure::Later) => {
-                                // Paged again once this device holds the key.
-                                None
-                            }
-                            Err(DecryptFailure::Refused(error)) => {
-                                tracing::warn!(%error, "collab: dropping undecryptable scrollback envelope");
-                                None
-                            }
-                        })
-                        .collect();
-                    (ops, payloads, oldest_seq, batch.done)
-                }
-                Err(error) => {
-                    // The app is told the history ends here, so the reason it
-                    // saw nothing must be in the journal.
-                    tracing::warn!(%error, "collab: scrollback could not be read; the app is told history ends here");
-                    (Vec::new(), Vec::new(), None, true)
-                }
-            };
-            let _ = inbound_tx
-                .send_document(CollabEvent::ScrollbackBatch {
-                    artifact,
-                    ops,
-                    decrypted_payloads,
-                    oldest_seq,
-                    exhausted,
-                })
-                .await;
         }
         CollabRequest::PublishActionSurface { delta } => {
             if let Err(error) = route.channel.publish_action_surface(&delta).await {
@@ -6951,28 +6122,7 @@ async fn dispatch_sdk_request(
     }
     true
 }
-/// Pass a single-frame document event through, or hold a segment until its
-/// transfer completes and return the complete mutation exactly once.
-fn complete_document_event(
-    event: CollabEvent,
-    reassembler: &std::sync::Mutex<collab_types::DocumentReassembler>,
-) -> Option<CollabEvent> {
-    let CollabEvent::Document {
-        envelope,
-        decrypted_payload,
-    } = event
-    else {
-        return Some(event);
-    };
-    let decrypted_payload =
-        DocumentReassembly::complete(reassembler, &envelope, decrypted_payload)?;
-    Some(CollabEvent::Document {
-        envelope,
-        decrypted_payload,
-    })
-}
-
-/// Shared per-route key state: the op stream opens with it, sends seal
+/// Shared per-route key state: the content the record references is sealed
 /// with it, and key refreshes update it.
 type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteKeys>>;
 

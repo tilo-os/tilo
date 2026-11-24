@@ -15,9 +15,8 @@
 //! and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
-use collab_types::inbound::OpAdmission;
 use collab_types::presence::Member;
-use collab_types::{ArtifactId, MemberId, PeerPresence, SignedOp};
+use collab_types::{MemberId, PeerPresence};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -360,9 +359,6 @@ pub enum Publication {
     /// A keyed presence update, fanned out to the workspace's other
     /// endpoints and replicated to its peers.
     Presence(PeerPresence),
-    /// A signed change to the channel's document, answered once the host
-    /// admitted it (and the workspace's owner committed it, where one must).
-    Document(Box<SignedOp>),
     /// Content the channel's record references, which the endpoint stored:
     /// the host keeps it where the record's readers are served from.
     Content { hash: String, bytes: Vec<u8> },
@@ -408,16 +404,6 @@ pub enum Read {
     /// arrives on [`Topic::Content`], from this device or the workspace's
     /// others.
     Content { hash: String },
-    /// The document's current state, which another endpoint holding the
-    /// channel is asked to publish; it arrives on [`Topic::Ops`].
-    Document,
-    /// Up to `max` admitted changes to `artifact` before `before_seq`,
-    /// answered as [`Reply::History`].
-    History {
-        artifact: ArtifactId,
-        before_seq: u64,
-        max: u32,
-    },
 }
 
 /// What a subscription delivers.
@@ -425,8 +411,6 @@ pub enum Read {
 pub enum Topic {
     /// The workspace's other members' presence.
     Presence,
-    /// Every signed change to the channel's document from now on.
-    Ops,
     /// Content of the channel's record that arrived, or where a read of it
     /// has got to.
     Content,
@@ -489,14 +473,6 @@ pub enum Reply {
     },
     /// Where an admitted local document action stands.
     Admitted(PublishedInvocationObservation),
-    /// A page of history, each change the postcard bytes of its
-    /// [`SignedOp`]. Not `exhausted` while older changes remain here or
-    /// were asked of the workspace's other devices, whose answer a later read
-    /// finds.
-    History {
-        ops: Vec<Vec<u8>>,
-        exhausted: bool,
-    },
     /// A [`Operation::Snapshot`]: the services' revision and `resource`'s
     /// reading as JSON, `None` when no service publishes it.
     Snapshot {
@@ -529,12 +505,6 @@ pub enum Event {
     Presence {
         member: collab_types::MemberId,
         presence: PeerPresence,
-    },
-    /// A signed document change, as the postcard bytes of its
-    /// [`SignedOp`], with who sent it and the channel's verdict on it.
-    Op {
-        op: Vec<u8>,
-        admission: OpAdmission,
     },
     /// Content of the channel's record: its bytes once `state` is
     /// resolved, else where it has got to.
@@ -583,8 +553,6 @@ pub enum ContextUpdate {
     FollowChanged {
         peer_id: Option<tilo_actions::MemberId>,
     },
-    /// Publish the document's current state.
-    SnapshotRequested,
     /// The next step of a handoff addressed to this instance, as
     /// `collab_types::handoff::HandoffRequest` JSON.
     Handoff(Vec<u8>),
@@ -593,6 +561,9 @@ pub enum ContextUpdate {
     /// Records another device wrote into this workspace's store: what a window that reads the
     /// store read of them is read again.
     RecordsMoved(Vec<String>),
+    /// The record this channel opened changed past what the endpoint was sent: it asks the
+    /// changes from its own heads (the store command `RecordChanges`).
+    RecordChanged,
 }
 
 /// What the host sends an endpoint.

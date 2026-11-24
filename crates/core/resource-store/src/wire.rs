@@ -118,6 +118,30 @@ pub enum Command {
     /// device's sync keeps them and its workspace service answers; a store answers none
     /// ([`read`]), as a store on one device alone has no other device to reach.
     Reach { record: String },
+    /// The changes of the record the asking app's process opened, as Automerge encodes them, past
+    /// the heads `after` (hex; none asks for every change): what the process merges into its own
+    /// copy of the record. Answered as [`Reply::RecordChanges`] by the device's workspace service,
+    /// which keeps the record and decides the read for the caller; a store answers none
+    /// ([`read`]).
+    ///
+    /// The answer comes in pages: `from` is where in it this page starts, `0` first, and each
+    /// page names where the next one starts until the last.
+    RecordChanges { after: Vec<String>, from: u64 },
+    /// The asking app's own changes of the record its process opened, as Automerge encodes them:
+    /// the device's workspace service reads them with the confined parser, decides the write for
+    /// the caller, and records them as its own change of the record. Answered as
+    /// [`Reply::Written`]; a store makes none ([`write`]).
+    ///
+    /// `changes` is a run of the changes, concatenated as Automerge saves them incrementally; a
+    /// write too large for one command goes as several runs in order, each but the last with
+    /// `more`, and the service takes them as one write once the last arrives. `commit` names the
+    /// action this write is one part of, when it wrote more than one record: every part carries
+    /// it, and every device applies the parts together or not at all.
+    RecordChange {
+        changes: Bytes,
+        more: bool,
+        commit: Option<collab_types::WorkspaceCommit>,
+    },
 }
 
 /// One edit of a resource's content.
@@ -184,6 +208,80 @@ pub enum Reply {
     Turn(Turn),
     /// How far this device's changes of a record have gone ([`Command::Reach`]).
     Reach(Reach),
+    /// The changes of a record past what the asker holds, and the heads they bring it to
+    /// ([`Command::RecordChanges`]).
+    ///
+    /// `changes` is this page's part of the changes, concatenated as Automerge saves them
+    /// incrementally; the asker joins the pages and loads them once `next` is `None`. `next` is
+    /// where the next page starts. `heads` is where the whole answer brings the record, the same
+    /// on every page of one answer: a page naming other heads belongs to a newer answer, and the
+    /// asker starts again from its first page.
+    RecordChanges {
+        changes: Bytes,
+        heads: Vec<String>,
+        next: Option<u64>,
+    },
+}
+
+/// How many bytes of changes one page or run carries: under [`MAX_WIRE_BYTES`] once encoded.
+pub const RECORD_PAGE_BYTES: usize = 2 << 20;
+
+/// Bytes carried in a command or reply, encoded as base64 text rather than a list of numbers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bytes(pub Vec<u8>);
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+impl Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut text = String::with_capacity(self.0.len().div_ceil(3) * 4);
+        for chunk in self.0.chunks(3) {
+            let word = chunk.iter().enumerate().fold(0u32, |word, (at, byte)| {
+                word | u32::from(*byte) << (16 - 8 * at)
+            });
+            for at in 0..4 {
+                if at <= chunk.len() {
+                    let index = (word >> (18 - 6 * at)) & 0x3f;
+                    text.push(char::from(
+                        BASE64[usize::try_from(index).unwrap_or_default()],
+                    ));
+                } else {
+                    text.push('=');
+                }
+            }
+        }
+        serializer.serialize_str(&text)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let text = text.trim_end_matches('=').as_bytes();
+        let value = |byte: u8| {
+            BASE64
+                .iter()
+                .position(|known| *known == byte)
+                .and_then(|at| u32::try_from(at).ok())
+                .ok_or_else(|| serde::de::Error::custom("bytes are not base64"))
+        };
+        let mut bytes = Vec::with_capacity(text.len() * 3 / 4);
+        for chunk in text.chunks(4) {
+            if chunk.len() == 1 {
+                return Err(serde::de::Error::custom(
+                    "base64 ends partway through a byte",
+                ));
+            }
+            let mut word = 0u32;
+            for (at, byte) in chunk.iter().enumerate() {
+                word |= value(*byte)? << (18 - 6 * at);
+            }
+            for at in 0..chunk.len() - 1 {
+                bytes.push(((word >> (16 - 8 * at)) & 0xff).to_le_bytes()[0]);
+            }
+        }
+        Ok(Self(bytes))
+    }
 }
 
 /// This device's changes of one record that no other device keeping the workspace has taken in
@@ -217,6 +315,7 @@ impl Command {
                 | Self::Undo { .. }
                 | Self::Edit { .. }
                 | Self::Batch(_)
+                | Self::RecordChange { .. }
         )
     }
 }
@@ -358,7 +457,9 @@ fn write_into(
         | Command::Contents { .. }
         | Command::Fields { .. }
         | Command::Turn { .. }
-        | Command::Reach { .. } => return Err(StoreError::NotAWrite),
+        | Command::Reach { .. }
+        | Command::RecordChanges { .. }
+        | Command::RecordChange { .. } => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -451,7 +552,9 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Undo { .. }
         | Command::Edit { .. }
         | Command::Batch(_)
-        | Command::Turn { .. } => return None,
+        | Command::Turn { .. }
+        | Command::RecordChanges { .. }
+        | Command::RecordChange { .. } => return None,
     })
 }
 
@@ -656,5 +759,33 @@ impl AsOf<'_> {
             ),
             Err(_) => Json::Null,
         }
+    }
+}
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::Bytes;
+
+    /// Every length's bytes come back from their text whole, and the text is base64's.
+    #[test]
+    fn bytes_travel_as_base64_text() {
+        assert_eq!(
+            serde_json::to_string(&Bytes(b"Man".to_vec())).unwrap(),
+            "\"TWFu\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Bytes(b"Ma".to_vec())).unwrap(),
+            "\"TWE=\""
+        );
+        for len in 0..300 {
+            let bytes = Bytes(
+                (0..len)
+                    .map(|at: usize| u8::try_from(at * 7 % 256).unwrap())
+                    .collect(),
+            );
+            let text = serde_json::to_string(&bytes).unwrap();
+            assert_eq!(serde_json::from_str::<Bytes>(&text).unwrap(), bytes);
+        }
+        assert!(serde_json::from_str::<Bytes>("\"T!==\"").is_err());
     }
 }

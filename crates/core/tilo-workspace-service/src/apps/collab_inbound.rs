@@ -231,7 +231,7 @@ fn deliver_at(
             // A host replay of an op this broker already admitted, for a
             // local app that joined after it arrived: deliver it again, byte
             // for byte; the app's CRDT drops what it holds.
-            fan_out(fanout, document.envelope, &route);
+            fanout.record_changed(&route);
             Delivery::Done
         }
         (_, Err(reason)) => refuse(channels, document, reason, now),
@@ -308,7 +308,7 @@ fn accept(
     if envelope.kind == OpKind::Redaction {
         apply_redaction_from_envelope(&envelope, artifact, channels);
     }
-    fan_out(fanout, envelope, route);
+    fanout.record_changed(route);
     if first_of_the_document {
         announce_document(fanout, route);
     }
@@ -323,16 +323,6 @@ fn validated_before(channels: &Arc<Mutex<BrokerChannels>>, envelope: &SignedOp) 
             .iter()
             .any(|op| op == envelope)
     })
-}
-
-/// Show a validated peer document to the local apps on its route.
-fn fan_out(fanout: &FanoutState, envelope: SignedOp, route: &CrdtRoute) {
-    let event = CollabEvent::Document {
-        envelope: Box::new(envelope),
-        decrypted_payload: None,
-    };
-    // An unaddressed route is dropped rather than shown to every app.
-    fanout.fanout_to_route(&event, u64::MAX, route);
 }
 
 /// Tell a window open on the app that a peer wrote a record of one of its trees (a chain's next
@@ -409,6 +399,43 @@ fn record_already_redacted(
 mod tests {
     use super::*;
     use collab_types::{document_artifact_id, document_attestation_id};
+
+    /// A window open on the fixtures' record, as this device's broker serves it.
+    struct Window {
+        _broker: Arc<crate::apps::collab_app_broker::AppBrokerState>,
+        updates: std::cell::RefCell<
+            tokio::sync::mpsc::UnboundedReceiver<runtime_collab::wire::ContextUpdate>,
+        >,
+        told: std::cell::Cell<usize>,
+    }
+
+    impl Window {
+        fn open(fanout: &FanoutState) -> Self {
+            let broker = crate::apps::collab_app_broker::AppBrokerState::test_state_only(
+                None,
+                crate::apps::services::ProcessServices::default(),
+            );
+            fanout.attach_app_broker(Arc::clone(&broker));
+            let channel = CrdtRoute::record("notes", WORKSPACE, "record").channel_key();
+            broker.ensure_channel(&channel);
+            let updates = broker.watch_context(&channel, 1);
+            Self {
+                _broker: broker,
+                updates: std::cell::RefCell::new(updates),
+                told: std::cell::Cell::new(0),
+            }
+        }
+
+        /// How often the window was told the record changed, so far.
+        fn told(&self) -> usize {
+            while let Ok(update) = self.updates.borrow_mut().try_recv() {
+                if matches!(update, runtime_collab::wire::ContextUpdate::RecordChanged) {
+                    self.told.set(self.told.get() + 1);
+                }
+            }
+            self.told.get()
+        }
+    }
 
     /// The workspace every fixture writes in, by the id a workspace is known by.
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
@@ -507,17 +534,8 @@ mod tests {
             };
             let channels = Arc::new(Mutex::new(BrokerChannels::default()));
             let fanout = FanoutState::new();
-            let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let seen = Arc::clone(&delivered);
-            let _app = fanout.subscribe_workspaces(
-                vec![WORKSPACE.into()],
-                Box::new(move |event, _| {
-                    if matches!(event, CollabEvent::Document { .. }) {
-                        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }),
-            );
-            let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
+            let window = Window::open(&fanout);
+            let count = || window.told();
             let first = op("first");
             assert_eq!(
                 deliver(&channels, &fanout, document(first.clone(), false)),
@@ -583,8 +601,9 @@ mod tests {
 
     /// A member of a sealed note, whose channel has moved on since its
     /// member joined, is shown the writer's `writes` in that order. Answers
-    /// what each delivery said, and the note the member's app holds, from
-    /// the writes it was shown in the order it was shown them.
+    /// what each delivery said, and the note the member's device holds, from
+    /// the writes it took in, in the order it took them; its window is told
+    /// of each.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels.lock().unwrap().register_seal_check(
@@ -592,17 +611,8 @@ mod tests {
             check(),
         );
         let fanout = FanoutState::new();
-        let shown = Arc::new(Mutex::new(Vec::new()));
-        let app = Arc::clone(&shown);
-        let _app = fanout.subscribe_workspaces(
-            vec![WORKSPACE.into()],
-            Box::new(move |event, _| {
-                if let CollabEvent::Document { envelope, .. } = event {
-                    app.lock().unwrap().push((**envelope).clone());
-                }
-            }),
-        );
-        let deliveries = writes
+        let window = Window::open(&fanout);
+        let deliveries: Vec<Delivery> = writes
             .iter()
             .map(|envelope| {
                 deliver(
@@ -619,8 +629,21 @@ mod tests {
                 )
             })
             .collect();
+        assert_eq!(
+            window.told(),
+            writes.len(),
+            "the window is told of every write"
+        );
         drop(fanout);
-        let shown = shown.lock().unwrap().clone();
+        let artifact = document_artifact_id("notes", WORKSPACE, "record");
+        let shown = channels
+            .lock()
+            .unwrap()
+            .state_for(artifact)
+            .op_log
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let mut note = automerge::AutoCommit::new();
         for envelope in &shown {
             tilo_automerge::ApplyIncoming::load_incoming(&mut note, &envelope.payload).unwrap();
@@ -669,18 +692,9 @@ mod tests {
             check(),
         );
         let fanout = FanoutState::new();
-        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let app = Arc::clone(&delivered);
-        let _app = fanout.subscribe_workspaces(
-            vec![WORKSPACE.into()],
-            Box::new(move |event, _| {
-                if matches!(event, CollabEvent::Document { .. }) {
-                    app.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-            }),
-        );
+        let window = Window::open(&fanout);
         let shows = |envelope: SignedOp, replayed: bool| {
-            let before = delivered.load(std::sync::atomic::Ordering::SeqCst);
+            let before = window.told();
             deliver(
                 &channels,
                 &fanout,
@@ -693,7 +707,7 @@ mod tests {
                     envelope,
                 },
             );
-            delivered.load(std::sync::atomic::Ordering::SeqCst) > before
+            window.told() > before
         };
         assert!(shows(clear(1, "live base"), false), "a live base write");
         assert!(shows(clear(2, "kept base"), true), "a kept base write");

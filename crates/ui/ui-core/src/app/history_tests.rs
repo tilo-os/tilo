@@ -196,27 +196,15 @@ fn native_key(app: &mut App, key: &str) {
     }
 }
 
+/// `mutation` of `route`'s record, as the device's store sends it.
 fn routed_document(
     route: &crate::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
-) -> collab_types::SignedOp {
-    collab_types::SignedOp::new_unsigned(
-        mutation.encode().unwrap(),
-        collab_types::document_artifact_id(
-            &route.app_id,
-            &route.cluster_id.to_string(),
-            route.document.as_deref().unwrap_or(""),
-        ),
-        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::document_attestation_id(
-            &route.app_id,
-            &route.cluster_id.to_string(),
-            route.document.as_deref().unwrap_or(""),
-        ),
-        collab_types::OpKind::Change,
-        crate::time::SystemTime::UNIX_EPOCH,
-        0,
-    )
+) -> CollabEvent {
+    CollabEvent::Document {
+        route: route.clone(),
+        mutation,
+    }
 }
 #[test]
 fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
@@ -235,13 +223,10 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
         foreign.document = Some("foreign-record".into());
         let mut incoming = automerge::AutoCommit::new();
         incoming.put(ROOT, "foreign-body", "must stay out").unwrap();
-        app.apply_signed_document_envelope(
-            &routed_document(
-                &foreign,
-                collab_types::DocumentMutation::Snapshot(incoming.save()),
-            ),
-            None,
-        );
+        app.apply_document_event(&routed_document(
+            &foreign,
+            collab_types::DocumentMutation::Snapshot(incoming.save()),
+        ));
         assert!(
             app.state.doc.get(ROOT, "foreign-body").unwrap().is_none(),
             "route-foreign envelope must not fall into outer State"
@@ -257,7 +242,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             fixture.remote(1, "second-remote", true),
         ];
         for envelope in &envelopes {
-            fixture.app.apply_signed_document_envelope(envelope, None);
+            fixture.app.apply_document_event(envelope);
         }
         assert_eq!(fixture.value(0, "first-remote").as_deref(), Some("remote"));
         assert_eq!(fixture.value(1, "second-remote").as_deref(), Some("remote"));
@@ -434,17 +419,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             &foreign,
             collab_types::DocumentMutation::Snapshot(doc.save()),
         );
-        app.apply_collab_event_for_test(CollabEvent::Document {
-            envelope: Box::new(envelope.clone()),
-            decrypted_payload: None,
-        });
-        app.apply_collab_event_for_test(CollabEvent::ScrollbackBatch {
-            artifact: envelope.artifact,
-            oldest_seq: Some(envelope.seq),
-            ops: vec![Box::new(envelope)],
-            decrypted_payloads: vec![],
-            exhausted: true,
-        });
+        app.apply_collab_event_for_test(envelope);
         assert_eq!(
             probe.collab_events.get(),
             0,
@@ -468,7 +443,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
                 doc.put(ROOT, "draft", "local").unwrap();
             })
             .unwrap();
-        fixture.app.apply_signed_document_envelope(&incoming, None);
+        fixture.app.apply_document_event(&incoming);
         fixture
             .app
             .actions
@@ -527,20 +502,9 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             &foreign,
             collab_types::DocumentMutation::Snapshot(outer_peer.save()),
         );
-        fixture
-            .app
-            .apply_collab_event_for_test(CollabEvent::ScrollbackBatch {
-                artifact: first.artifact,
-                oldest_seq: None,
-                ops: vec![
-                    Box::new(first),
-                    Box::new(foreign_op),
-                    Box::new(second),
-                    Box::new(primary_op),
-                ],
-                decrypted_payloads: vec![],
-                exhausted: true,
-            });
+        for event in [first, foreign_op, second, primary_op] {
+            fixture.app.apply_collab_event_for_test(event);
+        }
         assert_eq!(
             fixture.value(0, "scrollback-first").as_deref(),
             Some("remote")
@@ -675,7 +639,7 @@ impl RoutedOwners {
             _temp: temp,
         }
     }
-    fn remote(&self, index: usize, name: &str, incremental: bool) -> collab_types::SignedOp {
+    fn remote(&self, index: usize, name: &str, incremental: bool) -> CollabEvent {
         let binding = &self.bindings[index];
         let mut doc = self
             .records
@@ -737,7 +701,7 @@ fn identity_mutation(
     family: &str,
     field: &str,
     incremental: bool,
-) -> collab_types::SignedOp {
+) -> CollabEvent {
     use automerge::ReadDoc;
 
     let binding = &fixture.bindings[index];
@@ -807,7 +771,7 @@ tilo_test_env::scenario! {
             collab_types::DocumentMutation::Snapshot(remote.save()),
         );
 
-        fixture.app.apply_signed_document_envelope(&incoming, None);
+        fixture.app.apply_document_event(&incoming);
 
         assert_eq!(
             fixture
@@ -839,7 +803,7 @@ tilo_test_env::scenario! {
                 let family = "tilo:record";
                 let incoming = identity_mutation(&fixture, 0, family, field, incremental);
                 let before = fixture.observation(0);
-                fixture.app.apply_signed_document_envelope(&incoming, None);
+                fixture.app.apply_document_event(&incoming);
                 assert_eq!(fixture.observation(0), before, "{family} {field}");
                 assert_eq!(fixture.value(0, "foreign-content"), None);
                 assert!(
@@ -870,7 +834,7 @@ tilo_test_env::scenario! {
                     &route,
                     collab_types::DocumentMutation::Snapshot(recovery.save()),
                 );
-                fixture.app.apply_signed_document_envelope(&recovery, None);
+                fixture.app.apply_document_event(&recovery);
                 assert_eq!(
                     fixture.value(0, "valid-after-recovery").as_deref(),
                     Some(field)
@@ -902,7 +866,7 @@ tilo_test_env::scenario! {
             collab_types::DocumentMutation::Incremental(bytes),
         );
         let before = fixture.observation(0);
-        fixture.app.apply_signed_document_envelope(&incoming, None);
+        fixture.app.apply_document_event(&incoming);
         assert_eq!(fixture.observation(0), before);
         assert_eq!(fixture.value(0, "valid-prefix"), None);
     }
@@ -962,7 +926,7 @@ tilo_test_env::scenario! {
                     },
                 );
                 let before = fixture.observation(0);
-                fixture.app.apply_signed_document_envelope(&incoming, None);
+                fixture.app.apply_document_event(&incoming);
                 assert_eq!(fixture.observation(0), before, "{family} {field}");
             }
         }
@@ -1135,7 +1099,7 @@ impl RoutedPrimary {
         &self,
         incremental: bool,
         mutate: impl FnOnce(&mut automerge::AutoCommit),
-    ) -> collab_types::SignedOp {
+    ) -> CollabEvent {
         let mut remote = self
             .records
             .read_checked(&self.binding.checkout.id, Clone::clone)
@@ -1171,7 +1135,7 @@ tilo_test_env::scenario! {
                 let valid = fixture.envelope(incremental, |doc| {
                     doc.put(ROOT, "valid-primary", "remote").unwrap();
                 });
-                fixture.app.apply_signed_document_envelope(&valid, None);
+                fixture.app.apply_document_event(&valid);
                 assert_eq!(fixture.value("valid-primary").as_deref(), Some("remote"));
                 let after = fixture.observation();
                 assert_eq!(after.2, before.2);
@@ -1225,7 +1189,7 @@ tilo_test_env::scenario! {
                         }
                         doc.put(ROOT, "invalid-primary-content", attack).unwrap();
                     });
-                    fixture.app.apply_signed_document_envelope(&incoming, None);
+                    fixture.app.apply_document_event(&incoming);
                     assert_eq!(fixture.observation(), before, "primary {attack}");
                     assert_eq!(fixture.value("invalid-primary-content"), None);
                     assert!(fixture.app.document_sync_status().is_some());
@@ -1235,7 +1199,7 @@ tilo_test_env::scenario! {
                     let recovery = fixture.envelope(false, |doc| {
                         doc.put(ROOT, "primary-recovered", attack).unwrap();
                     });
-                    fixture.app.apply_signed_document_envelope(&recovery, None);
+                    fixture.app.apply_document_event(&recovery);
                     assert_eq!(fixture.value("primary-recovered").as_deref(), Some(attack));
                     assert_eq!(fixture.app.document_sync_status(), None);
                 }
@@ -1352,13 +1316,10 @@ tilo_test_env::scenario! {
         peer.commit();
         fixture
             .app
-            .apply_collab_event_for_test(CollabEvent::Document {
-                envelope: Box::new(routed_document(
-                    &binding.broker_route().unwrap(),
-                    collab_types::DocumentMutation::Snapshot(peer.save()),
-                )),
-                decrypted_payload: None,
-            });
+            .apply_collab_event_for_test(routed_document(
+                &binding.broker_route().unwrap(),
+                collab_types::DocumentMutation::Snapshot(peer.save()),
+            ));
         layout(&mut fixture.app);
         assert_eq!(
             fixture.value(0, "body").as_deref(),
@@ -1504,7 +1465,7 @@ tilo_test_env::scenario! {
                     &route,
                     round1_malformed_mutation(incremental, before.clone()),
                 );
-                fixture.app.apply_signed_document_envelope(&bad, None);
+                fixture.app.apply_document_event(&bad);
                 assert!(
                     fixture
                         .app
@@ -1520,7 +1481,7 @@ tilo_test_env::scenario! {
                     routed_document(&route, round1_malformed_mutation(false, before.clone()));
                 fixture
                     .app
-                    .apply_signed_document_envelope(&invalid_recovery, None);
+                    .apply_document_event(&invalid_recovery);
                 assert_eq!(
                     fixture.app.document_sync_status().as_deref(),
                     failure.as_deref()
@@ -1554,7 +1515,7 @@ tilo_test_env::scenario! {
                         (doc.base_heads(), doc.pending_ops(), history.revision())
                     })
                     .unwrap();
-                fixture.app.apply_signed_document_envelope(&recovery, None);
+                fixture.app.apply_document_event(&recovery);
                 assert_eq!(
                     fixture.app.document_sync_status().as_deref(),
                     failure.as_deref(),
@@ -1632,7 +1593,7 @@ tilo_test_env::scenario! {
                     &route,
                     round1_malformed_mutation(incremental, fixture.app.state.doc.clone()),
                 );
-                fixture.app.apply_signed_document_envelope(&bad, None);
+                fixture.app.apply_document_event(&bad);
                 assert!(
                     fixture
                         .app
@@ -1650,7 +1611,7 @@ tilo_test_env::scenario! {
                 );
                 fixture
                     .app
-                    .apply_signed_document_envelope(&invalid_recovery, None);
+                    .apply_document_event(&invalid_recovery);
                 assert_eq!(
                     fixture.app.document_sync_status().as_deref(),
                     failure.as_deref()
@@ -1675,7 +1636,7 @@ tilo_test_env::scenario! {
                     fixture.app.state.doc.pending_ops(),
                     fixture.app.state.history_revision(),
                 );
-                fixture.app.apply_signed_document_envelope(&recovery, None);
+                fixture.app.apply_document_event(&recovery);
                 assert_eq!(
                     fixture.app.document_sync_status().as_deref(),
                     failure.as_deref(),
@@ -1736,7 +1697,7 @@ tilo_test_env::scenario! {
             let mut fixture = RoutedOwners::new();
             let valid = fixture.remote(0, "must-not-partly-apply", true);
             let collab_types::DocumentMutation::Incremental(mut bytes) =
-                collab_types::DocumentMutation::decode(&valid.payload).unwrap()
+                valid.document_mutation().unwrap().clone()
             else {
                 panic!("fixture delta");
             };
@@ -1746,7 +1707,7 @@ tilo_test_env::scenario! {
                 &fixture.bindings[0].broker_route().unwrap(),
                 collab_types::DocumentMutation::Incremental(bytes),
             );
-            fixture.app.apply_signed_document_envelope(&envelope, None);
+            fixture.app.apply_document_event(&envelope);
             assert_eq!(
                 fixture.value(0, "must-not-partly-apply"),
                 None,
@@ -1774,7 +1735,7 @@ tilo_test_env::scenario! {
             );
             let delta = fixture.remote(0, "valid-queued-delta", true);
             let collab_types::DocumentMutation::Incremental(delta_bytes) =
-                collab_types::DocumentMutation::decode(&delta.payload).unwrap()
+                delta.document_mutation().unwrap().clone()
             else {
                 panic!("fixture delta");
             };
@@ -1810,7 +1771,7 @@ tilo_test_env::scenario! {
                 })
                 .unwrap();
             for message in [&bad, &delta, &snapshot] {
-                fixture.app.apply_signed_document_envelope(message, None);
+                fixture.app.apply_document_event(message);
             }
             assert_eq!(
                 fixture
@@ -1902,7 +1863,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
         fixture.app.state.doc.clone()
     };
     let bad = routed_document(&route, round1_malformed_mutation(false, baseline.clone()));
-    fixture.app.apply_signed_document_envelope(&bad, None);
+    fixture.app.apply_document_event(&bad);
     assert!(fixture.app.document_sync_status().is_some());
     let mut peer = baseline;
     peer.set_actor(automerge::ActorId::from(
@@ -1957,16 +1918,16 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
         }
     };
     let pending = observation(&fixture);
-    fixture.app.apply_signed_document_envelope(&s, None);
+    fixture.app.apply_document_event(&s);
     assert!(
         fixture.app.document_sync_status().is_some(),
         "S must remain visibly pending while local editing continues"
     );
-    fixture.app.apply_signed_document_envelope(&d, None);
+    fixture.app.apply_document_event(&d);
     if overflow {
         // S plus D and62 duplicate D packets fill the bounded64-item queue.
         for _ in 0..62 {
-            fixture.app.apply_signed_document_envelope(&d, None);
+            fixture.app.apply_document_event(&d);
         }
         peer.put(ROOT, "refused-newer-change", "must recover later")
             .unwrap();
@@ -1975,7 +1936,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
             &route,
             collab_types::DocumentMutation::Snapshot(peer.save()),
         );
-        fixture.app.apply_signed_document_envelope(&refused, None);
+        fixture.app.apply_document_event(&refused);
         assert!(
             fixture
                 .app
@@ -2060,7 +2021,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
             &route,
             collab_types::DocumentMutation::Snapshot(peer.save()),
         );
-        fixture.app.apply_signed_document_envelope(&fresh, None);
+        fixture.app.apply_document_event(&fresh);
         assert_eq!(
             value(&fixture, "refused-newer-change").as_deref(),
             Some("must recover later")

@@ -4,6 +4,8 @@
 )]
 use super::*;
 
+use tilo_actions::remote::ActionCallError;
+
 /// Postcard-encode [`PresenceKey::pointer_default`]; cheap enough not
 /// to cache.
 pub(super) fn default_pointer_key_bytes() -> Vec<u8> {
@@ -174,8 +176,8 @@ impl Drop for JoinedChannel {
 }
 
 impl JoinedChannel {
-    /// Refuse a change on a channel the app holds only to read: no app
-    /// writes on another app's route.
+    /// Refuse a change on a channel the app holds only to read: no app writes on another app's
+    /// route.
     pub(super) fn writable(&self) -> Result<(), BrokerError> {
         match self.route_access {
             RouteAccess::Own => Ok(()),
@@ -187,12 +189,52 @@ impl JoinedChannel {
         }
     }
 
+    /// Refuse a change on a channel the device's one reader does not let this channel's caller
+    /// make: the caller at the route's record, decided with the write action kind. An app changes
+    /// its own records; another app's record only where the caller's grants allow a change, so a
+    /// grant that reads alone answers a refusal.
+    pub(super) fn may_write(
+        &self,
+        admitted: &AdmittedJoinIdentity,
+        route: &CrdtRoute,
+    ) -> Result<(), BrokerError> {
+        let address = tilo_actions::remote::ResourceAddress {
+            workspace: route.cluster_id.clone(),
+            app: route.app_id.clone(),
+            record: route.document_id.clone(),
+        };
+        let caller = admitted.certified_caller(&route.cluster_id, false);
+        let decided = self.state.records().map(|reads| {
+            reads
+                .may_write(&caller, &address)
+                .wait_timeout(std::time::Duration::MAX)
+        });
+        match decided {
+            Some(Ok(Some(Ok(())))) => Ok(()),
+            // No reader answered the write decision: none is registered at this device, the
+            // answer was abandoned, or the reader cannot decide a change. The record cannot be
+            // changed from here now.
+            None
+            | Some(Ok(None))
+            | Some(Err(_))
+            | Some(Ok(Some(Err(ActionCallError::Unavailable { .. })))) => Err(BrokerError::failed(
+                "this record can't be changed right now".into(),
+            )),
+            Some(Ok(Some(Err(refusal)))) => Err(BrokerError::failed(format!(
+                "this connection may not change the record of {} and changes nothing on it: \
+                 {refusal}",
+                route.app_id
+            ))),
+        }
+    }
+
     /// Hands the resource command `body` to the device's one store, for this route's app in its
     /// workspace.
     pub(super) fn resources_dispatch(
         &self,
         body: &[u8],
         on_behalf_of: &[u8],
+        record_runs: &RefCell<Vec<u8>>,
     ) -> Result<crate::apps::services::ResourceAnswer, BrokerError> {
         if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
@@ -206,7 +248,6 @@ impl JoinedChannel {
             .state
             .revalidate_admission(&route, &self.verified_identity)?;
         if command.writes() {
-            self.writable()?;
             if !on_behalf_of.is_empty() || current.agent_id.is_some() {
                 return Err(BrokerError::failed(
                     "this resource route has no caller-scoped signer for the write".into(),
@@ -218,18 +259,44 @@ impl JoinedChannel {
                 "resources are written and read on a certified app and workspace route".into(),
             ));
         }
+        if command.writes() {
+            // A refused run ends its write: the next run starts another.
+            self.may_write(&current, &route)
+                .inspect_err(|_| drop(record_runs.take()))?;
+        }
+        let Some(command) = super::record_changes::gathered(record_runs, command) else {
+            return Ok(Box::pin(std::future::ready(Ok(
+                tilo_resource_store::wire::Reply::Written,
+            ))));
+        };
         let service = self.state.services.resources.clone().ok_or_else(|| {
             BrokerError::failed("this device keeps no store for apps' resources".into())
         })?;
+        let record = self.record_of(&command, &current, &route)?;
         let caller = current.certified_caller(&route.cluster_id, false);
-        let context = crate::apps::services::ResourceRequestContext::authenticated(
-            route.app_id,
-            route.cluster_id,
+        let mut context = crate::apps::services::ResourceRequestContext::authenticated(
+            route.app_id.clone(),
+            route.cluster_id.clone(),
             caller,
         )
         .serving(self.state.delivered_to(self.peer_id))
         .opened_for(self.opened_for());
-        Ok(service.command(&context, command))
+        if let Some(record) = record {
+            context = context.on_record(record);
+        }
+        if matches!(
+            command,
+            tilo_resource_store::wire::Command::RecordChange { .. }
+        ) {
+            context = context.refusing_founding(self.founding_refusal(&route));
+        }
+        let changes = command.writes() && context.record().is_some();
+        let answer = service.command(&context, command);
+        Ok(if changes {
+            self.telling_record_changed(answer, route)
+        } else {
+            answer
+        })
     }
 
     /// Opens the query `body` in the device's one store, for this route's app in its workspace:

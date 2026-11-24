@@ -1121,5 +1121,6 @@ pub struct AppWrite {
     pub author: tilo_action_policy::MemberAccess,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
+    /// The write as signed: its last segment, where it was too large for one frame.
     pub envelope: collab_types::SignedOp,
 }

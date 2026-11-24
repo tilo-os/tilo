@@ -77,8 +77,7 @@ mod external_moderation_rpc_tests {
             }));
             let (owner_handle, owner_mailbox) =
                 crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
-            let publisher =
-                PeerPublisher::with_commits(Arc::new(LifecycleSink), Arc::new(owner_handle));
+            let publisher = PeerPublisher::with_commits(Arc::new(owner_handle));
             let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),

@@ -7,6 +7,8 @@
 //! actor it is there (a person, an app acting for one, an agent by its key's grant), with the
 //! smaller of the two grants where it acts for someone, and a device the workspace admitted by
 //! its membership besides. The workspace a caller's connection was admitted to widens nothing.
+//! A change of a record is decided the same way, with the write action kind: an app changes its
+//! own records, and another app's only where its grants allow a change there.
 //! A read of a workspace this device does not hold goes whole to the app action server this host
 //! was given, when it was given one.
 //!
@@ -23,9 +25,10 @@
 use std::sync::Arc;
 
 use collab_types::workspace_grant::WorkspaceGrant;
+use tilo_action_policy::ActionKind;
 use tilo_actions::remote::{
-    ActionCallError, Caller, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED, RESOURCE_WRITE_REFUSED,
+    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
 };
 use tilo_peer_state::StatePeer;
 
@@ -64,6 +67,12 @@ enum Route {
 fn refused() -> ActionCallError {
     ActionCallError::Refused {
         reason: RESOURCE_READ_REFUSED.into(),
+    }
+}
+
+fn write_refused() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: RESOURCE_WRITE_REFUSED.into(),
     }
 }
 
@@ -172,22 +181,23 @@ impl RecordReads {
         }
         let admitted = Self::kept_here(&workspaces, &address.workspace)
             .ok_or_else(refused)
-            .and_then(|state| self.decides(&state, caller, address));
+            .and_then(|state| self.decides(&state, caller, address, ActionKind::Read));
         Some(admitted.map(|()| reads))
     }
 
-    /// Whether `caller` may read `address` now, decided by the workspace the address names
-    /// alone, through its governance as this device holds it (`state`). Its grants find the key
-    /// the caller reads as: one revoked, expired or scoped to another workspace reads nothing. A
-    /// device the workspace admitted reads as its membership lets it, within its certificate's
-    /// scope, and every caller as the actor it is there, the smaller grant where it acts for
-    /// someone. Every member sees who else is there, and a key is read as [`Self::reads_key`]
-    /// decides.
+    /// Whether `caller` may take `kind` at `address` now, decided by the workspace the address
+    /// names alone, through its governance as this device holds it (`state`). Its grants find the
+    /// key the caller reads as: one revoked, expired or scoped to another workspace reads
+    /// nothing. A device the workspace admitted acts as its membership lets it, within its
+    /// certificate's scope, and every caller as the actor it is there, the smaller grant where it
+    /// acts for someone. Every member sees who else is there, and a key is read as
+    /// [`Self::reads_key`] decides.
     fn decides(
         &self,
         state: &StatePeer,
         caller: &Caller,
         address: &ResourceAddress,
+        kind: ActionKind,
     ) -> Result<(), ActionCallError> {
         let now = tilo_clock::wall();
         let device = caller.device_public_key().copied();
@@ -223,24 +233,26 @@ impl RecordReads {
                     .map_err(|_| refused())?;
             }
         }
-        self.actor_reads(state, caller, member.is_some(), address, now)
+        self.actor_decides(state, caller, member.is_some(), address, kind, now)
     }
 
-    /// Whether `caller` reads `address` as the actor it is in the workspace the address names,
-    /// by that workspace's governed policy: an app acting for a person, bounded by the kinds it
-    /// declares, an agent for its person, each the smaller of its own grant and theirs. A caller inside this device that the
-    /// workspace did not admit as a device reads as the apps here name it (the person signed in,
-    /// or before anyone signs in, this device in the workspace it founded).
+    /// Whether `caller` may take `kind` at `address` as the actor it is in the workspace the
+    /// address names, by that workspace's governed policy: an app acting for a person, bounded by
+    /// the kinds it declares, an agent for its person, each the smaller of its own grant and
+    /// theirs. A caller inside this device that the workspace did not admit as a device reads as
+    /// the apps here name it (the person signed in, or before anyone signs in, this device in the
+    /// workspace it founded).
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    fn actor_reads(
+    fn actor_decides(
         &self,
         state: &StatePeer,
         caller: &Caller,
         member: bool,
         address: &ResourceAddress,
+        kind: ActionKind,
         now: web_time::SystemTime,
     ) -> Result<(), ActionCallError> {
-        use tilo_action_policy::{ActionKind, Answer};
+        use tilo_action_policy::Answer;
         let workspace =
             tilo_server_protocol::WorkspaceId::parse(&address.workspace).ok_or_else(refused)?;
         let policy = super::describe(workspace, "", state).ok_or_else(refused)?;
@@ -254,7 +266,7 @@ impl RecordReads {
                 _ => caller.clone(),
             },
         };
-        // An app reads as the one actor the dispatch decides its calls as, bounded by what it
+        // An app acts as the one actor the dispatch decides its calls as, bounded by what it
         // declares; a reader with no apps to say that reads nothing for an app.
         let actor = match &broker {
             Some(broker) => broker.caller_actor(&decided, &address.workspace),
@@ -271,22 +283,23 @@ impl RecordReads {
             return Ok(());
         }
         let node = collab_types::document_node(&address.workspace, &address.app, &address.record);
-        match actor.answer_in(&policy, &node, ActionKind::Read, seconds) {
+        match actor.answer_in(&policy, &node, kind, seconds) {
             Answer::Allow => Ok(()),
-            // The person is asked once, where the read is asked for; a read is never let by.
+            // The person is asked once, where the action is asked for; it is never let by.
             Answer::Ask => Err(ActionCallError::confirmation_required()),
             Answer::Deny => Err(refused()),
         }
     }
 
-    /// Without the apps' policy a device reads by its membership alone, and nothing else reads.
+    /// Without the apps' policy a device acts by its membership alone, and nothing else does.
     #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
-    fn actor_reads(
+    fn actor_decides(
         &self,
         _state: &StatePeer,
         _caller: &Caller,
         member: bool,
         _address: &ResourceAddress,
+        _kind: ActionKind,
         _now: web_time::SystemTime,
     ) -> Result<(), ActionCallError> {
         if member { Ok(()) } else { Err(refused()) }
@@ -378,7 +391,7 @@ impl RecordReads {
         bytes: Option<Vec<u8>>,
     ) -> Result<ResourceCopy, ActionCallError> {
         let state = Self::kept_here(workspaces, &address.workspace).ok_or_else(refused)?;
-        self.decides(&state, caller, address)?;
+        self.decides(&state, caller, address, ActionKind::Read)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
@@ -394,7 +407,7 @@ impl RecordReads {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
             && let Some(state) = Self::kept_here(&workspaces, &address.workspace)
         {
-            self.decides(&state, caller, address)?;
+            self.decides(&state, caller, address, ActionKind::Read)?;
             return Ok(Route::Held(workspaces));
         }
         self.served.clone().map(Route::Served).ok_or_else(refused)
@@ -499,8 +512,33 @@ impl ResourceReads for RecordReads {
             .and_then(WeakWorkspaces::upgrade)
             .and_then(|workspaces| Self::kept_here(&workspaces, &address.workspace));
         tilo_actions::remote::Pending::ready(match state {
-            Some(state) => self.decides(&state, caller, address),
+            Some(state) => self.decides(&state, caller, address, ActionKind::Read),
             None => Err(refused()),
+        })
+    }
+
+    /// A record of a workspace this device holds, changed as its write is decided there: an app
+    /// changes its own records, and another app's only where its grants allow a change, so a
+    /// grant that reads alone answers a refusal. A record of a workspace this device does not
+    /// hold is not changed here.
+    fn may_write(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        let state = self
+            .workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| Self::kept_here(&workspaces, &address.workspace));
+        tilo_actions::remote::Pending::ready(match state {
+            Some(state) => self
+                .decides(&state, caller, address, ActionKind::Undoable)
+                .map_err(|decision| match decision {
+                    ActionCallError::Refused { .. } => write_refused(),
+                    other => other,
+                }),
+            None => Err(write_refused()),
         })
     }
 
@@ -569,7 +607,10 @@ impl ResourceReads for RecordReads {
                 app,
                 record,
             })
-            .filter(|address| self.decides(&state, caller, address).is_ok())
+            .filter(|address| {
+                self.decides(&state, caller, address, ActionKind::Read)
+                    .is_ok()
+            })
             .collect())
     }
 

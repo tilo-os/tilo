@@ -2,8 +2,8 @@
 //! requirements: the browser adapter owns its asynchronous transport locally.
 use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec, annotation};
 
-/// Transport adapters must authenticate ordinary peer joins and verify inbound
-/// envelopes before publishing events. Installing this adapter grants no model,
+/// Transport adapters must authenticate ordinary peer joins before publishing
+/// events. Installing this adapter grants no model,
 /// action, ProcessContext, or storage authority. Queue failures are fail-closed.
 pub trait PeerTransport {
     /// Authenticated connection provenance from the host, never app model state.

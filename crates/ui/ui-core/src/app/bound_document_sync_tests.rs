@@ -31,7 +31,6 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         // The record goes out on its owner's route, never a second time as
         // the window's primary document.
         assert!(fixture.app.pending_primary_document().unwrap().is_none());
-        assert!(fixture.app.primary_document_snapshot().unwrap().is_none());
         let mut remote = fixture
             .records
             .read(&binding.checkout.id, Clone::clone)
@@ -233,20 +232,19 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .take()
             .unwrap();
         let outer = fixture.app.state.doc.get_heads();
-        assert!(fixture.app.primary_document_snapshot().is_err());
         assert!(fixture.app.pending_primary_document().is_err());
         let mut wrong = route.clone();
         wrong.route.app_id = "com.example.foreign".into();
         fixture.app.actions.bound_broker_route_for_test = Some(wrong);
-        assert!(fixture.app.primary_document_snapshot().is_err());
+        assert!(fixture.app.pending_primary_document().is_err());
         fixture.app.actions.bound_broker_route_for_test = Some(route);
         assert!(
-            fixture.app.primary_document_snapshot().unwrap().is_none(),
+            fixture.app.pending_primary_document().unwrap().is_none(),
             "the record's owner answers on its route"
         );
         fixture.app.close_components();
         assert!(
-            fixture.app.primary_document_snapshot().is_err(),
+            fixture.app.pending_primary_document().is_err(),
             "closed components cannot fall back to the outer document"
         );
         assert_eq!(fixture.app.state.doc.get_heads(), outer);

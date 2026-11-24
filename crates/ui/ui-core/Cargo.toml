@@ -427,6 +427,8 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { path = "../../core/runtime-collab", features = ["settings-host"] }
+# The device store's record commands the typed test host answers.
+tilo-resource-store = { path = "../../core/resource-store" }
 
 [[test]]
 name = "it"

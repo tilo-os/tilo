@@ -33,26 +33,20 @@ include!("../certified_person_fixture.rs");
 #[cfg(test)]
 include!("../eager_bridge_tests.rs");
 #[cfg(test)]
-use crate::apps::test_support::WorkspaceTree;
-use crate::apps::test_support::WorkspaceTreeHandle;
-use std::cell::RefCell;
-#[cfg(test)]
-use std::os::unix::fs::PermissionsExt;
-use std::rc::Rc;
-#[cfg(test)]
-use std::time::SystemTime;
-
-#[cfg(test)]
-#[cfg(test)]
-use crate::apps::collab_outbound::recording::{RecordingSink, Sent};
-#[cfg(test)]
 use crate::apps::test_support::Grants as _;
 #[cfg(test)]
-use collab_types::{Ed25519PublicKey, Role, sign_op};
+use crate::apps::test_support::WorkspaceTree;
+use crate::apps::test_support::WorkspaceTreeHandle;
+#[cfg(test)]
+use collab_types::Role;
 #[cfg(test)]
 use ed25519_dalek::Signer as _;
 #[cfg(test)]
 use ed25519_dalek::SigningKey;
+use std::cell::RefCell;
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
+use std::rc::Rc;
 
 /// Prepare an owned test directory for the production broker's socket check.
 pub fn secure_socket_parent(parent: &Path) -> std::io::Result<()> {
@@ -77,18 +71,6 @@ impl crate::apps::certificate_authority::CertificateAuthority for LifecycleAutho
 }
 
 #[cfg(test)]
-struct LifecycleSink;
-
-#[cfg(test)]
-impl crate::apps::collab_outbound::PeerPublishSink for LifecycleSink {
-    fn app_document(&self, _: String, _: String, _: String, _: collab_types::SignedOp) {}
-
-    fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
-
-    fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
-}
-
-#[cfg(test)]
 struct HealthyOwner;
 
 #[cfg(test)]
@@ -99,18 +81,6 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for HealthyOwner {
 
     fn health(&self) -> Result<(), String> {
         Ok(())
-    }
-
-    fn document(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        _: Option<String>,
-        _: collab_types::SignedOp,
-        _: Option<String>,
-    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-        Box::pin(async { Err("unused lifecycle write".into()) })
     }
 
     fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
@@ -190,18 +160,6 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for DropBrokerOnHealt
         false
     }
 
-    fn document(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        _: Option<String>,
-        _: collab_types::SignedOp,
-        _: Option<String>,
-    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-        Box::pin(async { Err("unused lifecycle write".into()) })
-    }
-
     fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
         Box::pin(async { Err("unused lifecycle receipt".into()) })
     }
@@ -229,18 +187,6 @@ struct DropOtherBrokerOnHealth {
 impl tilo_broker_core::workspace_commits::WorkspaceCommits for DropOtherBrokerOnHealth {
     fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
         false
-    }
-
-    fn document(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        _: Option<String>,
-        _: collab_types::SignedOp,
-        _: Option<String>,
-    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
-        Box::pin(async { Err("unused lifecycle write".into()) })
     }
 
     fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
@@ -867,15 +813,6 @@ fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
     }
 }
 
-#[cfg(test)]
-fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, actor: &str, _workspace: &str) {
-    let mut tree = membership.write();
-    let workspace = &mut tree.workspaces[0];
-    workspace.policy.owner = None;
-    workspace.policy.add_member(actor, Role::Viewer);
-    drop(tree);
-}
-
 /// Governs every workspace for one device; admits every certificate.
 #[cfg(test)]
 struct GovernedBy([u8; 32]);
@@ -892,81 +829,6 @@ impl crate::apps::certificate_authority::CertificateAuthority for GovernedBy {
     fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         device == Some(&self.0)
     }
-}
-
-#[cfg(test)]
-fn assert_replay_and_forgery_are_audited(
-    state: &Arc<AppBrokerState>,
-    broker_channels: &Arc<Mutex<BrokerChannels>>,
-    route: &CrdtRoute,
-    admitted: &AdmittedJoinIdentity,
-    op: &SignedOp,
-) {
-    let artifact = op.artifact;
-    let accepted_before = broker_channels
-        .lock()
-        .expect("broker channels")
-        .state_for(artifact)
-        .scrollback_for(artifact, u64::MAX, 10)
-        .0;
-    handle_signed_op_send(state, 1, route, admitted, op.clone());
-    let mut forged = op.clone();
-    forged.seq = 2;
-    forged.payload = DocumentMutation::Incremental(b"tampered".to_vec())
-        .encode()
-        .expect("typed incremental");
-    handle_signed_op_send(state, 1, route, admitted, forged);
-
-    let audit = state
-        .broker_channels
-        .lock()
-        .expect("broker channels")
-        .audit
-        .for_artifact(artifact);
-    assert_eq!(audit.len(), 2, "replay and forged op are both audited");
-    assert!(
-        audit
-            .iter()
-            .any(|entry| matches!(entry.rejection, Some(ValidationError::ReplaySeq { .. })))
-    );
-    assert!(
-        audit
-            .iter()
-            .any(|entry| matches!(entry.rejection, Some(ValidationError::BadOpSignature(_))))
-    );
-    assert_eq!(
-        broker_channels
-            .lock()
-            .expect("broker channels")
-            .state_for(artifact)
-            .scrollback_for(artifact, u64::MAX, 10)
-            .0,
-        accepted_before,
-        "replay and forgery must not change the accepted scrollback",
-    );
-}
-
-#[cfg(test)]
-fn assert_published_snapshot(sink: &RecordingSink, route: &CrdtRoute) {
-    let published = sink.snapshot();
-    let [
-        Sent::Signed {
-            app_id,
-            cluster_id,
-            document_id,
-            payload,
-        },
-    ] = published.as_slice()
-    else {
-        panic!("the certified document was not published to the peer network");
-    };
-    assert_eq!(app_id, "so.tilo.notes");
-    assert_eq!(cluster_id, &route.cluster_id);
-    assert_eq!(document_id, "meeting-notes");
-    assert_eq!(
-        DocumentMutation::decode(payload).expect("typed network payload"),
-        DocumentMutation::Snapshot(b"automerge snapshot".to_vec()),
-    );
 }
 
 #[cfg(test)]

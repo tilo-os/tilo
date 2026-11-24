@@ -90,18 +90,6 @@ include!("cluster_route_tests.rs");
 include!("committed_changes_tests.rs");
 use crate::CollaborationState;
 
-fn plain_route_keys() -> SharedRouteKeys {
-    std::sync::Arc::new(std::sync::Mutex::new(
-        super::super::route_keys::RouteKeys::plain(),
-    ))
-}
-
-fn group_route_keys(group: key_group::KeyGroup) -> SharedRouteKeys {
-    let keys = plain_route_keys();
-    keys.lock().unwrap().install_group(group);
-    keys
-}
-
 use crate::time::{Duration, Instant};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -115,25 +103,24 @@ use runtime_collab::wire::{
 };
 use tokio::io::AsyncWriteExt as _;
 
-/// A real change writing `text`, as a window's direct edit names itself, and
-/// the claims its op carries: a device that opens a sealed op reads each
-/// change against its claim, and refuses bytes that are no change.
-fn claimed_change(text: &str) -> (Vec<u8>, Vec<collab_types::ChangeClaim>) {
+/// A real change writing `text`, as a window's direct edit names itself: the bytes an app hands
+/// its record's store.
+fn change(text: &str) -> Vec<u8> {
     use automerge::transaction::Transactable as _;
     let message = tilo_actions::FrameworkChange::Native.change_message();
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "text", text).unwrap();
-    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message.clone()));
-    let bytes = doc.save_after(&[]);
-    let claims = collab_types::claim::parse_changes(&bytes)
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+    doc.save_after(&[])
+}
+
+/// Each change `bytes` carries, as the store takes it.
+fn changes_of(bytes: &[u8]) -> Vec<Vec<u8>> {
+    collab_types::parse_changes(bytes)
         .unwrap()
         .iter()
-        .map(|change| {
-            collab_types::ChangeClaim::of_change(change.hash().0, Some(&message), Vec::new())
-                .unwrap()
-        })
-        .collect();
-    (bytes, claims)
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
 }
 
 /// Changes the fake broker hands a reader holding `from`.
@@ -151,8 +138,6 @@ pub struct Captures {
     /// at once. Every report is refused: the fixture admits none.
     pub admit_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
     pub admits_asked: usize,
-    /// How long after it is asked for the op stream hands out each op.
-    pub op_stream_delay: Option<Duration>,
     /// The app and the records whose settings the channel hands out.
     pub settings: Option<(String, Arc<dyn settings_store::SettingsSource>)>,
     /// The app and the board whose live activity the channel hands out.
@@ -214,11 +199,11 @@ pub struct Captures {
     pub media_joined: bool,
     pub media_stops: usize,
     pub media_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
-    /// Lose the connection on the next document commit: the peer may or
+    /// Lose the connection on the next record write: the store may or
     /// may not have kept the change, an unknown outcome.
     pub fail_document: bool,
-    /// Refuse this many document commits the way a broker that will not
-    /// take the change answers: a definite error, not a lost call.
+    /// Refuse this many record writes the way a store that will not take
+    /// the change answers: a definite error, not a lost call.
     pub refuse_documents: usize,
     pub refused_documents: usize,
     pub document_holds: std::collections::VecDeque<DocumentSendHold>,
@@ -235,14 +220,18 @@ pub struct Captures {
     /// Each stream subscribed to, by its route, in the order asked.
     pub subscribed: Vec<(String, Topic)>,
     pub joined_resource_types: Vec<String>,
-    pub signed_ops: Vec<Vec<u8>>,
+    /// Each write of a record's changes the store took, in order: the changes it carried.
+    pub record_writes: Vec<Vec<Vec<u8>>>,
+    /// The channel of each read of a record's changes, in order.
+    pub record_reads: Vec<String>,
+    /// The action each record write named, in the order they came.
+    pub record_commits: Vec<Option<collab_types::WorkspaceCommit>>,
     pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
     pub caret_publishes: Vec<(Vec<u8>, u64)>,
     pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
     pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
     pub arrived: Vec<Vec<u8>>,
     pub left: Vec<Vec<u8>>,
-    pub scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
     pub action_publications: Vec<(String, Vec<(String, String)>)>,
     /// The connection's surface as its deltas built it, and each delta.
     pub surface_table: runtime_collab::SurfaceTable,
@@ -284,7 +273,7 @@ pub struct DocumentSendHold {
 }
 
 impl Captures {
-    /// Hold the next document commit: it says when it is entered, and is
+    /// Hold the next record write: it says when it is entered, and is
     /// answered with what is sent (dropping the sender answers `Err`).
     pub fn hold_document(
         &mut self,
@@ -318,24 +307,18 @@ pub struct SeedContext {
     permissions: Vec<String>,
 }
 
-#[derive(Clone)]
-pub struct SeedScrollback {
-    ops: Vec<Vec<u8>>,
-    done: bool,
-}
-
-/// `(op bytes, author, verdict)` the fake host's op topic delivers.
-type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, OpAdmission)>>>;
-
 /// What a fake host's channels start with, and what it records.
 #[derive(Default)]
 pub struct FakeBroker {
     pub captures: SharedCaptures,
-    pub op_backlog: Vec<(Vec<u8>, OpAdmission)>,
+    /// The changes every channel's record holds when it is first asked for.
+    pub record: Vec<Vec<u8>>,
+    /// Changes made elsewhere: each is taken into every record open on the
+    /// connection, whose context feeds are told the record changed.
+    pub peer_changes: Option<tokio_mpsc::UnboundedReceiver<Vec<u8>>>,
     pub presence_backlog: Vec<SeedPresence>,
     pub context_backlog: Vec<SeedContext>,
     pub terminate_context_stream: bool,
-    pub scrollback_response: Option<SeedScrollback>,
 }
 
 /// An answer the fake host sends once it is ready.
@@ -456,10 +439,29 @@ fn committed_answer(
     })
 }
 
+/// A channel's record as the store keeps it, and the context feeds told
+/// when it changes elsewhere.
+#[derive(Default)]
+struct FakeRecord {
+    doc: automerge::Automerge,
+    feeds: Vec<Feed>,
+    /// The runs of a write whose last run has not arrived.
+    incoming: Vec<u8>,
+}
+
+impl FakeRecord {
+    fn take(&mut self, change: &[u8]) -> Result<(), String> {
+        self.doc
+            .load_incremental(change)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// One channel a fake host's connection joined.
 struct FakeChannel {
     channel_id: String,
-    op_backlog: OpBacklog,
+    record: Rc<RefCell<FakeRecord>>,
     presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
     context_backlog: Rc<RefCell<Vec<SeedContext>>>,
     settings: RefCell<Option<Rc<runtime_collab::settings::host::AppSettingsServer>>>,
@@ -494,6 +496,9 @@ struct FakeHost {
     broker: FakeBroker,
     frames: tokio_mpsc::UnboundedSender<HostFrame>,
     channels: RefCell<HashMap<Handle, Rc<FakeChannel>>>,
+    /// Each channel's record, by channel, and the changes a new one starts with.
+    records: RefCell<HashMap<String, Rc<RefCell<FakeRecord>>>>,
+    seed: RefCell<Vec<Vec<u8>>>,
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
     next_handle: Cell<u64>,
     /// Ends the connection unanswered: a call whose outcome is unknown.
@@ -506,16 +511,20 @@ struct FakeHost {
     clippy::future_not_send,
     reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
 )]
-pub(super) async fn serve_fake_broker<S>(stream: S, broker: FakeBroker)
+pub(super) async fn serve_fake_broker<S>(stream: S, mut broker: FakeBroker)
 where
     S: AsyncRead + AsyncWrite + 'static,
 {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let (frames, mut outgoing) = tokio_mpsc::unbounded_channel();
+    let peer_changes = broker.peer_changes.take();
+    let seed = RefCell::new(broker.record.clone());
     let host = Rc::new(FakeHost {
         broker,
         frames,
         channels: RefCell::default(),
+        records: RefCell::default(),
+        seed,
         subscriptions: RefCell::default(),
         next_handle: Cell::new(1),
         hang_up: Rc::new(tokio::sync::Notify::new()),
@@ -537,10 +546,19 @@ where
             host.accept(call);
         }
     };
+    let peers = async {
+        if let Some(mut changes) = peer_changes {
+            while let Some(change) = changes.recv().await {
+                host.peer_change(change);
+            }
+        }
+        std::future::pending::<()>().await;
+    };
     let hang_up = host.hang_up.clone();
     tokio::select! {
         () = write => {}
         () = read => {}
+        () = peers => {}
         () = hang_up.notified() => {}
     }
     for (_, (_, task)) in host.subscriptions.borrow_mut().drain() {
@@ -560,6 +578,31 @@ impl FakeHost {
             .get(&handle)
             .cloned()
             .ok_or_else(|| format!("no channel {handle:?} on this connection"))
+    }
+
+    /// The record of `channel_id`, made from the seed when first asked.
+    fn record(&self, channel_id: &str) -> Rc<RefCell<FakeRecord>> {
+        let mut records = self.records.borrow_mut();
+        let record = records.entry(channel_id.to_owned()).or_insert_with(|| {
+            let mut record = FakeRecord::default();
+            for change in self.seed.borrow().iter() {
+                record.take(change).unwrap();
+            }
+            Rc::new(RefCell::new(record))
+        });
+        Rc::clone(record)
+    }
+
+    /// A change made elsewhere: every record takes it and its feeds hear so.
+    fn peer_change(&self, change: Vec<u8>) {
+        for record in self.records.borrow().values() {
+            let mut record = record.borrow_mut();
+            record.take(&change).unwrap();
+            for feed in &record.feeds {
+                feed.send(Event::Context(ContextUpdate::RecordChanged));
+            }
+        }
+        self.seed.borrow_mut().push(change);
     }
 
     /// Lose the connection, never answering the call at hand.
@@ -649,27 +692,6 @@ impl FakeHost {
             .subscribed
             .push((channel.channel_id.clone(), topic.clone()));
         Ok(match topic {
-            Topic::Ops => {
-                let backlog = channel.op_backlog.clone();
-                Box::pin(async move {
-                    loop {
-                        let next = {
-                            let mut backlog = backlog.borrow_mut();
-                            (!backlog.is_empty()).then(|| backlog.remove(0))
-                        };
-                        let Some((op, admission)) = next else {
-                            // Clients that outrun the backlog wait, as on
-                            // a quiet channel.
-                            return std::future::pending().await;
-                        };
-                        let delay = captures.lock().unwrap().op_stream_delay;
-                        if let Some(delay) = delay {
-                            tokio::time::sleep(delay).await;
-                        }
-                        feed.send(Event::Op { op, admission });
-                    }
-                })
-            }
             Topic::Presence => {
                 let backlog = std::mem::take(&mut *channel.presence_backlog.borrow_mut());
                 Box::pin(async move {
@@ -686,6 +708,7 @@ impl FakeHost {
                 })
             }
             Topic::Context => {
+                channel.record.borrow_mut().feeds.push(feed.clone());
                 let backlog = std::mem::take(&mut *channel.context_backlog.borrow_mut());
                 let terminate = self.broker.terminate_context_stream;
                 Box::pin(async move {
@@ -805,6 +828,7 @@ impl FakeHost {
                     Service::NativeMedia => self.native_media(&body),
                     Service::RemoteAction => answered(self.remote_action(&body)),
                     Service::BrowserServiceSession => answered(self.browser_service_session(&body)),
+                    Service::Resources => self.resource_command(&channel, &body),
                     other => answered(Err(format!("the fixture serves no {other:?}"))),
                 },
                 Err(error) => answered(Err(error)),
@@ -886,33 +910,6 @@ impl FakeHost {
                     }),
                 }
             }
-            Operation::Read {
-                read:
-                    wire::Read::History {
-                        artifact,
-                        before_seq,
-                        max,
-                    },
-                ..
-            } => {
-                self.captures().scrollback_requests.push((
-                    artifact.0.as_bytes().to_vec(),
-                    before_seq,
-                    max,
-                ));
-                let seed = self
-                    .broker
-                    .scrollback_response
-                    .clone()
-                    .unwrap_or(SeedScrollback {
-                        ops: Vec::new(),
-                        done: true,
-                    });
-                answered(Ok(Reply::History {
-                    ops: seed.ops,
-                    exhausted: seed.done,
-                }))
-            }
             Operation::Admit { .. } => {
                 let hold = {
                     let mut captures = self.captures();
@@ -954,11 +951,12 @@ impl FakeHost {
             }
             let handle = Handle(host.next_handle.get());
             host.next_handle.set(handle.0 + 1);
+            let record = host.record(&join.channel);
             host.channels.borrow_mut().insert(
                 handle,
                 Rc::new(FakeChannel {
                     channel_id: join.channel,
-                    op_backlog: Rc::new(RefCell::new(host.broker.op_backlog.clone())),
+                    record,
                     presence_backlog: Rc::new(RefCell::new(host.broker.presence_backlog.clone())),
                     context_backlog: Rc::new(RefCell::new(host.broker.context_backlog.clone())),
                     settings: RefCell::default(),
@@ -1027,7 +1025,6 @@ impl FakeHost {
                 }
                 answered(Ok(Reply::Done))
             }
-            Publication::Document(op) => self.send_document(&op),
             Publication::Surface(delta) => {
                 let delta: runtime_collab::SurfaceDelta = match serde_json::from_str(&delta) {
                     Ok(delta) => delta,
@@ -1080,12 +1077,73 @@ impl FakeHost {
         }
     }
 
-    fn send_document(&self, op: &SignedOp) -> FakeAnswer {
+    /// A store command on the channel's record, answered as the device's
+    /// store does: the changes past what the reader holds, or the writer's
+    /// own changes taken.
+    fn resource_command(&self, channel: &FakeChannel, body: &[u8]) -> FakeAnswer {
+        use tilo_resource_store::wire::{Command, Reply as Store};
+        let command: Command = match serde_json::from_slice(body) {
+            Ok(command) => command,
+            Err(error) => return answered(Err(error.to_string())),
+        };
+        match command {
+            Command::RecordChanges { after, from } => {
+                if from == 0 {
+                    self.captures()
+                        .record_reads
+                        .push(channel.channel_id.clone());
+                }
+                let after = after
+                    .iter()
+                    .map(|head| head.parse().unwrap())
+                    .collect::<Vec<automerge::ChangeHash>>();
+                let record = channel.record.borrow();
+                let changes: Vec<u8> = record
+                    .doc
+                    .get_changes(&after)
+                    .iter()
+                    .flat_map(|change| change.raw_bytes().iter().copied())
+                    .collect();
+                let from = usize::try_from(from).unwrap();
+                let end = changes
+                    .len()
+                    .min(from + tilo_resource_store::wire::RECORD_PAGE_BYTES);
+                answered(store_answer(&Store::RecordChanges {
+                    changes: tilo_resource_store::wire::Bytes(changes[from..end].to_vec()),
+                    heads: record
+                        .doc
+                        .get_heads()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    next: (end < changes.len()).then(|| u64::try_from(end).unwrap()),
+                }))
+            }
+            Command::RecordChange {
+                changes,
+                more,
+                commit,
+            } => {
+                let mut record = channel.record.borrow_mut();
+                record.incoming.extend(changes.0);
+                if more {
+                    return answered(store_answer(&Store::Written));
+                }
+                let changes = changes_of(&std::mem::take(&mut record.incoming));
+                drop(record);
+                self.captures().record_commits.push(commit);
+                self.write_record(channel, changes)
+            }
+            other => answered(Err(format!("the fixture's store answers no {other:?}"))),
+        }
+    }
+
+    fn write_record(&self, channel: &FakeChannel, changes: Vec<Vec<u8>>) -> FakeAnswer {
         let mut captures = self.captures();
         if captures.fail_document {
-            // The call is lost on its way back: the peer may or may not
+            // The call is lost on its way back: the store may or may not
             // have kept the change, which is an unknown outcome, not an
-            // answer. A refusal below is the opposite: the peer read the
+            // answer. A refusal below is the opposite: the store read the
             // change and said it will not take this one.
             drop(captures);
             return self.hang_up();
@@ -1093,20 +1151,30 @@ impl FakeHost {
         if captures.refuse_documents > 0 {
             captures.refuse_documents -= 1;
             captures.refused_documents += 1;
-            tracing::warn!("collab: fixture refuses one document change");
+            tracing::warn!("collab: fixture refuses one record change");
             return answered(Err("so.tilo.chat named no kind for a new record".into()));
         }
-        captures.signed_ops.push(postcard::to_stdvec(op).unwrap());
-        if let Some(hold) = captures.document_holds.pop_front() {
-            hold.entered.send(()).unwrap();
-            return Box::pin(async move {
-                hold.release
-                    .await
-                    .map_err(|_| "document hold dropped".to_owned())?
-                    .map(|()| Reply::Done)
-            });
-        }
-        answered(Ok(Reply::Done))
+        captures.record_writes.push(changes.clone());
+        let hold = captures.document_holds.pop_front();
+        drop(captures);
+        let record = Rc::clone(&channel.record);
+        let written = move || {
+            let mut record = record.borrow_mut();
+            for change in &changes {
+                record.take(change)?;
+            }
+            store_answer(&tilo_resource_store::wire::Reply::Written)
+        };
+        let Some(hold) = hold else {
+            return answered(written());
+        };
+        hold.entered.send(()).unwrap();
+        Box::pin(async move {
+            hold.release
+                .await
+                .map_err(|_| "document hold dropped".to_owned())??;
+            written()
+        })
     }
 
     fn update_invocation(&self, id: u64, update: &str) -> FakeAnswer {
@@ -1301,6 +1369,13 @@ impl FakeHost {
     }
 }
 
+/// `reply` as the device's store sends it.
+fn store_answer(reply: &tilo_resource_store::wire::Reply) -> Result<Reply, String> {
+    serde_json::to_vec(reply)
+        .map(Reply::Answer)
+        .map_err(|error| error.to_string())
+}
+
 /// A client connected to a fake host serving `broker` on this
 /// `LocalSet`, and its captures.
 pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, SharedCaptures) {
@@ -1313,7 +1388,7 @@ pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, 
 
 #[test]
 #[cfg(unix)]
-fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
+fn inherited_broker_identity_delegates_join_and_keys() {
     use std::os::fd::AsFd as _;
     use tilo_identity_client::wire::{FRAMING, Request, Response};
 
@@ -1364,15 +1439,6 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
                 },
             )
             .unwrap();
-        assert!(matches!(
-            FRAMING.read_value::<_, Request>(&mut host).unwrap(),
-            Some(Request::CollaborationOp { workspace_id, app_id, document_id, unsigned_op })
-                if workspace_id == expected_workspace && app_id == "notes"
-                    && document_id == "page" && unsigned_op == b"operation"
-        ));
-        FRAMING
-            .write_value(&mut host, &Response::Denied("role revoked".into()))
-            .unwrap();
     });
     let identity = tilo_identity_client::inherited::connect_service(app.as_fd()).unwrap();
     let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
@@ -1387,20 +1453,9 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
         panic!("an inherited identity must retain its broker signer");
     };
     assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
-    assert_eq!(signer.signing_public_key(), [5; 32]);
     let keys = signer.group_keys(&workspace, "notes", "page", 3).unwrap();
     assert_eq!(keys.access, tilo_identity_client::wire::KeyAccess::Removed);
     assert_eq!(keys.generation, 4);
-    let error = signer
-        .sign_collaboration_op(&workspace, "notes", "page", b"operation")
-        .unwrap_err();
-    match error {
-        runtime_portal::NotAvailable::ConnectionFailed(error) => {
-            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-            assert_eq!(error.to_string(), "role revoked");
-        }
-        other => panic!("expected the broker refusal, got {other}"),
-    }
     worker.join().unwrap();
 }
 
@@ -1461,7 +1516,7 @@ fn session_owner_commit_sdk_failure_stops_queued_terminal() {
     let (mut manager, captures, thread) = committed_route_over_fake_broker(broker);
     captures.lock().unwrap().fail_document = true;
     manager.send(CollabRequest::Document {
-        mutation: collab_types::DocumentMutation::Snapshot(b"committed worker mutation".to_vec()),
+        mutation: collab_types::DocumentMutation::Snapshot(change("committed worker mutation")),
         commit: None,
     });
     manager.send(CollabRequest::UpdateInvocation {
@@ -1522,7 +1577,68 @@ fn a_refused_route_join_says_why() {
     );
 }
 
-/// A peer may answer one commit with a definite refusal — it read the
+/// A write larger than one command goes to the store in runs, each naming the action it is
+/// part of, and the store takes it whole as one write once the last run arrives.
+#[test]
+fn a_large_write_under_an_action_reaches_the_store_whole() {
+    use automerge::transaction::Transactable as _;
+    let (mut manager, captured, thread) = committed_route_over_fake_broker(FakeBroker::default());
+    // Letters no compression shrinks, so the bytes stay larger than one run.
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut doc = automerge::AutoCommit::new();
+    for index in 0..6 {
+        let value: String = (0..1024 * 1024)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                char::from(b'a' + u8::try_from(seed % 26).unwrap())
+            })
+            .collect();
+        doc.put(automerge::ROOT, format!("part-{index}"), value)
+            .unwrap();
+        doc.commit();
+    }
+    let bytes = doc.save_after(&[]);
+    assert!(bytes.len() > tilo_resource_store::wire::RECORD_PAGE_BYTES);
+    let commit = collab_types::WorkspaceCommit {
+        version: collab_types::COMMIT_VERSION,
+        workspace: Uuid::new_v4(),
+        author: collab_types::CommitAuthor {
+            actor: None,
+            device: [0; 32],
+        },
+        at_ms: 1_700_000_000_000,
+        invocation: None,
+        run: None,
+        parts: Vec::new(),
+    };
+    assert!(manager.send(CollabRequest::document_action(
+        DocumentMutation::Incremental(bytes.clone()),
+        commit.clone(),
+    )));
+    manager
+        .begin_document_publication_barrier()
+        .unwrap()
+        .wait(Some(tilo_test_env::hang_deadline()))
+        .unwrap();
+    let captured_now = captured.lock().unwrap();
+    assert_eq!(
+        captured_now.record_writes,
+        [changes_of(&bytes)],
+        "one write, whole"
+    );
+    assert_eq!(
+        captured_now.record_commits,
+        [Some(commit)],
+        "under its action"
+    );
+    drop(captured_now);
+    drop(manager);
+    thread.join().unwrap();
+}
+
+/// The store may answer one write with a definite refusal — it read the
 /// change and will not take it, here because the record it would create
 /// was named without its kind. That is not a lost connection: the bridge
 /// stays open, the app stays published and reachable, and the very next
@@ -1532,9 +1648,9 @@ fn a_refused_document_commit_fails_only_that_change() {
     let broker = FakeBroker::default();
     let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
     captured.lock().unwrap().refuse_documents = 1;
-    assert!(manager.send(CollabRequest::document_incremental(
-        b"refused change".to_vec()
-    )));
+    assert!(manager.send(CollabRequest::document_incremental(change(
+        "refused change"
+    ))));
     let refused = manager.begin_document_publication_barrier().unwrap();
     let error = refused
         .wait(Some(tilo_test_env::hang_deadline()))
@@ -1565,27 +1681,25 @@ fn a_refused_document_commit_fails_only_that_change() {
         "the refusal must not withdraw the app's publication"
     );
     // The app's publication still works: a later change goes through.
-    assert!(manager.send(CollabRequest::document_incremental(
-        b"later change".to_vec()
-    )));
+    assert!(manager.send(CollabRequest::document_incremental(change("later change"))));
     let later = manager.begin_document_publication_barrier().unwrap();
     assert_eq!(later.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
-    assert_eq!(captured.lock().unwrap().signed_ops.len(), 1);
+    assert_eq!(captured.lock().unwrap().record_writes.len(), 1);
     assert!(manager.is_connected());
     drop(manager);
     thread.join().unwrap();
 }
 
-/// The outcome-unknown half of the same path: a commit call that never
+/// The outcome-unknown half of the same path: a write that never
 /// got an answer still ends collaboration, as it always has.
 #[test]
 fn a_document_commit_whose_outcome_is_unknown_still_closes_the_bridge() {
     let broker = FakeBroker::default();
     let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
     captured.lock().unwrap().fail_document = true;
-    assert!(manager.send(CollabRequest::document_incremental(
-        b"unknown change".to_vec()
-    )));
+    assert!(manager.send(CollabRequest::document_incremental(change(
+        "unknown change"
+    ))));
     tilo_test_env::wait_until("`!manager.is_connected()`", || !manager.is_connected());
     assert_eq!(
         manager.refused_change(),
@@ -1714,13 +1828,13 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
                 .publishable(&secondary.channel_id())
         },
     );
-    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("first"))));
     let first = manager.begin_document_publication_barrier().unwrap();
     assert!(
         manager
             .try_send_to_route(
                 secondary,
-                CollabRequest::document_incremental(b"second".to_vec())
+                CollabRequest::document_incremental(change("second"))
             )
             .is_ok()
     );
@@ -1738,7 +1852,7 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
     assert_eq!(second.try_complete(), Ok(None));
     release.send(Ok(())).unwrap();
     assert_eq!(second.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
-    assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
+    assert_eq!(captures.lock().unwrap().record_writes.len(), 2);
     assert!(manager.is_connected());
     drop(manager);
     thread.join().unwrap();
@@ -1749,24 +1863,16 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
 /// up, and every edit reaches the broker exactly once, in order.
 #[test]
 fn a_flood_of_edits_is_backpressured_not_fatal() {
-    let broker = FakeBroker {
-        captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-        op_backlog: vec![],
-        presence_backlog: vec![],
-        context_backlog: vec![],
-        scrollback_response: None,
-        terminate_context_stream: false,
-    };
-    let (fd, captures, thread) = stand_up_fake_broker(broker);
+    let (fd, captures, thread) = stand_up_fake_broker(FakeBroker::default());
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
     let total = SDK_COMMAND_QUEUE * 3;
     let mut busy = 0usize;
     for n in 0..total {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            match manager.try_send(CollabRequest::document_incremental(
-                format!("edit-{n}").into_bytes(),
-            )) {
+            match manager.try_send(CollabRequest::document_incremental(change(&format!(
+                "edit-{n}"
+            )))) {
                 Ok(()) => break,
                 Err(crate::CollabSendError::Busy) => {
                     busy += 1;
@@ -1788,8 +1894,8 @@ fn a_flood_of_edits_is_backpressured_not_fatal() {
         manager.is_connected(),
         "a burst must not disable collaboration (busy {busy}x)"
     );
-    assert_eq!(captures.lock().unwrap().signed_ops.len(), total);
-    assert!(manager.send(CollabRequest::document_incremental(b"after".to_vec())));
+    assert_eq!(captures.lock().unwrap().record_writes.len(), total);
+    assert!(manager.send(CollabRequest::document_incremental(change("after"))));
     drop(manager);
     thread.join().unwrap();
 }
@@ -2038,8 +2144,8 @@ fn ready_channel_keys() -> tilo_identity_client::wire::ChannelKeysReply {
 }
 
 /// A certified identity whose service answers each question for keys with `keys` (the route's
-/// app, and the generation it holds), and that signs every join and, unless `refuses_ops`, every
-/// op. Counts each question and each join it signs.
+/// app, and the generation it holds), and that signs every join. Counts each question and each
+/// join it signs.
 #[cfg(unix)]
 struct FixtureIdentity {
     keys: Box<
@@ -2053,7 +2159,6 @@ struct FixtureIdentity {
     >,
     asked: Arc<std::sync::atomic::AtomicUsize>,
     joins: Arc<std::sync::atomic::AtomicUsize>,
-    refuses_ops: bool,
 }
 
 #[cfg(unix)]
@@ -2073,7 +2178,6 @@ impl FixtureIdentity {
             keys: Box::new(keys),
             asked: Arc::default(),
             joins: Arc::default(),
-            refuses_ops: false,
         }
     }
 
@@ -2129,33 +2233,11 @@ impl SdkCertifiedIdentity for FixtureIdentity {
     fn device_certificate(&self) -> Option<&[u8]> {
         Some(b"fixture")
     }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
     fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
         self.joins.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok([7; 64])
     }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        if self.refuses_ops {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "certified signing refused",
-            )
-            .into());
-        }
-        Ok([9; 64])
-    }
 }
-
-#[cfg(unix)]
-include!("held_outbound_tests.rs");
 
 /// An endpoint on a pushing broker whose identity service answers its
 /// one route with `access` (or refuses, `None`): asked again on the
@@ -2218,62 +2300,6 @@ fn asks_while_waiting(access: Option<tilo_identity_client::wire::KeyAccess>, on_
     tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
         asked.load(std::sync::atomic::Ordering::Acquire) > before_change
     });
-    drop(manager);
-    thread.join().unwrap();
-}
-
-#[test]
-#[cfg(unix)]
-fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
-    let app_id = "so.tilo.test";
-    let cluster = Uuid::new_v4();
-    let artifact = collab_types::document_artifact_id(app_id, &cluster.to_string(), "");
-    let op = |seq, text: &[u8], admission| {
-        let op = SignedOp::new_unsigned(
-            DocumentMutation::Incremental(text.to_vec())
-                .encode()
-                .unwrap(),
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            seq,
-        );
-        (postcard::to_stdvec(&op).unwrap(), admission)
-    };
-    let broker = FakeBroker {
-        op_backlog: vec![
-            op(1, b"general", OpAdmission::CleartextAdmitted),
-            op(2, b"must be sealed", OpAdmission::EncryptionRequired),
-            op(3, b"random", OpAdmission::CleartextAdmitted),
-        ],
-        ..FakeBroker::default()
-    };
-    let (fd, _captures, thread) = stand_up_fake_broker(broker);
-    let mut manager = certified_manager(
-        fd,
-        FixtureIdentity::answering(|_, generation| {
-            Ok(tilo_identity_client::wire::ChannelKeysReply {
-                access: tilo_identity_client::wire::KeyAccess::Waiting,
-                generation,
-                keys: None,
-            })
-        }),
-        harness_presentation(),
-        (app_id, cluster),
-    );
-    let shown = |events: &[CollabEvent]| -> Vec<Vec<u8>> {
-        events
-            .iter()
-            .filter_map(|event| match event.document_mutation() {
-                Some(Ok(DocumentMutation::Incremental(text))) => Some(text),
-                _ => None,
-            })
-            .collect()
-    };
-    let events = poll_until(&mut manager, |events| shown(events).len() == 2);
-    assert_eq!(shown(&events), [b"general".to_vec(), b"random".to_vec()]);
     drop(manager);
     thread.join().unwrap();
 }
@@ -2347,53 +2373,25 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
 }
 
 /// An endpoint keeps receiving while its identity service is slow to
-/// answer a key refresh: an op that arrives during the refresh is
+/// answer a key refresh: a change made elsewhere during the refresh is
 /// delivered while the service still has not answered.
 #[test]
 #[cfg(unix)]
-fn a_slow_identity_service_never_holds_up_incoming_ops() {
-    // The op arrives after the first refresh tick, which the identity
-    // service holds until the op has been delivered.
+fn a_slow_identity_service_never_holds_up_incoming_changes() {
+    // The change is made after the first refresh tick, which the identity
+    // service holds until the change has been delivered.
     const ARRIVES: Duration = Duration::from_millis(1500);
     let app_id = "so.tilo.test";
     let cluster = Uuid::new_v4();
-    let workspace = cluster.to_string();
-    let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
-    let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
-    let group =
-        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("device").unwrap())
-            .unwrap();
-    let (change, claims) = claimed_change("remote change");
-    let frame = collab_types::DocumentMutation::Incremental(change)
-        .encode()
-        .unwrap();
-    let (metadata, ciphertext) = group
-        .seal_content(
-            artifact,
-            collab_types::ContentRetention::of_frame(&frame),
-            &frame,
-        )
-        .unwrap();
-    let op = SignedOp::new_unsigned_with_encryption(
-        ciphertext,
-        artifact,
-        collab_types::Ed25519PublicKey::from_bytes([3; 32]),
-        collab_types::AttestationId::new(),
-        collab_types::OpKind::Change,
-        crate::time::SystemTime::UNIX_EPOCH,
-        1,
-        metadata,
+    let group = key_group::KeyGroup::create(
+        collab_types::WorkspaceId::parse(&cluster.to_string()).unwrap(),
+        key_group::MemberKey::generate("device").unwrap(),
     )
-    .with_claims(claims);
+    .unwrap();
+    let remote = change("remote change");
+    let (peer, peer_changes) = tokio_mpsc::unbounded_channel();
     let broker = FakeBroker {
-        captures: Arc::new(std::sync::Mutex::new(Captures {
-            op_stream_delay: Some(ARRIVES),
-            ..Captures::default()
-        })),
-        op_backlog: vec![(
-            postcard::to_stdvec(&op).unwrap(),
-            OpAdmission::EncryptionRequired,
-        )],
+        peer_changes: Some(peer_changes),
         ..FakeBroker::default()
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
@@ -2430,6 +2428,8 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
         harness_presentation(),
         (app_id, cluster),
     );
+    thread::sleep(ARRIVES);
+    peer.send(remote.clone()).unwrap();
     let events = poll_until(&mut manager, |events| {
         events
             .iter()
@@ -2438,14 +2438,10 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
     *released.0.lock().unwrap() = true;
     released.1.notify_all();
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            CollabEvent::Document {
-                decrypted_payload: Some(payload),
-                ..
-            } if *payload == frame
-        )),
-        "the op must arrive, opened, while the key refresh is held: {events:?}"
+        events.iter().any(|event| event
+            .document_mutation()
+            .is_some_and(|mutation| changes_of(mutation.data()) == changes_of(&remote))),
+        "the change must arrive while the key refresh waits: {events:?}"
     );
     drop(manager);
     thread.join().unwrap();
@@ -2550,59 +2546,6 @@ fn without_pushed_changes_routes_are_asked_every_second() {
 
 #[test]
 #[cfg(unix)]
-fn document_publication_certified_signing_refusal_never_reports_success() {
-    let broker = FakeBroker::default();
-    let (fd, captures, thread) = stand_up_fake_broker(broker);
-    let mut manager = certified_manager(
-        fd,
-        FixtureIdentity {
-            refuses_ops: true,
-            ..FixtureIdentity::keyed()
-        },
-        harness_presentation(),
-        ("worker", Uuid::new_v4()),
-    );
-    let route = manager.primary_route().unwrap().route.clone();
-    let ready = broker_state(&manager)
-        .document_reads
-        .close_for_test(&route.channel_id());
-    let before = publication_hold_waits(&broker_state(&manager));
-    assert!(
-        manager
-            .try_send_to_route(
-                route,
-                CollabRequest::document_incremental(b"refused".to_vec())
-            )
-            .is_ok()
-    );
-    let pending = manager.begin_document_publication_barrier().unwrap();
-    wait_held_at_publication(&broker_state(&manager), before);
-    assert_eq!(
-        pending.try_complete(),
-        Ok(None),
-        "certified publication must still await exact route readiness"
-    );
-    assert!(captures.lock().unwrap().signed_ops.is_empty());
-    broker_state(&manager).document_reads.open_for_test(&ready);
-    // Signing may fail before the marker enqueue; either path must carry the cause.
-    let error = match manager.begin_document_publication_barrier() {
-        Ok(receipt) => receipt
-            .wait(Some(tilo_test_env::hang_deadline()))
-            .unwrap_err(),
-        Err(error) => error,
-    };
-    assert!(
-        error.to_string().contains("certified signing refused"),
-        "{error}"
-    );
-    assert!(captures.lock().unwrap().signed_ops.is_empty());
-    assert!(!manager.is_connected());
-    drop(manager);
-    thread.join().unwrap();
-}
-
-#[test]
-#[cfg(unix)]
 fn committed_queued_publication_retains_payload_and_credits_until_released() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let (observed, release) = captures.lock().unwrap().hold_document();
@@ -2612,19 +2555,18 @@ fn committed_queued_publication_retains_payload_and_credits_until_released() {
     };
     let (fd, captures, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
-    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("first"))));
     tilo_test_env::recv("the held document RPC", &observed);
-    assert!(manager.send(CollabRequest::document_incremental(
-        b"retained original".to_vec()
-    )));
+    let retained = change("retained original");
+    assert!(manager.send(CollabRequest::document_incremental(retained.clone())));
     let state = broker_state(&manager);
     let key = manager.primary_route().unwrap().route.channel_id();
     let ready = state.document_reads.close_for_test(&key);
     let receipt = manager.begin_document_publication_barrier().unwrap();
     let before = publication_hold_waits(&state);
     release.send(Ok(())).unwrap();
-    tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
-        captures.lock().unwrap().signed_ops.len() == 1
+    tilo_test_env::wait_until("the first write to be taken", || {
+        captures.lock().unwrap().record_writes.len() == 1
     });
     wait_held_at_publication(&state, before);
     assert_eq!(
@@ -2632,16 +2574,12 @@ fn committed_queued_publication_retains_payload_and_credits_until_released() {
         Ok(None),
         "accepted publication must hold the barrier while hydration is pending"
     );
-    assert!(state.document_command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
+    assert!(state.document_command_bytes.0.load(Ordering::Acquire) >= retained.len());
     state.document_reads.open_for_test(&ready);
     assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
-    let captured = captures.lock().unwrap().signed_ops.clone();
+    let captured = captures.lock().unwrap().record_writes.clone();
     assert_eq!(captured.len(), 2);
-    let envelope: SignedOp = postcard::from_bytes(&captured[1]).unwrap();
-    assert_eq!(
-        collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
-        collab_types::DocumentMutation::Incremental(b"retained original".to_vec())
-    );
+    assert_eq!(captured[1], changes_of(&retained));
     drop(manager);
     thread.join().unwrap();
 }
@@ -2668,9 +2606,9 @@ fn queued_publication_terminal_case(invalidate: bool) {
     };
     let (fd, captures, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
-    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("first"))));
     tilo_test_env::recv("the held document RPC", &observed);
-    assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("must replay"))));
     let state = broker_state(&manager);
     let ready = state
         .document_reads
@@ -2678,8 +2616,8 @@ fn queued_publication_terminal_case(invalidate: bool) {
     let receipt = manager.begin_document_publication_barrier().unwrap();
     let before = publication_hold_waits(&state);
     release.send(Ok(())).unwrap();
-    tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
-        captures.lock().unwrap().signed_ops.len() == 1
+    tilo_test_env::wait_until("the first write to be taken", || {
+        captures.lock().unwrap().record_writes.len() == 1
     });
     // No clock ends the wait: the publication holds until the route changes.
     wait_held_at_publication(&state, before);
@@ -2702,7 +2640,7 @@ fn queued_publication_terminal_case(invalidate: bool) {
     assert!(manager.document_publication_failed());
     ready.store(true, Ordering::Release);
     assert!(!manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())));
-    assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
+    assert_eq!(captures.lock().unwrap().record_writes.len(), 1);
     tilo_test_env::wait_until(
         "`state.command_bytes.0.load(Ordering::Acquire) == 0`",
         || state.command_bytes.0.load(Ordering::Acquire) == 0,
@@ -2751,7 +2689,7 @@ fn a_document_not_here_holds_back_only_itself() {
         manager
             .try_send_to_route(
                 drafts.clone(),
-                CollabRequest::document_incremental(b"draft".to_vec())
+                CollabRequest::document_incremental(change("draft"))
             )
             .is_ok()
     );
@@ -2769,15 +2707,15 @@ fn a_document_not_here_holds_back_only_itself() {
     );
     assert!(manager.take_unpublished_route(&drafts));
     assert!(!manager.take_unpublished_route(&drafts), "said once");
-    let before = captures.lock().unwrap().signed_ops.len();
-    assert!(manager.send(CollabRequest::document_incremental(b"own".to_vec())));
+    let before = captures.lock().unwrap().record_writes.len();
+    assert!(manager.send(CollabRequest::document_incremental(change("own"))));
     manager
         .begin_document_publication_barrier()
         .unwrap()
         .wait(Some(tilo_test_env::hang_deadline()))
         .unwrap();
     assert_eq!(
-        captures.lock().unwrap().signed_ops.len(),
+        captures.lock().unwrap().record_writes.len(),
         before + 1,
         "the app's own route still publishes"
     );
@@ -2785,7 +2723,7 @@ fn a_document_not_here_holds_back_only_itself() {
     thread.join().unwrap();
 }
 
-/// A commit RPC the peer answers with a refusal is that change's own
+/// A write the store answers with a refusal is that change's own
 /// failure: the barrier reports it and the bridge, which carried the
 /// answer, keeps the app published. (An RPC whose outcome is unknown is
 /// the closing case; see
@@ -2801,7 +2739,7 @@ fn a_refused_document_rpc_fails_the_barrier_without_closing() {
     };
     let (fd, _, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
-    assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("failed"))));
     tilo_test_env::recv("the held document RPC", &observed);
     let receipt = manager.begin_document_publication_barrier().unwrap();
     release.send(Err("document RPC refused".into())).unwrap();
@@ -3143,9 +3081,9 @@ tilo_test_env::scenario! {
 #[cfg(unix)]
 fn document_publication_superseded_receipt_does_not_stop_worker() {
     let mut manager = connected_manager();
-    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("first"))));
     drop(manager.begin_document_publication_barrier().unwrap());
-    assert!(manager.send(CollabRequest::document_incremental(b"second".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("second"))));
     assert_eq!(
         manager
             .begin_document_publication_barrier()
@@ -3201,9 +3139,9 @@ fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
             .document_reads
             .publishable(&route.channel_id())
     });
-    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("first"))));
     tilo_test_env::recv("the held document RPC", &held);
-    assert!(manager.send(CollabRequest::document_incremental(b"second".to_vec())));
+    assert!(manager.send(CollabRequest::document_incremental(change("second"))));
     for request_id in 1..=20_u64 {
         let capture = report_capture(u128::from(request_id));
         manager
@@ -3230,7 +3168,7 @@ fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
         let captures = captures.lock().unwrap();
         assert_eq!(captures.admits_asked, 20);
         assert_eq!(
-            captures.signed_ops.len(),
+            captures.record_writes.len(),
             1,
             "the second document waits for the first"
         );
@@ -3243,7 +3181,7 @@ fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
     tilo_test_env::wait_until("the second document and the outcome", || {
         manager.poll();
         let captures = captures.lock().unwrap();
-        captures.signed_ops.len() == 2 && captures.terminal_updates == 1
+        captures.record_writes.len() == 2 && captures.terminal_updates == 1
     });
     assert!(manager.is_connected());
     drop(manager);
@@ -3420,7 +3358,7 @@ async fn native_invocation_delivery_turn_waits_until_the_route_fails() {
 include!("native_fixtures.rs");
 
 #[cfg(unix)]
-pub(super) fn capturing_manager() -> (CollaborationManager, Box<dyn Fn() -> Vec<SignedOp>>) {
+pub(super) fn capturing_manager() -> (CollaborationManager, Box<dyn Fn() -> Vec<Vec<Vec<u8>>>>) {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let broker = FakeBroker {
         captures: captures.clone(),
@@ -3428,15 +3366,7 @@ pub(super) fn capturing_manager() -> (CollaborationManager, Box<dyn Fn() -> Vec<
     };
     let (fd, _, _thread) = stand_up_fake_broker(broker);
     let manager = CollaborationManager::from_sdk_fd_for_test(fd, "capture-test", Uuid::new_v4());
-    let probe = Box::new(move || {
-        captures
-            .lock()
-            .unwrap()
-            .signed_ops
-            .iter()
-            .map(|bytes| postcard::from_bytes::<SignedOp>(bytes).unwrap())
-            .collect()
-    });
+    let probe = Box::new(move || captures.lock().unwrap().record_writes.clone());
     (manager, probe)
 }
 
@@ -3751,7 +3681,7 @@ tilo_test_env::scenario! {
         assert!(
             !enqueue_sdk_command(
                 &tx,
-                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                SdkCommand::Primary(CollabRequest::ClearContinuation),
                 &state
             ),
             "a durable control overflow is refused as busy, to be parked by the transport"
@@ -3999,7 +3929,7 @@ tilo_test_env::scenario! {
         assert!(
             enqueue_sdk_command(
                 &tx,
-                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                SdkCommand::Primary(CollabRequest::ClearContinuation),
                 &state
             ),
             "queued document bytes never starve control traffic"
@@ -4148,14 +4078,14 @@ fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn sdk_transport_forwards_signed_documents_and_presence;
+    fn sdk_transport_forwards_documents_and_presence;
 
-    phase hello_joins_channel_and_send_forwards_signed_op;
+    phase hello_joins_channel_and_reads_its_record;
     {
         let broker = FakeBroker::default();
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let cluster = Uuid::new_v4();
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
+        let mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
         tilo_test_env::wait_until("join_channel must be observed", || {
             !captures.lock().unwrap().joined.is_empty()
@@ -4168,29 +4098,14 @@ tilo_test_env::scenario! {
             channel_key::format("alice", &cluster.to_string(), ""),
         );
 
-        let mut op = SignedOp::new_unsigned(
-            b"payload".to_vec(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            1,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let expected_bytes = postcard::to_stdvec(&op).unwrap();
-        mgr.send(CollabRequest::SignedOperation {
-            envelope: Box::new(op),
+        // The route reads what the store holds of its record as it opens.
+        tilo_test_env::wait_until("the route to read its record", || {
+            !captures.lock().unwrap().record_reads.is_empty()
         });
-
-        tilo_test_env::wait_until("send() must reach the SDK", || {
-            !captures.lock().unwrap().signed_ops.is_empty()
-        });
-        let seen = captures.lock().unwrap().signed_ops.clone();
-        assert_eq!(seen, vec![expected_bytes]);
+        assert!(mgr.is_connected());
     }
 
-    phase owned_route_raw_documents_use_typed_signed_sdk_transport;
+    phase owned_route_documents_reach_the_routes_record;
     {
         use automerge::transaction::Transactable;
         let broker = FakeBroker::default();
@@ -4222,39 +4137,17 @@ tilo_test_env::scenario! {
                 CollabRequest::document_incremental(delta.clone()),
             )
             .unwrap();
-        tilo_test_env::wait_until("both raw requests reach SDK signed RPC", || {
-            captures.lock().unwrap().signed_ops.len() == 2
+        tilo_test_env::wait_until("both requests reach the route's record", || {
+            captures.lock().unwrap().record_writes.len() == 2
         });
         let captured = captures.lock().unwrap();
         assert!(captured.joined.iter().any(|(channel, _)| channel
             == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
-        for (index, bytes) in captured.signed_ops.iter().enumerate() {
-            let envelope: SignedOp = postcard::from_bytes(bytes).unwrap();
-            collab_types::validate_document_payload_route(
-                "actual-owner",
-                &workspace.to_string(),
-                "tab:qualified",
-                &envelope,
-            )
-            .unwrap();
-            assert!(
-                envelope.encryption.is_none(),
-                "harness route is explicitly unencrypted"
-            );
-            let expected = if index == 0 {
-                collab_types::DocumentMutation::Snapshot(snapshot.clone())
-            } else {
-                collab_types::DocumentMutation::Incremental(delta.clone())
-            };
-            assert_eq!(
-                collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
-                expected
-            );
-            assert_ne!(
-                envelope.signature,
-                collab_types::Signature::from_bytes([0; 64])
-            );
-        }
+        assert_eq!(
+            captured.record_writes,
+            [changes_of(&snapshot), changes_of(&delta)],
+            "the record whole, then the change made since, each as its changes"
+        );
     }
 
     phase publication_barrier_resolves_after_every_earlier_document_is_published;
@@ -4267,7 +4160,7 @@ tilo_test_env::scenario! {
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
         for n in 0..8_u8 {
-            assert!(manager.send(CollabRequest::document_incremental(vec![n; 16])));
+            assert!(manager.send(CollabRequest::document_incremental(change(&n.to_string()))));
         }
         manager
             .begin_document_publication_barrier()
@@ -4275,7 +4168,7 @@ tilo_test_env::scenario! {
             .wait(Some(tilo_test_env::hang_deadline()))
             .expect("every queued document was published");
         assert_eq!(
-            captures.lock().unwrap().signed_ops.len(),
+            captures.lock().unwrap().record_writes.len(),
             8,
             "the barrier resolved before the documents ahead of it reached the broker"
         );
@@ -4442,391 +4335,56 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn signed_documents_seal_snapshots_and_decrypt_history;
-
-    phase signed_document_event_preserves_snapshot_kind;
-    {
-        let op = SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Snapshot(b"whole document".to_vec())
-                .encode()
-                .unwrap(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            43,
-        );
-        let event = signed_document_event(
-            Arrived {
-                envelope: op,
-                admission: OpAdmission::CleartextAdmitted,
-            },
-            &plain_route_keys(),
-        )
-        .unwrap()
-        .event;
-        assert!(matches!(
-            event.document_mutation(),
-            Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
-        ));
-    }
-
-    phase signed_document_event_decrypts_content_keys_for_history_and_late_joiners;
-    {
-        let channel = collab_types::WorkspaceId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let alice_key = key_group::MemberKey::generate("alice").unwrap();
-        let bob_key = key_group::MemberKey::generate("bob").unwrap();
-        let mut alice = key_group::KeyGroup::create(channel, alice_key).unwrap();
-        let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
-        let bob = key_group::KeyGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            bob_key,
-        )
-        .unwrap();
-        let (secret_change, claims) = claimed_change("secret change");
-        let plaintext = DocumentMutation::Incremental(secret_change.clone())
-            .encode()
-            .unwrap();
-        // The action commit a sealed part carries rides inside what only
-        // the unit's readers open.
-        let commit = collab_types::WorkspaceCommit::new(
-            uuid::Uuid::from_u128(1),
-            collab_types::CommitAuthor {
-                actor: Some(tilo_actions::MemberId::person("alice").into()),
-                device: [9; 32],
-            },
-            1,
-            None,
-            None,
-            vec![collab_types::CommitPart {
-                app: "chat".into(),
-                document: "main".into(),
-                heads: vec![[1; 32]],
-            }],
-        );
-        let sealed_plaintext = commit.frame(&plaintext).unwrap();
-        let alice_endpoint = group_route_keys(alice);
-        let PreparedFrame::Ready(ciphertext, metadata) =
-            prepare_document_payload(&alice_endpoint, artifact, sealed_plaintext, &[])
-        else {
-            panic!("a provisioned endpoint seals at once");
-        };
-        let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
-        assert_eq!(
-            metadata.retention(),
-            Some(collab_types::ContentRetention::Delta)
-        );
-        let build = |payload: Vec<u8>, artifact, metadata| {
-            SignedOp::new_unsigned_with_encryption(
-                payload,
-                artifact,
-                collab_types::Ed25519PublicKey::from_bytes([9; 32]),
-                collab_types::AttestationId::new(),
-                collab_types::OpKind::Change,
-                crate::time::SystemTime::UNIX_EPOCH,
-                1,
-                metadata,
-            )
-            .with_claims(claims.clone())
-        };
-        let op = build(ciphertext.clone(), artifact, metadata);
-        let endpoint = group_route_keys(bob);
-        for _ in 0..2 {
-            // Live delivery and a later scrollback read of the same op.
-            let signed = signed_document_event(
-                Arrived {
-                    envelope: op.clone(),
-                    admission: OpAdmission::EncryptionRequired,
-                },
-                &endpoint,
-            )
-            .unwrap();
-            assert!(matches!(
-                signed.event.document_mutation(),
-                Some(Ok(DocumentMutation::Incremental(data))) if data.as_slice() == secret_change.as_slice()
-            ));
-            assert_eq!(
-                signed.commit,
-                Some(commit.clone()),
-                "the part's action comes out of the sealed payload"
-            );
-        }
-        let plaintext_downgrade = SignedOp::new_unsigned(
-            plaintext,
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes([9; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            2,
-        );
-        let refusal = |op| match signed_document_event(
-            Arrived {
-                envelope: op,
-                admission: OpAdmission::EncryptionRequired,
-            },
-            &endpoint,
-        ) {
-            Err(UndeliveredDocument::Refused(refusal)) => refusal,
-            _ => panic!("refused"),
-        };
-        let downgrade = refusal(plaintext_downgrade);
-        assert!(
-            matches!(
-                downgrade,
-                Refusal::Unopened(crate::route_keys::Never::Downgrade)
-            ),
-            "cleartext the broker says must be sealed is refused, and says so"
-        );
-        assert_eq!(
-            downgrade.to_string(),
-            "cleartext the broker says must be sealed"
-        );
-        assert!(
-            matches!(
-                refusal(build(
-                    ciphertext.clone(),
-                    collab_types::ArtifactId::new(),
-                    metadata
-                )),
-                Refusal::Unopened(crate::route_keys::Never::Undecryptable)
-            ),
-            "content is bound to its artifact"
-        );
-        let mislabeled = collab_types::EncryptionMetadata::content_key(
-            metadata.epoch,
-            collab_types::ContentRetention::Checkpoint,
-        );
-        assert!(
-            matches!(
-                refusal(build(ciphertext, artifact, mislabeled)),
-                Refusal::RetentionMismatch
-            ),
-            "the clear storage class must match the content"
-        );
-
-        // A member added afterwards reads the op from history.
-        let carol_key = key_group::MemberKey::generate("carol").unwrap();
-        let addition = {
-            let mut keys = alice_endpoint.lock().unwrap();
-            let super::super::route_keys::Keys::Group(group) = &mut keys.keys else {
-                panic!("alice's endpoint holds her group");
-            };
-            group.admit(carol_key.fresh_key_package().unwrap()).unwrap()
-        };
-        let carol = key_group::KeyGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            carol_key,
-        )
-        .unwrap();
-        let carol_endpoint = group_route_keys(carol);
-        let event = signed_document_event(
-            Arrived {
-                envelope: op,
-                admission: OpAdmission::EncryptionRequired,
-            },
-            &carol_endpoint,
-        )
-        .unwrap()
-        .event;
-        assert!(matches!(
-            event.document_mutation(),
-            Some(Ok(DocumentMutation::Incremental(data))) if data.as_slice() == secret_change.as_slice()
-        ));
-    }
-
-    phase snapshots_are_sealed_as_retained_checkpoints;
-    {
-        let snapshot = DocumentMutation::Snapshot(b"whole".to_vec())
-            .encode()
-            .unwrap();
-        assert_eq!(
-            collab_types::ContentRetention::of_frame(&snapshot),
-            collab_types::ContentRetention::Checkpoint
-        );
-        let big = DocumentMutation::Snapshot(
-            vec![1; 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES],
-        )
-        .encode_frames()
-        .unwrap();
-        let classes: Vec<_> = big
-            .iter()
-            .map(|frame| collab_types::ContentRetention::of_frame(frame))
-            .collect();
-        assert_eq!(
-            classes.first(),
-            Some(&collab_types::ContentRetention::Checkpoint)
-        );
-        assert!(
-            classes
-                .iter()
-                .skip(1)
-                .all(|class| *class == collab_types::ContentRetention::Delta)
-        );
-    }
-
-    phase joiner_decrypts_fetched_history_with_no_other_member_online;
-    // A member added after the history was written fetches it through the
-    // real SDK transport and decrypts every page with the key history it
-    // received on joining — no other member is running.
-    {
-        let app_id = "so.tilo.history-test";
-        let cluster = Uuid::from_u128(7);
-        let workspace = cluster.to_string();
-        let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
-        let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
-        let mut alice = key_group::KeyGroup::create(
-            channel,
-            key_group::MemberKey::generate("alice").unwrap(),
-        )
-        .unwrap();
-        let changes: Vec<_> = (1..=20_u64)
-            .map(|seq| claimed_change(&format!("change {seq}")))
-            .collect();
-        let history: Vec<Vec<u8>> = (1..=20_u64)
-            .zip(&changes)
-            .map(|(seq, (change, claims))| {
-                let frame = collab_types::DocumentMutation::Incremental(change.clone())
-                    .encode()
-                    .unwrap();
-                let (metadata, ciphertext) = alice
-                    .seal_content(
-                        artifact,
-                        collab_types::ContentRetention::of_frame(&frame),
-                        &frame,
-                    )
-                    .unwrap();
-                let op = SignedOp::new_unsigned_with_encryption(
-                    ciphertext,
-                    artifact,
-                    collab_types::Ed25519PublicKey::from_bytes([3; 32]),
-                    collab_types::AttestationId::new(),
-                    collab_types::OpKind::Change,
-                    crate::time::SystemTime::UNIX_EPOCH,
-                    seq,
-                    metadata,
-                )
-                .with_claims(claims.clone());
-                postcard::to_stdvec(&op).unwrap()
-            })
-            .collect();
-        let carol_key = key_group::MemberKey::generate("carol").unwrap();
-        let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
-        let carol = key_group::KeyGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            carol_key,
-        )
-        .unwrap();
-        drop(alice);
-
-        let broker = FakeBroker {
-            scrollback_response: Some(SeedScrollback {
-                ops: history,
-                done: true,
-            }),
-            ..FakeBroker::default()
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
-        tilo_test_env::wait_until("`!captures.lock().unwrap().joined.is_empty()`", || {
-            !captures.lock().unwrap().joined.is_empty()
-        });
-        mgr.install_document_encryption(
-            RouteSpec {
-                app_id: app_id.to_owned(),
-                cluster_id: cluster,
-                document: None,
-            },
-            carol,
-        )
-        .unwrap();
-        mgr.send(CollabRequest::FetchScrollback {
-            artifact,
-            before_seq: 21,
-            max: 50,
-        });
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
-        });
-        let (ops, payloads, oldest_seq) = events
-            .into_iter()
-            .find_map(|e| match e {
-                CollabEvent::ScrollbackBatch {
-                    ops,
-                    decrypted_payloads,
-                    oldest_seq,
-                    ..
-                } => Some((ops, decrypted_payloads, oldest_seq)),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(ops.len(), 20);
-        assert_eq!(oldest_seq, Some(1));
-        assert_eq!(payloads.len(), changes.len());
-        for (payload, (change, _)) in payloads.iter().zip(&changes) {
-            assert_eq!(
-                collab_types::DocumentMutation::decode(payload.as_deref().unwrap()).unwrap(),
-                collab_types::DocumentMutation::Incremental(change.clone())
-            );
-        }
-    }
-}
-
-tilo_test_env::scenario! {
     #[cfg(unix)]
     fn sdk_streams_translate_to_ui_events;
 
-    phase signed_op_stream_translates_to_signed_crdt_incremental;
+    phase the_records_changes_reach_the_app_as_it_opens_and_as_they_are_made;
     {
-        let mut op = SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
-                .encode()
-                .unwrap(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            42,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let op_bytes = postcard::to_stdvec(&op).unwrap();
-
+        let stored = change("in the store");
+        let remote = change("made elsewhere");
+        let (peer, peer_changes) = tokio_mpsc::unbounded_channel();
         let broker = FakeBroker {
-            op_backlog: vec![(op_bytes, OpAdmission::CleartextAdmitted)],
+            record: vec![stored.clone()],
+            peer_changes: Some(peer_changes),
             ..FakeBroker::default()
         };
-        let (fd, _captures, _th) = stand_up_fake_broker(broker);
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = poll_until(&mut mgr, |events| {
+        let documents = |events: Vec<CollabEvent>| -> Vec<DocumentMutation> {
+            events
+                .into_iter()
+                .filter_map(|event| match event {
+                    CollabEvent::Document { mutation, .. } => Some(mutation),
+                    _ => None,
+                })
+                .collect()
+        };
+        let opened = documents(poll_until(&mut mgr, |events| {
             events
                 .iter()
                 .any(|e| matches!(e, CollabEvent::Document { .. }))
-        });
+        }));
+        assert_eq!(opened.len(), 1, "one document event expected");
+        assert_eq!(changes_of(opened[0].data()), changes_of(&stored));
+        let reads = captures.lock().unwrap().record_reads.len();
 
-        let signed: Vec<_> = events
-            .into_iter()
-            .filter_map(|e| match e {
-                CollabEvent::Document { envelope, .. } => Some(envelope),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(signed.len(), 1, "one document event expected");
+        peer.send(remote.clone()).unwrap();
+        let changed = documents(poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::Document { .. }))
+        }));
+        assert_eq!(changed.len(), 1, "one document event per change");
         assert_eq!(
-            collab_types::DocumentMutation::decode(&signed[0].payload).unwrap(),
-            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
+            changes_of(changed[0].data()),
+            changes_of(&remote),
+            "only the change the app lacks"
         );
-        assert_eq!(signed[0].seq, 42);
+        assert_eq!(
+            captures.lock().unwrap().record_reads.len(),
+            reads + 1,
+            "one read per notice"
+        );
     }
 
     phase context_stream_translates_to_context_event;
@@ -4885,66 +4443,6 @@ tilo_test_env::scenario! {
         assert!(contexts[1].1.is_empty());
     }
 
-    phase fetch_scrollback_returns_batch_event;
-    {
-        let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
-            .encode()
-            .unwrap();
-        let mut op = SignedOp::new_unsigned(
-            payload,
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            crate::time::SystemTime::UNIX_EPOCH,
-            5,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let op_bytes = postcard::to_stdvec(&op).unwrap();
-        let seed = SeedScrollback {
-            ops: vec![op_bytes],
-            done: true,
-        };
-        let broker = FakeBroker {
-            scrollback_response: Some(seed),
-            ..FakeBroker::default()
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        tilo_test_env::wait_until("join_channel must precede scrollback fetch", || {
-            !captures.lock().unwrap().joined.is_empty()
-        });
-
-        let artifact = collab_types::ArtifactId::new();
-        mgr.send(CollabRequest::FetchScrollback {
-            artifact,
-            before_seq: 10,
-            max: 50,
-        });
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
-        });
-        let batch = events
-            .into_iter()
-            .find_map(|e| match e {
-                CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
-                _ => None,
-            })
-            .expect("must receive a ScrollbackBatch event");
-        assert_eq!(batch.0.len(), 1);
-        assert_eq!(
-            collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
-            collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
-        );
-        assert!(batch.1, "seeded broker reports exhausted");
-        assert_eq!(
-            captures.lock().unwrap().scrollback_requests,
-            vec![(artifact.0.as_bytes().to_vec(), 10, 50)],
-            "artifact / before_seq / max round-tripped verbatim",
-        );
-    }
 }
 
 tilo_test_env::scenario! {

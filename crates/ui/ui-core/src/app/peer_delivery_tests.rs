@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
                         doc.put(ROOT, "local-draft", "unfinished").unwrap();
                     })
                     .unwrap();
-                fixture.app.apply_signed_document_envelope(&incoming, None);
+                fixture.app.apply_document_event(&incoming);
                 fixture
                     .records
                     .read_checked(&checkout.id, |doc| {
@@ -460,7 +460,7 @@ tilo_test_env::scenario! {
                 .records
                 .read_history(&binding.checkout.id, |_, history| history.revision())
                 .unwrap();
-            fixture.app.apply_signed_document_envelope(&incoming, None);
+            fixture.app.apply_document_event(&incoming);
             assert_eq!(
                 fixture.value(0, "remote-logical").as_deref(),
                 Some("remote"),
@@ -530,7 +530,7 @@ tilo_test_env::scenario! {
                 })
                 .unwrap();
             for _ in 0..65 {
-                fixture.app.apply_signed_document_envelope(&incoming, None);
+                fixture.app.apply_document_event(&incoming);
             }
             assert!(
                 fixture
@@ -575,7 +575,7 @@ tilo_test_env::scenario! {
                     .unwrap()
                     .contains("Too many changes from others")
             );
-            fixture.app.apply_signed_document_envelope(&incoming, None);
+            fixture.app.apply_document_event(&incoming);
             assert_eq!(fixture.app.document_sync_status(), None);
         }
     }
@@ -649,7 +649,7 @@ tilo_test_env::scenario! {
         // its sender and owner, so it is not echoed back as our Incremental.
         for incremental in [true, false] {
             let incoming = fixture.remote(0, &format!("remote-{incremental}"), incremental);
-            fixture.app.apply_signed_document_envelope(&incoming, None);
+            fixture.app.apply_document_event(&incoming);
             assert_eq!(
                 fixture
                     .value(0, &format!("remote-{incremental}"))
@@ -684,7 +684,7 @@ tilo_test_env::scenario! {
             .read_checked(&id, |doc| doc.clone().save_after(&before))
             .unwrap();
         let incoming = fixture.remote(0, "interleaved-remote", true);
-        fixture.app.apply_signed_document_envelope(&incoming, None);
+        fixture.app.apply_document_event(&incoming);
         assert_eq!(
             fixture.value(0, "interleaved-remote").as_deref(),
             Some("remote")

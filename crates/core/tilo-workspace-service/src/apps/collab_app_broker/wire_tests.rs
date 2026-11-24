@@ -4,18 +4,15 @@
 )]
 
 use super::*;
-use crate::apps::collab_outbound::recording::{RecordingSink, Sent};
 use crate::apps::test_support::WorkspaceTree;
-use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
+use collab_types::{PeerPresence, PeerPresencePayload};
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 use tokio::sync::oneshot;
 
 struct Workspace {
     state: Arc<AppBrokerState>,
     route: CrdtRoute,
-    sink: Arc<RecordingSink>,
     membership: crate::apps::test_support::WorkspaceTreeHandle,
     directories: Rc<LocalActionDirectoryRegistry>,
     fanout: Arc<FanoutState>,
@@ -43,11 +40,10 @@ impl Workspace {
         tree.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let sink = Arc::new(RecordingSink::default());
         let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::new(sink.clone()),
+            PeerPublisher::disabled(),
             Some(membership.clone().authority()),
             Some(Arc::new(
                 members
@@ -63,7 +59,6 @@ impl Workspace {
         Self {
             state,
             route,
-            sink,
             membership,
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             fanout,
@@ -239,11 +234,12 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             let mut watcher = workspace.endpoint(1);
             let mut author = workspace.endpoint(2);
             let channel = watcher.channel;
-            let subscription = watcher.send(Operation::Subscribe {
-                channel,
-                topic: Topic::Presence,
-            })
-            .await;
+            let subscription = watcher
+                .send(Operation::Subscribe {
+                    channel,
+                    topic: Topic::Presence,
+                })
+                .await;
             assert_eq!(
                 watcher.frame().await,
                 HostFrame::Reply {
@@ -273,8 +269,15 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 panic!("the watcher receives the author's presence");
             };
             assert_eq!(delivered, subscription);
-            assert_eq!(member, collab_types::MemberId::person(actor(2)), "attributed");
-            assert_eq!(postcard::from_bytes::<PresenceKey>(&presence.key).unwrap(), key);
+            assert_eq!(
+                member,
+                collab_types::MemberId::person(actor(2)),
+                "attributed"
+            );
+            assert_eq!(
+                postcard::from_bytes::<PresenceKey>(&presence.key).unwrap(),
+                key
+            );
             assert_eq!(
                 presence.payload,
                 PeerPresencePayload::Status {
@@ -282,16 +285,6 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                     automatic: false,
                 },
                 "the broker trims a status before it travels"
-            );
-            assert!(
-                workspace.sink.snapshot().iter().any(|sent| matches!(
-                    sent,
-                    Sent::Presence { presence, .. } if presence.payload == PeerPresencePayload::Status {
-                        text: "Reviewing Q2".into(),
-                        automatic: false,
-                    }
-                )),
-                "the same update is replicated to the workspace's peers"
             );
 
             assert!(
@@ -335,112 +328,357 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
         .await;
 }
 
+/// The device's copy of the one record the test's route opened, as its workspace service keeps
+/// it: an app's changes go in, each change whole, and a window reads the changes past what it
+/// holds.
+#[derive(Default)]
+struct KeptRecord {
+    record: Mutex<automerge::Automerge>,
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::apps::services::ResourceServices for KeptRecord {
+    fn command(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        command: tilo_resource_store::wire::Command,
+    ) -> crate::apps::services::ResourceAnswer {
+        use tilo_resource_store::wire::{Bytes, Command, Reply};
+        assert_eq!(
+            context.record(),
+            Some("meeting-notes"),
+            "the route's record"
+        );
+        let mut record = self.record.lock().unwrap();
+        let answer = match command {
+            Command::RecordChange {
+                changes,
+                more: false,
+                commit: None,
+            } => {
+                self.writes.fetch_add(1, Ordering::Relaxed);
+                record
+                    .load_incremental(&changes.0)
+                    .map(|_| Reply::Written)
+                    .map_err(|error| error.to_string())
+            }
+            Command::RecordChanges { after, from: 0 } => {
+                let after: Vec<automerge::ChangeHash> =
+                    after.iter().map(|head| head.parse().unwrap()).collect();
+                Ok(Reply::RecordChanges {
+                    changes: Bytes(
+                        record
+                            .get_changes(&after)
+                            .iter()
+                            .flat_map(|change| change.raw_bytes().iter().copied())
+                            .collect(),
+                    ),
+                    heads: record.get_heads().iter().map(ToString::to_string).collect(),
+                    next: None,
+                })
+            }
+            other => Err(format!("the record answers no {other:?}")),
+        };
+        drop(record);
+        Box::pin(std::future::ready(answer))
+    }
+
+    fn open(
+        &self,
+        _: &crate::apps::services::ResourceRequestContext,
+        _: tilo_resource_store::Query,
+    ) -> crate::apps::services::ResourcePages {
+        Box::pin(std::future::ready(Err("the record holds no query".into())))
+    }
+}
+
+/// The device's one reader as the test serves it: every read and change of a record allowed
+/// while `allows` says so, and refused after.
+struct Decides(AtomicBool);
+
+impl Decides {
+    fn decided(&self) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        tilo_actions::remote::Pending::ready(if self.0.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(tilo_actions::remote::ActionCallError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            })
+        })
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for Decides {
+    fn may_read(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        self.decided()
+    }
+
+    fn may_write(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        self.decided()
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        _: &tilo_actions::remote::Caller,
+        correlation: u64,
+        _: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::Pending::ready(
+            tilo_actions::remote::RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Err(tilo_actions::remote::ActionCallError::Unavailable {
+                    reason: "the test decides alone".into(),
+                }),
+            },
+        )
+    }
+}
+
+impl Workspace {
+    /// A workspace like [`Self::new`]'s whose route's record the device keeps, read and changed
+    /// as `decides` lets each caller.
+    fn keeping_the_record(members: &[u8]) -> (Self, Arc<Decides>, Arc<KeptRecord>) {
+        let kept = Arc::new(KeptRecord::default());
+        let resources = Arc::clone(&kept) as Arc<dyn crate::apps::services::ResourceServices>;
+        let workspace = Self::serving(members, |services| ProcessServices {
+            resources: Some(resources),
+            ..services
+        });
+        let decides = Arc::new(Decides(AtomicBool::new(true)));
+        workspace
+            .state
+            .serve_records(Arc::clone(&decides) as Arc<dyn tilo_actions::remote::ResourceReads>);
+        (workspace, decides, kept)
+    }
+}
+
+impl Endpoint {
+    /// Ask the device's one store `command` on this endpoint's channel.
+    async fn record(
+        &mut self,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let channel = self.channel;
+        let reply = self
+            .call(Operation::Command {
+                channel,
+                service: Service::Resources,
+                body: serde_json::to_vec(command).unwrap(),
+                on_behalf_of: Vec::new(),
+            })
+            .await?;
+        let Reply::Answer(answer) = reply else {
+            panic!("a store command is answered, not {reply:?}");
+        };
+        Ok(serde_json::from_slice(&answer).unwrap())
+    }
+
+    /// Subscribe this endpoint to its channel's context.
+    async fn follow_context(&mut self) -> u64 {
+        let channel = self.channel;
+        let subscription = self
+            .send(Operation::Subscribe {
+                channel,
+                topic: Topic::Context,
+            })
+            .await;
+        assert_eq!(
+            self.frame().await,
+            HostFrame::Reply {
+                id: subscription,
+                result: Ok(Reply::Subscribed),
+            }
+        );
+        subscription
+    }
+}
+
+/// An app's change of a record, as Automerge encodes it: its title set to `title`, on top of
+/// `on`.
+fn titled(on: &mut automerge::AutoCommit, title: &str) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    let heads = on.get_heads();
+    on.put(automerge::ROOT, "title", title).unwrap();
+    on.save_after(&heads)
+}
+
+/// A change of the route's record of `changes`, whole.
+fn change(changes: Vec<u8>) -> tilo_resource_store::wire::Command {
+    tilo_resource_store::wire::Command::RecordChange {
+        changes: tilo_resource_store::wire::Bytes(changes),
+        more: false,
+        commit: None,
+    }
+}
+
+/// A read of the route's record's changes past `after`, from its first page.
+fn changes_after(after: Vec<String>) -> tilo_resource_store::wire::Command {
+    tilo_resource_store::wire::Command::RecordChanges { after, from: 0 }
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
+async fn a_change_crosses_the_wire_to_the_other_windows_on_the_record() {
+    use tilo_resource_store::wire::Reply as Store;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let workspace = Workspace::new(&[4, 5]);
+            let (workspace, _, _) = Workspace::keeping_the_record(&[4, 5]);
             let mut watcher = workspace.endpoint(4);
             let mut author = workspace.endpoint(5);
-            let channel = watcher.channel;
-            let subscription = watcher
-                .send(Operation::Subscribe {
-                    channel,
-                    topic: Topic::Ops,
-                })
-                .await;
+            let subscription = watcher.follow_context().await;
+            author.follow_context().await;
+
+            let mut note = automerge::AutoCommit::new();
+            let change = titled(&mut note, "Standup");
+            assert!(matches!(
+                author.record(&self::change(change.clone())).await,
+                Ok(Store::Written)
+            ));
             assert_eq!(
                 watcher.frame().await,
-                HostFrame::Reply {
-                    id: subscription,
-                    result: Ok(Reply::Subscribed),
-                }
+                HostFrame::Event {
+                    subscription,
+                    event: Event::Context(ContextUpdate::RecordChanged),
+                },
+                "the watcher is told the record changed"
             );
-
-            let route = &workspace.route;
-            let mut op = SignedOp::new_unsigned(
-                DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
-                    .encode()
-                    .unwrap(),
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
-                collab_types::Ed25519PublicKey::from_bytes(device(5).verifying_key().to_bytes()),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-                collab_types::OpKind::Change,
-                SystemTime::now(),
-                1,
-            );
-            sign_op(&mut op, &device(5)).unwrap();
-            let channel = author.channel;
-            assert_eq!(
-                author
-                    .call(Operation::Publish {
-                        channel,
-                        publication: Publication::Document(Box::new(op.clone())),
-                    })
-                    .await,
-                Ok(Reply::Done)
-            );
-            let HostFrame::Event {
-                subscription: delivered,
-                event: Event::Op { op: bytes, .. },
-            } = watcher.frame().await
+            let Ok(Store::RecordChanges {
+                changes,
+                heads,
+                next: None,
+            }) = watcher.record(&changes_after(Vec::new())).await
             else {
-                panic!("the watcher receives the change");
+                panic!("the watcher reads the record's changes");
             };
-            assert_eq!(delivered, subscription);
-            assert_eq!(postcard::from_bytes::<SignedOp>(&bytes).unwrap(), op);
-
-            let channel = watcher.channel;
+            assert_eq!(changes.0, change, "the change the author made");
+            assert_eq!(
+                heads,
+                note.get_heads()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+            // The author is not told of its own change: the next frame it reads answers its next
+            // call.
             assert!(matches!(
-                watcher
-                    .call(Operation::Read {
-                        channel,
-                        read: Read::History {
-                            artifact: op.artifact,
-                            before_seq: u64::MAX,
-                            max: 16,
-                        },
-                    })
-                    .await,
-                Ok(Reply::History { .. })
+                author.record(&changes_after(heads)).await,
+                Ok(Store::RecordChanges { changes, .. }) if changes.0.is_empty()
             ));
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
+async fn a_late_joiner_reads_the_record_from_the_device_as_its_reader_decides() {
+    use tilo_resource_store::wire::Reply as Store;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let workspace = Workspace::new(&[6, 8]);
+            let (workspace, decides, _) = Workspace::keeping_the_record(&[6, 8]);
             let mut holder = workspace.endpoint(6);
+            holder.follow_context().await;
+            let mut note = automerge::AutoCommit::new();
+            let first = titled(&mut note, "Groceries");
+            let second = titled(&mut note, "Groceries, oat milk");
+            let both = [first, second].concat();
+            assert!(matches!(
+                holder.record(&change(both.clone())).await,
+                Ok(Store::Written)
+            ));
+
             let mut joiner = workspace.endpoint(8);
-            let channel = holder.channel;
-            assert_eq!(
-                holder
-                    .call(Operation::Subscribe {
-                        channel,
-                        topic: Topic::Context,
-                    })
-                    .await,
-                Ok(Reply::Subscribed)
+            let Ok(Store::RecordChanges { changes, heads, .. }) =
+                joiner.record(&changes_after(Vec::new())).await
+            else {
+                panic!("the joiner reads the record from the device");
+            };
+            assert_eq!(changes.0, both, "every change, in order");
+            assert!(
+                matches!(
+                    joiner.record(&changes_after(heads.clone())).await,
+                    Ok(Store::RecordChanges { changes, heads: now, next: None })
+                        if changes.0.is_empty() && now == heads
+                ),
+                "nothing past what it holds"
             );
-            let channel = joiner.channel;
+
+            decides.0.store(false, Ordering::Relaxed);
+            let refused = joiner.record(&changes_after(Vec::new())).await.unwrap_err();
+            assert!(refused.contains("may not read the record"), "{refused}");
+            let refused = joiner
+                .record(&change(titled(&mut note, "Mine now")))
+                .await
+                .unwrap_err();
+            assert!(refused.contains("may not change the record"), "{refused}");
+            // No other window was asked for the record, and the refused change told nobody: the
+            // holder's next frame answers its own next call.
+            assert!(holder.record(&changes_after(Vec::new())).await.is_err());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_change_sent_in_runs_lands_as_one_write() {
+    use tilo_resource_store::wire::{Bytes, Command, Reply as Store};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (workspace, _, kept) = Workspace::keeping_the_record(&[4, 5]);
+            let mut watcher = workspace.endpoint(4);
+            let mut author = workspace.endpoint(5);
+            let subscription = watcher.follow_context().await;
+            author.follow_context().await;
+            let mut note = automerge::AutoCommit::new();
+            let whole = [
+                titled(&mut note, "Plan"),
+                titled(&mut note, "Plan, revised"),
+            ]
+            .concat();
+
+            // Runs cut anywhere, even inside one change, are kept until the last.
+            let cuts = [whole.len() / 3, whole.len() * 2 / 3];
+            for run in [&whole[..cuts[0]], &whole[cuts[0]..cuts[1]]] {
+                assert!(matches!(
+                    author
+                        .record(&Command::RecordChange {
+                            changes: Bytes(run.to_vec()),
+                            more: true,
+                            commit: None,
+                        })
+                        .await,
+                    Ok(Store::Written)
+                ));
+            }
             assert_eq!(
-                joiner
-                    .call(Operation::Read {
-                        channel,
-                        read: Read::Document,
-                    })
-                    .await,
-                Ok(Reply::Done)
+                kept.writes.load(Ordering::Relaxed),
+                0,
+                "no run is written alone"
             );
             assert!(matches!(
-                holder.frame().await,
+                author.record(&change(whole[cuts[1]..].to_vec())).await,
+                Ok(Store::Written)
+            ));
+            assert_eq!(
+                kept.writes.load(Ordering::Relaxed),
+                1,
+                "the runs are one write"
+            );
+            assert_eq!(
+                watcher.frame().await,
                 HostFrame::Event {
-                    event: Event::Context(ContextUpdate::SnapshotRequested),
-                    ..
-                }
+                    subscription,
+                    event: Event::Context(ContextUpdate::RecordChanged),
+                },
+                "the watcher is told once, of the whole change"
+            );
+            assert!(matches!(
+                watcher.record(&changes_after(Vec::new())).await,
+                Ok(Store::RecordChanges { changes, .. }) if changes.0 == whole
             ));
         })
         .await;
@@ -605,7 +843,8 @@ async fn an_apps_open_query_sends_its_pages_over_its_route() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_read_only_one() {
+async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_the_device_reader()
+{
     use tilo_resource_store::wire::Command;
 
     tokio::task::LocalSet::new()
@@ -616,6 +855,9 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
                 resources: Some(served),
                 ..services
             });
+            let decides = Arc::new(Decides(AtomicBool::new(false)));
+            let reads: Arc<dyn tilo_actions::remote::ResourceReads> = decides.clone();
+            workspace.state.serve_records(reads);
             let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::ReadOnly);
             let mut endpoint = Endpoint::serve(connection, outgoing, handle);
             let ask = |handle, command: &Command, on_behalf_of| Operation::Command {
@@ -651,7 +893,8 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
                 .call(ask(handle, &write, Vec::new()))
                 .await
                 .unwrap_err();
-            assert!(denied.contains("changes nothing on it"));
+            assert!(denied.contains("may not change the record"), "{denied}");
+            assert!(denied.contains(workspace.route.app_id.as_str()), "{denied}");
             assert_eq!(
                 *store.0.lock().unwrap(),
                 [(
@@ -661,6 +904,15 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
                 "only the read reaches the store, under the admitted route"
             );
 
+            // The reader allows the write: it reaches the store, whatever the route's own
+            // access says, which decides no resource write.
+            decides.0.store(true, Ordering::Relaxed);
+            endpoint
+                .call(ask(handle, &write, Vec::new()))
+                .await
+                .unwrap();
+            assert_eq!(store.0.lock().unwrap().len(), 2);
+
             let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::Own);
             let mut endpoint = Endpoint::serve(connection, outgoing, handle);
             let denied = endpoint
@@ -668,11 +920,6 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
                 .await
                 .unwrap_err();
             assert!(denied.contains("no caller-scoped signer"));
-            assert_eq!(store.0.lock().unwrap().len(), 1);
-            endpoint
-                .call(ask(handle, &write, Vec::new()))
-                .await
-                .unwrap();
             assert_eq!(store.0.lock().unwrap().len(), 2);
         })
         .await;

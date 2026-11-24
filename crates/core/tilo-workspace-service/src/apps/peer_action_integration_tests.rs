@@ -467,11 +467,10 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
             workspace: workspace_id,
         }),
     };
-    let sink = Arc::new(RecordingSink::default());
     let broker = crate::apps::collab_broker::spawn_native_peer(
         root.path().join("app.sock"),
         tree.shared().authority(),
-        PeerPublisher::new(sink),
+        PeerPublisher::disabled(),
         config,
     )
     .unwrap();

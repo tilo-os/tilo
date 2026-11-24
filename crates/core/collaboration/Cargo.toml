@@ -57,9 +57,7 @@ tilo-startup-metrics = { version = "0.1.0", path = "../tilo-startup-metrics" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 thiserror.workspace = true
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand_core.workspace = true
-getrandom.workspace = true
 zeroize.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -90,6 +88,8 @@ serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The device store's commands an app reads and writes its records with.
+tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 
 [dev-dependencies]
 tempfile.workspace = true

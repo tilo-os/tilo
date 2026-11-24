@@ -14,7 +14,7 @@ use crate::wire::{
     Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
-use crate::{ChannelContext, Invocation, OpEvent, PresenceEvent, ScrollbackBatch};
+use crate::{ChannelContext, Invocation, PresenceEvent};
 use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
     SpeakerReply, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent,
@@ -640,20 +640,6 @@ impl ChannelHandle {
         native_media::Snapshot::decode(&reply).map_err(refused)
     }
 
-    /// Ask the host to direct one current holder of the channel to publish a
-    /// complete document snapshot for this late joiner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host cannot accept the request.
-    pub async fn request_document_snapshot(&self) -> Result<(), NotAvailable> {
-        self.done(Operation::Read {
-            channel: self.channel.handle,
-            read: Read::Document,
-        })
-        .await
-    }
-
     /// Submit one bounded realtime-session continuity command, answered with
     /// a versioned application-contract reply.
     ///
@@ -998,28 +984,6 @@ impl ChannelHandle {
         self.report(Report::SearchIndex(delta_json.to_vec())).await
     }
 
-    /// Submit a single signed op into the channel: the postcard encoding of
-    /// a `collab_types::SignedOp`. Answered once the host admitted it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the op does not decode, or the host
-    /// refuses it.
-    pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
-        let op: collab_types::SignedOp = postcard::from_bytes(op)
-            .map_err(|error| refused(format!("signed op does not decode: {error}")))?;
-        self.publish(Publication::Document(Box::new(op))).await
-    }
-
-    /// Every signed change to the channel's document from now on.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn subscribe(&self) -> Result<OpStream, NotAvailable> {
-        Ok(OpStream(self.feed(Topic::Ops).await?))
-    }
-
     /// The channel's presence.
     #[must_use]
     pub fn presence(&self) -> PresenceHandle {
@@ -1267,40 +1231,6 @@ impl ChannelHandle {
         }
     }
 
-    /// A page of earlier admitted changes to `artifact_id` (the artifact
-    /// uuid's 16 bytes), before `before_seq`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn fetch_scrollback_for(
-        &self,
-        artifact_id: &[u8],
-        before_seq: u64,
-        max: u32,
-    ) -> Result<ScrollbackBatch, NotAvailable> {
-        let artifact = <[u8; 16]>::try_from(artifact_id)
-            .map(|bytes| collab_types::ArtifactId(uuid::Uuid::from_bytes(bytes)))
-            .map_err(|_| refused("artifact id is not 16 bytes"))?;
-        match self
-            .call(Operation::Read {
-                channel: self.channel.handle,
-                read: Read::History {
-                    artifact,
-                    before_seq,
-                    max,
-                },
-            })
-            .await?
-        {
-            Reply::History { ops, exhausted } => Ok(ScrollbackBatch {
-                ops,
-                done: exhausted,
-            }),
-            other => Err(unexpected(&other)),
-        }
-    }
-
     /// Admit a local document action the app already performed.
     ///
     /// # Errors
@@ -1397,20 +1327,6 @@ impl Feed {
 
 fn unexpected_event(event: &Event) -> NotAvailable {
     refused(format!("the collaboration host delivered {event:?}"))
-}
-
-/// Signed changes to the channel's document.
-#[derive(Clone)]
-pub struct OpStream(Feed);
-
-impl OpStream {
-    /// The next change.
-    pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
-        match self.0.event().await? {
-            Event::Op { op, admission } => Ok(OpEvent { op, admission }),
-            other => Err(unexpected_event(&other)),
-        }
-    }
 }
 
 /// Content of a channel's record, or where a read of it has got to.
@@ -1891,10 +1807,10 @@ impl ContextStream {
                 context.apps = apps;
             }
             ContextUpdate::FollowChanged { peer_id } => context.follow_changed = Some(peer_id),
-            ContextUpdate::SnapshotRequested => context.snapshot_requested = true,
             ContextUpdate::Handoff(handoff) => context.handoff = Some(handoff),
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
             ContextUpdate::RecordsMoved(records) => context.records_moved = records,
+            ContextUpdate::RecordChanged => context.record_changed = true,
         }
         Ok(context)
     }

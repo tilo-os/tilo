@@ -34,6 +34,14 @@ fn refused(read: &Result<ResourceCopy, ActionCallError>) -> bool {
     matches!(read, Err(ActionCallError::Refused { .. }))
 }
 
+/// What a write decision on a record it may not change is answered: refused, saying why.
+fn not_changed(write: &Result<(), ActionCallError>) -> bool {
+    matches!(
+        write,
+        Err(ActionCallError::Refused { reason }) if reason.contains("change this record")
+    )
+}
+
 /// A grant of `grantee` reading all of `workspace`, given by the person `by` names.
 fn reads_all(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
     Grant::new(
@@ -41,6 +49,18 @@ fn reads_all(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
         grantee,
         TreePath::workspace(workspace),
         KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Grantee::person(by),
+    )
+}
+
+/// A grant of `grantee` reading all of `workspace` and changing nothing of it.
+fn reads_only(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
+    Grant::new(
+        id,
+        grantee,
+        TreePath::workspace(workspace),
+        KindSet::READ,
         Answer::Allow,
         Grantee::person(by),
     )
@@ -316,6 +336,33 @@ async fn read_with(
     tokio::task::spawn_blocking(move || reads.read(&caller, &address))
         .await
         .expect("the read ran")
+}
+
+/// `caller`'s write decision for `app`'s `record` in `workspace` through `reads`.
+async fn write_with(
+    reads: std::sync::Arc<dyn ResourceReads>,
+    caller: &Caller,
+    workspace: &str,
+    app: &str,
+    record: &str,
+) -> Result<(), ActionCallError> {
+    let caller = caller.clone();
+    let address = ResourceAddress {
+        workspace: workspace.to_owned(),
+        app: app.to_owned(),
+        record: record.to_owned(),
+    };
+    tokio::task::spawn_blocking(move || {
+        match reads
+            .may_write(&caller, &address)
+            .wait_timeout(std::time::Duration::MAX)
+        {
+            Ok(Some(decided)) => decided,
+            _ => panic!("the write decision answered"),
+        }
+    })
+    .await
+    .expect("the decision ran")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -653,5 +700,91 @@ async fn an_app_reads_its_own_records_and_no_kind_it_did_not_declare() {
     );
     let read = tokio::task::spawn_blocking(move || reads.read(&mail, &address)).await;
     assert!(not_read(&read.expect("the read ran")));
+    h.server.shutdown().await;
+}
+
+/// An app changes its own record as the person it acts for may change it there, and changes
+/// nothing of a kind it did not declare.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_changes_its_own_records_and_no_kind_it_did_not_declare() {
+    let h = host().await;
+    let (reads, _broker) = dispatch_reads(&h);
+    let app = |app: &str| {
+        Caller::local_app(app)
+            .acting_for(h.person.clone())
+            .in_workspace(h.kitchen.clone())
+    };
+    // Notes changes its own ordinary record, the person it acts for owning the workspace.
+    let write = write_with(
+        std::sync::Arc::clone(&reads),
+        &app(NOTES),
+        &h.kitchen,
+        NOTES,
+        "",
+    )
+    .await;
+    assert!(write.is_ok(), "{write:?}");
+    // Mail's mailbox is kept apart under its kind, which this Mail does not declare.
+    let write = write_with(
+        std::sync::Arc::clone(&reads),
+        &app("so.tilo.mail"),
+        &h.kitchen,
+        "so.tilo.mail",
+        "",
+    )
+    .await;
+    assert!(not_changed(&write), "{write:?}");
+    h.server.shutdown().await;
+}
+
+/// A grant that reads a record alone changes nothing of it: a change needs the grant to allow one
+/// at the record's node, whichever app asks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grant_that_reads_a_record_alone_changes_nothing_of_it() {
+    let h = host().await;
+    let (reads, _broker) = dispatch_reads(&h);
+    let bo = |app: &str| {
+        Caller::local_app(app)
+            .acting_for("bo")
+            .in_workspace(h.kitchen.clone())
+    };
+    h.grant(
+        &h.kitchen,
+        vec![reads_only(
+            "bo:reads",
+            Grantee::person("bo"),
+            &h.kitchen,
+            &h.person,
+        )],
+    )
+    .await;
+    // Bo reads Notes' record through another app, and changes nothing of it, its own app's
+    // included.
+    for app in ["so.tilo.messages", NOTES] {
+        let read = read_with(std::sync::Arc::clone(&reads), &bo(app), &h.kitchen, "").await;
+        assert!(document(&read), "{app}: {read:?}");
+        let write = write_with(
+            std::sync::Arc::clone(&reads),
+            &bo(app),
+            &h.kitchen,
+            NOTES,
+            "",
+        )
+        .await;
+        assert!(not_changed(&write), "{app}: {write:?}");
+    }
+    // The same grant allowing changes lets the app change the record.
+    h.grant(
+        &h.kitchen,
+        vec![reads_all(
+            "bo:changes",
+            Grantee::person("bo"),
+            &h.kitchen,
+            &h.person,
+        )],
+    )
+    .await;
+    let write = write_with(reads, &bo(NOTES), &h.kitchen, NOTES, "").await;
+    assert!(write.is_ok(), "{write:?}");
     h.server.shutdown().await;
 }

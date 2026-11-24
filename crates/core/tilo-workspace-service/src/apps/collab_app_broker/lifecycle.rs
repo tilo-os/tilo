@@ -31,19 +31,11 @@ impl Drop for BrokerThreadShutdown {
     }
 }
 
-/// Say where the broker listens and whether what apps write there reaches
-/// the workspace.
-pub(super) fn log_bound(socket_path: &Path, wired: bool) {
+/// Say where the broker listens.
+pub(super) fn log_bound(socket_path: &Path) {
     tracing::info!(
-        peer_sync = wired,
-        "collaboration broker: bound {} for native SDK access ({})",
+        "collaboration broker: bound {} for native SDK access",
         socket_path.display(),
-        if wired {
-            "edits from apps on this socket will reach the workspace"
-        } else {
-            "LOCAL ONLY — no peer network, so edits from apps on this \
-             socket stay on this machine"
-        },
     );
 }
 
@@ -62,7 +54,6 @@ pub(crate) fn spawn_configured(
         services,
         config,
     } = wiring;
-    let wired = publisher.is_wired();
     let (state, bridge_rx) = AppBrokerState::new_configured(
         fanout,
         broker_channels,
@@ -89,7 +80,7 @@ pub(crate) fn spawn_configured(
     // failure surfaces only via a log line.
     let (std_listener, socket_ownership) = bind_owned_socket(socket_path)?;
     std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
-    log_bound(socket_path, wired);
+    log_bound(socket_path);
 
     let attached_state = Arc::clone(&state);
     let fanout_for_thread = Arc::clone(fanout);

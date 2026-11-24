@@ -1,63 +1,7 @@
 //! What a local subscriber of a channel is sent besides live traffic.
-use super::{
-    BrokerChannels, ChannelSubscribers, ContextUpdate, CrdtRoute, OpAdmission, OpEnvelope,
-};
+use super::{BrokerChannels, ChannelSubscribers, ContextUpdate, CrdtRoute};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
-
-/// This broker's verdict for an op it delivers: the one it decided when it
-/// admitted the op, read off the op itself. A sealed op is sealed because
-/// its channel requires it, and cleartext is admitted because the channel's
-/// checks admitted it then. The app applies that verdict and keeps no policy
-/// of its own.
-///
-/// Reading the channel's check again here would decide the op a second time,
-/// by whatever the channel requires now: a write admitted in the clear a
-/// moment before the channel started requiring encryption — before its
-/// record sealed, or in a record whose seal another device's write made
-/// after it — would be refused when it is delivered again, and whether it
-/// reached an app would depend on when the check arrived against when the
-/// write did. Refusing what the check does not take is the ingress's job,
-/// before the op is recorded ([`crate::apps::collab_inbound::deliver`]); what was
-/// admitted is history.
-pub(super) fn recorded_admission(envelope: &collab_types::SignedOp) -> OpAdmission {
-    if envelope.encryption.is_some() {
-        OpAdmission::EncryptionRequired
-    } else {
-        OpAdmission::CleartextAdmitted
-    }
-}
-
-/// Replay to a new op subscriber of `channel_id` the ops this broker
-/// admitted for its record before. The workspace delivers a record's history
-/// once, when this device connects; an app that opens the record later
-/// would otherwise build on changes it never received. Its CRDT drops what
-/// it already holds. Every op in the log passed the channel's check when it
-/// arrived, so cleartext there stays admitted after the channel later
-/// starts requiring encryption: the history is the channel's own.
-pub(super) fn admitted_ops(
-    channels: &Mutex<BrokerChannels>,
-    channel_id: &str,
-    tx: &mpsc::UnboundedSender<OpEnvelope>,
-) {
-    let route = CrdtRoute::from_channel_key(channel_id);
-    if route.app_id.is_empty() {
-        return;
-    }
-    let Ok(mut admitted) = channels.lock() else {
-        return;
-    };
-    let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
-    for op in &admitted.state_for(artifact).op_log {
-        if let Ok(op_bytes) = postcard::to_stdvec(op) {
-            let _ = tx.send(OpEnvelope {
-                op_bytes,
-                admission: recorded_admission(op),
-            });
-        }
-    }
-}
 
 /// Tell a new context subscriber of `channel_id` the records of its app's
 /// trees this device holds in its workspace ([`BrokerChannels::tree_records_held`]).
@@ -82,14 +26,6 @@ pub(super) fn held_tree_records(
 }
 
 impl super::AppBrokerState {
-    /// The verdict a document event fans out with.
-    pub(super) fn admission_of(event: &super::CollabEvent) -> OpAdmission {
-        let super::CollabEvent::Document { envelope, .. } = event else {
-            return OpAdmission::Unstated;
-        };
-        recorded_admission(envelope)
-    }
-
     /// The records local app windows hold, by the window instance each shows:
     /// what each window shows, known as soon as its app opens a record, before
     /// anyone points in it.
@@ -113,14 +49,14 @@ impl super::AppBrokerState {
             let Some(tab) = continuation_tab(&route) else {
                 continue;
             };
-            for sub in &subscribers.op {
+            for sub in &subscribers.context {
                 named.insert(sub.peer_id, tab);
             }
         }
         let mut held: Vec<(u64, CrdtRoute)> = channels
             .iter()
             .flat_map(|(key, subscribers)| {
-                subscribers.op.iter().filter_map(|sub| {
+                subscribers.context.iter().filter_map(|sub| {
                     let instance = *named.get(&sub.peer_id)?;
                     let route = CrdtRoute::from_channel_key(key);
                     (!route.app_id.is_empty() && continuation_tab(&route).is_none())
@@ -148,7 +84,7 @@ impl super::AppBrokerState {
             .filter(|(key, _)| {
                 continuation_tab(&CrdtRoute::from_channel_key(key)) == Some(instance)
             })
-            .flat_map(|(_, subscribers)| subscribers.op.iter().map(|sub| sub.peer_id))
+            .flat_map(|(_, subscribers)| subscribers.context.iter().map(|sub| sub.peer_id))
             .collect();
         windows
             .iter()
@@ -167,12 +103,12 @@ impl super::AppBrokerState {
         }
     }
 
-    /// Whether a local app subscribes to exactly `route`'s documents.
+    /// Whether a local app window has exactly `route`'s record open.
     pub fn holds_route(&self, route: &CrdtRoute) -> bool {
         self.channels.lock().is_ok_and(|channels| {
             channels
                 .get(&route.channel_key())
-                .is_some_and(|subscribers| !subscribers.op.is_empty())
+                .is_some_and(|subscribers| !subscribers.context.is_empty())
         })
     }
 }
@@ -241,9 +177,9 @@ mod tests {
             let second = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-2");
             state.ensure_channel(&second.channel_key());
             state.window_instances.lock().unwrap().insert(4, 78);
-            let _note = state.subscribe_ops(&note.channel_key(), 2);
-            let _other = state.subscribe_ops(&other.channel_key(), 3);
-            let _second = state.subscribe_ops(&second.channel_key(), 4);
+            let _note = state.subscribe_context(&note.channel_key(), 2, None);
+            let _other = state.subscribe_context(&other.channel_key(), 3, None);
+            let _second = state.subscribe_context(&second.channel_key(), 4, None);
             assert_eq!(state.window_resources(), [(77, note.clone()), (78, second)]);
             assert_eq!(
                 state.window_peer(78),
@@ -279,8 +215,8 @@ mod tests {
             let window = CrdtRoute::record("so.tilo.notes", "workspace-1", "continuation:91");
             state.ensure_channel(&note.channel_key());
             state.ensure_channel(&window.channel_key());
-            let _note = state.subscribe_ops(&note.channel_key(), 5);
-            let _window = state.subscribe_ops(&window.channel_key(), 5);
+            let _note = state.subscribe_context(&note.channel_key(), 5, None);
+            let _window = state.subscribe_context(&window.channel_key(), 5, None);
             assert_eq!(
                 state.window_resources(),
                 [(91, note)],
@@ -499,122 +435,6 @@ mod tests {
             );
         }
 
-        phase a_late_subscriber_receives_what_was_admitted_before;
-        // A message another person posted reached this device before its app
-        // opened the record it went into: the app still receives it when it
-        // subscribes, though the workspace sent it only once.
-        {
-            let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "derived:part.0@chain");
-            let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
-            let op = SignedOp::new_unsigned(
-                DocumentMutation::Snapshot(b"part".to_vec())
-                    .encode()
-                    .unwrap(),
-                artifact,
-                Ed25519PublicKey::from_bytes([5; 32]),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-                collab_types::OpKind::Change,
-                tilo_clock::wall(),
-                1,
-            );
-            let channels = Mutex::new(BrokerChannels::default());
-            channels
-                .lock()
-                .unwrap()
-                .state_for(artifact)
-                .record_validated_op(op.clone());
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            admitted_ops(&channels, &route.channel_key(), &tx);
-            let replayed = rx.try_recv().expect("the admitted op");
-            assert_eq!(
-                postcard::from_bytes::<SignedOp>(&replayed.op_bytes).unwrap(),
-                op
-            );
-            assert!(rx.try_recv().is_err(), "once");
-
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            let other = CrdtRoute::record("so.tilo.chat", "workspace-1", "another");
-            admitted_ops(&channels, &other.channel_key(), &tx);
-            assert!(
-                rx.try_recv().is_err(),
-                "another record's subscriber gets none of it"
-            );
-        }
-    }
-
-    /// A write in the clear is admitted, and the workspace then starts
-    /// requiring encryption. Every way the op reaches an app after that — the
-    /// history a window opened now is sent, and the op fanned out again —
-    /// carries the verdict it was admitted under: the history is the
-    /// channel's own, and what a window receives never depends on how long
-    /// after the write the check arrived.
-    #[test]
-    fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
-        use std::sync::Arc;
-        // A workspace by the id it is known by: the check is registered under it.
-        let route = CrdtRoute::record("so.tilo.chat", "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b", "");
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
-        let op = SignedOp::new_unsigned(
-            DocumentMutation::Incremental(b"general".to_vec())
-                .encode()
-                .unwrap(),
-            artifact,
-            Ed25519PublicKey::from_bytes([5; 32]),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
-            collab_types::OpKind::Change,
-            tilo_clock::wall(),
-            1,
-        );
-        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .state_for(artifact)
-            .record_validated_op(op.clone());
-        let (state, _bridge_rx) = broker(&channels);
-        let mut first = state.subscribe_ops(&route.channel_key(), 1);
-        let delivered = |rx: &mut mpsc::UnboundedReceiver<OpEnvelope>| {
-            postcard::from_bytes::<SignedOp>(&rx.try_recv().unwrap().op_bytes).unwrap()
-        };
-        assert_eq!(delivered(&mut first), op, "admitted in the clear");
-        assert!(
-            first.try_recv().is_err(),
-            "the subscriber holds exactly the op the broker admitted"
-        );
-        // The workspace's group requires encryption from now on.
-        channels.lock().unwrap().register_seal_check(
-            collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
-            key_group::SealCheck {
-                encryption_required: true,
-            },
-        );
-        let mut reopened = state.subscribe_ops(&route.channel_key(), 2);
-        let replayed = reopened.try_recv().unwrap();
-        assert_eq!(
-            postcard::from_bytes::<SignedOp>(&replayed.op_bytes).unwrap(),
-            op
-        );
-        assert_eq!(
-            replayed.admission,
-            OpAdmission::CleartextAdmitted,
-            "history admitted before the channel sealed stays admitted"
-        );
-        // The same op reaching a subscriber again is delivered as admitted.
-        state.fanout_to_route(
-            &super::super::CollabEvent::Document {
-                envelope: Box::new(op),
-                decrypted_payload: None,
-            },
-            u64::MAX,
-            &route,
-        );
-        for rx in [&mut reopened, &mut first] {
-            assert_eq!(
-                rx.try_recv().unwrap().admission,
-                OpAdmission::CleartextAdmitted,
-                "a write the broker admitted is not refused after the switch"
-            );
-        }
     }
 
     /// The route, and the records, of each `ResourcesArrived` a window that holds the documents

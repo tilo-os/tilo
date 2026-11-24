@@ -194,6 +194,14 @@ pub enum MissingPrerequisite {
     /// The workspace itself: this device is still taking it in (joining it, or opening it as
     /// it starts), and decides the write once it holds it.
     Workspace,
+    /// The writes to the other records of the action the write is one part of: the action's
+    /// records change together, once all of them are here.
+    ActionParts {
+        /// The action's commit, by its id ([`collab_types::WorkspaceCommit::id`]).
+        action: [u8; 32],
+        /// The workspace the commit names.
+        workspace: String,
+    },
 }
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -209,6 +217,13 @@ impl std::fmt::Display for MissingPrerequisite {
             Self::EarlierWrite => "an earlier write of its author to its record",
             Self::RemovalCut => "the cut of its author's removal",
             Self::Workspace => "the workspace, which this device is still taking in",
+            Self::ActionParts { action, workspace } => {
+                return write!(
+                    f,
+                    "the rest of action {} of workspace {workspace}",
+                    hex::encode(action)
+                );
+            }
         })
     }
 }

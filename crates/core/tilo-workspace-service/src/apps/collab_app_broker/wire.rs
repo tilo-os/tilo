@@ -79,6 +79,8 @@ pub(super) struct ChannelSession {
     /// The app's live activity, opened on its first call; it ends when the
     /// app closes the channel.
     live_activity: RefCell<Option<Rc<runtime_collab::live_activity::LiveActivityServer>>>,
+    /// The runs of a change of the channel's record that came before its last.
+    record_runs: RefCell<Vec<u8>>,
 }
 
 impl ChannelSession {
@@ -94,6 +96,7 @@ impl ChannelSession {
             presence,
             settings: RefCell::default(),
             live_activity: RefCell::default(),
+            record_runs: RefCell::default(),
         }
     }
 
@@ -332,7 +335,7 @@ impl ChannelSession {
                 Service::Resources => {
                     // Keep the continuation reference so the broker can refuse unsupported writes.
                     channel
-                        .resources_dispatch(body, on_behalf_of)
+                        .resources_dispatch(body, on_behalf_of, &self.record_runs)
                         .map_err(failed)
                         .map(|reply| -> Answering {
                             Box::pin(async move {
@@ -356,64 +359,6 @@ impl std::ops::Deref for ChannelSession {
 }
 
 impl JoinedChannel {
-    /// Admit, commit where the workspace's owner must hold it first, and fan out
-    /// one signed document change.
-    pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
-        self.writable()?;
-        // A change of the record the channel carries, under the id it is kept under.
-        let (state, route) = (&self.state, self.resource_route());
-        let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
-        verify_session_author(&current_identity, envelope.author)
-            .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
-        state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        let owner_required = state.durable_owner_required || state.publisher.has_commits();
-        let _owner_order = if owner_required {
-            Some(state.owner_commit_order.lock().await)
-        } else {
-            None
-        };
-        // The write as the owner took it: signed again where another local
-        // writer's later write passed its sequence.
-        let envelope = if owner_required {
-            state.revalidate_admission(&route, &self.verified_identity)?;
-            state
-                .commit_document(
-                    route.cluster_id.clone(),
-                    route.app_id.clone(),
-                    route.document_id.clone(),
-                    None,
-                    envelope,
-                    self.resource_type.clone(),
-                )
-                .await?
-        } else {
-            envelope
-        };
-        let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
-        let authorized =
-            state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        handle_authorized_signed_op_send(
-            state,
-            self.connection_id,
-            &route,
-            &current_identity,
-            &authorized,
-            envelope,
-        );
-        Ok(())
-    }
-
-    /// Every document change on this route from now on, other endpoints'
-    /// and peers'.
-    pub(super) fn subscribe_ops(&self) -> Result<Feed<OpEnvelope>, BrokerError> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        Ok(Feed::new(
-            self.state
-                .subscribe_ops(&self.channel_id, self.connection_id),
-        ))
-    }
-
     /// The device's record-content service, for a route still admitted.
     fn document_content(
         &self,
@@ -492,17 +437,6 @@ impl JoinedChannel {
             document,
         });
         Ok(Feed::new(rx).with_native_guard(native_guard))
-    }
-
-    /// Ask another endpoint holding this route to publish the document's
-    /// current state.
-    pub(super) fn ask_for_document(&self) -> Result<(), BrokerError> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let _ = self
-            .state
-            .request_document_snapshot(&self.channel_id, self.connection_id);
-        Ok(())
     }
 
     /// Take a report about this route's own instance or record from the
@@ -852,42 +786,6 @@ impl JoinedChannel {
             ));
         }
         Ok(reply)
-    }
-
-    /// Up to `max` admitted changes to `artifact` before `before_seq`, and
-    /// whether that is all there is. Where local history ends, the
-    /// channel's other devices are asked for what lies before it; their
-    /// answer lands in durable history, so the page is reported as not
-    /// exhausted and the endpoint's next read picks it up.
-    pub(super) fn history(
-        &self,
-        artifact: ArtifactId,
-        before_seq: u64,
-        max: u32,
-    ) -> Result<(Vec<Vec<u8>>, bool), BrokerError> {
-        let route = self.resource_route();
-        self.state
-            .revalidate_admission(&route, &self.verified_identity)?;
-        let broker_channels = &self.state.broker_channels;
-        let (ops, oldest, mut exhausted) =
-            read_scrollback(broker_channels, artifact, before_seq, max);
-        if exhausted {
-            let peer_bound = oldest.unwrap_or(before_seq);
-            let ask = broker_channels
-                .lock()
-                .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));
-            if ask
-                && self.state.publisher().scrollback_request(
-                    &route,
-                    artifact,
-                    peer_bound,
-                    u16::try_from(max).unwrap_or(u16::MAX),
-                )
-            {
-                exhausted = false;
-            }
-        }
-        Ok((ops, exhausted))
     }
 
     /// Answer the app's remote-action `frame` with the frame its caller,
@@ -1847,27 +1745,13 @@ impl WireConnection {
 
     /// Answer one call. A reply, and the events a subscription it starts
     /// delivers, take the outgoing queue in that order; a call that waits (a
-    /// join, a workspace's change, a document change the workspace's owner commits
-    /// first) answers when done.
+    /// join, a workspace's change) answers when done.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per request answered once its work is done"
     )]
     pub(super) fn call(self: &Rc<Self>, Call { id, request }: Call) {
         let answer: std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
-            Operation::Publish {
-                channel,
-                publication: Publication::Document(envelope),
-            } => {
-                let channel = self.channel(channel);
-                Box::pin(async move {
-                    channel?
-                        .publish_document(*envelope)
-                        .await
-                        .map(|()| Reply::Done)
-                        .map_err(Refusal::refusal)
-                })
-            }
             Operation::Join(join) => {
                 let (service, connection) = (self.service.clone(), Rc::downgrade(self));
                 Box::pin(async move {
@@ -2057,7 +1941,7 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                publication: Publication::Document(_) | Publication::Effect { .. },
+                publication: Publication::Effect { .. },
                 ..
             }
             | Operation::Join(_)
@@ -2108,30 +1992,6 @@ impl WireConnection {
             }
             Operation::Read {
                 channel,
-                read:
-                    Read::History {
-                        artifact,
-                        before_seq,
-                        max,
-                    },
-            } => {
-                let (ops, exhausted) = self
-                    .channel(channel)?
-                    .history(artifact, before_seq, max)
-                    .map_err(Refusal::refusal)?;
-                Ok(Reply::History { ops, exhausted })
-            }
-            Operation::Read {
-                channel,
-                read: Read::Document,
-            } => {
-                self.channel(channel)?
-                    .ask_for_document()
-                    .map_err(Refusal::refusal)?;
-                Ok(Reply::Done)
-            }
-            Operation::Read {
-                channel,
                 read: Read::Content { hash },
             } => {
                 self.channel(channel)?
@@ -2150,15 +2010,6 @@ impl WireConnection {
                     Topic::Presence => {
                         let feed = session.presence.subscribe()?;
                         tokio::task::spawn_local(pump(feed, id, frames, presence_event))
-                    }
-                    Topic::Ops => {
-                        let feed = session.subscribe_ops().map_err(failed)?;
-                        tokio::task::spawn_local(pump(feed, id, frames, |envelope: OpEnvelope| {
-                            Some(Event::Op {
-                                op: envelope.op_bytes,
-                                admission: envelope.admission,
-                            })
-                        }))
                     }
                     Topic::Context => {
                         let feed = session.context_feed().map_err(failed)?;

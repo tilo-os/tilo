@@ -719,6 +719,15 @@ fn open_history<'a>(
             Err(_) if index > 0 && opened.transfers.is_empty() => break,
             Err(why) => return Err(PeerDocumentReadError::Opening(why)),
         };
+        // A write of an action whose writes to other records are not all here is read without,
+        // with every write after it, until they are: the records change together.
+        if peer
+            .sealed_action_waits((app, record), op, &plaintext)
+            .map_err(PeerDocumentReadError::Opening)?
+            .is_some()
+        {
+            break;
+        }
         opened.size = opened.size.saturating_add(plaintext.len());
         if opened.size > maximum {
             return Err(PeerDocumentReadError::Capacity);
@@ -852,7 +861,8 @@ impl Opened {
                 super::sealed_compaction::UnmergedReason::BehindUnsent { .. } => {
                     self.stuck.push((index, mutation));
                 }
-                super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
+                super::sealed_compaction::UnmergedReason::MissingDependencies { .. }
+                | super::sealed_compaction::UnmergedReason::WaitsForAction { .. } => {
                     return Err(PeerDocumentReadError::Incomplete);
                 }
                 super::sealed_compaction::UnmergedReason::Unreadable(why) => {
@@ -901,7 +911,8 @@ fn merge_some(
                 name_refused(refused, vec![(index, reason, mutation)], signers);
             }
             super::sealed_compaction::UnmergedReason::BehindUnsent { .. }
-            | super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
+            | super::sealed_compaction::UnmergedReason::MissingDependencies { .. }
+            | super::sealed_compaction::UnmergedReason::WaitsForAction { .. } => {
                 waiting.push((index, mutation));
             }
             super::sealed_compaction::UnmergedReason::Unreadable(why) => {

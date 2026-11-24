@@ -119,8 +119,8 @@ impl Peer {
 
 /// Process all pending outbound requests: translate each into a broadcast
 /// event to every other peer. Sender never receives its own broadcast.
-/// Document commands are wrapped in the same typed signed-envelope shape
-/// consumers receive from the production broker.
+/// Document commands arrive as the changes of the shared route's record, as
+/// consumers receive them from the device's store.
 /// - `Presence` → `RemotePresenceUpdate` (attributed to the sender's id,
 ///   so the receiving peer knows *who* the cursor/caret belongs to)
 /// - `Hello` is not fanned out
@@ -135,8 +135,10 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // No host authority here: dropping response ownership refuses the request.
             }
             CollabRequest::Document { mutation, .. } => {
-                let mutation = relay_mutation(mutation);
-                let event = document_event(&mutation);
+                let event = CollabEvent::Document {
+                    route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                    mutation,
+                };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::Presence { key, payload } => {
@@ -146,22 +148,6 @@ pub fn pump(relay: &mut MemoryRelay) {
                     payload,
                 };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
-            }
-            CollabRequest::SignedOperation { envelope } => {
-                // Mirror the production fan-out (collaboration.rs): the
-                // in-toolkit test broker routes verbatim (no role
-                // enforcement — that's the shell collab_broker's job).
-                let event = CollabEvent::Document {
-                    envelope,
-                    decrypted_payload: None,
-                };
-                broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
-            }
-            CollabRequest::FetchScrollback { artifact, .. } => {
-                respond_with_empty_scrollback(&mut inboxes, &from, artifact);
-            }
-            CollabRequest::RequestDocumentSnapshot => {
-                request_document_snapshot(&mut inboxes, &peer_ids, &from);
             }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 refuse_workspace_control(&mut inboxes, &from, session_id);
@@ -197,51 +183,6 @@ pub fn pump(relay: &mut MemoryRelay) {
         }
     }
     drop(inboxes);
-}
-
-fn relay_mutation(
-    mutation: tilo_ui::collaboration::DocumentMutation,
-) -> collab_types::DocumentMutation {
-    match mutation {
-        tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
-            collab_types::DocumentMutation::Incremental(data)
-        }
-        tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
-            collab_types::DocumentMutation::Snapshot(data)
-        }
-    }
-}
-
-fn respond_with_empty_scrollback(
-    inboxes: &mut PeerInboxes,
-    from: &str,
-    artifact: collab_types::ArtifactId,
-) {
-    // The test broker holds no op log — answer the requester
-    // with an empty, exhausted batch.
-    if let Some(inbox) = inboxes.get_mut(from) {
-        inbox.push_back(CollabEvent::ScrollbackBatch {
-            artifact,
-            ops: Vec::new(),
-            decrypted_payloads: Vec::new(),
-            oldest_seq: None,
-            exhausted: true,
-        });
-    }
-}
-
-fn request_document_snapshot(inboxes: &mut PeerInboxes, peer_ids: &[String], from: &str) {
-    // Production chooses the lowest broker peer id other than the
-    // requester. This route-agnostic harness has one shared test
-    // channel, so use the lexical peer id for the same one-holder
-    // invariant.
-    if let Some(id) = peer_ids.iter().filter(|id| id.as_str() != from).min()
-        && let Some(inbox) = inboxes.get_mut(id)
-    {
-        inbox.push_back(CollabEvent::DocumentSnapshotRequested {
-            route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
-        });
-    }
 }
 
 fn refuse_workspace_control(inboxes: &mut PeerInboxes, from: &str, session_id: u64) {
@@ -302,25 +243,32 @@ fn broadcast_to_others(
     }
 }
 
-fn document_event(mutation: &collab_types::DocumentMutation) -> CollabEvent {
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().expect("test document mutation encodes"),
-        collab_types::ArtifactId::new(),
-        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::AttestationId::new(),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::UNIX_EPOCH,
-        0,
-    );
-    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-    CollabEvent::Document {
-        envelope: Box::new(envelope),
-        decrypted_payload: None,
-    }
+pub fn document_mutation(event: &CollabEvent) -> Option<collab_types::DocumentMutation> {
+    event.document_mutation().cloned()
 }
 
-pub fn document_mutation(event: &CollabEvent) -> Option<collab_types::DocumentMutation> {
-    event.document_mutation()?.ok()
+/// A real change of a record that sets its `body` to `bytes`: what an app
+/// hands its record's store.
+pub fn change_carrying(bytes: Vec<u8>) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(
+        automerge::ROOT,
+        "body",
+        automerge::ScalarValue::Bytes(bytes),
+    )
+    .unwrap();
+    doc.commit();
+    doc.save_after(&[])
+}
+
+/// Each change `bytes` carries, as the store takes and hands them on.
+pub fn changes_of(bytes: &[u8]) -> Vec<Vec<u8>> {
+    collab_types::parse_changes(bytes)
+        .unwrap()
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
 }
 
 /// Build a minimal headless `App` paired with a `Peer` for integration tests.

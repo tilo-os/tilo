@@ -84,7 +84,6 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                 None,
                 CertifiedEndpointIdentity::new(
                     presentation(&env.route.cluster_id, &env.cert, &env.key),
-                    env.key.clone(),
                 ),
             )
             .unwrap();

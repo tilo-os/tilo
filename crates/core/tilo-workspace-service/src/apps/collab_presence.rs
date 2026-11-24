@@ -8,13 +8,6 @@ use collab_types::presence::PresenceKey;
 use collab_types::{PeerPresence, PeerPresencePayload};
 use collaboration::PresencePayload;
 
-pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPresence> {
-    Some(PeerPresence {
-        key: postcard::to_stdvec(key).ok()?,
-        payload: payload_to_peer(payload)?,
-    })
-}
-
 /// `payload` as the wire and peers carry it; `None` when a position does
 /// not fit it.
 pub fn payload_to_peer(payload: &PresencePayload) -> Option<PeerPresencePayload> {
@@ -174,7 +167,10 @@ mod tests {
                 PresencePayload::Composing { composing: false },
             ];
             for payload in variants {
-                let wire = to_peer(&key, &payload).expect("encode typed presence");
+                let wire = PeerPresence {
+                    key: postcard::to_stdvec(&key).expect("encode the presence key"),
+                    payload: payload_to_peer(&payload).expect("encode typed presence"),
+                };
                 let bytes = wire.to_bytes().expect("canonical peer bytes");
                 let decoded = PeerPresence::from_bytes(&bytes).expect("decode canonical peer bytes");
                 assert_eq!(from_peer(decoded), Some((key.clone(), payload)));

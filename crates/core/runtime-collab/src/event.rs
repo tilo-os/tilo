@@ -1,5 +1,5 @@
 //! The events an application's collaboration endpoint receives from the
-//! session: document changes, presence, actions, invocations and the
+//! session: record changes, presence, actions, invocations and the
 //! session-local control the broker routes to one connection.
 //!
 //! The vocabulary is shared by the toolkit's endpoint and by the session's
@@ -12,7 +12,6 @@
 
 use crate::route::{KeyAccessState, RouteSpec};
 use collab_types::DocumentMutation;
-use collab_types::SignedOp;
 use collab_types::presence::{Member, PresenceKey, PresencePayload};
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
@@ -84,11 +83,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     FollowChanged {
         peer_id: Option<tilo_actions::MemberId>,
     },
-    /// The broker selected this connection as the sole snapshot responder for
-    /// a late joiner on the same document route.
-    DocumentSnapshotRequested {
-        route: RouteSpec,
-    },
     /// The shell asked this instance for a step of moving its window to
     /// another workspace. Session-local control; never from a peer.
     Handoff {
@@ -106,51 +100,18 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     },
     /// What this endpoint can do with one route's end-to-end encrypted
     /// content changed: it was admitted, is waiting for access (a new device
-    /// before its welcome arrives), was removed, or cannot join. While a
-    /// route is not open the SDK holds edits and incoming ciphertext on the
-    /// device instead of dropping them; apps show the state.
+    /// before its welcome arrives), was removed, or cannot join: what the
+    /// content it stores is sealed under. Apps show the state.
     KeyAccess {
         route: RouteSpec,
         state: KeyAccessState,
     },
-    /// A validated signed document envelope from another peer. For cleartext
-    /// routes the mutation kind is inside the outer signed payload. For an
-    /// MLS route, `envelope.payload` remains the original signed ciphertext
-    /// and `decrypted_payload` holds endpoint-only plaintext after the inner
-    /// MLS authentication succeeds. A mutation too large for one frame
-    /// arrives as several signed segments; the SDK delivers it once, after
-    /// every segment arrived and the reassembled bytes matched their signed
-    /// digest, with `envelope` set to the final segment.
+    /// Changes of the record on `route` this endpoint lacked, which the device's store sent it
+    /// (the store command `RecordChanges`): what the endpoint merges into its own copy of the
+    /// record.
     Document {
-        envelope: Box<SignedOp>,
-        /// Endpoint-verified typed mutation bytes when they differ from
-        /// `envelope.payload`: MLS plaintext, or a mutation reassembled from
-        /// segments. `None` for single-frame cleartext envelopes (read
-        /// directly from `envelope.payload`) and for broker events, which
-        /// never possess MLS keys.
-        decrypted_payload: Option<Vec<u8>>,
-    },
-    /// Response to a the toolkit's `CollabRequest::FetchScrollback`: a page of
-    /// previously-validated ops plus `exhausted`.
-    ///
-    /// Targeted send — unlike every other event here, the broker writes
-    /// this only to the connection that issued the matching request.
-    ScrollbackBatch {
-        /// Echoes `FetchScrollback::artifact` so multiple in-flight
-        /// fetches route to the right history view.
-        artifact: collab_types::ArtifactId,
-        /// Ascending seq order. Empty when the broker has no matching
-        /// range (typically evicted by compaction).
-        ops: Vec<Box<SignedOp>>,
-        /// Endpoint-decrypted payload parallel to `ops`. Brokers leave this
-        /// empty because they have no MLS keys; SDK endpoints populate one
-        /// slot per op and drop undecryptable encrypted entries.
-        decrypted_payloads: Vec<Option<Vec<u8>>>,
-        /// Oldest `seq` the host returned, before the endpoint dropped ops
-        /// it could not use yet (an incomplete segment), so paging resumes
-        /// below it rather than re-fetching or stopping early.
-        oldest_seq: Option<u64>,
-        exhausted: bool,
+        route: RouteSpec,
+        mutation: DocumentMutation,
     },
     /// One capability-checked invocation addressed to this application
     /// connection by the session action broker.
@@ -276,21 +237,12 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
 }
 
 impl<C: EndpointOwnership> CollabEvent<C> {
-    /// Decode the typed payload of a validated document event. Returns `None`
-    /// for presence, context, action, and scrollback events.
-    pub fn document_mutation(
-        &self,
-    ) -> Option<Result<DocumentMutation, collab_types::DocumentMutationError>> {
-        let Self::Document {
-            envelope,
-            decrypted_payload,
-            ..
-        } = self
-        else {
-            return None;
-        };
-        Some(DocumentMutation::decode(
-            decrypted_payload.as_deref().unwrap_or(&envelope.payload),
-        ))
+    /// The changes a document event carries; `None` for every other event.
+    #[must_use]
+    pub const fn document_mutation(&self) -> Option<&DocumentMutation> {
+        match self {
+            Self::Document { mutation, .. } => Some(mutation),
+            _ => None,
+        }
     }
 }
