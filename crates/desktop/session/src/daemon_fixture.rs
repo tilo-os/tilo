@@ -24,7 +24,10 @@ use tilo_workspace_service::apps::shell::{
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::fixtures::{TestHost, governor, test_host};
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
+    test_host_holding,
+};
 
 use crate::layout::Layouts;
 use crate::workspace_view::WorkspaceView;
@@ -76,14 +79,75 @@ impl TestDaemon {
     /// open the session's link to it. The daemon carries out the shell's window steps on the
     /// apps it admits, as a device's daemon does.
     pub(crate) fn launching(launcher: Option<Arc<dyn LauncherServices>>) -> Self {
+        Self::start_as(governor(), None, launcher)
+    }
+
+    /// The person's two devices, each with its daemon: the first founds `workspace` as `name`
+    /// and holds it, and the second, a further device of the same person, joined it from the
+    /// first, so the two daemons carry each other's writes to it. Both hold the workspace's keys.
+    pub(crate) fn two_devices(workspace: WorkspaceId, name: &str) -> (Self, Self) {
+        let keys = Arc::new(TestGroupKeys::default());
+        let first = Self::start_as(governor(), Some(Arc::clone(&keys)), None);
+        first.found(workspace, name);
+        let person = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let second = Self::start_as(
+            device_cert(
+                &person,
+                "laptop",
+                tilo_user_identity::DeviceCapabilities::member(),
+            ),
+            Some(keys),
+            None,
+        );
+        let id = workspace.to_string();
+        let (host, cert) = (first.workspaces().clone(), first.cert.clone());
+        let recipient = second.cert.user_public_key;
+        let issued = tilo_rt::app()
+            .block_on(async move {
+                host.pre_admit(
+                    &cert,
+                    tilo_workspace_service::workspaces::PreAdmitRequest {
+                        request_id: [0x5a; 32],
+                        grant: signed_pre_admission(&id, &[0x5a; 8]),
+                        recipient_user_public_key: Some(recipient),
+                        inviter_name: None,
+                    },
+                )
+                .await
+            })
+            .expect("the runtime runs")
+            .expect("the first device invites its person's second");
+        let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
+        let joining = second.workspaces().clone();
+        tilo_rt::app()
+            .block_on(async move { joining.join_member(&invitation).await })
+            .expect("the runtime runs")
+            .expect("the second device joins the workspace from the first");
+        second.read_standing(workspace);
+        (first, second)
+    }
+
+    /// Start the daemon of the device `(key, cert)`, holding the group keys `keys` when the
+    /// test's devices share them, and admitting an app's connection as the launch `launcher`
+    /// recorded, and open the session's link to it.
+    fn start_as(
+        (key, cert): (ed25519_dalek::SigningKey, DeviceCert),
+        keys: Option<Arc<TestGroupKeys>>,
+        launcher: Option<Arc<dyn LauncherServices>>,
+    ) -> Self {
         let runtime = tilo_rt::app();
         let dir = tempfile::tempdir().expect("a state directory");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
             .expect("the daemon's directory is its own");
         let socket = dir.path().join("collab.sock");
-        let (key, cert) = governor();
+        let state = dir.path().join("host");
         let host = runtime
-            .block_on(test_host(&dir.path().join("host"), &key, &cert))
+            .block_on(async {
+                match keys {
+                    Some(keys) => test_host_holding(&state, &key, &cert, keys).await,
+                    None => test_host(&state, &key, &cert).await,
+                }
+            })
             .expect("the runtime runs");
         let workspaces = host.workspaces().clone();
         // The daemon's service acts as its device, as a device's daemon does: the record commands
@@ -249,16 +313,24 @@ impl TestDaemon {
     pub(crate) fn found(&self, workspace: WorkspaceId, name: &str) {
         let id = workspace.to_string();
         let workspaces = self.host.workspaces().clone();
-        let (_, peer) = tilo_rt::app()
+        tilo_rt::app()
             .block_on(async move {
                 workspaces
                     .create_workspace(name, Some(&id))
                     .await
                     .expect("the workspace is founded");
-                workspaces.governed_copy(workspace).await
             })
+            .expect("the runtime runs");
+        self.read_standing(workspace);
+    }
+
+    /// Have the session's view read how `workspace` stands here, as the daemon publishes it.
+    pub(crate) fn read_standing(&self, workspace: WorkspaceId) {
+        let workspaces = self.host.workspaces().clone();
+        let (_, peer) = tilo_rt::app()
+            .block_on(async move { workspaces.governed_copy(workspace).await })
             .expect("the runtime runs")
-            .expect("the daemon holds the workspace it founded");
+            .expect("the daemon holds the workspace");
         let reader = tilo_workspace_service::workspaces::standing::Reader {
             person: self.cert.user_public_key,
             device: self.cert.device_public_key,
@@ -288,6 +360,11 @@ impl TestDaemon {
     /// The workspaces the daemon holds, as its own roles reach them.
     pub(crate) fn workspaces(&self) -> &Workspaces {
         self.host.workspaces()
+    }
+
+    /// The device's key, which the daemon signs its writes with.
+    pub(crate) fn key(&self) -> ed25519_dalek::SigningKey {
+        self.key.clone()
     }
 
     /// The device's certificate: whose key the daemon signs its writes with.

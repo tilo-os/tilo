@@ -6,37 +6,20 @@
 use std::path::Path;
 
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::DeviceCert;
 
 use super::*;
 use crate::daemon_fixture::TestDaemon;
 
-/// The person both devices are certified by.
-const PERSON: [u8; 32] = [0x41; 32];
-
-/// A device of the person's, kept under `root` as a computer keeps its own: the key a session
-/// started there signs with and the certificate the person's root gave it.
-fn provisioned(root: &Path, device: &SigningKey, label: &str) -> DeviceCert {
+/// The device `daemon` serves, kept under `root` as a computer keeps its own: the key a session
+/// started there signs with and the certificate its person's root gave it.
+fn provisioned(root: &Path, daemon: &TestDaemon) {
     let paths = tilo_device_identity::IdentityPaths::under(root);
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("the device's key directory");
-    tilo_device_identity::persist::write_device_key(&paths.device_privkey, device)
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &daemon.key())
         .expect("the device's key");
-    let person = SigningKey::from_bytes(&PERSON);
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &daemon.certificate())
         .expect("the device's certificate");
-    cert
 }
 
 /// The session of the device whose key is `key`, keeping its shell under `state` and its
@@ -129,33 +112,84 @@ fn on_shell(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
     })
 }
 
-/// A person's device shares a window with the workspace, naming only its tab, as the window's
-/// menu and the shell's actions do. The share is in the workspace's governance the device's daemon
-/// holds, not only on the session's shell, so it leaves for the workspace's other devices with
-/// what the daemon writes there; the shell reads it back from that governance.
+/// `tree` listing the window `tab` of another device in the workspace `workspace`, as the
+/// workspace's shared shell lists a window another device opened, which this one opens its own
+/// view of, before anything of it is shared.
+fn listing(mut tree: Layout, workspace: WorkspaceId, tab: u64) -> Layout {
+    if !tree.workspaces.iter().any(|held| held.id() == workspace) {
+        tree.workspaces.push(Workspace::new(workspace, "Shell"));
+    }
+    let held = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| held.id() == workspace)
+        .expect("the workspace is on the shell");
+    let mut strip = Strip::new(StripId::from(tab.wrapping_add(2)), "Shared");
+    strip.window_groups.push(WindowGroup {
+        id: GroupId::from(tab.wrapping_add(1)),
+        tabs: vec![Tab {
+            id: TabId::from(tab),
+            title: "Notes".to_owned(),
+            tile: TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }],
+        active_tab: TabId::from(tab),
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    held.strips.push(strip);
+    tree.active = held.id();
+    tree
+}
+
+/// A person's second device shares a window with the workspace their first device founded,
+/// naming only its tab, as the window's menu and the shell's actions do. The share is in the
+/// workspace's governance the second device's daemon holds, not only on its shell; it leaves for
+/// the first device with what that daemon writes there; and the first device's shell then names
+/// the share and asks the second device for the window, in a tab of its own beside the one that
+/// stood for it — with nobody naming the window there.
 #[test]
-fn a_window_a_device_shares_is_in_the_member_list_its_daemon_holds() {
+fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_member_list() {
     tilo_window_share::flatpak_share::read_encoders();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let key = SigningKey::from_bytes(&[0x43; 32]);
-    let root = tempfile::tempdir().expect("the device's identity");
-    let device = provisioned(root.path(), &key, "Desktop branch 4c1f");
-    let state = tempfile::tempdir().expect("the device's state");
-    env.set("TILO_IDENTITY_ROOT", root.path());
-
-    let daemon = TestDaemon::start();
     let workspace_id = WorkspaceId::new();
-    daemon.found(workspace_id, "Shell");
-    let mut sharer = session_of(&key, "Desktop branch 4c1f", state.path(), &daemon);
+    let (first, second) = TestDaemon::two_devices(workspace_id, "Shell");
+    let (first_root, second_root) = (
+        tempfile::tempdir().expect("the first device's identity"),
+        tempfile::tempdir().expect("the second device's identity"),
+    );
+    provisioned(first_root.path(), &first);
+    provisioned(second_root.path(), &second);
+    let (first_state, second_state) = (
+        tempfile::tempdir().expect("the first device's state"),
+        tempfile::tempdir().expect("the second device's state"),
+    );
     let mut shell = Workspace::new(workspace_id, "Shell");
     shell
         .policy
-        .set_owner(hex::encode(daemon.certificate().user_public_key));
-    sharer.session.handle().replace_tree(Layout {
+        .set_owner(hex::encode(first.certificate().user_public_key));
+    let tree = Layout {
         active: workspace_id,
         workspaces: vec![shell],
         ..Layout::default()
-    });
+    };
+
+    // The second device maps the window it will share.
+    env.set("TILO_IDENTITY_ROOT", second_root.path());
+    let mut sharer = session_of(
+        &second.key(),
+        "Desktop branch 4c1f",
+        second_state.path(),
+        &second,
+    );
+    sharer.session.handle().replace_tree(tree.clone());
     for _ in 0..4 {
         sharer
             .session
@@ -166,10 +200,36 @@ fn a_window_a_device_shares_is_in_the_member_list_its_daemon_holds() {
     let tab = tab_of(&sharer.session, APP);
     assert_eq!(
         tilo_desktop_model::peer_salt_of(tab),
-        tilo_desktop_model::ids::device_salt_of_key(&device.device_public_key),
-        "the window is the device's own"
+        tilo_desktop_model::ids::device_salt_of_key(&second.certificate().device_public_key),
+        "the window is the second device's own"
     );
     let share = window_share_id(tab);
+
+    // The first device's own session, on the shell that lists the window as open on another
+    // device, before anything of the share reached it.
+    env.set("TILO_IDENTITY_ROOT", first_root.path());
+    let mut viewer = session_of(&first.key(), "Desktop", first_state.path(), &first);
+    viewer
+        .session
+        .handle()
+        .replace_tree(listing(tree, workspace_id, tab));
+    for _ in 0..8 {
+        viewer
+            .session
+            .step(Duration::from_millis(2))
+            .expect("a frame");
+    }
+    assert_eq!(
+        governed(&first, workspace_id, &share),
+        0,
+        "the first device knows nothing of the share before it is made"
+    );
+    assert!(
+        hosted(&viewer.session, tab).is_none(),
+        "and lists the window as one it opens its own view of"
+    );
+
+    // The second device's person shares the window it maps.
     sharer
         .session
         .invoke(
@@ -187,20 +247,74 @@ fn a_window_a_device_shares_is_in_the_member_list_its_daemon_holds() {
         &mut window,
         "the share lands in the workspace's governance and on the sharer's shell",
         |sharer| {
-            governed(&daemon, workspace_id, &share) == 1
+            governed(&second, workspace_id, &share) == 1
                 && on_shell(&sharer.session, workspace_id, &share) == 1
         },
     );
     assert_eq!(
-        governed(&daemon, workspace_id, &share),
+        governed(&second, workspace_id, &share),
         1,
-        "the share is in the workspace's governance the daemon holds, one grant to the viewers \
-         that reaches every role above them: a share only its own shell names reaches no other \
-         device"
+        "the share is in the workspace's governance the second device's daemon holds, one grant \
+         to the viewers that reaches every role above them: a share only its own shell names \
+         reaches no other device"
     );
     assert_eq!(
         on_shell(&sharer.session, workspace_id, &share),
         1,
-        "and the session's shell reads it from there"
+        "and its own shell reads it from there"
     );
+
+    // The share is the workspace's, so nobody asks for it on the first device: its daemon admits
+    // what the second device's daemon wrote, its shell names the share, and it asks the device
+    // the governance says hosts the window for it.
+    alone(
+        &mut viewer,
+        &mut None,
+        "the first device's daemon holds the share and its shell names it",
+        |viewer| {
+            governed(&first, workspace_id, &share) == 1
+                && on_shell(&viewer.session, workspace_id, &share) == 1
+        },
+    );
+    let host = hex::encode(second.certificate().device_public_key);
+    let named = tab.to_string();
+    let asked = |viewer: &Member| {
+        rows(&shares(&viewer.session), "watching")
+            .iter()
+            .any(|watched| watched["tab"] == named.as_str() && watched["host"] == host.as_str())
+    };
+    alone(
+        &mut viewer,
+        &mut None,
+        "the first device asks the second for the window it shares",
+        asked,
+    );
+    // The tab that listed the window is this session's own view of it and stays as it is. The
+    // window the second device shares stands beside it, in a tab of its own that names the device
+    // it runs on.
+    let stands = viewer.session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(Workspace::tabs)
+            .filter(|shown| shown.id == tab)
+            .count()
+    });
+    assert_eq!(stands, 1, "one tab stands under the window's own id");
+    assert!(
+        hosted(&viewer.session, tab).is_none(),
+        "and it is still this shell's own view of the window"
+    );
+    let place: u64 = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"] == named.as_str())
+        .and_then(|watched| watched["shown_in"].as_str())
+        .and_then(|place| place.parse().ok())
+        .expect("the tab the shared window is pictured in");
+    assert_ne!(place, tab, "the shared window stands in a tab of its own");
+    assert_eq!(
+        hosted(&viewer.session, place).as_deref(),
+        Some(host.as_str()),
+        "which shows it as the window running on the second device"
+    );
+    drop(window);
 }
