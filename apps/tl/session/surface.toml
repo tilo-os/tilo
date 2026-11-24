@@ -210,6 +210,24 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "move-to-new-strip"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "delete-strip"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "strip"
+required = true
+type = "text"
+
+[[resources.verbs]]
 id = "move-strip"
 kind = "outside"
 
