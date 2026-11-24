@@ -118,6 +118,7 @@ fn a_find_is_narrowed_by_what_its_query_says() {
             place: None,
             after: Some(1_794_268_800),
             before: Some(1_794_873_600),
+            ..Within::default()
         };
         assert_eq!(
             narrowing.asked.lock().unwrap().as_slice(),
