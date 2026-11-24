@@ -571,6 +571,7 @@ impl Device {
                 wait_ms: after.as_ref().map(|_| PERSON_LIST_WAIT_MS),
                 document: true,
                 listing: false,
+                decide: false,
                 after: after.clone(),
             };
             let answered = actions

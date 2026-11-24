@@ -63,26 +63,10 @@ impl AppConnection {
                 let access = attested_route_access(&app.app_id, &route, own_workspace)
                     .map_err(BrokerError::failed)?;
                 if access == RouteAccess::ReadOnly {
-                    let caller = verified_identity.certified_caller(&route.cluster_id, false);
-                    let address = tilo_actions::remote::ResourceAddress {
-                        workspace: route.cluster_id.clone(),
-                        app: route.app_id.clone(),
-                        record: route.document_id.clone(),
-                    };
-                    let reads = state.records();
-                    let may = tokio::task::spawn_blocking(move || {
-                        reads.is_some_and(|reads| {
-                            tilo_actions::remote::ResourceReads::may_read(
-                                &*reads, &caller, &address,
-                            )
-                        })
-                    });
-                    if !may.await.unwrap_or(false) {
-                        return Err(BrokerError::failed(format!(
-                            "the person may not read the record of {} that {} reads",
-                            route.app_id, app.app_id
-                        )));
-                    }
+                    state
+                        .person_reads_joined(&verified_identity, &app.app_id, &route)
+                        .await
+                        .map_err(BrokerError::failed)?;
                 }
                 access
             }

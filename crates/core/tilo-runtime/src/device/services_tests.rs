@@ -1011,6 +1011,7 @@ fn resource_read(
         wait_ms: None,
         document: true,
         listing: false,
+        decide: false,
     }
 }
 

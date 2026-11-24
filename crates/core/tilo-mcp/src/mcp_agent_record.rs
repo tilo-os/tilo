@@ -34,6 +34,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             wait_ms: None,
             document: false,
             listing: true,
+            decide: false,
         };
         let listing = answered(reads, &caller, read)
             .await
@@ -100,6 +101,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             after,
             document: false,
             listing: false,
+            decide: false,
         };
         let mut answer = answered(reads, &caller, read)
             .await

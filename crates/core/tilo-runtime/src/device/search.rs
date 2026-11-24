@@ -86,13 +86,17 @@ impl DeviceSearch {
         let _ = self.search.set(Arc::new(IndexSearch::new(
             Arc::clone(&self.index),
             Arc::new(move |caller, key| {
-                reads.may_read(
-                    caller,
-                    &ResourceAddress {
-                        workspace: key.workspace.clone(),
-                        app: key.app.clone(),
-                        record: key.record.clone(),
-                    },
+                let address = ResourceAddress {
+                    workspace: key.workspace.clone(),
+                    app: key.app.clone(),
+                    record: key.record.clone(),
+                };
+                // The device's reader decides as it is asked; a hit it would ask about is left out.
+                matches!(
+                    reads
+                        .may_read(caller, &address)
+                        .wait_timeout(std::time::Duration::MAX),
+                    Ok(Some(Ok(())))
                 )
             }),
         )));

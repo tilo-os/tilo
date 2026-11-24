@@ -86,6 +86,7 @@ fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> Resou
         after,
         document: true,
         listing: false,
+        decide: false,
     }
 }
 
@@ -428,6 +429,7 @@ fn reading_of(workspace: &str, app: &str, after: Option<String>) -> ResourceRead
         after,
         document: false,
         listing: false,
+        decide: false,
     }
 }
 

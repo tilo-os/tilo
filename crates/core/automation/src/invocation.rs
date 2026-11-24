@@ -1863,6 +1863,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             wait_ms: None,
             document: false,
             listing: false,
+            decide: false,
         };
         answered(reads, &self.caller, read)
             .await

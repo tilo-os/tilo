@@ -256,10 +256,11 @@ impl RecordReads {
             return Ok(());
         }
         let node = collab_types::document_node(&address.workspace, &address.app, &address.record);
-        if actor.answer_in(&policy, &node, ActionKind::Read, seconds) == Answer::Allow {
-            Ok(())
-        } else {
-            Err(refused())
+        match actor.answer_in(&policy, &node, ActionKind::Read, seconds) {
+            Answer::Allow => Ok(()),
+            // The person is asked once, where the read is asked for; a read is never let by.
+            Answer::Ask => Err(ActionCallError::confirmation_required()),
+            Answer::Deny => Err(refused()),
         }
     }
 
@@ -472,12 +473,20 @@ impl Workspaces {
 
 impl ResourceReads for RecordReads {
     /// A record of a workspace this device holds, decided as its read is; any other is not read.
-    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> bool {
-        self.workspaces
+    fn may_read(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        let state = self
+            .workspaces
             .as_ref()
             .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| Self::held(&workspaces, &address.workspace))
-            .is_some_and(|state| self.decides(&state, caller, address).is_ok())
+            .and_then(|workspaces| Self::held(&workspaces, &address.workspace));
+        tilo_actions::remote::Pending::ready(match state {
+            Some(state) => self.decides(&state, caller, address),
+            None => Err(refused()),
+        })
     }
 
     fn read(

@@ -252,6 +252,7 @@ fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest {
         wait_ms: None,
         document: true,
         listing: false,
+        decide: false,
     }
 }
 

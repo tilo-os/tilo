@@ -1,6 +1,8 @@
 //! What the attested launch of an app may do on a route it joins: its own
 //! route, or another app's read-only as its surface declares.
-use super::{CrdtRoute, person_document_join};
+use super::{AdmittedJoinIdentity, AppBrokerState, CrdtRoute, person_document_join};
+use crate::apps::app_actions::{AppActionAnswer, AppActionConsentRequest};
+use tilo_actions::remote::{ActionCallError, ResourceAddress};
 
 /// What the attested launch of an app may do on a route it joins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +46,94 @@ pub(super) fn attested_route_access(
         ));
     }
     Ok(RouteAccess::ReadOnly)
+}
+
+impl AppBrokerState {
+    /// Whether the person `identity` certifies may read `route`'s record, which `app` joins to
+    /// read: as the device's one reader decides, and where it would ask, once the person allows it.
+    pub(super) async fn person_reads_joined(
+        &self,
+        identity: &AdmittedJoinIdentity,
+        app: &str,
+        route: &CrdtRoute,
+    ) -> Result<(), String> {
+        let refused = || {
+            format!(
+                "the person may not read the record of {} that {app} reads",
+                route.app_id
+            )
+        };
+        let reads = self.records().ok_or_else(refused)?;
+        let caller = identity.certified_caller(&route.cluster_id, false);
+        let address = ResourceAddress {
+            workspace: route.cluster_id.clone(),
+            app: route.app_id.clone(),
+            record: route.document_id.clone(),
+        };
+        // The device's reader may block to decide, never on the broker's own thread.
+        let decided = tokio::task::spawn_blocking(move || reads.may_read(&caller, &address))
+            .await
+            .map_err(|_| refused())?
+            .await;
+        match decided {
+            Some(Ok(())) => Ok(()),
+            Some(Err(ActionCallError::ConfirmationRequired(_))) => {
+                if self.person_allows_read(identity, app, route).await {
+                    Ok(())
+                } else {
+                    Err(refused())
+                }
+            }
+            _ => Err(refused()),
+        }
+    }
+
+    /// The person asked once whether `app` may read `route`'s record, on the sheet every other
+    /// question of theirs is put on: `true` when they allow it.
+    async fn person_allows_read(
+        &self,
+        identity: &AdmittedJoinIdentity,
+        app: &str,
+        route: &CrdtRoute,
+    ) -> bool {
+        let Some(prompter) = self
+            .app_action_consent
+            .read()
+            .ok()
+            .and_then(|prompter| prompter.clone())
+        else {
+            return false;
+        };
+        let Some(answer) = prompter.ask(AppActionConsentRequest {
+            handle: format!(
+                "read:{}/{}/{}",
+                route.cluster_id, route.app_id, route.document_id
+            ),
+            workspace: route.cluster_id.clone(),
+            person: identity.actor_key.clone(),
+            app_id: app.to_owned(),
+            agent_session: None,
+            target_app: route.app_id.clone(),
+            resource_label: route.document_id.clone(),
+            action_label: String::new(),
+            kind: tilo_action_policy::ActionKind::Read,
+            risk: tilo_actions::RiskLevel::None,
+            confirming: true,
+            moderation: None,
+            scope: None,
+            draft: None,
+            ask: None,
+        }) else {
+            return false;
+        };
+        matches!(
+            answer.await,
+            Ok(AppActionAnswer {
+                lifetime: Some(_),
+                ..
+            })
+        )
+    }
 }
 
 #[cfg(test)]

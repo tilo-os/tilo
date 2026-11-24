@@ -486,15 +486,20 @@ impl JoinedChannel {
                     return Err("committed read launcher ownership ended".into());
                 }
                 // Another app's record is read as the device's one reader lets
-                // the person read it, as the join decided, and again at every read.
+                // the person read it, as the join decided, and again at every read:
+                // one it would ask about, the person allowed when it was joined.
                 let address = tilo_actions::remote::ResourceAddress {
                     workspace: checked_route.cluster_id.clone(),
                     app: checked_route.app_id.clone(),
                     record: checked_route.document_id.clone(),
                 };
                 let reads = |reads: Arc<dyn tilo_actions::remote::ResourceReads>| {
+                    use tilo_actions::remote::ActionCallError::ConfirmationRequired;
                     let caller = admitted.certified_caller(&address.workspace, false);
-                    reads.may_read(&caller, &address)
+                    let decided = reads
+                        .may_read(&caller, &address)
+                        .wait_timeout(Duration::MAX);
+                    matches!(decided, Ok(Some(Ok(()) | Err(ConfirmationRequired(_)))))
                 };
                 if read_only && !state.records().is_some_and(reads) {
                     return Err("committed read of another app's record ended".into());

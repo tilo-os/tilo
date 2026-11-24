@@ -66,6 +66,9 @@ impl ResourceCopy {
     }
 }
 
+/// Whether a caller may read a record: allowed, or why not ([`ResourceReads::may_read`]).
+pub type Decided = Result<(), ActionCallError>;
+
 /// A provider's API for reading records outside their app.
 pub trait ResourceReads: Send + Sync {
     /// The record `address`, in the workspace it names, as `caller` may read it now: decided at
@@ -93,8 +96,9 @@ pub trait ResourceReads: Send + Sync {
 
     /// Whether `caller` may read `address` now, decided as [`Self::read`] is, without the copy:
     /// what a reader that keeps the record another way (an app's live route to it) asks first.
-    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> bool {
-        self.read(caller, address).is_ok()
+    /// [`ActionCallError::ConfirmationRequired`] where the person is to be asked first.
+    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> super::Pending<Decided> {
+        super::Pending::ready(self.read(caller, address).map(|_| ()))
     }
 
     /// Answer a read of one of this provider's records, asked as `correlation` over the API
@@ -433,6 +437,26 @@ fn serve_readings(
 ) -> super::Pending<Result<String, ActionCallError>> {
     let (answer, answered) = super::pending();
     let caller = caller.clone();
+    if read.decide {
+        let address = ResourceAddress {
+            workspace: read.workspace,
+            app: read.app,
+            record: read.record,
+        };
+        // A reader may block to decide; without a thread the caller hears the read dropped.
+        let _ = std::thread::Builder::new()
+            .name("resource-decision".into())
+            .spawn(move || {
+                reads.may_read(&caller, &address).then(move |decided| {
+                    answer.complete(
+                        decided
+                            .unwrap_or(Err(ActionCallError::Unanswered))
+                            .map(|()| "null".to_owned()),
+                    );
+                });
+            });
+        return answered;
+    }
     if read.listing {
         // Without a thread the completer goes with the closure: the caller hears the read dropped.
         let _ = std::thread::Builder::new()

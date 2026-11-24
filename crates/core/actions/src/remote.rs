@@ -139,9 +139,10 @@ pub use line::{LineClient, LinePut, serve_lines};
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
-    HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
-    ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
-    ResourceReads, ResourceWake, answer_read, answered, read_resources, readings_of,
+    Decided, HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
+    RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges,
+    ResourceCopy, ResourceReadings, ResourceReads, ResourceWake, answer_read, answered,
+    read_resources, readings_of,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]
@@ -1848,6 +1849,10 @@ pub struct ResourceReadRequest {
     /// app's where `app` is empty ([`ResourceReads::list`]). `record` is not read then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub listing: bool,
+    /// Answer only whether the caller may read `record` now, decided as its read is, without the
+    /// copy ([`ResourceReads::may_read`]): what a reader that keeps the record another way asks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decide: bool,
 }
 
 impl RemoteActionMessage {

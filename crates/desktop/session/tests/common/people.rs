@@ -1976,6 +1976,7 @@ impl Device {
                 wait_ms,
                 document: false,
                 listing: false,
+                decide: false,
             },
         });
         let RemoteActionMessage::ResourceReading { result, .. } = answer else {
