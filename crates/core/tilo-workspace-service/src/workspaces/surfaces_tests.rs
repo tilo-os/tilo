@@ -22,7 +22,9 @@ use neighbour_wire::NeighbourMsg;
 use tilo_user_identity::DeviceCapabilities;
 
 use super::Workspaces;
-use super::fixtures::{admit_view_reader, device_cert, governor_with, test_host};
+use super::fixtures::{
+    TestGroupKeys, admit_view_reader, device_cert, governor_with, test_host_holding,
+};
 
 const APP: &str = "so.tilo.test.older-version";
 const KIND: &str = "so.tilo.test.older-version.article";
@@ -172,9 +174,25 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
         move |app| (app == APP).then_some(earlier),
     );
     let (key, cert) = governor_with(DeviceCapabilities::member());
-    let server = test_host(dir.path(), &key, &cert).await;
+    // The device's channel keys are its own and stay with it across a restart, as a device
+    // keeps them: the update reads the records' channel with them.
+    let keys = Arc::new(TestGroupKeys::default());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    assert!(
+        workspaces
+            .own_route_keys(&route, true)
+            .await
+            .unwrap()
+            .is_some(),
+        "the workspace's channel keys are here"
+    );
     let (member_key, member) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "the earlier build's page",
@@ -209,7 +227,7 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
         "this build names a surface of its own for the app"
     );
     crate::surfaces::decide_receipt(&store);
-    let server = test_host(dir.path(), &key, &cert).await;
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
     let workspaces = server.workspaces().clone();
     let listed = articles(&workspaces, &workspace).await;
     assert_eq!(
