@@ -1920,17 +1920,24 @@ tilo_test_env::scenario! {
 
     phase a_view_makes_the_block_a_page_was_made_from_a_link_to_it;
     {
+        use crate::slash_menu::SlashHostCommand;
         use ui::component::Link;
-        // A view made a page from a block's words and asks the editor to link that block to it:
-        // the words stay where the person wrote them, and read as the page from now on.
+        use ui::synthetic_input::named_key;
+        // A person chooses `/page` in a block, the view makes the page, and the editor writes the
+        // block the words stood in as the link to it: the words stay where they were, and read
+        // as the page from then on.
         let mut editor = BlockEditor::new();
+        editor.set_slash_commands(true, &[SlashHostCommand::Page]);
         editor.set_blocks(vec![Block::paragraph("Trip ideas")]);
-        let block = editor.blocks()[0].id.clone();
+        editor.focus_block(0, CursorPlacement::End);
+        type_keys(&mut editor, " /sub");
+        dispatch(&mut editor, &named_key(NamedKey::Enter));
+        assert!(editor.take_slash_request().is_some(), "the host is asked");
         let page = Link {
             reference: "tilo://tilo/notes#tl:so.tilo.notes:monday".to_owned(),
             title: "Trip ideas".to_owned(),
         };
-        assert!(editor.link_asked(Some(format!("{block}:1")), Some(page.clone())));
+        assert!(editor.link_asked(Some("1".to_owned()), Some(page.clone())));
         assert_eq!(
             editor.blocks()[0].text(),
             "Trip ideas",
@@ -1945,7 +1952,7 @@ tilo_test_env::scenario! {
             "the block reads as the page it became"
         );
         assert!(
-            !editor.link_asked(Some(format!("{block}:1")), Some(page)),
+            !editor.link_asked(Some("1".to_owned()), Some(page)),
             "each ask is answered once"
         );
     }

@@ -1668,10 +1668,10 @@ template view note_page(
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
-    // The block a `/page` was chosen in, and how many notes stood under this one before the
-    // press: the note the block became is the one that comes at that place among them, and the
-    // editor writes the block as a link to it. The ask count tells one page from the next.
-    state page_block: Text = ""
+    // How many notes stood under this one before a `/page` was chosen, and how many pages this
+    // open note has made: the note the press made is the one that comes at that place among
+    // them, and the editor writes the block it reported as the link to it. The ask count tells
+    // one page from the next.
     state page_place: Int = 0
     state page_ask: Int = 0
     // The page's blocks are groups of their own, a group gutter apart: the head, the body, what
@@ -1716,7 +1716,7 @@ template view note_page(
             reveal: reveal,
             slash: ["image", "page"],
             insert: if n.chosen == "" { .none } else { .some("{n.chosen}:{n.chosen_count}") },
-            link: if page_block == "" { .none } else { .some("{page_block}:{page_ask}") },
+            link: if page_ask == 0 { .none } else { .some("{page_ask}") },
             link_to: nb.notes.filter(x -> x.parent == n).at(page_place),
         ) {
             on links_open(open): set(linking, open)
@@ -1729,11 +1729,12 @@ template view note_page(
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
             // A page made from a block is titled with its words, as the words stand: what a
-            // person wrote in the block names the page it became. The block is the one the
-            // words stood in, and the page is the note the press made under this one.
-            on slash_page(parts): set(page_block, parts.at(0) ?? "").then(
-                set(page_place, nb.notes.count(x -> x.parent == n)),
-            ).then(set(page_ask, page_ask + 1)).then(new_child(n, parts.at(1) ?? ""))
+            // person wrote in the block names the page it became. The editor wrote down the
+            // block the words stood in, and the note the press made is the next one under this
+            // one; the ask makes that block the link to it.
+            on slash_page(words): set(page_place, nb.notes.count(x -> x.parent == n)).then(
+                set(page_ask, page_ask + 1),
+            ).then(new_child(n, words))
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)

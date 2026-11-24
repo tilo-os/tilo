@@ -805,6 +805,9 @@ pub struct BlockEditor {
     /// The block a view last asked to make a link to the record it made from it (`link`), as it
     /// asked: the ask it answers again only when it changes.
     link_ask: Option<String>,
+    /// The block the slash menu's last page was chosen in: the block the view names again with
+    /// `link` once it made the page, which reads as that page from then on.
+    page_block: Option<String>,
     /// The paper the document is set on, when a view asks for pages: the stack breaks the
     /// blocks into sheets and the draw puts the paper, the header and the footer under them.
     pages: Option<Pages>,
@@ -1011,6 +1014,7 @@ impl BlockEditor {
             asked_format: None,
             insert_ask: None,
             link_ask: None,
+            page_block: None,
             pages: None,
             presence_key: None,
             body: None,
@@ -2716,6 +2720,11 @@ impl BlockEditor {
             }
             SlashCommand::Host(command) => {
                 if let Some(block) = self.blocks.get(focused_idx) {
+                    // The block a page is made from is the one the words stand in: the view
+                    // makes the page and names it again, and this is the block it reads as.
+                    if matches!(command, SlashHostCommand::Page) {
+                        self.page_block = Some(block.id.clone());
+                    }
                     self.slash_request = Some(SlashRequest {
                         command,
                         block: block.id.clone(),

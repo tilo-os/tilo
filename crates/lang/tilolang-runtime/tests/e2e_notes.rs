@@ -1109,17 +1109,10 @@ mod cases {
             dump(view.tree())
         );
         let key = editor.key.clone();
-        // What the editor reports when a person chooses a page in its `/` menu: the block the
-        // words stand in, then the words.
-        view.fire_with(
-            &key,
-            "slash_page",
-            Some(&Value::List(vec![
-                Value::text("p0"),
-                Value::text("Meeting notes"),
-            ])),
-        )
-        .expect("the view makes the page");
+        // What the editor reports when a person chooses a page in its `/` menu: the words the
+        // block said, which title the note it makes.
+        view.fire_with(&key, "slash_page", Some(&Value::text("Meeting notes")))
+            .expect("the view makes the page");
         view.poll_patches().unwrap();
 
         assert_eq!(
@@ -1146,7 +1139,7 @@ mod cases {
             .expect("the open note's body is the editor");
         assert_eq!(
             editor.props.get("link"),
-            Some(&Value::some(Value::text("p0:1"))),
+            Some(&Value::text("1")),
             "the editor is asked to link the block the page was made from: {}",
             dump(view.tree())
         );
@@ -1184,7 +1177,7 @@ mod cases {
             .expect("the open note's body is the editor");
         assert_eq!(
             editor.props.get("insert"),
-            Some(&Value::some(Value::text(format!("{address}:1")))),
+            Some(&Value::text(format!("{address}:1"))),
             "the picture is handed to the editor, which writes it in at the caret: {}",
             dump(view.tree())
         );
