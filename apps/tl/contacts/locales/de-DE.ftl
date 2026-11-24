@@ -336,17 +336,38 @@ d-nhhj3wnt = Kontaktseite
 
 d-6ltzv265 = Telefonnummern
     .w-no-numbers-yet = Noch keine Nummern.
+    .w-home = Zuhause
+    .w-phone-number = Telefonnummer
+    .w-remove-phone = Telefonnummer entfernen
     .w-add-phone = Telefonnummer hinzufügen
 
 d-qkxolihp = E-Mail-Adressen
     .w-no-mailboxes-yet = Noch keine Postfächer.
+    .w-work = Geschäftlich
+    .w-email-address = E-Mail-Adresse
+    .w-remove-email = E-Mail-Adresse entfernen
     .w-add-email = E-Mail-Adresse hinzufügen
 
 d-5dnmy6vv = Adressen
     .w-no-addresses-yet = Noch keine Adressen.
+    .w-home = Zuhause
+    .w-street = Straße
+    .w-remove-address = Adresse entfernen
+    .w-city = Stadt
+    .w-region = Region
+    .w-postal-code = Postleitzahl
+    .w-country = Land
     .w-add-address = Adresse hinzufügen
 
 d-znqezbnm = Duplikate
+    .w-merge-into-this-card = In diese Karte zusammenführen
+    .w-they-share = Sie teilen { $shared_with }.
+    .w-take-their-name = Namen übernehmen
+    .w-take-their-organization = Organisation übernehmen
+    .w-take-their-job-title = Position übernehmen
+    .w-take-their-website = Website übernehmen
+    .w-take-their-birthday = Geburtstag übernehmen
+    .w-take-their-notes = Notizen übernehmen
 
 d-425344oj = Gruppen
     .w-not-in-a-group = In keiner Gruppe.
