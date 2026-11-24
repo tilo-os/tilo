@@ -11,6 +11,7 @@
 //! app was granted and refuses every other. Until a host is set, an app holds no files.
 
 use crate::abi::Imp;
+use crate::blob::FileValue;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::value::Value;
@@ -41,7 +42,9 @@ impl Entry {
             Value::Text(self.path.clone()),
             Value::Bool(self.folder),
             Value::Int(self.size),
-            Value::Int(self.modified),
+            // A `Time` is ISO-8601 text wherever the code holds one, so the entry can be stored
+            // in a resource's `Time` field as the type says it is.
+            Value::Text(tilolang::calendar::time_text(self.modified)),
             Value::Bool(self.hidden),
         ])
     }
@@ -68,7 +71,7 @@ impl TrashEntry {
             Value::Text(self.name.clone()),
             Value::Text(self.path.clone()),
             Value::Text(self.original.clone()),
-            Value::Int(self.deleted),
+            Value::Text(tilolang::calendar::time_text(self.deleted)),
         ])
     }
 }
@@ -134,6 +137,18 @@ pub trait FilesHost {
     /// Why they cannot be read (it is not a file, it is not granted, it is gone).
     fn read(&self, path: &str) -> Result<Vec<u8>, String>;
 
+    /// A preview of the file at `path`, no larger than `size` pixels a side, from the device's
+    /// shared cache: what `File.preview` asks. `None` for a file no preview stands for (it is no
+    /// picture this device previews), and for a file whose preview the cache is making still.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no preview (the path is not granted, the file is gone).
+    fn preview(&self, path: &str, size: u32) -> Result<Option<FileValue>, String> {
+        let _ = (path, size);
+        Ok(None)
+    }
+
     /// Keep `path` watched, running the action `run` when the folder changes, and answer the
     /// token that names the watch. `run` names one of the package's own actions taking only its
     /// target; the platform invokes it on the app's root, as the person the app runs for.
@@ -195,6 +210,17 @@ pub trait FilesHost {
     /// Why it cannot be copied (the folder is not granted, a name is taken, the entry is gone).
     fn copy(&self, path: &str, folder: &str) -> Result<Entry, String> {
         let _ = (path, folder);
+        Err(NO_FILES.to_owned())
+    }
+
+    /// Copy the entry at `path` to `to`, a path named whole, answering the copy: what a paste
+    /// beside an entry whose name is taken asks, so both are kept.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be copied (the folder is not granted, the name is taken, the entry is gone).
+    fn copy_to(&self, path: &str, to: &str) -> Result<Entry, String> {
+        let _ = (path, to);
         Err(NO_FILES.to_owned())
     }
 
@@ -372,6 +398,19 @@ impl Core {
                 host.read(&path)
                     .map(|bytes| Value::Bytes(std::rc::Rc::new(bytes)))
             }
+            Imp::FilePreview => {
+                let path = self.text(a.h(0)?)?;
+                let size = a.long(1)?;
+                if !(1..=4096).contains(&size) {
+                    return trap(format!(
+                        "a preview is 1 to 4096 pixels a side, and this asks for {size}"
+                    ));
+                }
+                host.preview(&path, u32::try_from(size).unwrap_or(1))
+                    .map(|preview| {
+                        preview.map_or_else(Value::none, |file| Value::some(Value::file(file)))
+                    })
+            }
             Imp::FileWatch => {
                 let (path, run) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
                 host.watch(&path, &run).map(Value::Text)
@@ -395,6 +434,10 @@ impl Core {
             Imp::FileCopy => {
                 let (path, folder) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
                 host.copy(&path, &folder).map(|entry| entry.value())
+            }
+            Imp::FileCopyTo => {
+                let (path, to) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+                host.copy_to(&path, &to).map(|entry| entry.value())
             }
             Imp::FileRemove => {
                 let path = self.text(a.h(0)?)?;
@@ -439,6 +482,7 @@ impl Core {
             Imp::FileList
             | Imp::FileStat
             | Imp::FileReadPath
+            | Imp::FilePreview
             | Imp::FileWatch
             | Imp::FileOpenPath
             | Imp::FileOpen => self.result(Err(NO_FILES.to_owned())),
@@ -529,7 +573,7 @@ pub const TRASH_ENTRY_FIELDS: &[(&str, &str, &str)] = &[
     (
         "deleted",
         "Time",
-        "When it was trashed; 0 when the trash does not say.",
+        "When it was trashed; the epoch when the trash does not say.",
     ),
 ];
 
@@ -541,7 +585,7 @@ pub const ENTRY_FIELDS: &[(&str, &str, &str)] = &[
     (
         "modified",
         "Time",
-        "When its content last changed; 0 when the disk does not say.",
+        "When its content last changed; the epoch when the disk does not say.",
     ),
     ("hidden", "Bool", "Whether its name starts with a dot."),
 ];

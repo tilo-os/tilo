@@ -28,6 +28,7 @@ mod chat_ban;
 mod chat_calls;
 mod chat_copylink;
 mod chat_emoji;
+mod chat_export;
 mod chat_liveshare;
 mod chat_members;
 mod chat_persona_shot;

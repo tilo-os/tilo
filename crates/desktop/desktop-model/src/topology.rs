@@ -431,7 +431,7 @@ impl Layout {
     /// [`Self::close_tab`] for a tab whose window went away by itself (its
     /// app closed it, or ended) while the tab was on the shell: remembered as
     /// a close all the same, and as the place an app that stopped working says
-    /// so in ([`crate::Workspace::reopen_closed_tab`]).
+    /// so in ([`crate::Workspace::hold_ended`]).
     pub fn window_went(&mut self, tab_id: TabId) -> Option<RemovedTab> {
         self.remove_tab_choosing(tab_id, Leaving::WindowWent)
     }

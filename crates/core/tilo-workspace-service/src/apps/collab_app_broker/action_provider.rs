@@ -1878,6 +1878,7 @@ impl AppBrokerState {
         self.action_invoke_with_origin(caller, own_peer, launch, None, request)
     }
 
+
     /// [`Self::action_invoke`] for a caller whose original invocation ownership
     /// the broker holds (an admitted local connection): an application
     /// action it starts carries that ownership to the application, so a scoped
@@ -1885,7 +1886,7 @@ impl AppBrokerState {
     ///
     /// A call that waits for its person's yes is refused with what they are shown
     /// ([`AppBrokerState::with_asked_facts`]).
-    pub(super) fn action_invoke_with_origin(
+    pub(crate) fn action_invoke_with_origin(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
@@ -2491,10 +2492,10 @@ impl AppBrokerState {
     }
 
     /// Where a view `caller`'s action needs opens in `workspace`: where a person
-    /// is looking, for the person's own invocation and for an app's request
-    /// the person's own press in it is behind (a link clicked in Chat, a
+    /// is looking, for the person's own invocation and for a call admitted on
+    /// the person's own press in the app asking (a link clicked in Chat, a
     /// file opened from Files), which takes them there; beside the asking
-    /// app's own view for an app's request nobody pressed for; else beside
+    /// app's own view for an app's call nobody pressed for; else beside
     /// the view the actor last worked in, so an agent or a Shortcut keeps
     /// working next to where it already is, and beside the person's view
     /// without taking their focus when it has none yet: nobody but the
@@ -2505,30 +2506,20 @@ impl AppBrokerState {
         workspace: &str,
         launch: Option<&LaunchScope>,
     ) -> LaunchPlace {
-        let pressed_for = |app_id: &str| {
-            self.services
-                .launcher
-                .as_ref()
-                .is_some_and(|launcher| launcher.person_initiated(app_id))
-        };
+        // A call the person's press admitted runs as the person, so their view is where it
+        // opens, whichever app asked.
+        if caller.acting().is_person() {
+            return LaunchPlace::Focus;
+        }
         if let Some(scope) = launch {
-            if pressed_for(&scope.app_id) {
-                return LaunchPlace::Focus;
-            }
             return LaunchPlace::Beside {
                 app_id: scope.app_id.clone(),
             };
         }
         if let Some(app_id) = caller.acting().app() {
-            if pressed_for(app_id) {
-                return LaunchPlace::Focus;
-            }
             return LaunchPlace::Beside {
                 app_id: app_id.to_string(),
             };
-        }
-        if caller.acting().is_person() {
-            return LaunchPlace::Focus;
         }
         self.launchable
             .view_of(workspace, BrokerActor::for_caller(caller).member())

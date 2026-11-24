@@ -14,6 +14,12 @@
 //! A use of an entry is written down in its uses beside it, never into the entry, so a use and a
 //! member's edit of the entry at the same time keep both.
 //!
+//! A write made for a call keeps that call: as its caller signed it, or, for an agent's call
+//! nobody signed, as this host signs it as the device that carried it out. An agent's call keeps
+//! how it was allowed beside it. Every device reading the write admits it as a step the called
+//! action declares, decided when the call was allowed, and never again as the agent's edit of
+//! the vault's record ([`Workspaces::write_vault`]).
+//!
 //! Who may read what is not decided here: the device reads the document as the policy lets it,
 //! and each caller is decided by the policy for its own acting before anything it asked for is
 //! read ([`super::person_vault`], [`super::machine_secrets`], [`super::hosted_use`]).
@@ -23,7 +29,7 @@ use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
-use tilo_actions::remote::InvokeRequest;
+use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
 use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
@@ -294,7 +300,10 @@ impl Workspaces {
     /// `call` is the request the write answers, when a caller asked for it: the host that keeps
     /// the workspace's own copy writes it for them, keeping the call as they signed it, so every
     /// device reading it sees that they asked and decides the step their action declares
-    /// ([`tilo_actions::remote::person_vault::effects`]) as theirs.
+    /// ([`tilo_actions::remote::person_vault::effects`]) as theirs. An agent's call is kept with
+    /// how it was allowed, and one nobody signed (a turn this host carries out, a call it
+    /// admitted again on its person's yes) is signed by this host as the device that carried it
+    /// out ([`Self::carried_call`]).
     ///
     /// # Errors
     /// An entry does not seal, the document cannot be made here, or the workspace refused the
@@ -312,7 +321,20 @@ impl Workspaces {
         if self.holds_own_copy(&opened.workspace).await {
             // The workspace's own copy is this service's: it writes the document as its
             // governor, onto the copy it holds now, as every other document it authors.
-            let served = call.and_then(served_call);
+            let served = match call {
+                Some(request) => {
+                    let used: Vec<&str> = changes
+                        .iter()
+                        .filter_map(|change| match change {
+                            VaultChange::Uses(SecretId(id), _) => Some(id.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    self.carried_call(&opened.workspace, request, acting, &used)
+                        .await?
+                }
+                None => None,
+            };
             // A caller whose call the write keeps is named as they asked; without it, the
             // write names whom this device may write for.
             let acting = match (&served, acting) {
@@ -368,6 +390,98 @@ impl Workspaces {
         .await
         .map(|_| self.vault_changed())
         .map_err(|refusal| refusal.to_string())
+    }
+
+    /// What a vault write keeps of `request`, the call it answers for `acting`: the call as its
+    /// caller signed it. An agent's call that nobody signed (a turn this host carries out, a
+    /// call it admitted again on its person's yes) is signed here, by this host as the device
+    /// that carries it out for the agent's person: an honest record of who did it, which names
+    /// the agent and never the person as its maker. With an agent's call goes how it was allowed:
+    /// the asked record its person approved, or the lasting grant that let the agent make it
+    /// unasked, which names no resource or an item in `used`, the items whose use the write
+    /// writes down, when it writes any. `None` for a call nobody signed that no agent made.
+    ///
+    /// # Errors
+    /// The call does not sign here.
+    pub(super) async fn carried_call(
+        &self,
+        workspace: &str,
+        request: &InvokeRequest,
+        acting: Option<&Acting>,
+        used: &[&str],
+    ) -> Result<Option<(tilo_actions::InvocationId, SignedCall)>, String> {
+        let agent = acting
+            .filter(|acting| acting.acted_for_person().is_some())
+            .and_then(Acting::agent_id);
+        // A call signed as its acting would sign it is kept as it was signed.
+        let signed_as_acting = request.signed.as_deref().is_some_and(|signed| {
+            acting.is_none_or(|acting| tilo_server_protocol::invocation::signs_for(acting, signed))
+        });
+        let served = served_call(request).filter(|_| signed_as_acting || agent.is_none());
+        let mut kept = match served {
+            Some(kept) => kept,
+            None if agent.is_some() => {
+                let signed = tilo_server_protocol::invocation::sign_invocation_now(
+                    workspace,
+                    request,
+                    &self.inner.host.cert,
+                    &self.inner.host.key,
+                    tilo_clock::unix_now_ns(),
+                )
+                .map_err(|error| error.to_string())?;
+                let mut call = SignedCall::with(request, signed);
+                call.argument = None;
+                (request.invocation, call)
+            }
+            None => return Ok(None),
+        };
+        if let Some(agent) = agent {
+            kept.1.allowed = match CallAllowed::asked(request) {
+                Some(asked) => Some(asked),
+                None => self
+                    .lasting_grant(workspace, agent, &request.target, used)
+                    .await
+                    .map(CallAllowed::Granted),
+            };
+        }
+        Ok(Some(kept))
+    }
+
+    /// The lasting grant of `workspace`'s that lets `agent` make the call `target` names unasked,
+    /// by its id: one naming the agent, live, allowing that action of that app, and naming no
+    /// resource or, where `used` names the items the write uses, one of them.
+    async fn lasting_grant(
+        &self,
+        workspace: &str,
+        agent: &str,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        used: &[&str],
+    ) -> Option<String> {
+        use tilo_action_policy::Level;
+        let policy = self.policy_of(workspace).await?;
+        let cx = tilo_action_policy::Context::at(tilo_clock::unix_now_ms());
+        let grantee = tilo_action_policy::Grantee::agent(agent);
+        policy
+            .grants
+            .iter()
+            .find(|grant| {
+                let node = &grant.node;
+                grant.grantee == grantee
+                    && grant.answer == tilo_action_policy::Answer::Allow
+                    && grant.is_live(&cx)
+                    && node.id_at(Level::App) == Some(target.provider.as_str())
+                    && node.id_at(Level::Action) == Some(target.address.action.as_str())
+                    && node.id_at(Level::Resource).is_none_or(|resource| {
+                        used.is_empty()
+                            || used.iter().any(|item| {
+                                resource == *item
+                                    || resource
+                                        .strip_prefix(*item)
+                                        .is_some_and(|rest| rest.starts_with('/'))
+                            })
+                    })
+            })
+            .map(|grant| grant.id.0.clone())
     }
 
     /// `document`, `source`'s vault forked into `branch`, with each entry and its uses sealed

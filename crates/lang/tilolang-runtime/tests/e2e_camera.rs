@@ -103,8 +103,7 @@ mod cases {
 
     impl Camera {
         fn new() -> Self {
-            let camera = Self::with_clock("2026-11-24T09:00:00Z");
-            camera
+            Self::with_clock("2026-11-24T09:00:00Z")
         }
 
         fn with_clock(at: &str) -> Self {

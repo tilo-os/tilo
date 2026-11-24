@@ -66,9 +66,12 @@ mod cases {
         }
     }
 
+    /// The media type and bytes of what the person copied.
+    type Copied = Option<(String, Vec<u8>)>;
+
     /// What the person copied: the media type and bytes of the last copy.
     #[derive(Clone, Default)]
-    struct Clipboard(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+    struct Clipboard(Rc<RefCell<Copied>>);
 
     impl ClipboardHost for Clipboard {
         fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
@@ -81,6 +84,10 @@ mod cases {
         }
     }
 
+    /// The call the workspace asked the person about and they have not answered: its app and
+    /// what it was asked with.
+    type Asked = Option<(String, Vec<Value>)>;
+
     /// The host's dispatch and the device's image model in one: the vision service's actions are
     /// answered here, and any other call the workspace wants the person's yes for waits as the
     /// question they are shown, as the session holds it until they answer.
@@ -89,7 +96,7 @@ mod cases {
         asked: Rc<RefCell<Vec<String>>>,
         /// The call the workspace asked the person about and they have not answered yet: what
         /// the session delivers, admitted, once they say yes.
-        question: Rc<RefCell<Option<(String, Vec<Value>)>>>,
+        question: Rc<RefCell<Asked>>,
     }
 
     impl Vision {
@@ -130,8 +137,7 @@ mod cases {
                     let images = args
                         .iter()
                         .find(|(name, _)| name == "images")
-                        .map(|(_, value)| value.clone())
-                        .unwrap_or(Value::List(Vec::new()));
+                        .map_or(Value::List(Vec::new()), |(_, value)| value.clone());
                     Invoked::Done(Value::List(vec![images]))
                 }
                 other => Invoked::Failed(format!("this device answers no {other}")),
@@ -331,7 +337,7 @@ mod cases {
         }
 
         /// The labels of a view's buttons and progress bars.
-        fn labels(&self, view: &ViewInstance) -> Vec<String> {
+        fn labels(view: &ViewInstance) -> Vec<String> {
             let mut labels: Vec<String> = of_kind(view.tree(), "ui.Button")
                 .into_iter()
                 .map(|node| text_prop(node, "label"))
@@ -387,7 +393,9 @@ mod cases {
                         assert!(asked, "{action} did not ask the person first");
                         return value;
                     }
-                    other => panic!("{action}, the person said yes, came to {other:?}"),
+                    other @ InvokeOutcome::Denied => {
+                        panic!("{action}, the person said yes, came to {other:?}")
+                    }
                 }
             }
         }
@@ -468,7 +476,7 @@ mod cases {
             opened
         }
 
-        fn texts(&self, view: &ViewInstance) -> Vec<String> {
+        fn texts(view: &ViewInstance) -> Vec<String> {
             of_kind(view.tree(), "ui.Text")
                 .into_iter()
                 .map(|node| text_prop(node, "value"))
@@ -511,7 +519,7 @@ mod cases {
         }
 
         /// The key of the control of `kind` whose `prop` says `text`.
-        fn control(&self, view: &ViewInstance, kind: &str, prop: &str, text: &str) -> String {
+        fn control(view: &ViewInstance, kind: &str, prop: &str, text: &str) -> String {
             of_kind(view.tree(), kind)
                 .into_iter()
                 .find(|node| node.props.get(prop).and_then(Value::as_text) == Some(text))
@@ -521,7 +529,7 @@ mod cases {
         }
 
         /// The titles of the picture cards the view shows, in order.
-        fn cards(&self, view: &ViewInstance) -> Vec<String> {
+        fn cards(view: &ViewInstance) -> Vec<String> {
             of_kind(view.tree(), "ui.MediaCard")
                 .into_iter()
                 .map(|card| text_prop(card, "title"))
@@ -564,7 +572,7 @@ mod cases {
                 }),
             );
             let page = g.open("library", vec![Value::resource(&g.lib)]);
-            let labels = g.labels(&page);
+            let labels = Gallery::labels(&page);
             assert!(
                 labels.iter().any(|l| l == "Importing 1 of 2"),
                 "the window shows the job's progress: {labels:?}"
@@ -618,7 +626,7 @@ mod cases {
                 Some("Notes.txt is not a picture, Quay-at-dusk.png: Could not read this image"),
                 "and what could not be read, and why"
             );
-            assert!(g.labels(&page).iter().any(|l| l == "Try again"));
+            assert!(Gallery::labels(&page).iter().any(|l| l == "Try again"));
 
             // Trying again asks the device for the picture that failed, and nothing else.
             g.call("retry_import", vec![Value::resource(&g.lib)]);
@@ -626,7 +634,10 @@ mod cases {
             assert_eq!(files, [("Quay-at-dusk.png".to_owned(), quay.clone())]);
             // Stopping it asks the device to stop, and the job ends saying so.
             g.call("stop_import", vec![Value::resource(&g.lib)]);
-            assert_eq!(g.engine.cancelled.borrow().as_slice(), [again.clone()]);
+            assert_eq!(
+                g.engine.cancelled.borrow().as_slice(),
+                std::slice::from_ref(&again)
+            );
             let stopped = g.ends(
                 &again,
                 "cancelled",
@@ -685,7 +696,7 @@ mod cases {
                 "details_fields",
                 vec![Value::resource(&g.lib), Value::resource(&photo)],
             );
-            let texts = g.texts(&details);
+            let texts = Gallery::texts(&details);
             let sections: Vec<String> = of_kind(details.tree(), "ui.Section")
                 .into_iter()
                 .filter_map(|s| s.props.get("title").and_then(Value::as_text).map(str::to_owned))
@@ -811,9 +822,9 @@ mod cases {
             assert_eq!(g.rt.read(&scan, "state").unwrap(), Value::text("running"));
             let people = g.open("face_recognition", vec![Value::resource(&g.lib)]);
             assert!(
-                g.labels(&people).iter().any(|l| l == "Scanned 12 of 13 photos"),
+                Gallery::labels(&people).iter().any(|l| l == "Scanned 12 of 13 photos"),
                 "the people page shows how far the scan has got: {:?}",
-                g.labels(&people)
+                Gallery::labels(&people)
             );
             // Paused, the scan reads nothing more.
             g.call("pause_scan", vec![Value::resource(&g.lib)]);
@@ -821,7 +832,7 @@ mod cases {
             g.call_and_approve("scan_step", vec![Value::resource(&g.lib)]);
             assert_eq!(g.vision.asked.borrow().len(), 1, "a paused scan asks the model nothing");
             let people = g.open("face_recognition", vec![Value::resource(&g.lib)]);
-            assert!(g.texts(&people).iter().any(|t| t == "Scanning is paused at 12 of 13 photos."));
+            assert!(Gallery::texts(&people).iter().any(|t| t == "Scanning is paused at 12 of 13 photos."));
             // Going on reads the photo left.
             g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
             assert_eq!(g.ids_of(&scan, "scanned").len(), 13);
@@ -884,7 +895,7 @@ mod cases {
             );
             // The person selects the three in the grid.
             let mut page = g.open("library", vec![Value::resource(&g.lib)]);
-            let select = g.control(&page, "ui.Button", "label", "Select");
+            let select = Gallery::control(&page, "ui.Button", "label", "Select");
             page.press(&select).unwrap();
             page.poll_patches().unwrap();
             let cards: Vec<String> = of_kind(page.tree(), "ui.MediaCard")
@@ -896,11 +907,11 @@ mod cases {
                 page.fire(&card, "activate").unwrap();
             }
             page.poll_patches().unwrap();
-            let edit = g.control(&page, "ui.Button", "label", "Edit details");
+            let edit = Gallery::control(&page, "ui.Button", "label", "Edit details");
             page.press(&edit).unwrap();
             page.poll_patches().unwrap();
             // The editor says where the photos differ, and where none of them holds a value.
-            let texts = g.texts(&page);
+            let texts = Gallery::texts(&page);
             assert!(
                 texts.iter().any(|text| text == "Details of 3 photos"),
                 "the editor names the selection: {texts:?}"
@@ -922,9 +933,9 @@ mod cases {
                 "none of the photos names a person: {texts:?}"
             );
             // The person adds one tag and saves, changing nothing else.
-            let add = g.control(&page, "ui.TextInput", "placeholder", "Tags to add, separated by commas");
+            let add = Gallery::control(&page, "ui.TextInput", "placeholder", "Tags to add, separated by commas");
             page.edit(&add, &Value::text("holiday")).unwrap();
-            let save = g.control(&page, "ui.Button", "label", "Save");
+            let save = Gallery::control(&page, "ui.Button", "label", "Save");
             page.press(&save).unwrap();
             page.poll_patches().unwrap();
             for (photo, own) in [(&dawn, "sea"), (&dunes, "sand"), (&pines, "fog")] {
@@ -938,7 +949,7 @@ mod cases {
                 "a field the person did not touch keeps what each photo has"
             );
             assert!(
-                !g.texts(&page).iter().any(|text| text == "Details of 3 photos"),
+                !Gallery::texts(&page).iter().any(|text| text == "Details of 3 photos"),
                 "saving closes the editor:\n{}",
                 dump(page.tree())
             );
@@ -956,7 +967,7 @@ mod cases {
                 vec![Value::resource(&g.lib), g.chosen("Dunes.png")],
             ));
             let mut page = g.open("library", vec![Value::resource(&g.lib)]);
-            let select = g.control(&page, "ui.Button", "label", "Select");
+            let select = Gallery::control(&page, "ui.Button", "label", "Select");
             page.press(&select).unwrap();
             page.poll_patches().unwrap();
             let cards: Vec<String> = of_kind(page.tree(), "ui.MediaCard")
@@ -967,11 +978,11 @@ mod cases {
                 page.fire(&card, "activate").unwrap();
             }
             page.poll_patches().unwrap();
-            let edit = g.control(&page, "ui.Button", "label", "Edit details");
+            let edit = Gallery::control(&page, "ui.Button", "label", "Edit details");
             page.press(&edit).unwrap();
             page.poll_patches().unwrap();
             // Save with every field left alone says what is missing, and the editor stays open.
-            let save = g.control(&page, "ui.Button", "label", "Save");
+            let save = Gallery::control(&page, "ui.Button", "label", "Save");
             let refused = page.press(&save);
             assert!(
                 refused.is_err(),
@@ -979,7 +990,7 @@ mod cases {
             );
             page.poll_patches().unwrap();
             assert!(
-                g.texts(&page).iter().any(|text| text == "Details of 2 photos"),
+                Gallery::texts(&page).iter().any(|text| text == "Details of 2 photos"),
                 "the editor stays open to say why:\n{}",
                 dump(page.tree())
             );
@@ -1057,7 +1068,7 @@ mod cases {
                 "details_fields",
                 vec![Value::resource(&g.lib), Value::resource(&photo)],
             );
-            let latitude = g.control(&details, "ui.NumberInput", "label", "Latitude");
+            let latitude = Gallery::control(&details, "ui.NumberInput", "label", "Latitude");
             details.edit(&latitude, &Value::Float(48.5)).unwrap();
             assert_eq!(
                 g.rt.read(&photo, "latitude").unwrap(),
@@ -1065,7 +1076,7 @@ mod cases {
                 "a typed latitude is the photo's"
             );
             details.poll_patches().unwrap();
-            let longitude = g.control(&details, "ui.NumberInput", "label", "Longitude");
+            let longitude = Gallery::control(&details, "ui.NumberInput", "label", "Longitude");
             details.edit(&longitude, &Value::Float(-3.2)).unwrap();
             assert_eq!(g.rt.read(&photo, "longitude").unwrap(), Value::Float(-3.2));
         }
@@ -1108,12 +1119,12 @@ mod cases {
             page.fire(&timeline, "select").unwrap();
             page.poll_patches().unwrap();
             assert_eq!(
-                g.cards(&page),
+                Gallery::cards(&page),
                 ["Pine.png", "Dunes.png", "Harbour.png"],
                 "the timeline shows every photo, newest first"
             );
             // The person opens July.
-            g.control(&page, "ui.MenuButton", "label", "All months");
+            Gallery::control(&page, "ui.MenuButton", "label", "All months");
             let july = of_kind(page.tree(), "ui.MenuItem")
                 .into_iter()
                 .find(|item| text_prop(item, "label") == "2026-07")
@@ -1123,12 +1134,12 @@ mod cases {
             page.fire(&july, "choose").unwrap();
             page.poll_patches().unwrap();
             assert_eq!(
-                g.cards(&page),
+                Gallery::cards(&page),
                 ["Dunes.png", "Harbour.png"],
                 "only July's photos are shown"
             );
             // And then a day of it.
-            g.control(&page, "ui.MenuButton", "label", "Every day");
+            Gallery::control(&page, "ui.MenuButton", "label", "Every day");
             let day = of_kind(page.tree(), "ui.MenuItem")
                 .into_iter()
                 .find(|item| text_prop(item, "label") == "2026-07-20")
@@ -1138,7 +1149,7 @@ mod cases {
             page.fire(&day, "choose").unwrap();
             page.poll_patches().unwrap();
             assert_eq!(
-                g.cards(&page),
+                Gallery::cards(&page),
                 ["Dunes.png"],
                 "only that day's photo is shown"
             );

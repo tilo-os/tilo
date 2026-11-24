@@ -49,6 +49,9 @@ mod external_moderation_rpc_tests {
     /// keeps for them: this process's dispatch, as the device that carried the app's call.
     struct Answering {
         state: std::sync::Weak<AppBrokerState>,
+        /// The connection's own admission, captured once the fixture exists: what admitting a
+        /// call again carries, and what its effect goes on to do stays within.
+        origin: std::sync::OnceLock<InvocationCaller>,
         outcome: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
     }
 
@@ -77,8 +80,17 @@ mod external_moderation_rpc_tests {
             };
             let written = Arc::clone(&self.outcome);
             let (caller, asking) = (caller.clone(), request.clone());
+            let origin = self.origin.get().cloned();
             tokio::task::spawn_local(async move {
-                let came = match state.action_invoke(&caller, None, None, &asking).await {
+                let Some(origin) = origin else {
+                    *written.lock().unwrap() = Some(Err("the fixture's origin is not named".to_owned()));
+                    return;
+                };
+                // The same admission the connection's own provider makes of an app's call.
+                let came = match state
+                    .action_invoke_with_origin(&caller, None, None, Some(&origin), &asking)
+                    .await
+                {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(error)) => Err(error.to_string()),
                     None => Err("the fixture's broker abandoned the call".to_owned()),
@@ -151,11 +163,12 @@ mod external_moderation_rpc_tests {
             assert!(state.certificate_authority.set(authority).is_ok());
             let answering = Arc::new(Answering {
                 state: Arc::downgrade(&state),
+                origin: std::sync::OnceLock::new(),
                 outcome: Arc::new(std::sync::Mutex::new(None)),
             });
             let asked = AskedStore::opened(None, None, Vec::new())
                 .expect("the fixture keeps the calls that wait");
-            Self {
+            let mut me = Self {
                 original,
                 route,
                 state,
@@ -163,7 +176,10 @@ mod external_moderation_rpc_tests {
                 asked,
                 answering,
                 _owner_mailbox: owner_mailbox,
-            }
+            };
+            let (_, origin) = me.caller();
+            let _ = me.answering.origin.set(origin);
+            me
         }
 
         /// The person the app's calls ask.

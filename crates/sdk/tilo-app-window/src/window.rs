@@ -3765,6 +3765,9 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.landing = None;
             self.focus_request = None;
+            // A drag this window gave the desktop ended somewhere else: what is dropped here
+            // later comes from another app, even the same files.
+            ui::widget::drag_bus::forget_offer();
         }
         // What the person typed while the keyboard was on its way to the field a press opened goes
         // there first, before the input this event brings.
@@ -3823,9 +3826,12 @@ impl ui::widget::Decorator for AppWindow {
             // A file dropped where nothing of the app's own took it is the window's: it is kept,
             // and the app's view hears of it as the `File` its process reads, so a document
             // dropped anywhere on an app that takes one is not lost.
+            // A drag of this window's own files let go where no target took them lands nowhere:
+            // they are not taken in again as another app's.
             if !*ctx.handled
                 && let WindowEvent::DroppedFile(path) = event
-                && self.drop_on_window(std::slice::from_ref(path))
+                && (ui::widget::drag_bus::came_back_nowhere(path)
+                    || self.drop_on_window(std::slice::from_ref(path)))
             {
                 *ctx.handled = true;
             }

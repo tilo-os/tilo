@@ -115,12 +115,14 @@ mod cases {
 
         /// Types `text` into the snippet's body, as the page's editor does.
         fn write_body(&self, snippet: &ResourceRef, text: &str) {
-            let mut page = self.window("snippet_page", vec![Value::resource(snippet)]);
+            let page = self.window("snippet_page", vec![Value::resource(snippet)]);
             let editor = of_kind(page.tree(), "ui.CodeEditor")
                 .into_iter()
                 .next()
-                .map(|editor| editor.key.clone())
-                .unwrap_or_else(|| panic!("no body editor in {}", dump(page.tree())));
+                .map_or_else(
+                    || panic!("no body editor in {}", dump(page.tree())),
+                    |editor| editor.key.clone(),
+                );
             page.edit(&editor, &Value::text(text)).unwrap();
         }
 
@@ -200,10 +202,10 @@ mod cases {
             .into_iter()
             .map(|item| {
                 let count = match item.props.get("count") {
-                    Some(Value::Int(n)) => *n as f64,
+                    Some(Value::Int(n)) => f64::from(i32::try_from(*n).unwrap_or(0)),
                     Some(Value::Float(n)) => *n,
                     Some(Value::Opt(Some(held))) => match &**held {
-                        Value::Int(n) => *n as f64,
+                        Value::Int(n) => f64::from(i32::try_from(*n).unwrap_or(0)),
                         Value::Float(n) => *n,
                         other => panic!("a count is {other:?}"),
                     },
@@ -405,7 +407,7 @@ mod cases {
         );
 
         // The sheet's fields are the values, typed into one at a time.
-        let mut sheet = snippets.window(
+        let sheet = snippets.window(
             "fill_sheet",
             vec![Value::resource(&snippets.lib), Value::resource(&fill)],
         );
@@ -420,8 +422,10 @@ mod cases {
         let dialog = of_kind(sheet.tree(), "ui.ModalDialog")
             .into_iter()
             .next()
-            .map(|dialog| dialog.key.clone())
-            .unwrap_or_else(|| panic!("no sheet in {}", dump(sheet.tree())));
+            .map_or_else(
+                || panic!("no sheet in {}", dump(sheet.tree())),
+                |dialog| dialog.key.clone(),
+            );
         sheet.fire(&dialog, "act_primary").unwrap();
         assert_eq!(
             snippets.copied(),
@@ -538,7 +542,7 @@ mod cases {
                 ("snippet", Value::resource(&copy)),
             ],
         );
-        assert!(snippets.listed("Tail logs").id_string() == two.id_string());
+        assert_eq!(snippets.listed("Tail logs").id_string(), two.id_string());
         assert_eq!(
             snippets.field(&snippets.lib, "snippets"),
             json!({"count": 2})

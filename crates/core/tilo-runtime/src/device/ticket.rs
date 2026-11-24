@@ -34,10 +34,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND, IDENTITIES, ISSUE,
-    LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, RELEASE_HALF,
-    REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report, TICKET_LIFETIME_NS,
-    Ticket, UPDATE, USE_IDENTITY,
+    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND,
+    IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
+    RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
+    TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -85,10 +85,13 @@ pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
 }
 
 /// The `tilo.device` page `query` asks for: the `devices` resource and its actions, resolved and
-/// invoked the way an app's are.
+/// invoked the way an app's are. Founding and restoring a person stay among them on a person's
+/// device, answered with [`ALREADY_A_PERSONS`], so whatever asks a device to found its person
+/// (a dev session's start, `tilo login --new-identity`) is told it has one rather than that the
+/// action is gone.
 #[must_use]
 pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| !matches!(action, FOUND | RESTORE))
+    catalogue_of(query, |_| true)
 }
 
 /// [`catalogue`] with only what a device answers before its person's services run: what it is,
@@ -1019,6 +1022,8 @@ impl Tickets {
                 && matches!(
                     request.target.address.action.as_str(),
                     INFO | ISSUE
+                        | FOUND
+                        | RESTORE
                         | LOG_IN
                         | PENDING
                         | APPROVE
@@ -1044,6 +1049,14 @@ impl Tickets {
                 || (request.target.address.resource == SERVER
                     && tilo_server::operations::ACTIONS
                         .contains(&request.target.address.action.as_str())))
+    }
+
+    /// Whether `request` asks this device, which serves a person, to found or restore one: refused
+    /// to whoever asks, since the answer only says the device has its person.
+    pub(crate) fn asks_for_a_person(request: &InvokeRequest) -> bool {
+        request.target.provider == PROVIDER
+            && request.target.address.resource == RESOURCE
+            && matches!(request.target.address.action.as_str(), FOUND | RESTORE)
     }
 
     /// Whether `request` only reads what the device is ([`INFO`]) or which identities it keeps,
@@ -1097,6 +1110,7 @@ impl Tickets {
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
+                FOUND | RESTORE => Err(anyhow!("{ALREADY_A_PERSONS}: it serves them")),
                 RECOVERY_WORDS => {
                     let (record, _) = rooted.expect("the caller's root is read for its words");
                     super::services::recovery_words_in(&record)
@@ -1172,7 +1186,7 @@ impl Tickets {
                         if unreached {
                             tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                         }
-                        served.issue(&args).await
+                        served.issue(&args, false).await
                     }
                 };
                 let update = match answer {
@@ -1206,9 +1220,10 @@ impl Tickets {
             other => return Err(format!("{other} is no ticket a founding issues")),
         };
         // The person just founded holds the root this device keeps, where this computer is the
-        // one their account made them on: otherwise their root is the device's own.
+        // one their account made them on: otherwise their root is the device's own. A founding
+        // asks for its tickets together, so each is served beside the others.
         let root = super::services::holds_root_for_person(person).then_some(person);
-        super::services::with_root_caller(root, self.issue(&args))
+        super::services::with_root_caller(root, self.issue(&args, true))
             .await
             .map_err(|error| format!("{error:#}"))
     }
@@ -1425,8 +1440,10 @@ impl Tickets {
 
     /// Serve a ticket for a new computer, approved by the person's root on this computer: the
     /// ticket as the one string the person hands on. The person who runs `tilo device add`
-    /// chooses what the computer becomes; the ticket it brings carries nothing of its own.
-    async fn issue(&self, args: &Value) -> Result<Value> {
+    /// chooses what the computer becomes; the ticket it brings carries nothing of its own. It is
+    /// served `beside` the tickets issued before it, or in place of the one printed last for a
+    /// computer at hand.
+    async fn issue(&self, args: &Value, beside: bool) -> Result<Value> {
         let plan = args
             .get("plan")
             .and_then(Value::as_str)
@@ -1438,12 +1455,13 @@ impl Tickets {
             None if args.get("server").and_then(Value::as_bool) == Some(true) => Some(Role::Server),
             None => None,
         };
-        let ticket = self
-            .0
-            .fleet
-            .issue(role)
-            .await
-            .map_err(|error| anyhow!(error))?;
+        let fleet = &self.0.fleet;
+        let ticket = if beside {
+            fleet.issue_beside(role).await
+        } else {
+            fleet.issue(role).await
+        }
+        .map_err(|error| anyhow!(error))?;
         Ok(json!({"ticket": ticket.encode()}))
     }
 

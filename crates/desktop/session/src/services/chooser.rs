@@ -6,12 +6,19 @@
 //! who it is. The server itself is portable ([`tilo_dialogs::chooser_service`]): this module fills
 //! it in with the session's own questions ([`tilo_portal::file_chooser::choose`]) and with the
 //! loop that opens a link or a file in the app that takes it ([`crate::apps::Apps::open_claimed`]).
+//!
+//! A file the person chooses inside a workspace's files tree is a grant to the app on the file's
+//! tree node, written through the workspace's own governance as the person who chose it
+//! ([`PolicyFiles`]): the app reaches exactly that node, follows it through renames and moves, and
+//! opens it again only while the grant stands. Anything else the person chooses is a document the
+//! session keeps for the app.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_action_policy::{Answer, Change, Grant, Grantee};
 use tilo_actions::ApiError;
 use tilo_dialogs::chooser_service::{
     Asked, Caller, Choice, Granted, Grants, Opens as ServiceOpens, Person, Question,
@@ -36,6 +43,9 @@ pub(crate) struct Serving {
     pub questions: Option<AskSender>,
     /// The files people choose for apps, while the session serves them to its sandboxes.
     pub documents: tilo_documents::Documents,
+    /// The workspaces' file trees, for a choice that lies inside one: `None` when this session
+    /// reaches no workspace mount.
+    pub files: Option<Arc<dyn WorkspaceFiles>>,
     /// What wakes the session's loop when an open waits for it.
     pub wake: Wake,
 }
@@ -147,8 +157,9 @@ fn serve_at(path: &std::path::Path, serving: Serving) -> Result<Served, String> 
         person: serving
             .questions
             .map(|questions| Arc::new(SessionPerson { questions }) as Arc<dyn Person>),
-        grants: Arc::new(DocumentsGrants {
+        grants: Arc::new(ChosenGrants {
             documents: serving.documents,
+            files: serving.files,
         }),
         opens: Arc::clone(&pending) as Arc<dyn ServiceOpens>,
     };
@@ -161,14 +172,28 @@ fn serve_at(path: &std::path::Path, serving: Serving) -> Result<Served, String> 
     Ok(Served { pending })
 }
 
-/// The session's documents store, as the chooser reaches it: a choice is a grant, and only a
-/// grant this app was given opens again.
-struct DocumentsGrants {
+/// The files the person chose for the apps of this session: a file of a workspace is a grant to
+/// the app on the file's tree node, and anything else is a document the session keeps for the app.
+struct ChosenGrants {
     documents: tilo_documents::Documents,
+    files: Option<Arc<dyn WorkspaceFiles>>,
 }
 
-impl Grants for DocumentsGrants {
+impl Grants for ChosenGrants {
     fn grant(&self, caller: &Caller, chosen: &Path, choice: Choice) -> Result<Granted, String> {
+        // A file of a workspace's tree is a grant on its node, written where the workspace keeps
+        // what it allows: it follows a rename or a move, shows in the file's sharing and ends
+        // when the grant does, on every device that holds the workspace.
+        if let Some(files) = self.files.as_deref()
+            && let Some(node) = files.node(chosen)
+        {
+            let write = choice.writes();
+            files.grant(&node, &caller.app, write).map_err(|error| {
+                tracing::warn!(%error, path = %chosen.display(), "a chosen file is not granted to the app");
+                tilo_dialogs::chooser_service::DOES_NOT_FIT.to_owned()
+            })?;
+            return Ok(node_granted(&node, write));
+        }
         let key = documents_key(caller)?;
         tilo_documents::chosen::granted(&self.documents, &key, chosen, kind_of(choice))
             .map(granted_of)
@@ -183,9 +208,339 @@ impl Grants for DocumentsGrants {
     }
 
     fn document(&self, caller: &Caller, reference: &Path) -> Option<Granted> {
+        // A reference naming a workspace file opens again while the app's grant on its node
+        // stands. Reopened by the node, it opens whatever the file is called now.
+        if let Some((workspace, id)) = reference_node(reference) {
+            let files = self.files.as_ref()?;
+            let node = files.node_at(workspace, id)?;
+            let write = files.holds(&node, &caller.app, true);
+            if !write && !files.holds(&node, &caller.app, false) {
+                return None;
+            }
+            return Some(node_granted(&node, write));
+        }
         let key = documents_key(caller).ok()?;
         tilo_documents::chosen::looked_up(&self.documents, &key, reference).map(granted_of)
     }
+}
+
+/// The path a choice of a workspace file answers with: the node it is, with the workspace whose
+/// tree holds it, never a host path an app could use itself.
+const CHOSEN_ROOT: &str = "/run/tilo/chosen";
+
+/// The tree node `reference` names, and the workspace whose tree holds it, when it names one.
+fn reference_node(reference: &Path) -> Option<(&str, fs_protocol::FileDocumentId)> {
+    let rest = reference
+        .to_str()?
+        .strip_prefix(CHOSEN_ROOT)?
+        .strip_prefix('/')?;
+    let (workspace, rest) = rest.split_once('/')?;
+    tilo_desktop_model::WorkspaceId::parse(workspace)?;
+    let id = rest.split('/').next()?;
+    Some((
+        workspace,
+        fs_protocol::FileDocumentId(uuid::Uuid::parse_str(id).ok()?),
+    ))
+}
+
+/// One file of a workspace's tree, as a choice names it: its stable record, where it is now, and
+/// the workspace whose tree it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceNode {
+    workspace: String,
+    id: fs_protocol::FileDocumentId,
+    host: PathBuf,
+    directory: bool,
+}
+
+impl WorkspaceNode {
+    /// What an app reaches it by: the node itself, so a rename leaves it opening the same file.
+    fn reference(&self) -> PathBuf {
+        PathBuf::from(CHOSEN_ROOT)
+            .join(&self.workspace)
+            .join(self.id.0.to_string())
+    }
+
+    fn name(&self) -> String {
+        self.host.file_name().map_or_else(
+            || "document".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// The kind the workspace's folder listing offers the node as: a file or a folder of the
+    /// tree ([`fs_protocol::tree::FOLDER_KIND`], beside a file's
+    /// [`tilo_actions::remote::FOUND_FILE`]).
+    const fn kind(&self) -> &'static str {
+        if self.directory {
+            fs_protocol::tree::FOLDER_KIND
+        } else {
+            tilo_actions::remote::FOUND_FILE
+        }
+    }
+
+    /// The node a grant names: the tree's app, the kind of node, and its stable record.
+    fn node(&self) -> tilo_action_policy::TreePath {
+        tilo_action_policy::TreePath::workspace(&self.workspace)
+            .app(fs_protocol::tree::FILES_APP)
+            .kind(self.kind())
+            .resource(self.id.0.to_string())
+    }
+}
+
+/// The document a node's grant answers with: a descriptor the chooser opens, and what the app
+/// reaches it by.
+fn node_granted(node: &WorkspaceNode, write: bool) -> Granted {
+    let choice = if node.directory {
+        Choice::Folder { write }
+    } else if write {
+        Choice::Save
+    } else {
+        Choice::Read
+    };
+    // A save writes the file the node is, in place: a file beside it would be a node of its own,
+    // and renaming it over the file would leave the app's grant naming a node the workspace no
+    // longer has. The workspace keeps the versions.
+    let save_sibling = (write && !node.directory).then(|| node.name().into());
+    Granted {
+        reference: node.reference(),
+        name: node.name(),
+        host: node.host.clone(),
+        choice,
+        save_sibling,
+    }
+}
+
+/// The workspaces' file trees as the host reaches them, and the grants a choice writes there.
+pub(crate) trait WorkspaceFiles: Send + Sync {
+    /// The tree node `host` is, when it is a file of a workspace mount.
+    fn node(&self, host: &Path) -> Option<WorkspaceNode>;
+
+    /// The node `workspace`/`id` names as it is now, wherever a rename or a move left it.
+    fn node_at(&self, workspace: &str, id: fs_protocol::FileDocumentId) -> Option<WorkspaceNode>;
+
+    /// Give `app` this node: to read, and to change when `write`, as the person who chose it.
+    ///
+    /// # Errors
+    /// The workspace refused the grant, or this device could not write it.
+    fn grant(&self, node: &WorkspaceNode, app: &str, write: bool) -> Result<(), String>;
+
+    /// Whether `app` holds this node for reading, and for changing it when `write`.
+    fn holds(&self, node: &WorkspaceNode, app: &str, write: bool) -> bool;
+}
+
+/// How long a grant waits for the workspace to take it and this device to read it.
+const GRANT_WAIT: Duration = Duration::from_secs(20);
+
+/// The session's view of the workspaces, and the mounts Tilo's filesystem serves their trees on.
+pub(crate) struct PolicyFiles {
+    view: Arc<crate::workspace_view::WorkspaceView>,
+    /// The person who chose, by the id their devices sign as.
+    person: String,
+}
+
+impl PolicyFiles {
+    pub(crate) fn new(view: Arc<crate::workspace_view::WorkspaceView>, person: String) -> Self {
+        Self { view, person }
+    }
+
+    /// The workspace the mounts serve: the person's own, whose tree a device's filesystem
+    /// publishes.
+    fn workspace(&self) -> Option<String> {
+        tilo_action_policy::roles::workspace_of_person(&self.person)
+    }
+
+    /// Write `change` into `workspace`'s governance as this device, waiting for the workspace to
+    /// take it. The workspace's own admission decides it, by the person's grants.
+    fn commit(&self, workspace: &str, change: Change) -> Result<(), String> {
+        let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)
+            .ok_or_else(|| "the chosen file names no workspace".to_owned())?;
+        let view = Arc::clone(&self.view);
+        let (reply, answered) = std::sync::mpsc::sync_channel(1);
+        let asked = async move {
+            let membership = crate::membership::Membership::of(&*view, workspace);
+            let _ = reply.send(membership.commit(&change).await);
+        };
+        let runtime =
+            tilo_rt::try_app().map_err(|error| format!("no task writes the grant: {error}"))?;
+        runtime.spawn(asked);
+        match answered.recv_timeout(GRANT_WAIT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(reason)) => Err(reason),
+            Err(_) => Err("the workspace did not take the grant in time".to_owned()),
+        }
+    }
+
+    /// The grant `app` holds on `node` for what `write` adds to reading it, as the workspace's
+    /// policy says.
+    fn held(
+        &self,
+        node: &WorkspaceNode,
+        app: &str,
+        write: bool,
+    ) -> Option<tilo_action_policy::KindSet> {
+        let policy = self.view.policy(&node.workspace).ok()?;
+        granted_kinds(&policy, node, app, write, tilo_clock::unix_now())
+    }
+}
+
+impl WorkspaceFiles for PolicyFiles {
+    fn node(&self, host: &Path) -> Option<WorkspaceNode> {
+        let host = host.canonicalize().ok()?;
+        let workspace = self.workspace()?;
+        let id = {
+            let bytes = host_fs::attributes::get(&host, collab_types::document::DOCUMENT_ID_XATTR)
+                .ok()
+                .flatten()?;
+            fs_protocol::FileDocumentId(uuid::Uuid::from_slice(&bytes).ok()?)
+        };
+        // The record's own binding says where it is: a file that carries another record's id is
+        // not that record.
+        tilo_app_launch::downloaded::workspace_roots()
+            .iter()
+            .find_map(|root| mounted_node(root, &workspace, id, Some(&host)))
+    }
+
+    fn node_at(&self, workspace: &str, id: fs_protocol::FileDocumentId) -> Option<WorkspaceNode> {
+        if self.workspace().as_deref() != Some(workspace) {
+            return None;
+        }
+        tilo_app_launch::downloaded::workspace_roots()
+            .iter()
+            .find_map(|root| mounted_node(root, workspace, id, None))
+    }
+
+    fn grant(&self, node: &WorkspaceNode, app: &str, write: bool) -> Result<(), String> {
+        // Written once per app, node and what it allows: choosing it again keeps the one
+        // grant, as every reader of it answers the same.
+        if self.held(node, app, write).is_some() {
+            return Ok(());
+        }
+        let grant = app_grant(node, app, &self.person, write);
+        self.commit(&node.workspace, Change::Grant(grant))?;
+        // The workspace's reading reaches this session a moment after it takes the change. Wait
+        // for it, so a reopen right after the choice reads the grant and nothing this session
+        // cannot read again is answered for.
+        let deadline = std::time::Instant::now() + GRANT_WAIT;
+        while self.held(node, app, write).is_none() {
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "the workspace took the grant but this device did not read it".to_owned(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+
+    fn holds(&self, node: &WorkspaceNode, app: &str, write: bool) -> bool {
+        // The workspace's own reading decides, as it does on every device: a grant revoked there
+        // is gone here too.
+        self.held(node, app, write)
+            .is_some_and(|held| covers(held, kinds_of(write)))
+    }
+}
+
+/// The grant `app` is given on `node` as the person who chose it: reading it, and changing it
+/// when `write`.
+fn app_grant(node: &WorkspaceNode, app: &str, person: &str, write: bool) -> Grant {
+    Grant::new(
+        grant_id(node, app, write),
+        Grantee::app(app),
+        node.node(),
+        kinds_of(write),
+        Answer::Allow,
+        Grantee::person(person),
+    )
+}
+
+/// What `app`'s grant on `node` allows at `now`, when it holds one that is live: reading it, and
+/// changing it when `write`.
+fn granted_kinds(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    node: &WorkspaceNode,
+    app: &str,
+    write: bool,
+    now: u64,
+) -> Option<tilo_action_policy::KindSet> {
+    let id = grant_id(node, app, write);
+    policy
+        .grants
+        .iter()
+        .find(|held| held.id.as_str() == id)
+        .filter(|held| {
+            held.answer == Answer::Allow
+                && held.stands_in(policy, &tilo_action_policy::Context::at_secs(now))
+        })
+        .map(|held| held.kinds)
+}
+
+/// What a choice gives: reading it, and changing it when `write`.
+fn kinds_of(write: bool) -> tilo_action_policy::KindSet {
+    if write {
+        tilo_action_policy::KindSet::READ_UNDOABLE
+    } else {
+        tilo_action_policy::KindSet::READ
+    }
+}
+
+/// Whether `held` covers every kind in `wanted`.
+fn covers(held: tilo_action_policy::KindSet, wanted: tilo_action_policy::KindSet) -> bool {
+    wanted.iter().all(|kind| held.contains(kind))
+}
+
+/// The grant `app` holds or is given on `node`: one per app, node and what it allows, so a choice
+/// of the same file as a save does not change what an open was given.
+fn grant_id(node: &WorkspaceNode, app: &str, write: bool) -> String {
+    format!(
+        "chosen:{app}:{}:{}",
+        node.id.0,
+        if write { "write" } else { "read" }
+    )
+}
+
+/// The node `id` names in the workspace whose tree `root` mounts, when its record's path is
+/// `expected` (or anywhere, for a reference naming the node alone).
+fn mounted_node(
+    root: &Path,
+    workspace: &str,
+    id: fs_protocol::FileDocumentId,
+    expected: Option<&Path>,
+) -> Option<WorkspaceNode> {
+    let name = format!(
+        "{}{}",
+        fs_protocol::projection::DOCUMENT_INDEX_BY_ID_XATTR_PREFIX,
+        id.0
+    );
+    let bytes = host_fs::attributes::get(root, name).ok().flatten()?;
+    if bytes.len() > fs_protocol::projection::MAX_DOCUMENT_INDEX_PAGE_BYTES {
+        return None;
+    }
+    let exact = fs_protocol::projection::DocumentIndexExactV2::from_json(&bytes).ok()?;
+    exact.validate().ok()?;
+    if exact.record.document_id != id {
+        return None;
+    }
+    let relative = exact.record.path.strip_prefix('/')?;
+    let path = Path::new(relative);
+    if path
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let host = root.join(path);
+    if let Some(expected) = expected
+        && host.canonicalize().ok()? != expected
+    {
+        return None;
+    }
+    Some(WorkspaceNode {
+        workspace: workspace.to_owned(),
+        id,
+        host,
+        directory: exact.record.is_dir,
+    })
 }
 
 /// The app's documents key, as the launcher computed it when it bound the app's view.

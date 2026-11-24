@@ -288,8 +288,9 @@ fn control(bin: &Path, socket: &str, runtime: &str, args: &[&str]) -> Result<Str
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The action model's frame that asks a session for the first page of its catalogue.
-const CATALOGUE_FRAME: &str = r#"{"version":3,"message":{"CatalogueRequest":{"correlation":1}}}"#;
+/// The action model's frame that asks a session for the first page of its catalogue, at
+/// `tilo_actions::remote::REMOTE_ACTIONS_VERSION`: a session refuses any other version.
+const CATALOGUE_FRAME: &str = r#"{"version":5,"message":{"CatalogueRequest":{"correlation":1}}}"#;
 
 /// The smoke test for `cargo desktop --check` and `cargo headless --check`.
 pub fn session(repo: &Path, asked: &Options) -> Result<ExitCode, String> {

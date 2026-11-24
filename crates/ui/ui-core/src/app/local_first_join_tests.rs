@@ -270,6 +270,7 @@ tilo_test_env::scenario! {
                     signed: None,
                 },
             ),
+            press: None,
         };
         probe.app.collaboration.held_requests.push_back(invoke);
         probe.app.pump_collab_presence();

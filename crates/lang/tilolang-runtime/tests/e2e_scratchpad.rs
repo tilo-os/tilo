@@ -5,7 +5,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::rich::RichValue;
-    use tilolang_runtime::{AmStore, EditOutcome, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, EditOutcome, Runtime, Value};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/scratchpad/app.tl");
 

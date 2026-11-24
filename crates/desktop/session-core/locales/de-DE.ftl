@@ -1255,7 +1255,6 @@ hung-app-wait = Warten
 hung-app-force-quit = Erzwungen beenden
 shell-wait-window = Weiter auf { $window } warten
 shell-force-quit-window = { $window } erzwungen beenden
-shell-reopen-window = { $window } erneut öffnen
 activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
@@ -1318,6 +1317,7 @@ so-tilo-chrome-set-width = Die Breite setzen
 so-tilo-chrome-share-window = Ein Fenster teilen
 so-tilo-chrome-shortcut = Ein Tastenkürzel ausführen
 so-tilo-chrome-open-settings = Einstellungen öffnen
+so-tilo-chrome-show-in-files = In Dateien zeigen
 so-tilo-chrome-show-app = Eine App zeigen
 so-tilo-chrome-show-person = Eine Person zeigen
 so-tilo-chrome-show-self = Wer du hier bist
@@ -1339,7 +1339,6 @@ so-tilo-layout-launchpad = Eine Karte wählen
 so-tilo-layout-move-to-display = Auf eine andere Anzeige verschieben
 so-tilo-layout-search = Den Desktop durchsuchen
 so-tilo-layout-step-focus = Durch die Fenster wechseln
-so-tilo-layout-reopen-window = Die App erneut öffnen
 so-tilo-layout-wait-window = Weiter warten
 
 # Parameterbeschreibungen der deklarierten Vokabulare, als `<Label>-<Argument>` gelesen.

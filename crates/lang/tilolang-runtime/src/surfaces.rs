@@ -21,7 +21,8 @@ use crate::error::RuntimeError;
 use crate::exec::MANY_ACTION;
 use crate::handles::ViewState;
 use crate::host_ui::{
-    COPY_LINK_ACTION, KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, VIEW_STATE,
+    COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
+    VIEW_STATE,
 };
 use crate::ids::Actor;
 use crate::value::{ActionRef, RefValue, Value};
@@ -31,8 +32,8 @@ use crate::view_state::StateKey;
 /// A node whose `item` gets the host's menu: what a person right-clicks, long-presses, or picks
 /// out of with the Menu key.
 const MEMBERS: [&str; 3] = ["ui.ListItem", "ui.TreeViewNode", "ui.BoardCard"];
-/// A place of a navigation list: its menu is the view's own, and the system's Copy link of the
-/// resource it stands for stands last in it.
+/// A place of a navigation list: its menu is the view's own, and the system's Export and Copy
+/// link of the resource it stands for stand last in it.
 const NAV_ITEM: &str = "ui.NavItem";
 /// The row of a list: the one member that swipes, too.
 const LIST_ITEM: &str = "ui.ListItem";
@@ -314,8 +315,9 @@ impl Core {
         };
         let mut out = Vec::new();
         for action in first {
-            // A link names one resource: copying one is no command over a choice of many.
-            let Some(id) = opt_text(action, ID).filter(|id| *id != COPY_LINK_ACTION) else {
+            // A link and an export name one resource each: neither is a command over a choice
+            // of many.
+            let Some(id) = opt_text(action, ID).filter(|_| !is_system_offer(action)) else {
                 continue;
             };
             let mut runs = Vec::with_capacity(offered.len());
@@ -461,10 +463,12 @@ impl Core {
             }
         } else if kind == NAV_ITEM
             && let Some(item) = ref_prop(&self.props(at)?, "item")
-            && let Some(link) = self.link_offer(&item)
         {
             let key = self.key(at)?;
-            self.put_in_part(at, MENU, Self::menu_item(&link, &format!("{key}~link")))?;
+            for (index, offer) in self.system_offers(&item).iter().enumerate() {
+                let item = Self::menu_item(offer, &format!("{key}~system-{index}"));
+                self.put_in_part(at, MENU, item)?;
+            }
         }
         for child in self.children(at)? {
             self.item_surfaces(child)?;
@@ -505,9 +509,9 @@ impl Core {
         let direct = shown.len();
         let key = self.key(at)?;
         let mut menu = shown;
-        // The system's Copy link closes the menu, on every row alike: never behind a view's
+        // The system's Export and Copy link close the menu, on every row alike: never behind a view's
         // "More", which holds what the app offers beyond what it placed.
-        let (links, rest): (Vec<Value>, Vec<Value>) = rest.into_iter().partition(is_copy_link);
+        let (links, rest): (Vec<Value>, Vec<Value>) = rest.into_iter().partition(is_system_offer);
         for action in rest {
             menu.push(self.behind_more(action));
         }
@@ -523,7 +527,7 @@ impl Core {
         };
         if kind == LIST_ITEM && self.part(at, SWIPE)?.is_none() {
             // Copying a link is no step on the row: a swipe never runs it.
-            let swipes = |action: &&Value| flag(action, AVAILABLE) && !is_copy_link(action);
+            let swipes = |action: &&Value| flag(action, AVAILABLE) && !is_system_offer(action);
             let swipe = swipeable
                 .iter()
                 .filter(swipes)
@@ -576,9 +580,10 @@ impl Core {
                 Ok(Some((keys, swipe)))
             })
             .map_err(trapped)?;
-        // A row whose item offers nothing of its app's still has the system's Copy link.
+        // A row whose item offers nothing of its app's still has the system's Export and Copy
+        // link.
         let Some((keys, swipe)) =
-            offered.or_else(|| self.link_offer(item).map(|_| (Vec::new(), None)))
+            offered.or_else(|| (!self.system_offers(item).is_empty()).then(|| (Vec::new(), None)))
         else {
             return Ok(());
         };
@@ -880,9 +885,9 @@ impl Core {
     ) -> Result<(), RuntimeError> {
         let key = self.key(shell)?;
         let (acted, mut rest) = Self::as_placed(acted.to_vec(), placed);
-        // The system's Copy link stands in the bar's "…", never as a button of its own: it is on
-        // every resource, and a bar shows what this one is for.
-        let (links, acted): (Vec<Value>, Vec<Value>) = acted.into_iter().partition(is_copy_link);
+        // The system's Export and Copy link stand in the bar's "…", never as buttons of their
+        // own: they are on every resource, and a bar shows what this one is for.
+        let (links, acted): (Vec<Value>, Vec<Value>) = acted.into_iter().partition(is_system_offer);
         rest.extend(links);
         let mut by_place: [Vec<Value>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         for action in acted {
@@ -1602,7 +1607,8 @@ fn opt_text(action: &Value, at: usize) -> Option<&str> {
     .filter(|text| !text.is_empty())
 }
 
-/// Whether `action` is the system's Copy link ([`Core::link_offer`]).
-fn is_copy_link(action: &Value) -> bool {
-    opt_text(action, ID) == Some(COPY_LINK_ACTION)
+/// Whether `action` is one the system offers on every resource, Export or Copy link
+/// ([`Core::system_offers`]).
+fn is_system_offer(action: &Value) -> bool {
+    matches!(opt_text(action, ID), Some(COPY_LINK_ACTION | EXPORT_ACTION))
 }

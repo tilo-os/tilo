@@ -5360,19 +5360,19 @@ async fn dispatch_sdk_request(
                 }
             }
         }
-        CollabRequest::RemoteAction { message } if message.waits() => {
+        CollabRequest::RemoteAction { message, press } if message.waits() => {
             // The host holds this answer until the invocation moves (a cancel
             // right after its invoke still goes out after it).
             let channel = route.channel.clone();
             answer_beside(
-                async move { remote_action_round_trip(&channel, message).await },
+                async move { remote_action_round_trip(&channel, message, press).await },
                 inbound_tx,
                 |message| CollabEvent::RemoteAction { message },
             )
             .await;
         }
-        CollabRequest::RemoteAction { message } => {
-            let answer = remote_action_round_trip(&route.channel, message).await;
+        CollabRequest::RemoteAction { message, press } => {
+            let answer = remote_action_round_trip(&route.channel, message, press).await;
             let _ = inbound_tx.send_reply(CollabEvent::RemoteAction { message: answer });
         }
         CollabRequest::ReportLocalDocumentAction { request_id, report } => {

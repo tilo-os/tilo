@@ -27,23 +27,41 @@ __all__ = [
     "Place",
     "Favorite",
     "Recent",
+    "Preview",
+    "Destination",
+    "Transfer",
+    "FileFacts",
+    "TransferAsk",
+    "TransferStarted",
+    "TransferState",
     "Session",
     "Files",
     "Crumb",
     "FileExplorer",
     "ReadListingArgs",
     "ChangedArgs",
+    "PreviewStepArgs",
     "GoArgs",
-    "ShowArgs",
     "BackArgs",
     "ForwardArgs",
     "UpArgs",
+    "ShowArgs",
+    "ExtractIntoArgs",
+    "MoveIntoArgs",
+    "DropIntoArgs",
+    "CopyIntoArgs",
+    "PutIntoArgs",
+    "PollTransfersArgs",
+    "DismissTransferArgs",
     "DismissNoticeArgs",
     "SortByArgs",
     "AscendingArgs",
     "ShowGridArgs",
     "ChooseViewArgs",
     "ToggleHiddenArgs",
+    "SetZoomArgs",
+    "ZoomInArgs",
+    "ZoomOutArgs",
     "OpenEntryArgs",
     "FindOpenersArgs",
     "OpenWithArgs",
@@ -91,15 +109,14 @@ ChangedArgs = TypedDict("ChangedArgs", {
 })
 """The arguments of `changed`."""
 
+PreviewStepArgs = TypedDict("PreviewStepArgs", {
+})
+"""The arguments of `preview_step`."""
+
 GoArgs = TypedDict("GoArgs", {
     "place": "str",
 })
 """The arguments of `go`."""
-
-ShowArgs = TypedDict("ShowArgs", {
-    "path": "str",
-})
-"""The arguments of `show`."""
 
 BackArgs = TypedDict("BackArgs", {
 })
@@ -112,6 +129,49 @@ ForwardArgs = TypedDict("ForwardArgs", {
 UpArgs = TypedDict("UpArgs", {
 })
 """The arguments of `up`."""
+
+ShowArgs = TypedDict("ShowArgs", {
+    "path": "str",
+})
+"""The arguments of `show`."""
+
+ExtractIntoArgs = TypedDict("ExtractIntoArgs", {
+    "path": "str",
+    "folder": "str",
+})
+"""The arguments of `extract_into`."""
+
+MoveIntoArgs = TypedDict("MoveIntoArgs", {
+    "folder": "str",
+})
+"""The arguments of `move_into`."""
+
+DropIntoArgs = TypedDict("DropIntoArgs", {
+    "paths": "list[str]",
+    "folder": "str",
+})
+"""The arguments of `drop_into`."""
+
+CopyIntoArgs = TypedDict("CopyIntoArgs", {
+    "folder": "str",
+})
+"""The arguments of `copy_into`."""
+
+PutIntoArgs = TypedDict("PutIntoArgs", {
+    "paths": "list[str]",
+    "folder": "str",
+    "moving": "bool",
+})
+"""The arguments of `put_into`."""
+
+PollTransfersArgs = TypedDict("PollTransfersArgs", {
+})
+"""The arguments of `poll_transfers`."""
+
+DismissTransferArgs = TypedDict("DismissTransferArgs", {
+    "transfer": "Transfer",
+})
+"""The arguments of `dismiss_transfer`."""
 
 DismissNoticeArgs = TypedDict("DismissNoticeArgs", {
 })
@@ -141,6 +201,19 @@ ToggleHiddenArgs = TypedDict("ToggleHiddenArgs", {
     "hidden": "bool",
 })
 """The arguments of `toggle_hidden`."""
+
+SetZoomArgs = TypedDict("SetZoomArgs", {
+    "step": "int",
+})
+"""The arguments of `set_zoom`."""
+
+ZoomInArgs = TypedDict("ZoomInArgs", {
+})
+"""The arguments of `zoom_in`."""
+
+ZoomOutArgs = TypedDict("ZoomOutArgs", {
+})
+"""The arguments of `zoom_out`."""
 
 OpenEntryArgs = TypedDict("OpenEntryArgs", {
     "path": "str",
@@ -311,7 +384,7 @@ NameItArgs = TypedDict("NameItArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -372,7 +445,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.file-explorer.Entry`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     lm429k0c: str  # name
     sq7vzl81: str  # path
     @property
@@ -391,7 +464,7 @@ class Entry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.file-explorer.Listing`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     uzztpcqp: str  # path
     @property
     def _9ilrk28j(self) -> list[Entry]:
@@ -408,7 +481,7 @@ class Listing(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.file-explorer.Place`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     kcy1i0qo: str  # label
     z0dyhfw9: str  # path
     @property
@@ -423,21 +496,117 @@ class Place(Resource):
 
 class Favorite(Resource):
     """Favorite — `tl.so.tilo.file-explorer.Favorite`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     m5mpzvqt: str  # place
 
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.file-explorer.Recent`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     v8w5s5s2: str  # name
     ddeyygde: str  # path
     flcdg3ss: str  # opened
 
 
+class Preview(Resource):
+    """Preview — `tl.so.tilo.file-explorer.Preview`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    @property
+    def _3knlafaw(self) -> str:
+        """path (`3knlafaw` on the wire)."""
+        return self.fields["3knlafaw"]
+
+    @_3knlafaw.setter
+    def _3knlafaw(self, value: str) -> None:
+        self.edit("3knlafaw", value=value)
+    @property
+    def _2gbzq5wu(self) -> str:
+        """modified (`2gbzq5wu` on the wire)."""
+        return self.fields["2gbzq5wu"]
+
+    @_2gbzq5wu.setter
+    def _2gbzq5wu(self, value: str) -> None:
+        self.edit("2gbzq5wu", value=value)
+    e52oeizb: Any | None  # file
+
+
+class Destination(Resource):
+    """Destination — `tl.so.tilo.file-explorer.Destination`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    @property
+    def _3wtmjgc5(self) -> str:
+        """name (`3wtmjgc5` on the wire)."""
+        return self.fields["3wtmjgc5"]
+
+    @_3wtmjgc5.setter
+    def _3wtmjgc5(self, value: str) -> None:
+        self.edit("3wtmjgc5", value=value)
+    gpo7gdkp: str  # path
+
+
+class Transfer(Resource):
+    """Transfer — `tl.so.tilo.file-explorer.Transfer`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    holiaqgm: str  # job
+    dtg3bicb: str  # label
+    b4sboihw: int  # done
+    yqeek7os: int  # total
+    o5vail2q: str  # current
+    gdzzzq6x: str  # failed
+
+
+class FileFacts(Resource):
+    """FileFacts — `tl.so.tilo.file-explorer.FileFacts`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    foqi2yof: int  # width
+    sg7ksmy3: int  # height
+    opvq63ti: int  # duration
+    wzwzsjca: int  # pages
+    nea4pran: str  # codec
+    nyczknd7: str  # container
+
+
+class TransferAsk(Resource):
+    """TransferAsk — `tl.so.tilo.file-explorer.TransferAsk`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    wsdpc7wm: list[str]  # paths
+    @property
+    def _3s3dhes2(self) -> str:
+        """folder (`3s3dhes2` on the wire)."""
+        return self.fields["3s3dhes2"]
+
+    @_3s3dhes2.setter
+    def _3s3dhes2(self, value: str) -> None:
+        self.edit("3s3dhes2", value=value)
+    @property
+    def _3ebinaph(self) -> bool:
+        """moving (`3ebinaph` on the wire)."""
+        return self.fields["3ebinaph"]
+
+    @_3ebinaph.setter
+    def _3ebinaph(self, value: bool) -> None:
+        self.edit("3ebinaph", value=value)
+
+
+class TransferStarted(Resource):
+    """TransferStarted — `tl.so.tilo.file-explorer.TransferStarted`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    l4hyxvom: str  # job
+
+
+class TransferState(Resource):
+    """TransferState — `tl.so.tilo.file-explorer.TransferState`."""
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
+    cjszmwp5: str  # state
+    xy4h2hjf: int  # done
+    xqn7tfzw: int  # total
+    mfmf4wlj: str  # current
+    xxm5zyoq: str  # error
+
+
 class Session(Resource):
     """Session — `tl.so.tilo.file-explorer.Session`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     zxu7qmx7: str  # here
     roylouv1: SortBy  # sort
     hm8xkfti: bool  # ascending
@@ -450,6 +619,14 @@ class Session(Resource):
     @_31bypi4c.setter
     def _31bypi4c(self, value: bool) -> None:
         self.edit("31bypi4c", value=value)
+    @property
+    def _2myooacl(self) -> int:
+        """zoom (`2myooacl` on the wire)."""
+        return self.fields["2myooacl"]
+
+    @_2myooacl.setter
+    def _2myooacl(self, value: int) -> None:
+        self.edit("2myooacl", value=value)
     @property
     def _9cdifavr(self) -> list[str]:
         """went (`9cdifavr` on the wire)."""
@@ -491,6 +668,14 @@ class Session(Resource):
     def _9psytdam(self, value: list[Entry[Listing]]) -> None:
         self.edit("9psytdam", value=value)
     @property
+    def _2kuloiux(self) -> list[Entry[Preview]]:
+        """previews (`2kuloiux` on the wire)."""
+        return self.fields["2kuloiux"]
+
+    @_2kuloiux.setter
+    def _2kuloiux(self, value: list[Entry[Preview]]) -> None:
+        self.edit("2kuloiux", value=value)
+    @property
     def _8kzpf3es(self) -> Any | None:
         """preview (`8kzpf3es` on the wire)."""
         return self.fields["8kzpf3es"]
@@ -500,17 +685,33 @@ class Session(Resource):
         self.edit("8kzpf3es", value=value)
     omzv6cq5: str  # previewed
     l1bciwln: str  # words
+    @property
+    def _27yiejjv(self) -> FileFacts | None:
+        """facts (`27yiejjv` on the wire)."""
+        return self.fields["27yiejjv"]
+
+    @_27yiejjv.setter
+    def _27yiejjv(self, value: FileFacts | None) -> None:
+        self.edit("27yiejjv", value=value)
     wduoe4ej: list[str]  # chosen
     zgzedmq4: str  # selected
     kljwn54u: list[str]  # templates
     uswipaet: str  # opening
     v4v6h4ut: list[Any]  # openers
     fpb2xkum: str  # notice
+    @property
+    def _3jhnrnyu(self) -> list[Entry[Transfer]]:
+        """transfers (`3jhnrnyu` on the wire)."""
+        return self.fields["3jhnrnyu"]
+
+    @_3jhnrnyu.setter
+    def _3jhnrnyu(self, value: list[Entry[Transfer]]) -> None:
+        self.edit("3jhnrnyu", value=value)
 
 
 class Files(Resource):
     """Files — `tl.so.tilo.file-explorer.Files`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     @property
     def _7dfrn16h(self) -> list[Entry[Session]]:
         """sessions (`7dfrn16h` on the wire)."""
@@ -552,6 +753,14 @@ class Files(Resource):
         """Runs `changed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("changed", items)
 
+    def preview_step(self) -> None:
+        """Makes the previews of a few pictures in the folder shown that have none yet, as the window shows it: a folder of photographs fills with their pictures while the person looks at it, without the window waiting for every one when the folder is read."""
+        return self.action("preview_step")
+
+    def preview_step_many(self, items: list[PreviewStepArgs]) -> list[dict[str, Any]]:
+        """Runs `preview_step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("preview_step", items)
+
     def go(self, *, place: str) -> None:
         """Goes to the place `place`, reading it: a folder, the trash, the recent files or the apps."""
         return self.action("go", place=place)
@@ -559,14 +768,6 @@ class Files(Resource):
     def go_many(self, items: list[GoArgs]) -> list[dict[str, Any]]:
         """Runs `go` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("go", items)
-
-    def show(self, *, path: str) -> None:
-        """Shows the place `path` names: the folder itself, or the folder holding the file, with that file marked. Another app asks this when it shows where something it made or saved stands; a person opens a file with `open_entry` instead, which opens what the file holds."""
-        return self.action("show", path=path)
-
-    def show_many(self, items: list[ShowArgs]) -> list[dict[str, Any]]:
-        """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("show", items)
 
     def back(self) -> None:
         """Goes back to the place the person came from."""
@@ -591,6 +792,87 @@ class Files(Resource):
     def up_many(self, items: list[UpArgs]) -> list[dict[str, Any]]:
         """Runs `up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("up", items)
+
+    def show(self, *, path: str) -> None:
+        """Shows `path` in this window: the folder itself when it is one, and the folder that holds it with the entry chosen when it is a file. It is how another app sends a person to a file it made, and how an agent or a link brings them to one, so the person reads where it stands in its folder."""
+        return self.action("show", path=path)
+
+    def show_many(self, items: list[ShowArgs]) -> list[dict[str, Any]]:
+        """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("show", items)
+
+    def extract_into(self,
+        *,
+        path: str,
+        folder: str,
+    ) -> None:
+        """Extracts the archive at `path` into `folder`, into a folder named after it there: what the rows that offer a folder to extract into ask."""
+        return self.action("extract_into", path=path, folder=folder)
+
+    def extract_into_many(self, items: list[ExtractIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `extract_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("extract_into", items)
+
+    def move_into(self, *, folder: str) -> None:
+        """Moves the entries the person chose into `folder`, keeping a taken name both."""
+        return self.action("move_into", folder=folder)
+
+    def move_into_many(self, items: list[MoveIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `move_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_into", items)
+
+    def drop_into(self,
+        *,
+        paths: list[str],
+        folder: str,
+    ) -> None:
+        """Moves the entries the person dragged onto the folder `folder`, by their `paths`, as 'Move to…' does, keeping a taken name both. A folder let go on itself, inside itself or on the folder its entries already stand in moves nothing."""
+        return self.action("drop_into", paths=paths, folder=folder)
+
+    def drop_into_many(self, items: list[DropIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `drop_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("drop_into", items)
+
+    def copy_into(self, *, folder: str) -> None:
+        """Copies the entries the person chose into `folder`, keeping a taken name both."""
+        return self.action("copy_into", folder=folder)
+
+    def copy_into_many(self, items: list[CopyIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `copy_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("copy_into", items)
+
+    def put_into(self,
+        *,
+        paths: list[str],
+        folder: str,
+        moving: bool,
+    ) -> None:
+        """Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work: the window shows how far it has got and can stop it. What arrives under a name the folder already holds lands as “name (2)”, so nothing is replaced."""
+        return self.action("put_into", paths=paths, folder=folder, moving=moving)
+
+    def put_into_many(self, items: list[PutIntoArgs]) -> list[dict[str, Any]]:
+        """Runs `put_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("put_into", items)
+
+    def poll_transfers(self) -> None:
+        """Asks how far each transfer under way has got. One that finished leaves the window and the folder is read again; one that failed stays, saying why, until it is dismissed."""
+        return self.action("poll_transfers")
+
+    def poll_transfers_many(self, items: list[PollTransfersArgs]) -> list[dict[str, Any]]:
+        """Runs `poll_transfers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("poll_transfers", items)
+
+    def stop_transfer(self, *, transfer: Transfer) -> None:
+        """Stops the transfer `transfer`: the entry it was on is taken away, and what it finished stays."""
+        return self.action("stop_transfer", transfer=transfer)
+
+    def dismiss_transfer(self, *, transfer: Transfer) -> None:
+        """Takes a transfer that stopped short out of the window."""
+        return self.action("dismiss_transfer", transfer=transfer)
+
+    def dismiss_transfer_many(self, items: list[DismissTransferArgs]) -> list[dict[str, Any]]:
+        """Runs `dismiss_transfer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("dismiss_transfer", items)
 
     def send_nearby(self, *, nearby: str) -> None:
         """Sends the entries the person chose to the nearby device `nearby`, as Nearby Send offers it."""
@@ -644,6 +926,30 @@ class Files(Resource):
     def toggle_hidden_many(self, items: list[ToggleHiddenArgs]) -> list[dict[str, Any]]:
         """Runs `toggle_hidden` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("toggle_hidden", items)
+
+    def set_zoom(self, *, step: int) -> None:
+        """Draws the entries at `step`: 0 smaller, 1 regular, 2 larger, as the two keys step it."""
+        return self.action("set_zoom", step=step)
+
+    def set_zoom_many(self, items: list[SetZoomArgs]) -> list[dict[str, Any]]:
+        """Runs `set_zoom` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_zoom", items)
+
+    def zoom_in(self) -> None:
+        """Draws the entries one step larger."""
+        return self.action("zoom_in")
+
+    def zoom_in_many(self, items: list[ZoomInArgs]) -> list[dict[str, Any]]:
+        """Runs `zoom_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("zoom_in", items)
+
+    def zoom_out(self) -> None:
+        """Draws the entries one step smaller."""
+        return self.action("zoom_out")
+
+    def zoom_out_many(self, items: list[ZoomOutArgs]) -> list[dict[str, Any]]:
+        """Runs `zoom_out` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("zoom_out", items)
 
     def open_entry(self, *, path: str) -> None:
         """Opens the entry `e`: a folder in this window, a file in the app that opens its kind."""
@@ -882,7 +1188,7 @@ class Files(Resource):
         return self.many("compress_selection", items)
 
     def paste(self) -> None:
-        """Pastes what the person carries into the place shown. A name the folder already holds is kept both: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is overwritten."""
+        """Pastes what the person carries into the place shown, as the device's own work that says how far it has got. A name the folder already holds is kept both: what arrives lands as “name (2)”, so nothing is overwritten."""
         return self.action("paste")
 
     def paste_many(self, items: list[PasteArgs]) -> list[dict[str, Any]]:
@@ -971,17 +1277,17 @@ class Files(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "go", "go_many", "show", "show_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "import_dropped", "import_dropped_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app"})
+    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "preview_step", "preview_step_many", "go", "go_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "show", "show_many", "extract_into", "extract_into_many", "move_into", "move_into_many", "drop_into", "drop_into_many", "copy_into", "copy_into_many", "put_into", "put_into_many", "poll_transfers", "poll_transfers_many", "stop_transfer", "dismiss_transfer", "dismiss_transfer_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "set_zoom", "set_zoom_many", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "import_dropped", "import_dropped_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app"})
 
 
 class Crumb(Resource):
     """Crumb — `tl.so.tilo.file-explorer.Crumb`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
     lbeg1rhd: str  # label
     sv3ucdrd: str  # path
 
 
 class FileExplorer(Resource):
     """Files — `tl.so.tilo.file-explorer`."""
-    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    __surface__ = "so.tilo.file-explorer@dd3290d42b0cc4c0"
 

@@ -99,6 +99,27 @@ fn layout() -> Layout {
     tree
 }
 
+/// The tab `id`, wherever it stands.
+fn tab(tree: &Layout, id: TabId) -> Tab {
+    tree.tab(id).cloned().expect("the tab stands")
+}
+
+/// Put the card an ended app leaves in tab `id`'s place, as the shell's window placement does.
+fn card(tree: &mut Layout, id: TabId) {
+    let held = tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| workspace.strips.iter_mut())
+        .flat_map(|strip| strip.window_groups.iter_mut())
+        .flat_map(|group| group.tabs.iter_mut())
+        .find(|held| held.id == id)
+        .expect("the tab stands");
+    held.tile = TileContent::AppPlaceholder {
+        kind: tilo_desktop_model::AppKind::Other("so.tilo.notes".into()),
+        label: "so.tilo.notes".into(),
+    };
+}
+
 fn ids(tree: &Layout, group_id: u64) -> Vec<TabId> {
     tree.workspaces
         .iter()
@@ -331,12 +352,13 @@ tilo_test_env::scenario! {
         assert!(workspace.closed_tabs().closed_by_person(31));
         assert!(!workspace.closed_tabs().closed_by_person(40));
         assert!(
-            workspace.reopen_closed_tab(31).is_none(),
+            !workspace.hold_ended(31, "so.tilo.chat"),
             "a window the person closed is not put back for its app"
         );
+        assert!(workspace.hold_ended(40, "record:so.tilo.docs:plan"));
         assert_eq!(
-            workspace.reopen_closed_tab(40).map(|put| (put.group, put.tab)),
-            Some((21, 40)),
+            ids(&tree, 21),
+            [40],
             "a window that went is put back where it stood"
         );
         assert_eq!(
@@ -345,6 +367,57 @@ tilo_test_env::scenario! {
             Some((20, 31)),
             "the person's reopen still brings back what they closed"
         );
+    }
+
+    phase the_window_an_ended_app_left_reopens_exactly_over_its_card;
+    // An app ends under its window: the card says so in the window's place, and the window's
+    // close stays remembered with the launch that opens it on what it showed. Another window of
+    // the same app closes after it; reopening the ended one by its id brings back that window,
+    // over its card, not the newest close of its app.
+    {
+        let mut tree = layout();
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(app(33, "Notes", "so.tilo.notes"));
+        tree.window_went(30).unwrap();
+        assert!(tree.workspaces[0].hold_ended(30, "record:so.tilo.notes:plan"));
+        card(&mut tree, 30);
+        tree.close_tab(33).unwrap();
+        assert_eq!(ids(&tree, 20), [30, 31, 32], "the card stands in the window's place");
+
+        let back = tree.reopen_closed_window(30).expect("the ended window reopens");
+        assert_eq!((back.group, back.tab), (20, 30));
+        assert_eq!(back.launch.as_deref(), Some("record:so.tilo.notes:plan"));
+        assert_eq!(ids(&tree, 20), [30, 31, 32], "in its own place, once");
+        assert!(
+            matches!(&tab(&tree, 30).tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"),
+            "the window, not its card: {:?}",
+            tab(&tree, 30).tile
+        );
+        assert!(tree.reopen_closed_window(30).is_none(), "a close is undone once");
+        assert_eq!(
+            tree.reopen_closed(WorkspaceId::from_u128(1), Some("so.tilo.notes"))
+                .map(|put| put.tab),
+            Some(33),
+            "the other window of the app is still there to reopen"
+        );
+    }
+
+    phase dismissing_the_card_leaves_the_window_to_reopen;
+    // The person dismisses the card: what they closed is the window the card stood for, so their
+    // reopen brings back that window on what it showed, not the card.
+    {
+        let mut tree = layout();
+        tree.window_went(40).unwrap();
+        assert!(tree.workspaces[0].hold_ended(40, "record:so.tilo.docs:plan"));
+        card(&mut tree, 40);
+        tree.close_tab(40).unwrap();
+        assert!(tree.workspaces[0].closed_tabs().closed_by_person(40));
+        assert_eq!(tree.workspaces[0].closed_tabs().len(), 1, "one close, the window's");
+        let back = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
+        assert_eq!(back.tab, 40);
+        assert_eq!(back.launch.as_deref(), Some("record:so.tilo.docs:plan"));
+        assert!(matches!(tab(&tree, 40).tile, TileContent::LocalApp { .. }));
     }
 
     phase the_reopen_command_puts_back_the_last_close_of_its_workspace;

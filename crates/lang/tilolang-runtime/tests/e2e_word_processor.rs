@@ -170,7 +170,7 @@ view member_row(p: Member) {
             }
         }
 
-        fn words(&self, words: &str) -> Value {
+        fn words(words: &str) -> Value {
             Value::Rich(RichValue::from_text(words))
         }
 
@@ -367,12 +367,15 @@ view member_row(p: Member) {
     fn the_page_zooms_from_the_toolbar_and_the_band_says_how_large_it_reads() {
         let writer = Writer::new();
         let mut view = writer.window();
-        assert_eq!(shown_zoom(&view), 1.0, "a page opens at its own size");
+        assert!(
+            (shown_zoom(&view) - 1.0).abs() < f64::EPSILON,
+            "a page opens at its own size"
+        );
 
         let larger = control(&view, "ui.ToolbarButton", "Zoom in");
         view.press(&larger).unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(shown_zoom(&view), 1.25);
+        assert!((shown_zoom(&view) - 1.25).abs() < f64::EPSILON);
         assert!(
             texts(&view).iter().any(|text| text == "125%"),
             "the band names the size the page reads at: {:?}",
@@ -383,7 +386,10 @@ view member_row(p: Member) {
         view.press(&smaller).unwrap();
         view.press(&smaller).unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(shown_zoom(&view), 0.8, "two steps back from 125%");
+        assert!(
+            (shown_zoom(&view) - 0.8).abs() < f64::EPSILON,
+            "two steps back from 125%"
+        );
 
         // The page's menu names the sizes it is set at, and choosing one sets it.
         let menu = view.tree().clone();
@@ -394,7 +400,7 @@ view member_row(p: Member) {
         let half = half.key.clone();
         view.fire(&half, "choose").unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(shown_zoom(&view), 1.5);
+        assert!((shown_zoom(&view) - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -480,7 +486,7 @@ view member_row(p: Member) {
             "comment_on",
             vec![
                 Value::resource(&writer.doc),
-                writer.words("Which Monday?"),
+                Writer::words("Which Monday?"),
                 Value::text("\u{b6}2"),
                 Value::Int(0),
                 Value::Int(2),
@@ -501,7 +507,7 @@ view member_row(p: Member) {
         );
         let InvokeOutcome::Done(Value::Ref(plain)) = writer.call(
             "comment_on",
-            vec![Value::resource(&writer.doc), writer.words("Looks good.")],
+            vec![Value::resource(&writer.doc), Writer::words("Looks good.")],
         ) else {
             panic!("a comment on the whole document is the answer too");
         };
@@ -604,7 +610,7 @@ view member_row(p: Member) {
             "comment_on",
             vec![
                 Value::resource(&writer.doc),
-                writer.words("Which Monday?"),
+                Writer::words("Which Monday?"),
                 Value::text("\u{b6}2"),
                 Value::Int(11),
                 Value::Int(17),

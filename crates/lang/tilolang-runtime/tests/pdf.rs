@@ -10,7 +10,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.papers "Papers"
 

@@ -22,7 +22,9 @@ mod cases {
         let times: Vec<String> = (0..hours)
             .map(|h| format!("2026-11-24T{h:02}:00"))
             .collect();
-        let temps: Vec<f64> = (0..hours).map(|h| (h as f64) + 2.0).collect();
+        let temps: Vec<f64> = (0..hours)
+            .map(|h| f64::from(u32::try_from(h).unwrap_or(0)) + 2.0)
+            .collect();
         json!({
             "current": {
                 "time": format!("2026-11-24T{current:02}:00"),
@@ -369,15 +371,19 @@ mod cases {
             let add = of_kind(window.tree(), "ui.Button")
                 .into_iter()
                 .find(|button| text(button, "label") == "Add place")
-                .map(|button| button.key.clone())
-                .unwrap_or_else(|| panic!("no Add place in {}", dump(window.tree())));
+                .map_or_else(
+                    || panic!("no Add place in {}", dump(window.tree())),
+                    |button| button.key.clone(),
+                );
             window.press(&add).unwrap();
             window.poll_patches().unwrap();
             let field = of_kind(window.tree(), "ui.Autocomplete")
                 .into_iter()
                 .next()
-                .map(|field| field.key.clone())
-                .unwrap_or_else(|| panic!("no search field in {}", dump(window.tree())));
+                .map_or_else(
+                    || panic!("no search field in {}", dump(window.tree())),
+                    |field| field.key.clone(),
+                );
             (window, field)
         }
 
@@ -622,7 +628,7 @@ mod cases {
                 .expect("the feels-like tile");
             assert_eq!(text(feels, "value"), "64°", "{:?}", dump(window.tree()));
             assert!(
-                feels.props.get("unit").is_none(),
+                !feels.props.contains_key("unit"),
                 "and takes no unit beside it: {:?}",
                 dump(window.tree())
             );

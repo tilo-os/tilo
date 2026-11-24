@@ -23,12 +23,8 @@ use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_server_protocol::WorkspaceId;
 
-use tilo_workspace_service::agents::agent_keys::AgentKeys;
 use tilo_workspace_service::agents::{Model, ServerAgents};
-
-use super::mount;
 
 const CHAT: &str = "so.tilo.chat";
 const MESSAGE: &str = "tl.so.tilo.chat.Message";
@@ -128,35 +124,6 @@ fn tool_call(id: &str, action: &str, arguments: Value) -> Content {
 }
 
 /// The key a person's device makes for its agents: one fixed key here.
-struct Keys;
-
-impl AgentKeys for Keys {
-    fn grant(
-        &self,
-        _workspace: WorkspaceId,
-        _agent: &str,
-        _name: &str,
-        _person: [u8; 32],
-    ) -> Result<[u8; 32], String> {
-        Ok([7; 32])
-    }
-
-    fn sign(
-        &self,
-        _workspace: WorkspaceId,
-        _key: &[u8; 32],
-        _request: &mut tilo_actions::remote::InvokeRequest,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn made(
-        &self,
-        _key: &[u8; 32],
-    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
-        None
-    }
-}
 
 /// Make `scout` through the workspace's typed create, with the moderation watch: what a
 /// Moderator's device asks.
@@ -204,6 +171,31 @@ async fn create_watching_agent(
             tilo_actions::remote::PendingPoll::Abandoned => panic!("the agent's making is dropped"),
         }
     }
+}
+
+/// The device a moderation turn runs on: the person's workspace with Chat declared, Scout
+/// watching it, and the grants its undo is admitted by.
+async fn moderation_device() -> super::Device {
+    let device = super::Device::start("Moderation", Some(CHAT)).await;
+    let owner = device.person();
+    create_watching_agent(device.workspaces(), &device.workspace, &device.cert).await;
+    grant_scout(device.workspaces(), &device.workspace, &owner).await;
+    device
+}
+
+/// The model the device runs Scout's turns with, keeping what it was asked.
+fn scripted(person: String) -> (Model, Arc<Mutex<Vec<ModelRequest>>>) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let model: Model = {
+        let asked = Arc::clone(&asked);
+        Arc::new(move || {
+            Some(Box::new(Scripted {
+                person: person.clone(),
+                asked: Arc::clone(&asked),
+            }) as Box<dyn PlanTurns>)
+        })
+    };
+    (model, asked)
 }
 
 /// The workspace lets `scout` change its records, so its undo is admitted.
@@ -337,24 +329,13 @@ fn posted(
 /// turn whose saver may not records nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_run() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
-    tilo_workspace_service::surfaces::decide_receipt(&scratch.path().join("surfaces"));
-    let server =
-        tilo_workspace_service::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    mount(&workspaces);
-    // Chat's types are declared so a write to its record is judged by them, as the tests that
-    // write a built-in app's record do.
-    tilo_workspace_service::workspaces::fixtures::declare_built_in_app(&server, CHAT);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Moderation").await.unwrap().workspace;
-    let owner = hex::encode(cert.user_public_key);
-    create_watching_agent(&workspaces, &workspace, &cert).await;
-    grant_scout(&workspaces, &workspace, &owner).await;
+    let surfaces = tempfile::tempdir().unwrap();
+    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    let device = moderation_device().await;
+    let cert = &device.cert;
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    let owner = device.person();
 
     general(&workspaces, &workspace, &cert.user_public_key).await;
     post(&workspaces, &workspace, &cert, "a spam offer").await;
@@ -368,20 +349,11 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
         "the person's posts are in the record's history: {before:#?}"
     );
 
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let model: Model = {
-        let asked = Arc::clone(&asked);
-        let person = owner.clone();
-        Arc::new(move || {
-            Some(Box::new(Scripted {
-                person: person.clone(),
-                asked: Arc::clone(&asked),
-            }) as Box<dyn PlanTurns>)
-        })
-    };
+    let (model, asked) = scripted(owner.clone());
     let provider = Arc::new(tilo_actions::remote::TestProvider::new());
     let agents =
-        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(Keys)).scripted(model);
+        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(super::Keys([7; 32])))
+            .scripted(model);
     let event = posted(&workspace, &owner, "m-1");
     let place =
         tilo_workspace_service::agents::triggered::Where::of(&event).expect("a message is a place");
@@ -457,41 +429,21 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 /// nothing is taken back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
-    tilo_workspace_service::surfaces::decide_receipt(&scratch.path().join("surfaces"));
-    let server =
-        tilo_workspace_service::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    mount(&workspaces);
-    // Chat's types are declared so a write to its record is judged by them, as the tests that
-    // write a built-in app's record do.
-    tilo_workspace_service::workspaces::fixtures::declare_built_in_app(&server, CHAT);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Moderation").await.unwrap().workspace;
-    let owner = hex::encode(cert.user_public_key);
-    create_watching_agent(&workspaces, &workspace, &cert).await;
-    grant_scout(&workspaces, &workspace, &owner).await;
+    let surfaces = tempfile::tempdir().unwrap();
+    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    let device = moderation_device().await;
+    let cert = &device.cert;
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    let owner = device.person();
     general(&workspaces, &workspace, &cert.user_public_key).await;
     post(&workspaces, &workspace, &cert, "a spam offer").await;
 
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let model: Model = {
-        let asked = Arc::clone(&asked);
-        let person = owner.clone();
-        Arc::new(move || {
-            Some(Box::new(Scripted {
-                person: person.clone(),
-                asked: Arc::clone(&asked),
-            }) as Box<dyn PlanTurns>)
-        })
-    };
+    let (model, asked) = scripted(owner.clone());
     let provider = Arc::new(tilo_actions::remote::TestProvider::new());
     let agents =
-        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(Keys)).scripted(model);
+        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(super::Keys([7; 32])))
+            .scripted(model);
     let saver = "c2".repeat(32); // a member whose grants do not reach the record
     let event = posted(&workspace, &owner, "m-1");
     let place =

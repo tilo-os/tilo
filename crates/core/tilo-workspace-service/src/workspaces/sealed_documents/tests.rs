@@ -636,20 +636,23 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
 /// none until the fetch lands, then one that admits a sealed write.
 struct LateSurface(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
+/// A surface whose kind, the one the members' writes edit, publishes an edit of every field of
+/// the record: a member's write under it is one its app allows, whether it is admitted or opened
+/// from the record's sealed history.
 struct AnySurface;
 
 impl collab_types::ReceiptSurface for AnySurface {
     fn kind(&self) -> &'static str {
-        ""
+        "fixture"
     }
     fn verb(&self, _: &str) -> Option<(tilo_action_policy::ActionKind, Option<String>)> {
         None
     }
     fn editable(&self, _: &[tilo_actions::PathStep]) -> bool {
-        false
+        true
     }
     fn footprint(&self, _: &collab_types::ClaimedAction) -> Vec<collab_types::UnitPath> {
-        Vec::new()
+        vec![Vec::new()]
     }
 }
 

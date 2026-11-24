@@ -1227,6 +1227,13 @@ fn new_resource<A: ResourceApp>(
 /// What initializing a new record writes into it.
 type ResourceWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
 
+/// Bring a record up to date with the app; what it answers when it cannot.
+type Migration<'a> = &'a dyn Fn(&mut tilo_resource::Doc) -> Result<(), String>;
+
+/// The migration over the records an app's windows kept, when it keeps one per
+/// workspace ([`ResourceApp::WORKSPACE_RESOURCE`]); none when its seed adopts them.
+type Migrate<'a> = Option<Migration<'a>>;
+
 /// Initialize the new record `context` opened: `genesis` into its genesis,
 /// then `seed`, then what the app's windows kept, one record each, before it
 /// kept one per workspace, each brought up to date by `migrate`; nothing of
@@ -1236,7 +1243,7 @@ fn initialize_resource(
     context: &mut ProcessContext,
     genesis: ResourceWrite<'_>,
     seed: ResourceWrite<'_>,
-    migrate: Option<&dyn Fn(&mut tilo_resource::Doc) -> Result<(), String>>,
+    migrate: Migrate<'_>,
 ) -> Result<(), LaunchError> {
     let windows = if migrate.is_some() {
         context.window_resources()

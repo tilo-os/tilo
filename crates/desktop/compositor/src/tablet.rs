@@ -300,7 +300,7 @@ impl State {
             TabletPhase::ProximityIn | TabletPhase::ProximityOut | TabletPhase::Motion => None,
         };
         if let Some((button, pressed)) = press {
-            self.pointer_button(button, pressed, serial, time);
+            self.pointer_button(button, pressed, serial, time, true);
         }
     }
 }

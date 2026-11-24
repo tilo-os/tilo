@@ -11,7 +11,7 @@
     reason = "one scenario, end to end, reads as one test; a fixture failing is its test failing"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value as Json, json};
@@ -30,15 +30,14 @@ use tilo_resource_store::{Cell, Resource, Stamp, Value};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 
-use tilo_workspace_service::agents::agent_keys::AgentKeys;
 use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE};
 use tilo_workspace_service::agents::{Model, ServerAgents};
-use tilo_workspace_service::apps::triggers::{Firing, Runner, StartRun};
+use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, device_cert, governor, test_host_holding,
+    Started, TestGroupKeys, device_cert, governor, test_host_holding,
 };
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
@@ -48,30 +47,6 @@ use super::mount;
 pub(super) const SCOUT: &str = "scout";
 /// What Bea's agent answers, as its model says it.
 pub(super) const PLAN_READY: &str = "the plan is ready";
-
-/// The firings a device was asked to start.
-#[derive(Default)]
-pub(super) struct Started(pub(super) Mutex<Vec<Firing>>);
-
-impl StartRun for Started {
-    fn start(
-        &self,
-        firing: &Firing,
-        _: tilo_automation::AutomationInvocationId,
-    ) -> Result<u64, ActionCallError> {
-        let mut started = self.0.lock().unwrap();
-        started.push(firing.clone());
-        Ok(u64::try_from(started.len()).unwrap())
-    }
-
-    fn ended(
-        &self,
-        _: &Firing,
-        _: tilo_automation::AutomationInvocationId,
-    ) -> Option<tilo_automation::InvocationReport> {
-        None
-    }
-}
 
 /// A model that answers at once, in words.
 pub(super) struct Answers;
@@ -104,32 +79,6 @@ impl PlanTurns for Answers {
 
 /// The key Bea's device makes for her agent: one fixed key here, which the dispatch standing in
 /// for her device's takes as the agent's own.
-struct Keys;
-
-impl AgentKeys for Keys {
-    fn grant(
-        &self,
-        _: tilo_server_protocol::WorkspaceId,
-        _: &str,
-        _: &str,
-        _: [u8; 32],
-    ) -> Result<[u8; 32], String> {
-        Ok([9; 32])
-    }
-
-    fn sign(
-        &self,
-        _: tilo_server_protocol::WorkspaceId,
-        _: &[u8; 32],
-        _: &mut InvokeRequest,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn made(&self, _: &[u8; 32]) -> Option<(DeviceCert, SigningKey)> {
-        None
-    }
-}
 
 /// `operation` of `workspace`'s agents with `arguments`, asked by `device` over `workspaces`'
 /// dispatch, as every caller asks it.
@@ -462,8 +411,12 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         }))
     };
     let model: Model = Arc::new(|| Some(Box::new(Answers) as Box<dyn PlanTurns>));
-    let agents =
-        ServerAgents::on_device(beas.clone(), dispatch.clone(), Arc::new(Keys)).scripted(model);
+    let agents = ServerAgents::on_device(
+        beas.clone(),
+        dispatch.clone(),
+        Arc::new(super::Keys([9; 32])),
+    )
+    .scripted(model);
     let event = serde_json::from_value(firing.inputs[tilo_automation::EVENT_INPUT].clone())
         .expect("the firing carries the change");
     let taken = agents

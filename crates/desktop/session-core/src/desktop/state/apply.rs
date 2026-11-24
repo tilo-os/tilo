@@ -145,6 +145,30 @@ fn resolve(shared: &mut Shared, tiles: &dyn TileSource, command: Admitted) -> Ad
     clippy::too_many_lines,
     reason = "one match: every command the desktop answers, each against the tree"
 )]
+/// A reopened window, `reopened`, back on the desktop: the row takes it in as it takes a window a
+/// peer added, and the strip comes to it as it does to a launched one. Whether anything came back.
+fn put_back(
+    shared: &mut Shared,
+    tiles: &mut dyn TileSource,
+    ops: &mut Vec<RowOp>,
+    reopened: Option<tilo_desktop_model::Reopened>,
+) -> bool {
+    let Some(reopened) = reopened else {
+        return false;
+    };
+    ops.push(RowOp::Reveal(reopened.strip, reopened.group));
+    shared.replaced = true;
+    // A window an app's end took comes back over the card that said so: the card goes with it.
+    shared.ended.remove(&reopened.tab);
+    // The window that closed is gone for good, so the tab comes back as the app that opens it
+    // again: the app is asked for, on what the window showed when the close knew it, and the
+    // window that comes takes this tab.
+    if let Some((workspace, tab)) = find_tab(&shared.tree, reopened.strip, reopened.tab) {
+        tiles.reopened(workspace, tab, reopened.launch.as_deref());
+    }
+    true
+}
+
 fn apply(
     shared: &mut Shared,
     tiles: &mut dyn TileSource,
@@ -250,21 +274,14 @@ fn apply(
             }
             true
         }
-        // The window comes back where it was, its app launched again if that is what it takes:
-        // the row takes it in as it takes a window a peer added, and the strip comes to it as it
-        // does to a launched one.
+        // The window comes back where it was, its app launched again if that is what it takes.
         Admitted::Reopen(workspace, app) => {
-            let Some(reopened) = shared.tree.reopen_closed(workspace, app.as_deref()) else {
-                return false;
-            };
-            ops.push(RowOp::Reveal(reopened.strip, reopened.group));
-            shared.replaced = true;
-            // The window that closed is gone for good, so the tab comes back as the app that
-            // opens it again: the app is asked for, and the window that comes takes this tab.
-            if let Some((workspace, tab)) = find_tab(&shared.tree, reopened.strip, reopened.tab) {
-                tiles.reopened(workspace, tab);
-            }
-            true
+            let reopened = shared.tree.reopen_closed(workspace, app.as_deref());
+            put_back(shared, tiles, ops, reopened)
+        }
+        Admitted::ReopenWindow(tab) => {
+            let reopened = shared.tree.reopen_closed_window(tab);
+            put_back(shared, tiles, ops, reopened)
         }
         Admitted::Strip(workspace, strip) => {
             shared.tree.active = workspace;

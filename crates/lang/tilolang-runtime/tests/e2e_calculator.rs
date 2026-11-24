@@ -65,7 +65,7 @@ mod cases {
             let kept = returned_ref(done);
             match self.rt.read(&kept, "result").unwrap() {
                 Value::Text(said) => Ok(said),
-                other => panic!("result reads {other:?}"),
+                other => Err(format!("result reads {other:?}")),
             }
         }
 
@@ -329,9 +329,12 @@ mod cases {
             use std::cell::RefCell;
             use std::rc::Rc;
 
+            /// The media type and bytes of what the person copied.
+            type Copied = Option<(String, Vec<u8>)>;
+
             /// The person's selection, as the device answers it: what a copy leaves there.
             #[derive(Clone, Default)]
-            struct Selection(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+            struct Selection(Rc<RefCell<Copied>>);
 
             impl tilolang_runtime::clipboard::ClipboardHost for Selection {
                 fn copy(&self, mime: &str, bytes: &[u8]) -> bool {

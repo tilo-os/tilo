@@ -321,7 +321,7 @@ prefix=tilo-sh-local
 commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "${TILO_SH_REMOTE_COMMIT:-unknown}")
 
 native=$state/native   # what the native stack builds and lays out
-runs=$state/run         # each native process's runtime directory and pid
+runs=$state/run         # each native process's environment, pid and files
 # Where the programs and the bundle are built: on the build server by the
 # cargo drop-in TILO_SH_CARGO names (`builder`, the default), or by t's checks
 # (`t`, from_t below).
@@ -1073,12 +1073,9 @@ as_owner() {
 owner_run() {
   local home=$state/owner/home run
   mkdir -p "$home"
-  # Their own runtime directory, where the holder of their device listens: one this account
-  # makes private, since tilo refuses a temporary directory's tilo-UID someone else made (a
-  # build container's temporary directory is every container's), and short, since a socket's
-  # path is.
-  run=${TMPDIR:-/tmp}/tilo-sh-$(printf '%s' "$home" | sha256sum | cut -c1-12)
-  mkdir -p -m 700 "$run"
+  # Their own runtime directory, where the holder of their device listens: the stack's own,
+  # private and short (stack_runtime).
+  run=$(stack_runtime owner) || exit 1
   XDG_RUNTIME_DIR=$run \
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
@@ -1095,13 +1092,20 @@ owner_run() {
 # there is a person: the daemon is what makes one (stack_person).
 owner_daemon() {
   local runtime log=$state/logs/person.log
-  [[ ${1-} == --before-person || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
+  # A person made by an earlier start that stopped before the Lounge joined them has no login
+  # yet, and still needs their daemon to print the Lounge's ticket.
+  [[ ${1-} == --before-person || -s $state/owner/key \
+    || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
     || return 0
   [[ -z $(people_holders) ]] || return 0
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
   mkdir -p "$state/logs"
-  (owner_run setsid "$runtime" >> "$log" 2>&1 < /dev/null &) 9>&-
+  # setsid forks the daemon and returns, so no shell of this script waits on it: a background
+  # job's shell never execs, and keeps the copy bash saved of whatever a caller's redirection
+  # replaced (`owner_tilo ... >/dev/null` inside `$(owner_api_key)` saves that substitution's
+  # pipe), which held the caller reading it for as long as the daemon ran.
+  owner_run setsid -f "$runtime" >> "$log" 2>&1 < /dev/null
   for _ in $(seq 1 60); do
     [[ -z $(people_holders) ]] || return 0
     sleep 0.5
@@ -1740,6 +1744,13 @@ build_bundle() {
   say "bundle built ($((SECONDS - began))s)"
 }
 
+# stop_tree PID: PID and every process it started, theirs first.
+stop_tree() {
+  local child
+  for child in $(cat "/proc/$1/task/"*/children 2>/dev/null); do stop_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
+
 # Whether DIR holds a finished desktop bundle with the module the page starts
 # from.
 bundle_whole() {
@@ -1772,9 +1783,17 @@ t_build() {
   run=$(cd "$repo" && t --json test "${rev[@]}" --detach "$@" \
     | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["run"])') \
     || die "t did not start a run of $*"
-  # Its results as they come, without the advice about other checks t ends on.
-  (cd "$repo" && t follow "$run" 2>&1 | sed -u '/^opt-in checks/,$d' >&2; exit "${PIPESTATUS[0]}") \
+  # Its results as they come, without the advice about other checks t ends on. A run whose
+  # checks t skipped (a newer run of this session asked them at another tree) built nothing
+  # here, though it fails none: what would be fetched is an earlier build's.
+  local followed=$state/logs/t-follow-$run.log
+  mkdir -p "$state/logs"
+  (cd "$repo" && t follow "$run" 2>&1 | sed -u '/^opt-in checks/,$d' | tee "$followed" >&2
+    exit "${PIPESTATUS[0]}") \
     || die "t could not build $what (run $run; t log CHECK says why)"
+  ! grep -Eq '[1-9][0-9]* cancelled or skipped' "$followed" \
+    || die "t skipped some of $what's checks in run $run, so nothing was built here ($followed says why)"
+  rm -f "$followed"
   say "$what built on t ($((SECONDS - began))s)"
   began=$SECONDS
   mkdir -p "$t_fetched" "$state/logs"
@@ -1901,17 +1920,42 @@ sign_releases() {
     || die 'could not sign the local release'
 }
 
+# stack_runtime NAME: a runtime directory of NAME's own, private to this stack (0700), made
+# under this login's runtime directory (/run/user/UID) and keyed by a short hash of the state:
+# a socket's path is at most 103 bytes, which a stack's state in a deep checkout outgrows. A
+# shared temporary directory never holds one, since anyone can make the name first. `down`
+# removes them all (stack_runtimes).
+stack_runtimes() {
+  local base=${XDG_RUNTIME_DIR:-/run/user/$EUID}
+  if [[ ! -d $base || ! -w $base ]]; then
+    [[ $EUID == 0 && -w /run ]] \
+      || die "no runtime directory of this login's (XDG_RUNTIME_DIR, /run/user/$EUID) to keep the stack's sockets in"
+    base=/run
+  fi
+  printf '%s/tilo-sh-%s' "$base" "$(printf '%s' "$state" | sha256sum | cut -c1-12)"
+}
+
+stack_runtime() {
+  local root dir
+  root=$(stack_runtimes) || exit 1
+  dir=$root/$1
+  mkdir -p "$dir"
+  chmod 0700 "$root" "$dir"
+  printf '%s' "$dir"
+}
+
 # private_env NAME PATH: a home, runtime, config, data, state, cache and
 # temporary directory of NAME's own under $runs/NAME, and its PATH, as env
 # lines. run_native gives a service nothing else of this login's
 # environment, so none reaches this session's D-Bus, runtime directory or
 # settings.
 private_env() {
-  local home=${runs:?}/$1
+  local home=${runs:?}/$1 runtime
   rm -rf "${home:?}/tmp"
   mkdir -p "$home"/{home,config,data,state,cache,tmp}
   chmod 0700 "$home"
-  printf '%s\n' "HOME=$home/home" "XDG_RUNTIME_DIR=$home" "XDG_CONFIG_HOME=$home/config" \
+  runtime=$(stack_runtime "$1") || exit 1
+  printf '%s\n' "HOME=$home/home" "XDG_RUNTIME_DIR=$runtime" "XDG_CONFIG_HOME=$home/config" \
     "XDG_DATA_HOME=$home/data" "XDG_STATE_HOME=$home/state" "XDG_CACHE_HOME=$home/cache" \
     "TMPDIR=$home/tmp" "PATH=$2:/usr/bin:/bin" LANG=C.UTF-8
   [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
@@ -2115,8 +2159,12 @@ up_native() {
     if [[ -z ${TILO_SH_PROGRAMS:-} ]] && ! from_t && on_builder; then
       builder_build programs bundle
     else
-      build_bundle > "$state/logs/bundle.log" 2>&1 &
+      # The bundle's job holds no lock of the state, and ends with this command: a start that
+      # stops (its programs did not build) leaves no build behind it following t, which held
+      # the lock the next start waits on.
+      build_bundle > "$state/logs/bundle.log" 2>&1 9>&- &
       bundle_pid=$!
+      trap '[[ -z ${bundle_pid:-} ]] || stop_tree "$bundle_pid"' EXIT
     fi
   fi
   build_programs
@@ -2124,7 +2172,10 @@ up_native() {
   lay_out_releases
   if [[ -n $bundle_pid ]]; then
     say "waiting for the desktop bundle (stack.sh logs bundle)"
-    wait "$bundle_pid" || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
+    local built=0
+    wait "$bundle_pid" || built=$?
+    bundle_pid=
+    ((built == 0)) || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
   elif [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
     build_bundle
   fi
@@ -2524,6 +2575,7 @@ down() {
   done
   stop_mail_stand_in
   stop_people_holders
+  rm -rf "$(stack_runtimes)"
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.

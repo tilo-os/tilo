@@ -328,23 +328,6 @@ mod cases {
         node.children.iter().find_map(|child| find(child, kind))
     }
 
-    fn texts(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text" {
-            if let Some(Value::Text(text)) = node.props.get("value") {
-                out.push(text.clone());
-            }
-        }
-        for child in &node.children {
-            texts(child, out);
-        }
-    }
-
-    fn words(window: &ViewInstance) -> Vec<String> {
-        let mut out = Vec::new();
-        texts(&window.tree(), &mut out);
-        out
-    }
-
     /// Every section's title in `node`'s tree.
     fn sections(node: &UiNode, out: &mut Vec<String>) {
         if node.kind == "ui.Section" {
@@ -363,7 +346,7 @@ mod cases {
 
     /// What the bar under the window says.
     fn status(window: &ViewInstance) -> String {
-        match find(&window.tree(), "ui.StatusLine").and_then(|bar| bar.props.get("text")) {
+        match find(window.tree(), "ui.StatusLine").and_then(|bar| bar.props.get("text")) {
             Some(Value::Text(text)) => text.clone(),
             other => panic!("the status line reads {other:?}"),
         }
@@ -481,7 +464,7 @@ mod cases {
             let s = Desk::new();
             let d = s.compare("a\nb\nc\nd\ne\n", "a\nB\nc\nD\ne\n");
             let window = s.window(&d);
-            let grid = find(&window.tree(), "ui.DiffGrid").expect("the grid stands in the window");
+            let grid = find(window.tree(), "ui.DiffGrid").expect("the grid stands in the window");
             let at = grid.props.get("at");
             assert!(
                 matches!(at, Some(Value::Int(1))),
@@ -676,12 +659,12 @@ mod cases {
             let said = status(&window);
             assert!(said.contains("changes") && said.contains("conflicts left"), "{said}");
             let mut titles = Vec::new();
-            sections(&window.tree(), &mut titles);
+            sections(window.tree(), &mut titles);
             assert!(
                 titles.iter().any(|t| t.starts_with("Merged result")),
                 "{titles:?}"
             );
-            let card = find(&window.tree(), "ui.Card");
+            let card = find(window.tree(), "ui.Card");
             assert!(card.is_some(), "each change stands in a card the person decides on");
         }
     }

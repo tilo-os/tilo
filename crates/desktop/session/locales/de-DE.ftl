@@ -163,6 +163,7 @@ action-failed-that-notification = Das Ausführen dieser Mitteilung
 action-failed-that-app = Das Öffnen dieser App
 action-failed-no-workspace = Es ist kein Arbeitsbereich offen.
 action-failed-that-settings = Das Öffnen der Einstellungen
+action-failed-that-files = Diese Datei in Dateien anzuzeigen
 action-failed-that-change = Das Öffnen dieser Änderung
 action-failed-that-agent = Den Zugriff dieses Agenten zurückzunehmen
 downloaded-apps-app-name = Heruntergeladene Apps

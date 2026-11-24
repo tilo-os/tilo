@@ -49,6 +49,11 @@ pub fn system_verb(id: &str) -> Option<&str> {
         .then_some(verb)
 }
 
+/// The system's Export of a resource, which every menu of one offers: the window's host saves it
+/// as a file where the person says ([`crate::export`]). Its arguments are the resource and the
+/// app whose resource it is.
+pub const EXPORT_ACTION: &str = "$export";
+
 /// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
 /// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
 /// and the key pressed.

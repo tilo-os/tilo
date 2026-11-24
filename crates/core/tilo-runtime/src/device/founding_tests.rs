@@ -99,6 +99,9 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     running
         .wait_for_person(Duration::from_secs(120))
         .expect("the person's services run");
+    // The person's part serves the device a moment after their services run: the daemon's own
+    // status names it from then on, and `account#who` answers where it enters.
+    wait_for_the_person_serving(&socket);
     let who = ask(&socket, &json!({"native": "account#who"}));
     assert_eq!(who["claimed"], true, "{who}");
     assert_eq!(
@@ -450,6 +453,26 @@ fn reset_identity(keys: &tilo_device_identity::IdentityPaths) {
     }
     if let Some(certs) = keys.device_cert_for_user(&[0; 32]).parent() {
         let _ = std::fs::remove_dir_all(certs);
+    }
+}
+
+/// Wait until the daemon's own status names the device its person's part serves: from that
+/// moment `account#who` answers where this computer enters its person's workspaces.
+fn wait_for_the_person_serving(socket: &Path) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let status = ask(
+            socket,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": tilo_api::daemon::PEER_STATUS}),
+        );
+        if status["result"]["device"] != Value::Null {
+            return status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the person's part did not take this device up: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

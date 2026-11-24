@@ -206,21 +206,14 @@ pub(super) async fn listed(
 }
 
 /// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
-/// knows the call. An agent another of the person's devices hands its session to is answered as
-/// any caller is: as unknown where this device offers no such action, and as refused where it
-/// offers it and the agent's grants do not reach.
+/// knows the call. What a workspace keeps for a person (their vault's uses by reference, mail,
+/// calendars, connections) is offered here only to a turn this device carries out, so an agent
+/// another of the person's devices hands its session to is answered as the person themselves are.
 pub(super) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
     who: &str,
     refused: Result<T, ActionCallError>,
 ) {
-    if who == HANDED {
-        assert!(
-            matches!(refused, Err(UnknownAction | Refused { .. })),
-            "{who}: {refused:?}"
-        );
-    } else {
-        assert_eq!(refused, Err(UnknownAction), "{who}");
-    }
+    assert_eq!(refused, Err(UnknownAction), "{who}");
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
@@ -1083,4 +1076,88 @@ pub(super) fn narrowing(
         }
     }
     policy
+}
+
+/// What the host signs for a turn it carries out reaches only the workspace the turn works in,
+/// and only what its person allowed there: a turn in a workspace she is no member of, and one
+/// that names another workspace than its own, are none this server carries out; an item her
+/// "Always" does not name asks her; and once she takes the leave back, the item it named asks
+/// again. Nothing of what was not allowed signs in or is written down.
+#[tokio::test]
+async fn a_turn_reaches_only_its_workspace_and_what_its_person_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let hers = (&ada, &as_ada);
+    let login = a_mail_login(&service, workspace_id, hers).await;
+    let unnamed = a_mail_login(&service, workspace_id, hers).await;
+    let proved = proving(workspaces);
+    let scout = on_turn(&ada, &workspace, "scout");
+    let turn = HostedTurn {
+        workspace: workspace_id,
+        caller: &scout,
+        policy: None,
+    };
+    let add = |address: &str, item: &Value| add_mail(address, "imap.example.test", item);
+
+    // Another workspace: a turn of hers there is none this server carries out, and nothing of
+    // this workspace's vault is used or asked for.
+    let away = on_turn(&ada, &elsewhere, "scout");
+    let turn_away = HostedTurn {
+        workspace: elsewhere_id,
+        caller: &away,
+        policy: None,
+    };
+    assert_eq!(
+        workspaces.asked_turn(&turn_away).await,
+        Err(UnknownAction),
+        "a workspace she is no member of"
+    );
+    let refused = workspaces
+        .device_actions()
+        .invoke(&away, add("away@example.test", &login))
+        .await
+        .expect("the device's dispatch answers");
+    assert!(
+        !matches!(
+            refused.map(|receipt| receipt.status),
+            Ok(tilo_actions::remote::ReceiptStatus::Completed { .. })
+        ),
+        "a turn in another workspace uses nothing here"
+    );
+    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
+
+    // Her "Always" names one item: the use is made unasked with it.
+    let wanted = add("news@example.test", &login);
+    asks(dispatched(workspaces, &turn, &wanted).await);
+    always(
+        workspaces,
+        (&workspace, &owner, &ada),
+        "scout",
+        (&wanted.target, &login, &[IMAP, SMTP]),
+    )
+    .await;
+    dispatched(workspaces, &turn, &add("work@example.test", &login))
+        .await
+        .expect("allowed always, it is made unasked");
+    assert_eq!(proved.lock().unwrap().len(), 1);
+
+    // An item of the same vault her leave does not name asks her, and is used nowhere.
+    asks(dispatched(workspaces, &turn, &add("other@example.test", &unnamed)).await);
+    assert_eq!(
+        remembered(&service, workspace_id, hers, &unnamed).await,
+        json!({"uses": []})
+    );
+
+    // Taken back, the leave admits nothing more: the item it named asks again.
+    she_alone_takes_the_leave_back(&service, workspace_id, &ada, &login).await;
+    asks(dispatched(workspaces, &turn, &add("late@example.test", &login)).await);
+    assert_eq!(proved.lock().unwrap().len(), 1, "nothing more signed in");
+    assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
+    server.shutdown().await;
 }

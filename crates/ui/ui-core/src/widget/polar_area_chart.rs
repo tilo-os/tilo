@@ -55,6 +55,10 @@ impl Default for PolarAreaStyle {
 
 #[derive(Clone, Debug)]
 struct Sector {
+    /// Its place in [`PolarAreaMarks::data`].
+    index: usize,
+    /// Its place among the sectors drawn, which its colour follows.
+    slot: usize,
     id: String,
     start: f64,
     sweep: f64,
@@ -69,6 +73,13 @@ pub struct PolarAreaMarks {
     center_subtitle: String,
     frame: PlotFrame<String>,
     sectors: Vec<Sector>,
+    /// Each sector's whole label, where it fits: inside its sector, or outside it with a
+    /// leader line to the sector. Its datum's place in `data`, its colour's slot, the rect the
+    /// words take and the leader's two ends where it stands outside.
+    labels: Vec<(usize, usize, Rect, Option<[Point; 2]>)>,
+    /// The legend naming every sector, where at least one label has no whole room inside its
+    /// sector: its datum's place in `data`, its colour's slot and the entry's rect.
+    legend: Vec<(usize, usize, Rect)>,
 }
 
 pub type PolarAreaChart = Plot<PolarAreaMarks>;
@@ -82,6 +93,8 @@ impl PolarAreaChart {
             center_subtitle: String::new(),
             frame: PlotFrame::new(320.0, 140.0),
             sectors: Vec::new(),
+            labels: Vec::new(),
+            legend: Vec::new(),
         })
     }
     #[must_use]
@@ -120,22 +133,75 @@ impl PolarAreaMarks {
             radius,
         )
     }
-    /// Each sector's label inside its sector, centred on the sector's
-    /// middle, largest sector first: shortened to the width the sector has
-    /// there and dropped (the tooltip names it) where it would spill out of
-    /// the sector or collide with a label already placed.
-    fn draw_sector_labels(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        labels: &[(String, f64, f64, f64, Color)],
-    ) {
-        let (center, inner, _) = self.geometry();
+    /// Each sector round the chart, in the order it takes: every direction the same angle,
+    /// its length carrying the value.
+    fn sector_layout(&self, inner: f64, outer: f64) -> Vec<Sector> {
+        let max = self.max();
+        let valid: Vec<(usize, &ChartItem)> = self
+            .data
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.value.is_finite() && d.value >= 0.0)
+            .collect();
+        let count = f64::from(u32::try_from(valid.len()).unwrap_or(u32::MAX));
+        if count <= 0.0 {
+            return Vec::new();
+        }
+        let slot = TAU / count;
+        let gap = self.style.angular_gap.clamp(0.0, slot * 0.7);
+        let exponent = self.style.radius_exponent.max(0.01);
+        valid
+            .into_iter()
+            .enumerate()
+            .map(|(slot_index, (index, datum))| {
+                let start = self.style.start_angle
+                    + f64::from(u32::try_from(slot_index).unwrap_or(u32::MAX)) * slot
+                    + gap / 2.0;
+                let sweep = slot - gap;
+                let fraction = (datum.value / max).clamp(0.0, 1.0).powf(exponent);
+                Sector {
+                    index,
+                    slot: slot_index,
+                    id: datum.id.clone(),
+                    start,
+                    sweep,
+                    inner,
+                    outer: fraction.mul_add(outer - inner, inner),
+                }
+            })
+            .collect()
+    }
+
+    /// The words a sector shows: its name, and its value where the chart shows values.
+    fn label_text(&self, index: usize) -> String {
+        let Some(datum) = self.data.get(index) else {
+            return String::new();
+        };
+        if self.style.show_values {
+            format!("{}  {}", datum.label, format_compact(datum.value))
+        } else {
+            datum.label.clone()
+        }
+    }
+
+    /// Each sector's label whole, largest sector first, centred in its sector where it fits
+    /// there and standing outside it with a leader line where it does not: a label is never cut
+    /// to a stub, since a shared prefix names nothing. Where even the room beside the circle
+    /// fails, the chart names every sector in a legend under it instead.
+    fn place_sector_labels(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.labels.clear();
+        self.legend.clear();
+        if !self.style.show_labels {
+            return;
+        }
+        let (center, inner, outer) = self.geometry();
+        let sectors = self.sector_layout(inner, outer);
+        if sectors.is_empty() {
+            return;
+        }
         let style = theme.text(TextRole::Caption);
-        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.frame.rect, theme);
-        if let Some(((_, title), subtitle)) = crate::widget::chart_labels::centre_label_layout(
+        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.frame.inside(), theme);
+        if let Some(label) = crate::widget::chart_labels::centre_label_layout(
             tr,
             theme,
             center,
@@ -143,53 +209,161 @@ impl PolarAreaMarks {
             &self.center_title,
             &self.center_subtitle,
         ) {
-            placer.block(subtitle.map_or(title, |sub| title.union(sub)));
-        }
-        let mut order: Vec<&(String, f64, f64, f64, Color)> = labels.iter().collect();
-        order.compact_sort_by(|a, b| b.3.total_cmp(&a.3));
-        for (label, start, sweep, radius, fill) in order {
-            let angle = start + sweep / 2.0;
-            let mid_r = inner.midpoint(*radius);
-            let anchor = Point::new(
-                center.x + mid_r * angle.cos(),
-                center.y + mid_r * angle.sin(),
+            placer.block(
+                label
+                    .subtitle
+                    .map_or(label.rect, |sub| label.rect.union(sub)),
             );
-            let spare = (2.0 * mid_r * (sweep / 2.0).sin()).min(radius - inner);
-            let Some((shown, w, h)) =
-                crate::widget::chart_labels::fit_label(tr, label, spare, &style)
-            else {
-                continue;
-            };
-            let rect = Rect::from_center_size(anchor, (w, h));
-            let inside = [
-                Point::new(rect.x0, rect.y0),
-                Point::new(rect.x1, rect.y0),
-                Point::new(rect.x0, rect.y1),
-                Point::new(rect.x1, rect.y1),
-            ]
+        }
+        let mut order: Vec<&Sector> = sectors
             .iter()
-            .all(|corner| {
-                let dx = corner.x - center.x;
-                let dy = corner.y - center.y;
-                let r = dx.hypot(dy);
-                let a = (dy.atan2(dx) - start).rem_euclid(TAU);
-                r >= inner && r <= *radius && a <= *sweep
-            });
-            if !inside || !placer.place(rect) {
+            .filter(|sector| !self.label_text(sector.index).is_empty())
+            .collect();
+        if order.is_empty() {
+            return;
+        }
+        order.compact_sort_by(|a, b| b.outer.total_cmp(&a.outer));
+        let mut labels = Vec::new();
+        for sector in &order {
+            let text = self.label_text(sector.index);
+            let angle = sector.start + sector.sweep / 2.0;
+            let mid = inner.midpoint(sector.outer);
+            let anchor = Point::new(center.x + mid * angle.cos(), center.y + mid * angle.sin());
+            let (w, h) = tr.measure_style(&text, None, &style);
+            let (w, h) = (f64::from(w), f64::from(h));
+            let inside = Rect::from_center_size(anchor, (w, h));
+            if sector_holds(inside, center, sector) && placer.place(inside) {
+                labels.push((sector.index, sector.slot, inside, None));
                 continue;
+            }
+            // Not whole inside: it stands outside the sector with a leader line to it, in
+            // the room the chart leaves beside the circle.
+            let edge = sector.outer + self.style.hover_offset + f64::from(theme.tokens.spacing.s1);
+            let outside =
+                crate::widget::chart_labels::radial_label_rect(center, edge, angle, (w, h));
+            if !placer.place(outside) {
+                continue;
+            }
+            let ring = Point::new(
+                center.x + sector.outer * angle.cos(),
+                center.y + sector.outer * angle.sin(),
+            );
+            let at = Point::new(
+                ring.x.clamp(outside.x0, outside.x1),
+                ring.y.clamp(outside.y0, outside.y1),
+            );
+            labels.push((sector.index, sector.slot, outside, Some([ring, at])));
+        }
+        if labels.len() == order.len() {
+            self.labels = labels;
+        } else {
+            self.place_legend(tr, theme, &order);
+        }
+    }
+
+    /// A legend naming every sector, largest first, wrapped under the chart: the circle gives
+    /// up as much height as its rows take, so no row covers it.
+    fn place_legend(&mut self, tr: &mut TextRenderer, theme: &Theme, order: &[&Sector]) {
+        let labels: Vec<String> = order
+            .iter()
+            .map(|sector| self.label_text(sector.index))
+            .collect();
+        let entries =
+            crate::widget::chart_legend::measure(tr, theme, labels.iter().map(String::as_str));
+        let rows = crate::widget::chart_legend::wrap(
+            &entries,
+            self.frame.rect.x0,
+            self.frame.rect.x1,
+            0.0,
+            theme,
+        );
+        let height = rows.iter().map(|row| row.y1).fold(0.0, f64::max);
+        self.frame.margins.bottom = height + f64::from(theme.tokens.spacing.rhythm.section);
+        let top = self.frame.rect.y1 - height;
+        self.legend = order
+            .iter()
+            .zip(rows)
+            .map(|(sector, row)| {
+                (
+                    sector.index,
+                    sector.slot,
+                    row + vello::kurbo::Vec2::new(0.0, top),
+                )
+            })
+            .collect();
+    }
+
+    /// The ink a label reads in: the sector's own ink where it stands inside the sector, and
+    /// the page's where it stands beside the circle, since that is what it is drawn on.
+    fn label_ink(&self, index: usize, slot: usize, outside: bool, theme: &Theme) -> Color {
+        if outside {
+            return theme.tokens.colors.text_primary;
+        }
+        let fill = self.data.get(index).map_or_else(
+            || theme.tokens.colors.text_primary,
+            |datum| Self::color(datum, slot, theme),
+        );
+        // Dark words on a dark sector would not be read: the ink keeps its contrast.
+        theme.tokens.colors.ink_on(
+            fill,
+            theme.tokens.colors.text_primary,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
+    }
+
+    fn draw_labels(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let style = theme.text(TextRole::Caption);
+        for (index, slot, rect, leader) in &self.labels {
+            let text = self.label_text(*index);
+            if text.is_empty() {
+                continue;
+            }
+            if let Some([from, to]) = leader {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.tokens.colors.border_standard,
+                    None,
+                    &vello::kurbo::Line::new(*from, *to),
+                );
             }
             tr.draw_style(
                 scene,
-                &shown,
-                // Dark words on a dark sector would not be read: the ink keeps its contrast.
-                theme.tokens.colors.ink_on(
-                    *fill,
-                    theme.tokens.colors.text_primary,
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                ),
+                &text,
+                self.label_ink(*index, *slot, leader.is_some(), theme),
                 transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &style,
+            );
+        }
+    }
+
+    fn draw_legend(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for (index, slot, rect) in &self.legend {
+            let Some(datum) = self.data.get(*index) else {
+                continue;
+            };
+            crate::widget::chart_legend::paint_entry_emphasised(
+                scene,
+                transform,
+                tr,
+                theme,
+                *rect,
+                Self::color(datum, *slot, theme),
+                &self.label_text(*index),
+                self.frame.inspection.hovered.as_deref() == Some(&datum.id),
             );
         }
     }
@@ -288,14 +462,11 @@ impl PlotMarks for PolarAreaMarks {
             .collect()
     }
 
-    fn place(&mut self, _tr: &mut TextRenderer, theme: &Theme) {
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         self.frame.margins = Margins::header(theme, &self.frame.title, 0);
+        self.place_sector_labels(tr, theme);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "rings, sectors, radial labels, center copy, and inspector share polar geometry"
-    )]
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -312,7 +483,6 @@ impl PlotMarks for PolarAreaMarks {
             &self.frame.title,
         );
         let (center, inner, outer) = self.geometry();
-        let max = self.max();
         let rings = self.style.rings.max(1);
         for ring in 1..=rings {
             let fraction = f64::from(ring) / f64::from(rings);
@@ -325,63 +495,42 @@ impl PlotMarks for PolarAreaMarks {
                 &Circle::new(center, radius),
             );
         }
-        let valid = self
-            .data
-            .iter()
-            .filter(|d| d.value.is_finite() && d.value >= 0.0)
-            .count();
-        self.sectors.clear();
-        if valid == 0 {
+        self.sectors = self.sector_layout(inner, outer);
+        if self.sectors.is_empty() {
             return;
         }
-        let count = f64::from(u32::try_from(valid).unwrap_or(u32::MAX));
-        let slot = TAU / count;
-        let gap = self.style.angular_gap.clamp(0.0, slot * 0.7);
-        let exponent = self.style.radius_exponent.max(0.01);
-        let mut labels: Vec<(String, f64, f64, f64, Color)> = Vec::new();
-        for (index, datum) in self
-            .data
-            .iter()
-            .filter(|d| d.value.is_finite() && d.value >= 0.0)
-            .enumerate()
-        {
-            let start = self.style.start_angle
-                + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) * slot
-                + gap / 2.0;
-            let sweep = slot - gap;
-            let fraction = (datum.value / max).clamp(0.0, 1.0).powf(exponent);
-            let mut radius = fraction.mul_add(outer - inner, inner);
-            let hovered = self.frame.inspection.hovered.as_deref() == Some(&datum.id);
-            if hovered {
+        for sector in &self.sectors {
+            let Some(datum) = self.data.get(sector.index) else {
+                continue;
+            };
+            let mut radius = sector.outer;
+            if self.frame.inspection.hovered.as_deref() == Some(&datum.id) {
                 radius += self.style.hover_offset;
             }
-            let color = Self::color(datum, index, theme);
+            let color = Self::color(datum, sector.slot, theme);
             scene.fill(
                 Fill::NonZero,
                 transform,
                 color,
                 None,
-                &annulus(center, inner, radius, start, start + sweep),
+                &annulus(
+                    center,
+                    inner,
+                    radius,
+                    sector.start,
+                    sector.start + sector.sweep,
+                ),
             );
-            self.sectors.push(Sector {
-                id: datum.id.clone(),
-                start,
-                sweep,
-                inner,
-                outer: radius,
-            });
-            if self.style.show_labels {
-                let label = if self.style.show_values {
-                    format!("{}  {}", datum.label, format_compact(datum.value))
-                } else {
-                    datum.label.clone()
-                };
-                labels.push((label, start, sweep, radius, color));
-            }
         }
-        self.draw_sector_labels(scene, transform, tr, theme, &labels);
+        // Labels placed by the layout, or the legend that names every sector where one had no
+        // whole room: never a label cut to a stub that names nothing.
+        if self.legend.is_empty() {
+            self.draw_labels(scene, transform, tr, theme);
+        } else {
+            self.draw_legend(scene, transform, tr, theme);
+        }
         // The centre copy at the largest size the hole holds; left out
-        // where even a heading does not fit.
+        // where even a short line does not fit.
         let _ = crate::widget::chart_labels::paint_centre_label(
             scene,
             transform,
@@ -423,9 +572,177 @@ impl PlotMarks for PolarAreaMarks {
 mod polar_area_chart_component;
 pub use polar_area_chart_component::{PolarAreaChartProps, PolarAreaValue, areas_description};
 
+/// Whether `rect` lies wholly inside `sector`: every corner within its annulus and its
+/// angular span.
+fn sector_holds(rect: Rect, center: Point, sector: &Sector) -> bool {
+    [
+        Point::new(rect.x0, rect.y0),
+        Point::new(rect.x1, rect.y0),
+        Point::new(rect.x0, rect.y1),
+        Point::new(rect.x1, rect.y1),
+    ]
+    .iter()
+    .all(|corner| {
+        let dx = corner.x - center.x;
+        let dy = corner.y - center.y;
+        let radius = dx.hypot(dy);
+        let angle = (dy.atan2(dx) - sector.start).rem_euclid(TAU);
+        radius >= sector.inner && radius <= sector.outer && angle <= sector.sweep
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn months() -> Vec<ChartItem> {
+        [
+            ("Jan", 120.0),
+            ("Feb", 98.0),
+            ("Mar", 145.0),
+            ("Apr", 162.0),
+            ("May", 138.0),
+            ("Jun", 174.0),
+            ("Jul", 151.0),
+            ("Aug", 119.0),
+            ("Sep", 203.0),
+            ("Oct", 221.0),
+            ("Nov", 188.0),
+            ("Dec", 146.0),
+        ]
+        .into_iter()
+        .map(|(label, value)| ChartItem::new(label, label, value))
+        .collect()
+    }
+
+    fn weeks() -> Vec<ChartItem> {
+        [
+            ("The week after the launch", 214.0),
+            ("The week of the conference", 176.0),
+            ("The week the pricing changed for every plan", 132.0),
+            ("The week of the outage", 61.0),
+            ("The week before the holidays", 149.0),
+            ("The week after the newsletter", 195.0),
+        ]
+        .into_iter()
+        .map(|(label, value)| ChartItem::new(label, label, value))
+        .collect()
+    }
+
+    /// Places `data` in a `width`-wide, 320-tall chart, as the layout does.
+    fn placed(data: Vec<ChartItem>, width: f64, theme: &Theme) -> PolarAreaChart {
+        let mut chart = PolarAreaChart::new(data);
+        chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 320.0);
+        crate::text_render::with_layout_renderer(theme, |tr| chart.marks.place(tr, theme));
+        chart
+    }
+
+    /// Every sector is told apart: all named by a whole label inside their sector, or all
+    /// named by the legend, never by a stub cut to the words every label shares.
+    #[test]
+    fn every_sector_is_named_by_a_whole_label_or_the_legend() {
+        let theme = Theme::light();
+        for (data, width) in [
+            (months(), 1000.0),
+            (months(), 358.0),
+            (weeks(), 1000.0),
+            (weeks(), 358.0),
+        ] {
+            let count = data.len();
+            let chart = placed(data, width, &theme);
+            let labels = &chart.marks.labels;
+            let legend = &chart.marks.legend;
+            assert!(
+                labels.len() == count || legend.len() == count,
+                "at {width}: {} labels and {} legend entries for {count} sectors",
+                labels.len(),
+                legend.len()
+            );
+            let mut named: Vec<String> = labels
+                .iter()
+                .map(|(index, _, _, _)| chart.marks.label_text(*index))
+                .chain(
+                    legend
+                        .iter()
+                        .map(|(index, _, _)| chart.marks.label_text(*index)),
+                )
+                .collect();
+            assert!(
+                named.iter().all(|label| !label.ends_with('…')),
+                "at {width}: a label was cut to a stub: {named:?}"
+            );
+            let total = named.len();
+            named.sort();
+            named.dedup();
+            assert_eq!(total, named.len(), "at {width}: labels repeat: {named:?}");
+            for rect in labels
+                .iter()
+                .map(|(_, _, rect, _)| *rect)
+                .chain(legend.iter().map(|(_, _, rect)| *rect))
+            {
+                assert!(
+                    rect.x0 >= -0.5 && rect.x1 <= width + 0.5 && rect.y1 <= 320.5,
+                    "at {width}: {rect:?} leaves the chart"
+                );
+            }
+        }
+    }
+
+    /// A chart with room names its months inside their wedges, whole, whatever the min width a
+    /// shortened label would need to be worth showing.
+    #[test]
+    fn short_month_names_fit_their_sectors_whole() {
+        let chart = placed(months(), 1000.0, &Theme::light());
+        assert_eq!(chart.marks.labels.len(), 12);
+        assert!(chart.marks.legend.is_empty());
+    }
+
+    /// A label reads on what it stands on: its sector's fill where it stands inside, and the
+    /// page where it stands beside the circle, in both themes.
+    #[test]
+    fn a_label_reads_on_what_it_stands_on() {
+        for theme in [Theme::light(), Theme::dark()] {
+            for (data, width) in [(months(), 1000.0), (weeks(), 1000.0), (months(), 358.0)] {
+                let chart = placed(data, width, &theme);
+                for (index, slot, _, leader) in &chart.marks.labels {
+                    let outside = leader.is_some();
+                    let ink = chart.marks.label_ink(*index, *slot, outside, &theme);
+                    let ground = if outside {
+                        theme.tokens.colors.surfaces.base
+                    } else {
+                        let datum = &chart.marks.data[*index];
+                        PolarAreaMarks::color(datum, *slot, &theme)
+                    };
+                    assert!(
+                        crate::a11y::contrast_ratio(ink, ground)
+                            >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                        "at {width}: {ink:?} on {ground:?} is under 4.5:1"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Weeks whose labels are too long for their wedges stand outside them with leader lines at
+    /// a laptop's width, whole, rather than every one shortening to "The week…".
+    #[test]
+    fn long_labels_stand_outside_with_leaders_where_the_chart_has_room() {
+        let chart = placed(weeks(), 1000.0, &Theme::light());
+        assert_eq!(chart.marks.labels.len(), 6, "every week is named");
+        assert!(
+            chart.marks.legend.is_empty(),
+            "no legend is needed beside them"
+        );
+        assert!(
+            chart
+                .marks
+                .labels
+                .iter()
+                .any(|(_, _, _, leader)| leader.is_some()),
+            "a label with no room inside stands outside with a leader"
+        );
+    }
+
     #[test]
     fn explicit_max_requires_positive_finite_value() {
         let mut chart = PolarAreaChart::new(vec![ChartItem::new("a", "A", 7.0)]);

@@ -195,7 +195,8 @@ impl ReplicaFiles {
             admission: parts.admission,
             state: parts.state,
         };
-        std::fs::create_dir_all(parts.folder)?;
+        // The folder is made where it is shown: a mount an ended daemon left on it answers
+        // neither a look nor a mkdir (EEXIST) until it is cleared there first.
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             Arc::new(

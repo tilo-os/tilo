@@ -508,15 +508,6 @@ pub trait LauncherServices: Send + Sync {
             .filter(|app| app.package_id == app_id)
             .collect()
     }
-    /// Whether the person's own input is behind what app `app_id` asks for
-    /// now: a press of theirs (never an agent's) reached one of its windows
-    /// within the activation window, and has not proved another open
-    /// already. Answering uses it up. A host without that record answers
-    /// `false`: an app then opens nothing on its own, only what an
-    /// invocation someone else asked of it calls for.
-    fn person_initiated(&self, _app_id: &str) -> bool {
-        false
-    }
     /// Launches `app` into `workspace`, its view of `record` (else the
     /// record it opens by default) opening at `place`.
     fn launch(

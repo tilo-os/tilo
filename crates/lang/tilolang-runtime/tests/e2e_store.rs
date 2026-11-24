@@ -76,7 +76,7 @@ action open_app(app_name: Text) {
         .to_string()
     }
 
-    /// What Flathub says of one app: its AppStream document.
+    /// What Flathub says of one app: its `AppStream` document.
     const APPSTREAM: &str = r#"{
       "description": "Build GTK interfaces quickly.",
       "developer_name": "The GNOME Project",
@@ -142,7 +142,7 @@ action open_app(app_name: Text) {
         serde_json::json!({
             "description": "Notes you write alone or together.",
             "developer": "Tilo", "license": "MIT", "homepage": "https://tilo.sh",
-            "source_code": "https://code.tilo.so/tilo/tilo", "size": 44040192,
+            "source_code": "https://code.tilo.so/tilo/tilo", "size": 44_040_192,
             "installed_size": 0,
             "screenshots": ["https://artwork.invalid/one.png"],
             "permissions": [r#"{"what":"network","broad":false}"#],
@@ -224,13 +224,11 @@ action open_app(app_name: Text) {
             }
             match op {
                 "catalogue" => Ok(catalogue()),
-                "one" => Ok(one()),
+                "one" | "runtime" => Ok(one()),
                 "details" => Ok(details()),
                 "remotes" => Ok(remotes()),
                 "browse" => Ok(browse()),
-                "review" => Ok(review()),
-                "reference" => Ok(review()),
-                "runtime" => Ok(one()),
+                "review" | "reference" => Ok(review()),
                 "prepare-report" => Ok(prepared()),
                 "report-status" => Ok(case()),
                 "block" => Ok("{}".to_owned()),
@@ -365,7 +363,7 @@ action open_app(app_name: Text) {
             rt.set_web(flathub.clone());
             rt.set_clock(|| "2026-11-24T09:30:00Z".to_owned());
             let device = Device::default();
-            rt.set_blobs(device.clone());
+            rt.set_blobs(device);
             // The platform's own packages: the session the app opens, the device whose language
             // and processor it reads, and the settings its catalogue is read in.
             let platform = tilolang_tilo::platform_apps::platform_packages()
@@ -401,11 +399,7 @@ action open_app(app_name: Text) {
             session.load(&rt);
             let app = App::compile(
                 &format!("{SOURCE}\n{VIEWS}"),
-                &[
-                    session.meta().clone(),
-                    device_package.clone(),
-                    settings.clone(),
-                ],
+                &[session.meta().clone(), device_package, settings],
             );
             authority.trust(&app.load(&rt));
             let root = rt.create_root("Store").unwrap();
@@ -666,11 +660,11 @@ action open_app(app_name: Text) {
                 "the screenshots an https address names"
             );
             match m.rt.read(&glade, "size").unwrap() {
-                Value::Int(size) => assert_eq!(size, 4194304, "the bytes its source downloads"),
+                Value::Int(size) => assert_eq!(size, 4_194_304, "the bytes its source downloads"),
                 other => panic!("size reads {other:?}"),
             }
             match m.rt.read(&glade, "installed_size").unwrap() {
-                Value::Int(size) => assert_eq!(size, 12582912, "the bytes it takes installed"),
+                Value::Int(size) => assert_eq!(size, 12_582_912, "the bytes it takes installed"),
                 other => panic!("installed_size reads {other:?}"),
             }
             let page = m.page(&glade);

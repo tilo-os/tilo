@@ -108,11 +108,14 @@ mod cases {
         }
     }
 
+    /// The media type and bytes of what the person copied.
+    type Copied = Option<(String, Vec<u8>)>;
+
     /// The person's selection, as the device answers it: holding what was copied, or refusing
     /// to take it where the test asks for a clipboard that does not.
     #[derive(Clone, Default)]
     struct Selection {
-        kept: Rc<RefCell<Option<(String, Vec<u8>)>>>,
+        kept: Rc<RefCell<Copied>>,
         refuses: Rc<std::cell::Cell<bool>>,
     }
 
@@ -233,7 +236,7 @@ mod cases {
                         Some(reference) if self.kept.borrow().contains_key(&reference) => reference,
                         _ => {
                             let mut next = self.next.borrow_mut();
-                            *next += 1;
+                            *next = next.saturating_add(1);
                             format!("vault.item:{:032x}", *next)
                         }
                     };
@@ -442,10 +445,10 @@ mod cases {
     }
 
     fn texts(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text" {
-            if let Some(Value::Text(text)) = node.props.get("value") {
-                out.push(text.clone());
-            }
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
         }
         for child in &node.children {
             texts(child, out);
@@ -454,8 +457,6 @@ mod cases {
 
     /// Every value the window's nodes carry, and every word it says.
     fn shown(window: &ViewInstance) -> Vec<String> {
-        let mut said = Vec::new();
-        texts(&window.tree(), &mut said);
         fn props(node: &UiNode, out: &mut Vec<String>) {
             for value in node.props.values() {
                 if let Value::Text(text) = value {
@@ -466,7 +467,9 @@ mod cases {
                 props(child, out);
             }
         }
-        props(&window.tree(), &mut said);
+        let mut said = Vec::new();
+        texts(window.tree(), &mut said);
+        props(window.tree(), &mut said);
         said
     }
 
@@ -556,17 +559,28 @@ mod cases {
         let modules = code.to_colors();
         let side = code.width();
         let (scale, quiet) = (6usize, 4usize);
-        let pixels_side = (side + quiet * 2) * scale;
-        let mut rgba = vec![255u8; pixels_side * pixels_side * 4];
+        let pixels_side = side
+            .saturating_add(quiet.saturating_mul(2))
+            .saturating_mul(scale);
+        let mut rgba = vec![255u8; pixels_side.saturating_mul(pixels_side).saturating_mul(4)];
         for y in 0..side {
             for x in 0..side {
-                if modules[y * side + x] == qrcode::Color::Dark {
+                if modules[y.saturating_mul(side).saturating_add(x)] == qrcode::Color::Dark {
                     for dy in 0..scale {
                         for dx in 0..scale {
-                            let px = (x + quiet) * scale + dx;
-                            let py = (y + quiet) * scale + dy;
-                            let at = (py * pixels_side + px) * 4;
-                            rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+                            let px = x
+                                .saturating_add(quiet)
+                                .saturating_mul(scale)
+                                .saturating_add(dx);
+                            let py = y
+                                .saturating_add(quiet)
+                                .saturating_mul(scale)
+                                .saturating_add(dy);
+                            let at = py
+                                .saturating_mul(pixels_side)
+                                .saturating_add(px)
+                                .saturating_mul(4);
+                            rgba[at..at.saturating_add(4)].copy_from_slice(&[0, 0, 0, 255]);
                         }
                     }
                 }
@@ -614,7 +628,7 @@ mod cases {
             // The window veils the code the vault makes until the person asks for it.
             let window = s.window();
             let mut said = Vec::new();
-            texts(&window.tree(), &mut said);
+            texts(window.tree(), &mut said);
             assert!(
                 said.iter().any(|word| word == "••• •••"),
                 "the code is veiled at rest: {said:?}"
@@ -623,7 +637,7 @@ mod cases {
                 !said.iter().any(|word| word == "123 456"),
                 "no code reads until it is asked for: {said:?}"
             );
-            let countdown = find(&window.tree(), "ui.Countdown").expect("its code's lifetime shows");
+            let countdown = find(window.tree(), "ui.Countdown").expect("its code's lifetime shows");
             assert_eq!(countdown.props.get("at"), Some(&Value::text(UNTIL)));
         }
 
@@ -851,17 +865,17 @@ mod cases {
             let s = Desk::new();
             // Nothing yet: the empty state asks for the first account.
             let window = s.window();
-            let empty = find(&window.tree(), "ui.EmptyState").expect("the empty state stands");
+            let empty = find(window.tree(), "ui.EmptyState").expect("the empty state stands");
             assert_eq!(empty.props.get("title"), Some(&Value::text("No accounts yet")));
             let a = s.add("GitHub", "ada@example.com", VECTOR);
             let window = s.window();
-            let card = find(&window.tree(), "ui.CardGridCard")
+            let card = find(window.tree(), "ui.CardGridCard")
                 .expect("the account's card stands in the window");
             assert_eq!(card.props.get("title"), Some(&Value::text("GitHub")));
-            let countdown = find(&window.tree(), "ui.Countdown").expect("its code's lifetime shows");
+            let countdown = find(window.tree(), "ui.Countdown").expect("its code's lifetime shows");
             assert!(countdown.props.contains_key("at"), "the instant it changes");
             let mut said = Vec::new();
-            texts(&window.tree(), &mut said);
+            texts(window.tree(), &mut said);
             assert!(
                 said.iter().any(|w| w == "••• •••"),
                 "the card veils the code until it is asked for: {said:?}"
@@ -879,7 +893,7 @@ mod cases {
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             let mut said = Vec::new();
-            texts(&window.tree(), &mut said);
+            texts(window.tree(), &mut said);
             assert!(
                 said.iter().any(|w| w == "GitHub"),
                 "the account's view names it: {said:?}"
@@ -888,7 +902,7 @@ mod cases {
                 said.iter().any(|w| w == "••• •••"),
                 "its code is veiled at rest: {said:?}"
             );
-            let countdown = find(&window.tree(), "ui.Countdown").expect("its code's lifetime shows");
+            let countdown = find(window.tree(), "ui.Countdown").expect("its code's lifetime shows");
             assert_eq!(countdown.props.get("at"), Some(&Value::text(UNTIL)));
         }
 
@@ -989,7 +1003,7 @@ mod cases {
             press(&s, "Save");
             let window = s.window();
             assert_eq!(state_text(&window, "screen"), "form", "a bad period keeps the form");
-            let options = find(&window.tree(), "ui.DisclosureRow").expect("the options stand");
+            let options = find(window.tree(), "ui.DisclosureRow").expect("the options stand");
             assert!(
                 truthy(options.props.get("expanded")),
                 "the options the bad period is under open: {:?}",
@@ -1115,7 +1129,7 @@ mod cases {
                 )
                 .expect("the account's window opens");
             let mut said_words = Vec::new();
-            texts(&window.tree(), &mut said_words);
+            texts(window.tree(), &mut said_words);
             assert!(said_words.iter().any(|word| word == "GitHub"), "{said_words:?}");
             assert!(
                 said_words.iter().any(|word| word == "••• •••"),
@@ -1132,7 +1146,7 @@ mod cases {
                 )
                 .expect("the account's window opens");
             let mut said_words = Vec::new();
-            texts(&window.tree(), &mut said_words);
+            texts(window.tree(), &mut said_words);
             assert!(
                 said_words.iter().any(|word| word == "123 456"),
                 "the press shows its code: {said_words:?}"
@@ -1144,7 +1158,7 @@ mod cases {
             let s = Desk::new();
             let a = s.add_coloured("GitHub", "ada@example.com", VECTOR, 2);
             let window = s.window();
-            let avatar = find(&window.tree(), "ui.Avatar").expect("the card has an avatar");
+            let avatar = find(window.tree(), "ui.Avatar").expect("the card has an avatar");
             assert_eq!(
                 avatar.props.get("colour"),
                 Some(&Value::text("#b0568f")),
@@ -1214,7 +1228,7 @@ mod cases {
             let s = Desk::new();
             let title = |s: &Desk| {
                 let window = s.window();
-                let shell = find(&window.tree(), "ui.NavShell").expect("the window's shell stands");
+                let shell = find(window.tree(), "ui.NavShell").expect("the window's shell stands");
                 shell.props.get("title").cloned().unwrap_or(Value::Bool(false))
             };
             assert_eq!(title(&s), Value::text("Authenticator"), "nothing to name yet");
@@ -1262,7 +1276,7 @@ mod cases {
             press(&s, "Add account");
             let window = s.window();
             let picker =
-                find(&window.tree(), "ui.ColorSwatchPicker").expect("the form offers colours");
+                find(window.tree(), "ui.ColorSwatchPicker").expect("the form offers colours");
             let swatches = match picker.props.get("swatches") {
                 Some(Value::List(swatches)) => swatches.len(),
                 other => panic!("the palette reads {other:?}"),
@@ -1291,7 +1305,7 @@ mod cases {
                 "{saved:?}"
             );
             let window = s.window();
-            let avatar = find(&window.tree(), "ui.Avatar").expect("the card wears it");
+            let avatar = find(window.tree(), "ui.Avatar").expect("the card wears it");
             assert_eq!(avatar.props.get("colour"), Some(&Value::text("#b0568f")));
             let history = s.rt.history(&s.root.doc).expect("the root's history reads");
             let since: Vec<String> = history

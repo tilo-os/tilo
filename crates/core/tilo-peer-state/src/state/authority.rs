@@ -52,6 +52,29 @@ type Written = (MemberAccess, bool);
 pub(super) struct CallerAccess {
     person: String,
     access: MemberAccess,
+    /// Every change made for the call is a step its action declares, which the device that
+    /// keeps the record took for it ([`tilo_server_protocol::invocation::declared_effect`]).
+    /// Such a step is the call's effect: it was decided once, when the call was allowed, so
+    /// it is decided as the caller's own step and never again as an edit of the record by
+    /// whoever acted for them.
+    effect: bool,
+}
+
+impl CallerAccess {
+    /// The caller `person`, whose access under `policy` decides the call, with `keys`, the
+    /// keys approved at the write.
+    fn of(
+        person: String,
+        policy: std::sync::Arc<tilo_action_policy::WorkspacePolicy>,
+        keys: Vec<tilo_action_policy::Grant>,
+    ) -> Self {
+        let access = MemberAccess::person(policy, person.clone()).granted(keys);
+        Self {
+            person,
+            access,
+            effect: true,
+        }
+    }
 }
 
 /// The changes of a cleartext change `envelope`, when its payload carries
@@ -100,6 +123,23 @@ fn allowing<'a>(
             .is_some_and(|caller| caller.access.may_write_for(acting));
         if !by_signer && !by_caller {
             return false;
+        }
+        // A step the called action declares, which the record's host took for the call: the
+        // call was decided once, when it was allowed (its person's yes, or a lasting grant,
+        // which an agent's call keeps beside it), and the step is that call's effect. Neither
+        // the caller nor whoever acted for them is decided again as editing the record, which a
+        // record the workspace keeps apart grants nobody: only that the caller is still one of
+        // the workspace's members.
+        if let Some(caller) = caller.as_ref()
+            && caller.effect
+            && by_caller
+        {
+            let allowed = caller.access.policy.active_role(&caller.person).is_some();
+            if !allowed {
+                *caller_refused.borrow_mut() =
+                    Some((caller.person.clone(), node.to_string(), kind));
+            }
+            return allowed;
         }
         let mut allowed = !by_signer
             || collab_types::ChangeAuthor::answer(member, Some(acting), node, kind, cx)
@@ -1448,7 +1488,9 @@ impl StatePeer {
             app: app_id,
             document: record,
         };
+        let keeper = self.signed_by_governor(source).then_some(source);
         let mut caller: Option<CallerAccess> = None;
+        let mut bare = false;
         for claim in &envelope.claims {
             let Some(invoker) = claim.invoker.as_deref() else {
                 continue;
@@ -1458,6 +1500,7 @@ impl StatePeer {
             // for must still be that member's.
             let Some(call) = claim.call.as_deref() else {
                 if member.may_write_for(invoker) {
+                    bare = true;
                     continue;
                 }
                 return Err(refused_invocation(
@@ -1469,7 +1512,7 @@ impl StatePeer {
             };
             let certificate = tilo_server_protocol::invocation::verify_carried(
                 call,
-                (&self.core.workspace, self.signed_by_governor(source)),
+                (&self.core.workspace, keeper),
                 &document,
                 claim,
                 &self.core.revocations,
@@ -1482,27 +1525,59 @@ impl StatePeer {
                     &format!("the invocation a change made for a caller does not check: {error}"),
                 )
             })?;
-            let person = hex::encode(certificate.user_public_key);
-            match &caller {
-                Some(held) if held.person != person => {
-                    return Err(refused_invocation(
-                        &route,
-                        source,
-                        envelope,
-                        "the changes of one action name more than one caller",
-                    ));
+            let effect = keeper.is_some()
+                && tilo_server_protocol::invocation::carried_effect(call, &document, claim);
+            // A call the keeper carried out for an agent, and signed as the device that did, is
+            // the call of the person the agent acts for.
+            let person = match invoker.acted_for_person() {
+                Some(person) if effect && certificate.device_public_key == *source => {
+                    person.to_owned()
                 }
-                Some(_) => {}
-                None => {
-                    // The member list at the write's heads decides the caller:
-                    // the role and grants its person had then, and the keys
-                    // approved then.
-                    let access = MemberAccess::person(member.policy.clone(), person.clone())
-                        .granted(self.approved_keys(authorization_time));
-                    caller = Some(CallerAccess { person, access });
-                }
-            }
+                _ => hex::encode(certificate.user_public_key),
+            };
+            caller = Some(self.called_by(
+                (&route, source, envelope),
+                caller,
+                person,
+                (member, authorization_time),
+                effect,
+            )?);
         }
+        if bare && let Some(caller) = caller.as_mut() {
+            caller.effect = false;
+        }
+        Ok(caller)
+    }
+
+    /// `held`, the caller the changes of one write named so far, with `person`, whom the next
+    /// change made for a call names: as a step its action declares (`effect`) or not.
+    fn called_by(
+        &self,
+        (route, source, envelope): (&Route, &[u8; 32], &SignedOp),
+        held: Option<CallerAccess>,
+        person: String,
+        (member, authorization_time): (&MemberAccess, SystemTime),
+        effect: bool,
+    ) -> Result<CallerAccess, AuthorizeRefusal> {
+        let mut caller = match held {
+            Some(held) if held.person != person => {
+                return Err(refused_invocation(
+                    route,
+                    source,
+                    envelope,
+                    "the changes of one action name more than one caller",
+                ));
+            }
+            Some(held) => held,
+            // The member list at the write's heads decides the caller: the role and grants its
+            // person had then, and the keys approved then.
+            None => CallerAccess::of(
+                person,
+                member.policy.clone(),
+                self.approved_keys(authorization_time),
+            ),
+        };
+        caller.effect &= effect;
         Ok(caller)
     }
 
@@ -1568,8 +1643,14 @@ impl StatePeer {
         // A step a called action declares it takes in another record counts only when the
         // device that wrote it keeps the workspace's records: its host. Any other device writes
         // nothing for a call but the call's own.
-        let keeper = self.signed_by_governor(source).then_some(app_id);
+        let keeper = self.signed_by_governor(source).then_some(
+            tilo_server_protocol::invocation::RecordHost {
+                app: app_id,
+                device: source,
+            },
+        );
         let mut caller: Option<CallerAccess> = None;
+        let mut bare = false;
         'changes: for change in changes {
             let certificate = 'named: {
                 let Some(context) = change
@@ -1632,8 +1713,31 @@ impl StatePeer {
                 // member — unless it names a device it was made from, which
                 // must prove it.
                 match certificate {
-                    Some(certificate) => certificate,
-                    None if invoker.device.is_none() => continue 'changes,
+                    Some(certificate) => {
+                        let effect = keeper.is_some()
+                            && tilo_server_protocol::invocation::declared_effect(&context);
+                        let acting = &invoker.acting;
+                        // A call the keeper carried out for an agent, and signed as the device
+                        // that did, is the call of the person the agent acts for.
+                        let person = match acting.acted_for_person() {
+                            Some(person) if effect && certificate.device_public_key == *source => {
+                                person.to_owned()
+                            }
+                            _ => hex::encode(certificate.user_public_key),
+                        };
+                        caller = Some(self.called_by(
+                            (&route, source, envelope),
+                            caller,
+                            person,
+                            (member, authorization_time),
+                            effect,
+                        )?);
+                        continue 'changes;
+                    }
+                    None if invoker.device.is_none() => {
+                        bare = true;
+                        continue 'changes;
+                    }
                     None => {
                         return Err(refused_invocation(
                             &route,
@@ -1644,26 +1748,19 @@ impl StatePeer {
                     }
                 }
             };
+            // A resource store's change keeps its call in its stamp: it is the call's own, never
+            // a step another action declares.
             let person = hex::encode(certificate.user_public_key);
-            match &caller {
-                Some(held) if held.person != person => {
-                    return Err(refused_invocation(
-                        &route,
-                        source,
-                        envelope,
-                        "the changes of one action name more than one caller",
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    // The member list at the write's heads decides the caller:
-                    // the role and grants its person had then, and the keys
-                    // approved then.
-                    let access = MemberAccess::person(member.policy.clone(), person.clone())
-                        .granted(self.approved_keys(authorization_time));
-                    caller = Some(CallerAccess { person, access });
-                }
-            }
+            caller = Some(self.called_by(
+                (&route, source, envelope),
+                caller,
+                person,
+                (member, authorization_time),
+                false,
+            )?);
+        }
+        if bare && let Some(caller) = caller.as_mut() {
+            caller.effect = false;
         }
         Ok(caller)
     }

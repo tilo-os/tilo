@@ -1392,7 +1392,7 @@ fn wifi_open(settings: &Settings) -> bool {
         settings
             .string("802-11-wireless-security", "key-mgmt")
             .as_deref(),
-        None | Some("") | Some("none" | "owe")
+        None | Some("" | "none" | "owe")
     )
 }
 

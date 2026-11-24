@@ -308,7 +308,7 @@ mod cases {
         }
 
         /// Types `text` into the window's field that says `placeholder`, as a person does.
-        fn type_into(&self, window: &ViewInstance, placeholder: &str, text: &str) {
+        fn type_into(window: &ViewInstance, placeholder: &str, text: &str) {
             let input = of_kind(window.tree(), "ui.TextInput")
                 .into_iter()
                 .find(|node| prop(node, "placeholder") == placeholder)
@@ -317,7 +317,7 @@ mod cases {
         }
 
         /// The proof lines the window shows under "Where to publish the proof".
-        fn places(&self, window: &ViewInstance) -> Vec<String> {
+        fn places(window: &ViewInstance) -> Vec<String> {
             of_kind(window.tree(), "ui.Property")
                 .into_iter()
                 .filter(|node| prop(node, "label") == "Publish at")
@@ -326,7 +326,7 @@ mod cases {
         }
 
         /// The readings the window lists, newest first, as their summaries.
-        fn readings(&self, window: &ViewInstance) -> Vec<String> {
+        fn readings(window: &ViewInstance) -> Vec<String> {
             of_kind(window.tree(), "ui.ListRow")
                 .into_iter()
                 .map(|node| prop(node, "title"))
@@ -353,10 +353,10 @@ mod cases {
         assert_eq!(p.text("contact"), "");
 
         let window = p.window();
-        p.type_into(&window, "example.com", "lovelace.dev");
-        p.type_into(&window, "github:ada", "codeberg:ada");
-        p.type_into(&window, "you@example.com", "ada@lovelace.dev");
-        p.type_into(&window, "https://apps.tilo.so", "https://apps.example.com");
+        Publisher::type_into(&window, "example.com", "lovelace.dev");
+        Publisher::type_into(&window, "github:ada", "codeberg:ada");
+        Publisher::type_into(&window, "you@example.com", "ada@lovelace.dev");
+        Publisher::type_into(&window, "https://apps.tilo.so", "https://apps.example.com");
         assert_eq!(p.text("domain"), "lovelace.dev");
         assert_eq!(p.text("forge_account"), "codeberg:ada");
         assert_eq!(p.text("contact"), "ada@lovelace.dev");
@@ -469,9 +469,9 @@ mod cases {
         let p = Publisher::new();
         p.engine.set_key(A_KEY);
         let window = p.window();
-        p.type_into(&window, "example.com", "lovelace.dev");
-        p.type_into(&window, "github:ada", "codeberg:ada");
-        p.type_into(&window, "you@example.com", "ada@lovelace.dev");
+        Publisher::type_into(&window, "example.com", "lovelace.dev");
+        Publisher::type_into(&window, "github:ada", "codeberg:ada");
+        Publisher::type_into(&window, "you@example.com", "ada@lovelace.dev");
         p.act("apply_for_namespaces");
         assert_eq!(p.text("job"), "apply-1", "the registry call runs as a job");
         let asked = p.engine.jobs();
@@ -491,7 +491,7 @@ mod cases {
         assert_eq!(p.text("notice_title"), "Application status");
         assert_eq!(p.text("notice_detail"), "pending (dev.lovelace)");
         assert_eq!(
-            p.readings(&p.window()),
+            Publisher::readings(&p.window()),
             ["pending (dev.lovelace)"],
             "the answer is kept as the application's newest reading"
         );
@@ -503,7 +503,7 @@ mod cases {
         p.act("check_status");
         p.end();
         assert_eq!(
-            p.readings(&p.window()),
+            Publisher::readings(&p.window()),
             ["approved (dev.lovelace)", "pending (dev.lovelace)"]
         );
     }
@@ -530,7 +530,7 @@ mod cases {
         let p = Publisher::new();
         p.engine.set_key(A_KEY);
         let window = p.window();
-        p.type_into(&window, "example.com", "lovelace.dev");
+        Publisher::type_into(&window, "example.com", "lovelace.dev");
         p.act("apply_for_namespaces");
         assert_eq!(p.text("job"), "apply-1");
         p.engine.set_status(
@@ -541,7 +541,7 @@ mod cases {
         assert_eq!(p.text("notice_kind"), "error");
         assert!(p.text("notice_detail").contains("missing proof"));
         assert!(
-            p.readings(&p.window()).is_empty(),
+            Publisher::readings(&p.window()).is_empty(),
             "a failed call is no reading of the application"
         );
     }
@@ -551,7 +551,7 @@ mod cases {
         let p = Publisher::new();
         p.engine.set_key(A_KEY);
         let window = p.window();
-        p.type_into(&window, "example.com", "lovelace.dev");
+        Publisher::type_into(&window, "example.com", "lovelace.dev");
         for address in [
             "http://apps.tilo.so",
             "http://localhost.example.com",
@@ -559,7 +559,7 @@ mod cases {
             "file:///tmp/registry",
             "https://",
         ] {
-            p.type_into(&window, "https://apps.tilo.so", address);
+            Publisher::type_into(&window, "https://apps.tilo.so", address);
             let refused = p.refused("apply_for_namespaces");
             assert!(
                 refused.contains("credential-free https"),
@@ -573,7 +573,7 @@ mod cases {
             "http://localhost.:8080",
             "https://apps.example.com",
         ] {
-            p.type_into(&window, "https://apps.tilo.so", address);
+            Publisher::type_into(&window, "https://apps.tilo.so", address);
             p.act("apply_for_namespaces");
             assert_ne!(p.text("job"), "", "{address} is a registry");
             p.engine
@@ -587,13 +587,13 @@ mod cases {
         let p = Publisher::new();
         let window = p.window();
         assert!(
-            p.places(&window).is_empty(),
+            Publisher::places(&window).is_empty(),
             "no claim, no place to publish the proof"
         );
 
-        p.type_into(&window, "example.com", "lovelace.dev");
+        Publisher::type_into(&window, "example.com", "lovelace.dev");
         assert_eq!(
-            p.places(&p.window()),
+            Publisher::places(&p.window()),
             [
                 "DNS TXT _tilo-publisher.lovelace.dev",
                 "or https://lovelace.dev/.well-known/tilo-publisher.txt",
@@ -602,25 +602,25 @@ mod cases {
 
         let p = Publisher::new();
         let window = p.window();
-        p.type_into(&window, "github:ada", "github:ada");
+        Publisher::type_into(&window, "github:ada", "github:ada");
         assert_eq!(
-            p.places(&p.window()),
+            Publisher::places(&p.window()),
             ["https://github.com/ada/tilo-publisher"]
         );
 
         let p = Publisher::new();
         let window = p.window();
-        p.type_into(&window, "github:ada", "git.example.net:ada");
+        Publisher::type_into(&window, "github:ada", "git.example.net:ada");
         assert_eq!(
-            p.places(&p.window()),
+            Publisher::places(&p.window()),
             ["https://git.example.net/ada/tilo-publisher"]
         );
 
         let p = Publisher::new();
         let window = p.window();
-        p.type_into(&window, "github:ada", "nowhere");
+        Publisher::type_into(&window, "github:ada", "nowhere");
         assert!(
-            p.places(&p.window()).is_empty(),
+            Publisher::places(&p.window()).is_empty(),
             "a forge without an account has no proof place"
         );
     }

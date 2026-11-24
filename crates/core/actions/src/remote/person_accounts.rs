@@ -190,9 +190,13 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
             (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, RECONNECT | CHECK) => (&[KEEP_USES], &[REPORT_SYNC]),
-        (RESOURCE, SET_SERVICES | SET_CALENDARS) => {
-            (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT])
-        }
+        // Turning an iCloud account's calendars on signs in to its calendar server with the
+        // mail account's password, and keeps that sign-in.
+        (RESOURCE, SET_SERVICES) => (
+            &[KEEP_SEALED, KEEP_USES, REMOVE_SEALED],
+            &[SAVE_ACCOUNT, REMOVE_ACCOUNT],
+        ),
+        (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
         (RESOURCE, FETCH | READ | SEARCH | SEND | MARK | SAVE_DRAFT | ARRIVED)
         | (
             calendars::RESOURCE,

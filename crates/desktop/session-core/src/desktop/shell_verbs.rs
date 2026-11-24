@@ -90,11 +90,9 @@ impl ShellVerbs {
             searching: self.handle.search_searching(),
         });
         let hung = self.handle.unresponsive_tabs();
-        let ended = self.handle.ended_tabs();
         let mut resources = vec![shell_resource(
             &windows,
             &hung,
-            &ended,
             &self.handle.displays(),
             search,
         )];
@@ -196,12 +194,6 @@ impl ShellVerbs {
                     return false;
                 };
                 ask(&self.handle, &self.asks, DesktopAsk::ForceQuitApp(tab));
-            }
-            LayoutEffect::ReopenWindow { tab } => {
-                let Ok(tab) = tab.parse() else {
-                    return false;
-                };
-                ask(&self.handle, &self.asks, DesktopAsk::ReopenEnded(tab));
             }
         }
         true

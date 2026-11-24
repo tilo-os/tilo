@@ -57,7 +57,9 @@ mod cases {
 
     impl EngineHost for Device {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.chip-design");
+            if app != "so.tilo.chip-design" {
+                return Err(format!("`{app}` is not the app this device designs for"));
+            }
             self.asks
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -1003,7 +1005,7 @@ mod cases {
                         "database_artifact": "db.h5",
                         "observation_artifact": "report.json",
                         "dbu_per_micron": 1000,
-                        "die_dbu": [0, 0, 100000, 100000],
+                        "die_dbu": [0, 0, 100_000, 100_000],
                         "total_instances": 1,
                         "omitted_instances": 0,
                         "macros": [{
@@ -1078,7 +1080,7 @@ mod cases {
                         "database_artifact": "db.h5",
                         "observation_artifact": "report.json",
                         "dbu_per_micron": 1000,
-                        "die_dbu": [0, 0, 100000, 100000],
+                        "die_dbu": [0, 0, 100_000, 100_000],
                         "total_instances": 1,
                         "omitted_instances": 0,
                         "macros": [{
@@ -1119,85 +1121,89 @@ mod cases {
                 "original_receipt_sha256": hash,
                 "producer_sha256": hash,
                 "input_identity_sha256": hash,
-                "links": {
-                    "prepare": {
-                        "receipt_sha256": hash,
-                        "producer_sha256": hash,
-                        "input_identity_sha256": hash,
-                    },
-                    "numerical": {
-                        "receipt_sha256": hash,
-                        "producer_sha256": hash,
-                        "input_identity_sha256": hash,
-                    },
-                    "fault": {
-                        "receipt_sha256": hash,
-                        "producer_sha256": hash,
-                        "input_identity_sha256": hash,
-                    },
-                    "synthesis": {
-                        "receipt_sha256": hash,
-                        "producer_sha256": hash,
-                        "input_identity_sha256": hash,
-                    },
-                },
+                "links": links(&hash),
                 "expected_comparison_words": 64,
-                "variants": [{
-                    "identity": "packed-4bit",
-                    "numerical": {
-                        "cold_program_cycles": 1,
-                        "vector_load_cycles": 1,
-                        "warm_cycles": 1,
-                        "accepted_weight_bytes": 1,
-                        "accepted_descriptor_bytes": 1,
-                        "cache_reads": 1,
-                        "quantizer_packets": 1,
-                        "comparison_words": 64,
-                        "output_sha256": hash,
-                    },
-                    "synthesis": {
-                        "generic_logic_cells": 1,
-                        "activation_cache_bits": 1,
-                        "programmed_weight_bits": 1,
-                        "fixed_initialized_bits": 1,
-                        "licensed_memory_macro": false,
-                        "synthesized_netlist_equivalence": false,
-                        "memories": [{
-                            "name": "weights",
-                            "width_bits": 64,
-                            "depth_words": 8192,
-                            "bits": 524288,
-                            "read_ports": 1,
-                            "clocked_read_ports": 1,
-                            "write_ports": 1,
-                            "fully_initialized": true,
-                        }],
-                    },
-                }, {
-                    "identity": "fp32",
-                    "numerical": {
-                        "cold_program_cycles": 1,
-                        "vector_load_cycles": 1,
-                        "warm_cycles": 1,
-                        "accepted_weight_bytes": 1,
-                        "accepted_descriptor_bytes": 1,
-                        "cache_reads": 1,
-                        "quantizer_packets": 1,
-                        "comparison_words": 64,
-                        "output_sha256": hash,
-                    },
-                    "synthesis": {
-                        "generic_logic_cells": 2,
-                        "activation_cache_bits": 1,
-                        "programmed_weight_bits": 1,
-                        "fixed_initialized_bits": 1,
-                        "licensed_memory_macro": false,
-                        "synthesized_netlist_equivalence": false,
-                        "memories": [],
-                    },
-                }],
+                "variants": [packed_variant(&hash), fp32_variant(&hash)],
             },
         })
         .to_string()
+    }
+
+    /// The receipt's four stage links, each naming `hash`'s receipt.
+    fn links(hash: &str) -> serde_json::Value {
+        let link = serde_json::json!({
+            "receipt_sha256": hash,
+            "producer_sha256": hash,
+            "input_identity_sha256": hash,
+        });
+        serde_json::json!({
+            "prepare": link,
+            "numerical": link,
+            "fault": link,
+            "synthesis": link,
+        })
+    }
+
+    /// The packed-4bit variant the study compares, its receipt naming `hash`.
+    fn packed_variant(hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "identity": "packed-4bit",
+            "numerical": {
+                "cold_program_cycles": 1,
+                "vector_load_cycles": 1,
+                "warm_cycles": 1,
+                "accepted_weight_bytes": 1,
+                "accepted_descriptor_bytes": 1,
+                "cache_reads": 1,
+                "quantizer_packets": 1,
+                "comparison_words": 64,
+                "output_sha256": hash,
+            },
+            "synthesis": {
+                "generic_logic_cells": 1,
+                "activation_cache_bits": 1,
+                "programmed_weight_bits": 1,
+                "fixed_initialized_bits": 1,
+                "licensed_memory_macro": false,
+                "synthesized_netlist_equivalence": false,
+                "memories": [{
+                    "name": "weights",
+                    "width_bits": 64,
+                    "depth_words": 8192,
+                    "bits": 524_288,
+                    "read_ports": 1,
+                    "clocked_read_ports": 1,
+                    "write_ports": 1,
+                    "fully_initialized": true,
+                }],
+            },
+        })
+    }
+
+    /// The fp32 variant the study compares, its receipt naming `hash`.
+    fn fp32_variant(hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "identity": "fp32",
+            "numerical": {
+                "cold_program_cycles": 1,
+                "vector_load_cycles": 1,
+                "warm_cycles": 1,
+                "accepted_weight_bytes": 1,
+                "accepted_descriptor_bytes": 1,
+                "cache_reads": 1,
+                "quantizer_packets": 1,
+                "comparison_words": 64,
+                "output_sha256": hash,
+            },
+            "synthesis": {
+                "generic_logic_cells": 2,
+                "activation_cache_bits": 1,
+                "programmed_weight_bits": 1,
+                "fixed_initialized_bits": 1,
+                "licensed_memory_macro": false,
+                "synthesized_netlist_equivalence": false,
+                "memories": [],
+            },
+        })
     }
 }

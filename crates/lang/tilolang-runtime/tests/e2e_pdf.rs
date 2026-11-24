@@ -112,12 +112,12 @@ mod cases {
         }
 
         fn save(&self, sources: &[&[u8]], request: &str) -> Result<Vec<u8>, String> {
-            assert_eq!(
-                sources.first(),
-                Some(&PDF),
-                "the document's own bytes are saved"
-            );
-            assert!(request.contains("\"pages\""), "a save names the pages");
+            if sources.first() != Some(&PDF) {
+                return Err("a save hands the document's own bytes".to_owned());
+            }
+            if !request.contains("\"pages\"") {
+                return Err("a save names the pages".to_owned());
+            }
             Ok(b"%PDF-1.4 saved".to_vec())
         }
     }
@@ -239,7 +239,7 @@ mod cases {
             let projected = self.rt.project(&pages);
             let id = projected["items"][at]["id"]
                 .as_str()
-                .unwrap_or_else(|| panic!("no page {at} in {}", projected));
+                .unwrap_or_else(|| panic!("no page {at} in {projected}"));
             let ty = self
                 .app
                 .meta()
@@ -254,7 +254,7 @@ mod cases {
 
         fn count(&self, at: &ResourceRef, field: &str) -> usize {
             let held = self.rt.read(at, field).unwrap();
-            self.rt.project(&held)["count"].as_u64().unwrap_or(0) as usize
+            usize::try_from(self.rt.project(&held)["count"].as_u64().unwrap_or(0)).unwrap_or(0)
         }
 
         fn texts(&self, at: &ResourceRef, field: &str) -> Vec<String> {
@@ -315,7 +315,7 @@ mod cases {
         assert!(
             reader
                 .text(&doc, "imported_source")
-                .ends_with(&digest_of(PDF).clone()),
+                .ends_with(&digest_of(PDF)),
             "the source it took its markup over from is remembered; trouble={:?}",
             reader.text(&doc, "trouble")
         );
@@ -497,7 +497,7 @@ mod cases {
         assert!(
             reader
                 .text(&doc, "imported_source")
-                .ends_with(&digest_of(b"").clone())
+                .ends_with(&digest_of(b""))
         );
         assert_eq!(reader.count(&doc, "marks"), 0);
     }
@@ -585,7 +585,11 @@ mod cases {
             let page = reader.page(&doc, at);
             reader.call(
                 "show_page",
-                vec![Value::resource(&doc), Value::resource(&page), Value::Int(800)],
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&page),
+                    Value::Int(800),
+                ],
             );
         }
         let mut window = reader.window("reader", vec![Value::resource(&doc)]);
@@ -906,7 +910,7 @@ mod cases {
                 &stage,
                 "moved",
                 Some(&Value::List(vec![
-                    Value::text(&signed.id_string()),
+                    Value::text(signed.id_string()),
                     Value::List(vec![Value::Int(300), Value::Int(400)]),
                 ])),
             )

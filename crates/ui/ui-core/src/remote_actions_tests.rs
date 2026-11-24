@@ -116,6 +116,7 @@ fn catalogue_query(actions: &mut RemoteActions, what: &str) -> CatalogueQuery {
     let [
         CollabRequest::RemoteAction {
             message: RemoteActionMessage::CatalogueRequest { query, .. },
+            ..
         },
     ] = requests.as_slice()
     else {
@@ -129,6 +130,7 @@ fn catalogue_correlation(actions: &mut RemoteActions, what: &str) -> u64 {
     let [
         CollabRequest::RemoteAction {
             message: RemoteActionMessage::CatalogueRequest { correlation, .. },
+            ..
         },
     ] = requests.as_slice()
     else {
@@ -236,6 +238,7 @@ tilo_test_env::scenario! {
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             },
         ] = requests.as_slice()
         else {
@@ -286,6 +289,7 @@ tilo_test_env::scenario! {
             requests.as_slice(),
             [CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Cancel { invocation: id },
+                ..
             }] if *id == invocation
         ));
         actions.handle_collab_event(&CollabEvent::RemoteAction {
@@ -358,6 +362,7 @@ tilo_test_env::scenario! {
             requests.as_slice(),
             [CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Cancel { invocation: id },
+                ..
             }] if *id == invocation
         ));
         assert!(actions.cancel(invocation).unwrap().get().is_pending());
@@ -383,6 +388,7 @@ tilo_test_env::scenario! {
                         appearance: None,
                         ..
                     }),
+                    ..
                 }]
             ),
             "the invocation asks for its outcome in the same round trip: {requests:?}"
@@ -460,6 +466,7 @@ tilo_test_env::scenario! {
                     seen: Some(UpdateMark::Accepted),
                     ..
                 },
+                ..
             }]
         ));
     }
@@ -512,6 +519,7 @@ tilo_test_env::scenario! {
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             },
         ] = requests.as_slice()
         else {
@@ -535,6 +543,7 @@ tilo_test_env::scenario! {
                             seen: Some(_),
                             ..
                         },
+                        ..
                     }]
                 ),
                 "a waiting observe follows each update: {requests:?}"
@@ -561,6 +570,7 @@ tilo_test_env::scenario! {
                 requests.as_slice(),
                 [CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Cancel { invocation: id },
+                    ..
                 }] if *id == invocation
             ),
             "dropping it cancels the invocation: {requests:?}"
@@ -615,7 +625,7 @@ tilo_test_env::scenario! {
 }
 
 fn only_message(requests: Vec<CollabRequest>) -> RemoteActionMessage {
-    let [CollabRequest::RemoteAction { message }] = <[CollabRequest; 1]>::try_from(requests)
+    let [CollabRequest::RemoteAction { message, .. }] = <[CollabRequest; 1]>::try_from(requests)
         .unwrap_or_else(|requests| panic!("one request: {requests:?}"))
     else {
         panic!("a remote-action request");
@@ -1001,6 +1011,32 @@ tilo_test_env::scenario! {
         );
         let _pending = session.catalogue_page(CatalogueQuery::default());
         assert_eq!(session.take_collab_requests().len(), 1);
+    }
+
+    phase an_invocation_names_the_press_the_window_handled;
+    // What a call made while the window handles the person's input travels with is that press's
+    // serial, which only the compositor can confirm: the host refuses one it did not issue.
+    {
+        crate::press::note(7);
+        let mut actions = RemoteActions::session();
+        let _running = actions.invoke_with_id(
+            InvocationId(uuid::Uuid::from_bytes([0x61; 16])),
+            target("slow"),
+            InvokeArgument::None,
+            None,
+        );
+        let requests = actions.take_collab_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(_),
+                    press: Some(7),
+                }]
+            ),
+            "the invocation names the press it followed: {requests:?}"
+        );
+        crate::press::forget();
     }
 
     phase a_host_that_cannot_tell_when_the_workspace_changes_says_so;

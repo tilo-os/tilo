@@ -316,6 +316,10 @@ mod cases {
             }
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a document's whole numbers are far inside i64"
+        )]
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
@@ -333,7 +337,7 @@ mod cases {
         fn float(&self, r: &ResourceRef, field: &str) -> f64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Float(n) => n,
-                Value::Int(n) => n as f64,
+                Value::Int(n) => f64::from(i32::try_from(n).unwrap_or(0)),
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -896,13 +900,15 @@ mod cases {
                     .and_then(Value::as_text)
                     .is_some_and(|meta| meta.contains("src/main.rs"))
             })
-            .map(|node| node.key.clone())
-            .unwrap_or_else(|| {
-                panic!(
-                    "the result's row is in the panel: {}",
-                    crate::common::dump(window.tree())
-                )
-            });
+            .map_or_else(
+                || {
+                    panic!(
+                        "the result's row is in the panel: {}",
+                        crate::common::dump(window.tree())
+                    )
+                },
+                |node| node.key.clone(),
+            );
         window.fire(&row, "activate").expect("the result opens");
         window.poll_patches().expect("the window draws the file");
         let opened = editor
@@ -930,7 +936,7 @@ mod cases {
             .expect("the result opened its file");
         assert_eq!(editor.text(main, "text"), "fn main() {}\n");
         assert_eq!(main.id_string(), main_id, "the window shows the hit's file");
-        assert_eq!(editor.number(&main, "reveal_line"), 0);
+        assert_eq!(editor.number(main, "reveal_line"), 0);
     }
 
     #[test]
@@ -1155,7 +1161,7 @@ mod cases {
             "an open bracket is a problem: {problems:?}"
         );
         assert_eq!(editor.text(&broken, "source"), "lint");
-        assert_ne!(editor.text(&broken, "checked"), "");
+        assert!(!editor.text(&broken, "checked").is_empty());
     }
 
     #[test]
@@ -1370,8 +1376,15 @@ mod cases {
             ],
         );
         let mut window = editor.window();
-        // The commands on the open file are the file menu's: each answers to its key while the
-        // window has the keyboard.
+        the_file_menu_answers_to_its_keys(&window);
+        the_line_commands_work_on_the_caret_line(&editor, &main, &mut window);
+        go_to_line_shows_the_line_the_field_holds(&editor, &main, &mut window);
+        the_windows_keys_switch_the_panel_and_escape_returns(&editor, &mut window);
+    }
+
+    /// The commands on the open file are the file menu's: each answers to its key while the
+    /// window has the keyboard.
+    fn the_file_menu_answers_to_its_keys(window: &tilolang_runtime::ViewInstance) {
         for (label, key) in [
             ("Save", "Ctrl+S"),
             ("Save as…", "Ctrl+Shift+S"),
@@ -1398,12 +1411,18 @@ mod cases {
         assert_eq!(
             node_with(window.tree(), "ui.TextInput", "placeholder", "Line")
                 .and_then(|node| node.props.get("key"))
-                .and_then(Value::as_text)
-                .as_deref(),
+                .and_then(Value::as_text),
             Some("Ctrl+G"),
             "the line field answers to Ctrl+G"
         );
+    }
 
+    /// The comment toggle and the line commands work on the line the caret is on.
+    fn the_line_commands_work_on_the_caret_line(
+        editor: &Editor,
+        main: &ResourceRef,
+        window: &mut tilolang_runtime::ViewInstance,
+    ) {
         // The comment toggle the key runs comments the line the caret is on.
         let toggle = node_with(window.tree(), "ui.MenuItem", "label", "Toggle comment")
             .expect("the file menu offers the comment toggle")
@@ -1411,12 +1430,12 @@ mod cases {
             .clone();
         window.fire(&toggle, "choose").expect("the comment toggles");
         window.poll_patches().expect("the window draws the comment");
-        assert_eq!(editor.text(&main, "text"), "// fn main() {}\nlet x = 1;\n");
+        assert_eq!(editor.text(main, "text"), "// fn main() {}\nlet x = 1;\n");
 
         // The line commands the keys run work on the line the caret is on.
         editor.call(
             "replace_text",
-            vec![Value::resource(&main), Value::text("one\ntwo\nthree\n")],
+            vec![Value::resource(main), Value::text("one\ntwo\nthree\n")],
         );
         let fire = |window: &tilolang_runtime::ViewInstance, label: &str| {
             let key = node_with(window.tree(), "ui.MenuItem", "label", label)
@@ -1425,22 +1444,29 @@ mod cases {
                 .clone();
             window.fire(&key, "choose").expect(label);
         };
-        fire(&window, "Move line down");
+        fire(window, "Move line down");
         window.poll_patches().expect("the window draws the move");
-        assert_eq!(editor.text(&main, "text"), "two\none\nthree\n");
+        assert_eq!(editor.text(main, "text"), "two\none\nthree\n");
         // The caret is on the first line, so the other direction moves the second one up.
         editor.call(
             "move_line",
-            vec![Value::resource(&main), Value::Int(1), Value::Bool(true)],
+            vec![Value::resource(main), Value::Int(1), Value::Bool(true)],
         );
-        assert_eq!(editor.text(&main, "text"), "one\ntwo\nthree\n");
-        fire(&window, "Duplicate line");
+        assert_eq!(editor.text(main, "text"), "one\ntwo\nthree\n");
+        fire(window, "Duplicate line");
         window.poll_patches().expect("the window draws the copy");
-        assert_eq!(editor.text(&main, "text"), "one\none\ntwo\nthree\n");
-        fire(&window, "Delete line");
+        assert_eq!(editor.text(main, "text"), "one\none\ntwo\nthree\n");
+        fire(window, "Delete line");
         window.poll_patches().expect("the window draws the delete");
-        assert_eq!(editor.text(&main, "text"), "one\ntwo\nthree\n");
+        assert_eq!(editor.text(main, "text"), "one\ntwo\nthree\n");
+    }
 
+    /// Go to line shows the line the field holds.
+    fn go_to_line_shows_the_line_the_field_holds(
+        editor: &Editor,
+        main: &ResourceRef,
+        window: &mut tilolang_runtime::ViewInstance,
+    ) {
         // Go to line shows the line the field holds.
         let goto = editor
             .app
@@ -1459,8 +1485,14 @@ mod cases {
             .clone();
         window.fire(&go, "press").expect("the line is shown");
         window.poll_patches().expect("the window draws the line");
-        assert_eq!(editor.number(&main, "reveal_line"), 2);
+        assert_eq!(editor.number(main, "reveal_line"), 2);
+    }
 
+    /// The window's keys switch the panel under the code, and Escape in the terminal returns.
+    fn the_windows_keys_switch_the_panel_and_escape_returns(
+        editor: &Editor,
+        window: &mut tilolang_runtime::ViewInstance,
+    ) {
         // The window's keys switch the panel under the code, through the buttons its actions
         // stand on.
         for (label, panel) in [
@@ -1479,7 +1511,7 @@ mod cases {
                 .clone();
             window.fire(&button, "press").expect("the panel switches");
             window.poll_patches().expect("the window draws the panel");
-            match project_state(&editor, &window, "panel") {
+            match project_state(editor, window, "panel") {
                 Value::Opt(Some(held)) => assert_eq!(*held, Value::text(panel)),
                 Value::Text(shown) => assert_eq!(shown, panel),
                 other => panic!("the panel reads {other:?}"),
@@ -1513,7 +1545,7 @@ mod cases {
             .fire(&field, "cancel")
             .expect("Escape leaves the field");
         window.poll_patches().expect("the window draws the code");
-        match project_state(&editor, &window, "panel") {
+        match project_state(editor, window, "panel") {
             Value::Opt(Some(held)) => assert_eq!(*held, Value::text("")),
             Value::Text(shown) => assert_eq!(shown, ""),
             other => panic!("the panel reads {other:?}"),
@@ -1524,7 +1556,7 @@ mod cases {
     fn float_prop(node: &UiNode, name: &str) -> f64 {
         match node.props.get(name) {
             Some(Value::Float(n)) => *n,
-            Some(Value::Int(n)) => *n as f64,
+            Some(Value::Int(n)) => f64::from(i32::try_from(*n).unwrap_or(0)),
             other => panic!("{name} reads {other:?}"),
         }
     }

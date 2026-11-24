@@ -22,17 +22,17 @@ mod cases {
     const SOURCE: &str = include_str!("../../../../apps/tl/maps/app.tl");
 
     /// What the geocoder answers for Munich.
-    const MUNICH: &str = r##"[
+    const MUNICH: &str = r#"[
         {"lat":"48.1374","lon":"11.5755","display_name":"Marienplatz, München, Bayern","name":"Marienplatz","osm_type":"node","osm_id":11,"class":"tourism","type":"attraction","address":{"road":"Marienplatz"}},
         {"lat":"48.1351","lon":"11.5820","display_name":"Café Glockenspiel, München","name":"Café Glockenspiel","osm_type":"node","osm_id":12,"class":"amenity","type":"cafe","address":{"road":"Marienplatz","house_number":"1"}}
-    ]"##;
+    ]"#;
 
     /// What the geocoder answers for a place the tests name but it does not know.
     const UNKNOWN: &str = "[]";
 
     /// What the routing service answers for two places in Munich: two routes, so the map can offer
     /// another one.
-    const ROUTES: &str = r##"{"code":"Ok","routes":[
+    const ROUTES: &str = r#"{"code":"Ok","routes":[
         {"distance":1200.0,"duration":600.0,"geometry":{"coordinates":[[11.5755,48.1374],[11.5820,48.1351]]},
          "legs":[{"steps":[
             {"maneuver":{"type":"depart"},"name":"Marienplatz","distance":200.0},
@@ -41,7 +41,7 @@ mod cases {
          ]}]},
         {"distance":1400.0,"duration":700.0,"geometry":{"coordinates":[[11.5755,48.1374],[11.5700,48.1330],[11.5820,48.1351]]},
          "legs":[{"steps":[{"maneuver":{"type":"depart"},"name":"Marienplatz","distance":1400.0}]}]}
-    ]}"##;
+    ]}"#;
 
     /// What the transit service answers for the same two places.
     const JOURNEYS: &str = r##"{"itineraries":[
@@ -56,12 +56,12 @@ mod cases {
     ]}"##;
 
     /// What the map's points of interest answer around Munich.
-    const NEARBY: &str = r##"{"elements":[
+    const NEARBY: &str = r#"{"elements":[
         {"type":"node","id":42,"lat":48.138,"lon":11.576,
          "tags":{"name":"Café Glockenspiel","amenity":"cafe","addr:street":"Marienplatz","addr:housenumber":"1","opening_hours":"8:00-20:00"}},
         {"type":"way","id":43,"center":{"lat":48.139,"lon":11.577},
          "tags":{"name":"Münchner Stadtmuseum","tourism":"museum","website":"https://example.org"}}
-    ]}"##;
+    ]}"#;
 
     /// The device's network, as the map services answer it: what was asked, and the answer each
     /// kind of request gets.
@@ -123,9 +123,9 @@ mod cases {
                 return Err(format!("`{op}` is no op this device runs"));
             }
             if *self.found.borrow() {
-                Ok(r##"{"lat":48.1374,"lon":11.5755}"##.to_owned())
+                Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned())
             } else {
-                Ok(r##"{"why":"Location is unavailable right now"}"##.to_owned())
+                Ok(r#"{"why":"Location is unavailable right now"}"#.to_owned())
             }
         }
 
@@ -200,7 +200,7 @@ mod cases {
         fn float(&self, at: &ResourceRef, field: &str) -> f64 {
             match self.read(at, field) {
                 Value::Float(n) => n,
-                Value::Int(n) => n as f64,
+                Value::Int(n) => f64::from(i32::try_from(n).unwrap_or(0)),
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -627,19 +627,24 @@ mod cases {
         let area = areas[0].clone();
         let tiles = m.float(&area, "tiles");
         assert!(tiles > 0.0, "the area holds tiles: {tiles}");
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the area's tiles are far inside i64"
+        )]
+        let tile_count = tiles as i64;
         // The map says how far saving it has come; the last report says it is ready.
         m.call(
             "note_saved",
             vec![
                 Value::resource(&m.root),
                 Value::Text("This view".to_owned()),
-                Value::List(vec![Value::Int(tiles as i64), Value::Int(tiles as i64)]),
+                Value::List(vec![Value::Int(tile_count), Value::Int(tile_count)]),
             ],
         );
-        assert_eq!(m.float(&area, "done"), tiles);
+        assert!((m.float(&area, "done") - tiles).abs() < f64::EPSILON);
         assert_eq!(
             m.text(&m.root, "status"),
-            format!("Offline area ready ({} tiles)", tiles as i64)
+            format!("Offline area ready ({tile_count} tiles)")
         );
         m.call(
             "delete_offline_area",
@@ -699,7 +704,7 @@ mod cases {
             ],
         );
         let kept = m.float(&m.offline()[0], "done");
-        assert_eq!(kept, 5.0, "the tiles it got before the stop stay");
+        assert!((kept - 5.0).abs() < f64::EPSILON, "the tiles it got before the stop stay");
         assert_eq!(
             m.rt.read(&m.offline()[0], "stopped").unwrap(),
             Value::Bool(true)
@@ -712,11 +717,7 @@ mod cases {
                 Value::List(vec![Value::Int(99), Value::Int(100)]),
             ],
         );
-        assert_eq!(
-            m.float(&m.offline()[0], "done"),
-            kept,
-            "a stopped area is not filled further"
-        );
+        assert!((m.float(&m.offline()[0], "done") - kept).abs() < f64::EPSILON, "a stopped area is not filled further");
         assert!(
             m.text(&m.root, "status").contains("stay available offline"),
             "it says what it keeps: {}",
@@ -759,7 +760,7 @@ mod cases {
                 Value::List(vec![Value::Int(99), Value::Int(100)]),
             ],
         );
-        assert_eq!(m.float(&m.offline()[0], "done"), 99.0);
+        assert!((m.float(&m.offline()[0], "done") - 99.0).abs() < f64::EPSILON);
         m.call("clear_offline_areas", vec![Value::resource(&m.root)]);
         assert!(m.offline().is_empty());
     }
@@ -997,7 +998,7 @@ mod cases {
                 .into_iter()
                 .find(|node| node.props.get("name") == Some(&Value::text("Marienplatz")))
                 .expect("the place stands on the map");
-            marker.props.get("presence").cloned().unwrap_or(Value::none())
+            marker.props.get("presence").cloned().unwrap_or_else(Value::none)
         };
         // The lens's `who`: the actor itself, or the option holding it.
         let at_the_place = presence(&m);

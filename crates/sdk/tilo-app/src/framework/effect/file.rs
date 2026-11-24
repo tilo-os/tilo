@@ -279,12 +279,18 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 }
 
+/// The files a choice reopened, or why the app cannot open them. Empty when the person
+/// cancelled.
+type OpenedHandles = Result<Vec<OpenedFile>, String>;
+
+/// Polls the choice [`EffectCx::choose_handles`] waits for: the reopened files once it is taken
+/// up, or [`TryRecvError::Empty`] while some of them are still on their way.
+type PickedHandles = dyn FnMut() -> Result<OpenedHandles, TryRecvError>;
+
 /// What [`EffectCx::choose_handles`] waits for, outside the app's generic code: the choice, then
 /// each chosen item reopened by the reference it answered. Empty when the person cancelled.
 #[inline(never)]
-fn picked_handles(
-    request: PickRequest,
-) -> Box<dyn FnMut() -> Result<Result<Vec<OpenedFile>, String>, TryRecvError>> {
+fn picked_handles(request: PickRequest) -> Box<PickedHandles> {
     let picks = request.send_multiple();
     let mut picks = Some(picks);
     let mut opening: Vec<OpenFileChannel> = Vec::new();
@@ -344,7 +350,7 @@ fn read_chosen(handle: ChosenHandle, limit: Option<usize>) -> Result<ChosenFile,
     let mut bytes = Vec::new();
     let read = match limit {
         Some(limit) => {
-            let mut limited = std::io::Read::take(&mut file, limit as u64 + 1);
+            let mut limited = std::io::Read::take(&mut file, (limit as u64).saturating_add(1));
             std::io::Read::read_to_end(&mut limited, &mut bytes)
         }
         None => std::io::Read::read_to_end(&mut file, &mut bytes),

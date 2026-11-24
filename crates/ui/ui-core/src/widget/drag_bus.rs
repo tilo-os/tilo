@@ -28,12 +28,27 @@ pub struct Landed {
     pub pointer: Point,
 }
 
+/// A drag of device files a source here handed to the desktop: what it carries on this bus, and
+/// the files the desktop carries for it. When those files are dropped back on a tree of this
+/// thread, the drop is the source's own drag, not files from another app.
+#[derive(Clone, Debug)]
+struct Offered {
+    source: String,
+    payload: crate::dnd::DragPayload,
+    label: String,
+    /// The files not yet dropped back: the desktop hands a drop of several over one by one.
+    files: Vec<std::path::PathBuf>,
+    /// Whether one of them came back already: the first lands the drag, the rest go with it.
+    landed: bool,
+}
+
 thread_local! {
     static IN_FLIGHT: RefCell<Option<InFlight>> = const { RefCell::new(None) };
     static LANDED: RefCell<Option<Landed>> = const { RefCell::new(None) };
     static CARRIED_AWAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static ORIGIN: Cell<Vec2> = const { Cell::new(Vec2::ZERO) };
+    static OFFERED: RefCell<Option<Offered>> = const { RefCell::new(None) };
 }
 
 /// Where the tree that runs now stands, until it is dropped.
@@ -76,12 +91,29 @@ pub fn revision() -> u64 {
 
 /// `source` lifted the resource `address` over `rect` : a window's bar, a view a person picks up.
 pub fn carry(source: String, address: Vec<u8>, label: String, pointer: Point, rect: Rect) {
-    publish(InFlight {
-        source: source.clone(),
-        payload: crate::dnd::DragPayload::Custom {
+    carry_payload(
+        source,
+        crate::dnd::DragPayload::Custom {
             kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
             blob: address,
         },
+        label,
+        pointer,
+        rect,
+    );
+}
+
+/// `source` lifted `payload` over `rect`: a resource, or device files a view stands for.
+pub fn carry_payload(
+    source: String,
+    payload: crate::dnd::DragPayload,
+    label: String,
+    pointer: Point,
+    rect: Rect,
+) {
+    publish(InFlight {
+        source: source.clone(),
+        payload,
         label,
         pointer,
         runs: vec![(source, rect)],
@@ -150,6 +182,83 @@ pub fn carry_away() {
         CARRIED_AWAY.with(|carried| carried.set(true));
         changed();
     }
+}
+
+/// `source`'s drag of `files` went to the desktop, which carries it over every app: on this bus it
+/// is `payload`, named `label`. Should the files come back to a tree here, they
+/// land as that drag ([`came_back`]); a drag offered since replaces it.
+pub fn offer(
+    source: String,
+    payload: crate::dnd::DragPayload,
+    label: String,
+    files: Vec<std::path::PathBuf>,
+) {
+    OFFERED.with(|slot| {
+        *slot.borrow_mut() = Some(Offered {
+            source,
+            payload,
+            label,
+            files,
+            landed: false,
+        });
+    });
+}
+
+/// What the drag a source here handed to the desktop is called, while one is out: what a target
+/// it hovers says it takes.
+#[must_use]
+pub fn offered() -> Option<String> {
+    OFFERED.with(|slot| slot.borrow().as_ref().map(|offered| offered.label.clone()))
+}
+
+/// The desktop dropped `path` on this tree at `pointer`: whether it is one of the files a source
+/// here offered. The first to come back lands that source's drag at `pointer`, for the target
+/// there to take as any drag of this bus; the rest of the same drag come back with it and land
+/// nothing more. A file no source here offered is another app's, and is left to whatever takes
+/// those.
+pub fn came_back(path: &std::path::Path, pointer: Point) -> bool {
+    returned(path, Some(pointer))
+}
+
+/// The desktop dropped `path` on this tree where no target took it: whether it is one of the
+/// files a source here offered, which then lands nowhere. A window lets a drag of its own go
+/// where nothing takes it, rather than take its own files in again as another app's.
+pub fn came_back_nowhere(path: &std::path::Path) -> bool {
+    returned(path, None)
+}
+
+fn returned(path: &std::path::Path, pointer: Option<Point>) -> bool {
+    let landing = OFFERED.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let offered = slot.as_mut()?;
+        let at = offered.files.iter().position(|file| file == path)?;
+        offered.files.remove(at);
+        let first = !std::mem::replace(&mut offered.landed, true);
+        let landing = pointer.filter(|_| first).map(|pointer| Landed {
+            source: offered.source.clone(),
+            payload: offered.payload.clone(),
+            pointer,
+        });
+        if offered.files.is_empty() {
+            *slot = None;
+        }
+        Some(landing)
+    });
+    match landing {
+        None => false,
+        Some(landing) => {
+            if let Some(landed) = landing {
+                end(Some(landed));
+            }
+            true
+        }
+    }
+}
+
+/// The drag a source here handed to the desktop is over: it was dropped in another app, or the
+/// person pressed again here. Files dropped later are another app's, even the same ones.
+pub fn forget_offer() {
+    OFFERED.with(|slot| slot.borrow_mut().take());
 }
 
 /// The drop the last drag left, if any, as [`take`] would test it, without taking it: what a

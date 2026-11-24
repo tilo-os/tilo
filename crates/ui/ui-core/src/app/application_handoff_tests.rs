@@ -92,6 +92,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
         .filter_map(|request| match request {
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             } => Some(request),
             _ => None,
         })

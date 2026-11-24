@@ -919,13 +919,13 @@ impl ModemManager {
         let found = gpp.scan().await.map_err(|error| failed(&error))?;
         let operators = found
             .into_iter()
-            .filter_map(|(key, mut values)| {
-                let code = text_of(values.remove("operator-code"))
+            .filter_map(|(key, values)| {
+                let code = text_of(values.get("operator-code"))
                     .or_else(|| non_empty(&key))
                     .filter(|code| valid_operator(code))?;
                 Some(Operator {
                     code,
-                    name: text_of(values.remove("operator-name"))
+                    name: text_of(values.get("operator-name"))
                         .unwrap_or_else(|| "An operator".into()),
                     availability: Availability::from_mm(u32_of(values.get("status")).unwrap_or(0)),
                 })
@@ -1021,8 +1021,8 @@ async fn ussd_state(ussd: &Modem3gppUssdProxy<'_>) -> u32 {
 }
 
 /// A value the bus gave as text.
-fn text_of(value: Option<OwnedValue>) -> Option<String> {
-    match value.as_ref().map(|value| &**value) {
+fn text_of(value: Option<&OwnedValue>) -> Option<String> {
+    match value.map(|value| &**value) {
         Some(Value::Str(text)) => non_empty(text),
         _ => None,
     }

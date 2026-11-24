@@ -988,7 +988,7 @@ fn workspace_resource(record: [u8; 16]) -> Option<PathBuf> {
 /// The mounts Tilo's filesystem serves records on: `TILO_WORKSPACE_ROOTS`
 /// where a test or another image mounts them elsewhere, else
 /// `/var/workspace` when this device has it.
-pub(crate) fn workspace_roots() -> Vec<PathBuf> {
+pub fn workspace_roots() -> Vec<PathBuf> {
     if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return std::env::split_paths(&value)
             .filter(|path| !path.as_os_str().is_empty() && path.exists())

@@ -938,6 +938,7 @@ impl Session {
             match request {
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(call),
+                    ..
                 } if application_provider(&call.target.provider)
                     .is_some_and(|(_, app)| app == self.app)
                     && !self

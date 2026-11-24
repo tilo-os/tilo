@@ -11,7 +11,7 @@ use tilo_dialogs::portal::{
 };
 use tilo_dialogs::shell::ShellLink;
 
-use super::{Opens, Served, Serving, serve_at};
+use super::{Opens, Served, Serving, WorkspaceFiles, WorkspaceNode, serve_at};
 
 const APP: &str = "so.tilo.settings";
 const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
@@ -129,6 +129,10 @@ struct Rig {
 }
 
 fn rig() -> Rig {
+    rig_with(None)
+}
+
+fn rig_with(files: Option<Arc<dyn WorkspaceFiles>>) -> Rig {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("chooser");
     let (asks, questions) = tilo_service::asks::channel();
@@ -138,6 +142,7 @@ fn rig() -> Rig {
         Serving {
             questions: Some(asks),
             documents: documents.clone(),
+            files,
             wake: Arc::new(|| {}),
         },
     )
@@ -549,5 +554,425 @@ fn several_files_chosen_at_once_are_all_handed_over() {
             ("one.txt".to_owned(), b"one".to_vec()),
             ("two.txt".to_owned(), b"two".to_vec())
         ]
+    );
+}
+
+/// One workspace's tree as the chooser reaches it: the files' records and the workspace's policy,
+/// which a grant changes through the same checked edit a device's workspace applies.
+struct FakeWorkspace {
+    workspace: String,
+    person: String,
+    nodes: Mutex<Vec<WorkspaceNode>>,
+    policy: Mutex<tilo_action_policy::WorkspacePolicy>,
+}
+
+impl FakeWorkspace {
+    fn new(workspace: &str) -> Self {
+        let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, OWNER);
+        policy.add_member(PERSON, tilo_action_policy::Role::Editor);
+        Self {
+            workspace: workspace.to_owned(),
+            person: PERSON.to_owned(),
+            nodes: Mutex::default(),
+            policy: Mutex::new(policy),
+        }
+    }
+
+    /// The person who chose loses the workspace: what they gave the app goes with it.
+    fn remove_person(&self) {
+        self.policy
+            .lock()
+            .unwrap()
+            .change_as_at(
+                OWNER,
+                tilo_action_policy::Change::RemoveMember {
+                    person: PERSON.to_owned(),
+                },
+                tilo_clock::unix_now(),
+            )
+            .unwrap();
+    }
+
+    /// Give the file at `host` its record in the tree, as the workspace gives a file made there.
+    fn place(&self, host: &std::path::Path) -> fs_protocol::FileDocumentId {
+        let id = fs_protocol::FileDocumentId::new();
+        self.nodes.lock().unwrap().push(WorkspaceNode {
+            workspace: self.workspace.clone(),
+            id,
+            host: host.canonicalize().unwrap(),
+            directory: false,
+        });
+        id
+    }
+
+    /// Where the record `id` is now, as a rename or a move found it.
+    fn move_to(&self, id: fs_protocol::FileDocumentId, host: &std::path::Path) {
+        if let Some(node) = self
+            .nodes
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|node| node.id == id)
+        {
+            node.host = host.canonicalize().unwrap();
+        }
+    }
+
+    /// The grant the workspace holds by `id`.
+    fn granted(&self, id: &str) -> Option<tilo_action_policy::Grant> {
+        self.policy
+            .lock()
+            .unwrap()
+            .grants
+            .iter()
+            .find(|held| held.id.as_str() == id)
+            .cloned()
+    }
+
+    /// Take the grant `app` holds on the record `id` back, as the file's sharing does.
+    fn revoke(&self, id: &str) {
+        self.policy
+            .lock()
+            .unwrap()
+            .change_as_at(
+                &self.person,
+                tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(id)),
+                tilo_clock::unix_now(),
+            )
+            .unwrap();
+    }
+}
+
+impl WorkspaceFiles for FakeWorkspace {
+    fn node(&self, host: &std::path::Path) -> Option<WorkspaceNode> {
+        let host = host.canonicalize().ok()?;
+        self.nodes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|node| node.host == host)
+            .cloned()
+    }
+
+    fn node_at(&self, workspace: &str, id: fs_protocol::FileDocumentId) -> Option<WorkspaceNode> {
+        (workspace == self.workspace)
+            .then(|| {
+                self.nodes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|node| node.id == id)
+                    .cloned()
+            })
+            .flatten()
+    }
+
+    fn grant(&self, node: &WorkspaceNode, app: &str, write: bool) -> Result<(), String> {
+        let grant = super::app_grant(node, app, &self.person, write);
+        self.policy
+            .lock()
+            .unwrap()
+            .change_as_at(
+                &self.person,
+                tilo_action_policy::Change::Grant(grant),
+                tilo_clock::unix_now(),
+            )
+            .map_err(|refusal| refusal.to_string())
+    }
+
+    fn holds(&self, node: &WorkspaceNode, app: &str, write: bool) -> bool {
+        super::granted_kinds(
+            &self.policy.lock().unwrap(),
+            node,
+            app,
+            write,
+            tilo_clock::unix_now(),
+        )
+        .is_some()
+    }
+}
+
+/// The workspace mount a rig places its files in: the person's own workspace, whose tree a
+/// device's filesystem serves.
+const FILES_WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
+/// The person who chose, by the id their devices sign as.
+const PERSON: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// The workspace's owner, who is not the person choosing.
+const OWNER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// The node's reference, as the chooser answers with it.
+fn node_reference(workspace: &str, id: fs_protocol::FileDocumentId) -> std::path::PathBuf {
+    std::path::PathBuf::from(super::CHOSEN_ROOT)
+        .join(workspace)
+        .join(id.0.to_string())
+}
+
+fn files(workspace: &Arc<FakeWorkspace>) -> Arc<dyn WorkspaceFiles> {
+    Arc::clone(workspace) as Arc<dyn WorkspaceFiles>
+}
+
+#[test]
+fn a_chosen_workspace_file_is_a_grant_on_its_node_and_reopen_reads_it() {
+    let workspace = Arc::new(FakeWorkspace::new(FILES_WORKSPACE));
+    let rig = rig_with(Some(files(&workspace)));
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig;
+    let chosen = directory.path().join("plan.txt");
+    std::fs::write(&chosen, "Spring planting").unwrap();
+    let id = workspace.place(&chosen);
+
+    let picking = link
+        .picker(tilo_dialogs::unavailable_picker())
+        .pick(PickRequest::open("Import a plan", "Import"));
+    answer_with(&questions, &[&chosen]);
+    let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the pick answered nothing");
+    };
+    assert_eq!(
+        reference,
+        node_reference(FILES_WORKSPACE, id),
+        "the answer names the node, never a host path"
+    );
+
+    let key = format!("chosen:{APP}:{}:read", id.0);
+    let held = workspace
+        .granted(&key)
+        .expect("the workspace keeps the app's grant");
+    assert_eq!(
+        held.node,
+        tilo_action_policy::TreePath::workspace(FILES_WORKSPACE)
+            .app(fs_protocol::tree::FILES_APP)
+            .kind(tilo_actions::remote::FOUND_FILE)
+            .resource(id.0.to_string())
+    );
+    assert_eq!(held.kinds, tilo_action_policy::KindSet::READ);
+    assert_eq!(
+        held.granted_by,
+        tilo_action_policy::Grantee::person(PERSON),
+        "history names the person who chose"
+    );
+
+    // The descriptor reads the file, and the reference opens it again.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ask = reference.clone();
+    link.reopen(&ask, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    let (mut file, reopened, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "Spring planting");
+    assert_eq!(reopened, reference);
+    assert_eq!(name, "plan.txt");
+}
+
+#[test]
+fn a_revoked_grant_opens_nothing_and_neither_app_reaches_another() {
+    let workspace = Arc::new(FakeWorkspace::new(FILES_WORKSPACE));
+    let rig = rig_with(Some(files(&workspace)));
+    let Rig {
+        directory,
+        questions,
+        socket,
+        link,
+        ..
+    } = rig;
+    let chosen = directory.path().join("plan.txt");
+    std::fs::write(&chosen, "Spring planting").unwrap();
+    let id = workspace.place(&chosen);
+
+    let picking = link
+        .picker(tilo_dialogs::unavailable_picker())
+        .pick(PickRequest::open("Import a plan", "Import"));
+    answer_with(&questions, &[&chosen]);
+    let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the pick answered nothing");
+    };
+
+    // Another app of the same workspace holds no grant on the node.
+    let other = app_connection(&socket, "so.tilo.browser");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ask = reference.clone();
+    other.reopen(&ask, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a second app reaches nothing the person chose for the first"
+    );
+
+    // Revoked through the file's sharing, the grant opens nothing again.
+    workspace.revoke(&format!("chosen:{APP}:{}:read", id.0));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ask = reference.clone();
+    link.reopen(&ask, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a revoked grant opens the file no more"
+    );
+}
+
+#[test]
+fn a_grant_follows_the_node_through_a_rename_and_a_new_file_at_the_old_path_is_not_it() {
+    let workspace = Arc::new(FakeWorkspace::new(FILES_WORKSPACE));
+    let rig = rig_with(Some(files(&workspace)));
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig;
+    let old = directory.path().join("plan.txt");
+    std::fs::write(&old, "Spring planting").unwrap();
+    let id = workspace.place(&old);
+
+    let picking = link
+        .picker(tilo_dialogs::unavailable_picker())
+        .pick(PickRequest::open("Import a plan", "Import"));
+    answer_with(&questions, &[&old]);
+    let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the pick answered nothing");
+    };
+
+    // The workspace moved the file: the reference names the record, so it opens where it is now.
+    let renamed = directory.path().join("planting.md");
+    std::fs::rename(&old, &renamed).unwrap();
+    workspace.move_to(id, &renamed);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ask = reference.clone();
+    link.reopen(&ask, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    let (mut file, reopened, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "Spring planting", "the grant followed the record");
+    assert_eq!(name, "planting.md");
+    assert_eq!(reopened, reference);
+
+    // A new file taking the old name is a new record, and no grant names it.
+    std::fs::write(&old, "Autumn planning").unwrap();
+    let other = workspace.place(&old);
+    let newer = node_reference(FILES_WORKSPACE, other);
+    assert_ne!(newer, reference);
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(&newer, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a new file at the old path is not the one the person chose"
+    );
+}
+
+#[test]
+fn a_save_grants_writing_the_node_and_keeps_the_record() {
+    let workspace = Arc::new(FakeWorkspace::new(FILES_WORKSPACE));
+    let rig = rig_with(Some(files(&workspace)));
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig;
+    let chosen = directory.path().join("report.txt");
+    std::fs::write(&chosen, "the report").unwrap();
+    let id = workspace.place(&chosen);
+
+    let saving = link
+        .picker(tilo_dialogs::unavailable_picker())
+        .save_contents(
+            PickRequest::save("Save the report", "Save", "report.txt"),
+            b"the report, revised".to_vec(),
+        );
+    answer_with(&questions, &[&chosen]);
+    assert_eq!(saving.recv_timeout(answer()).unwrap(), SaveOutcome::Saved);
+    assert_eq!(std::fs::read(&chosen).unwrap(), b"the report, revised");
+    let held = workspace
+        .granted(&format!("chosen:{APP}:{}:write", id.0))
+        .expect("the save's grant covers writing the node");
+    assert_eq!(
+        held.kinds,
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        "reading it and changing it"
+    );
+    assert_eq!(
+        workspace.node_at(FILES_WORKSPACE, id).unwrap().host,
+        chosen.canonicalize().unwrap(),
+        "the file is the node it was, never a new record"
+    );
+}
+
+#[test]
+fn a_mounts_index_is_what_names_a_node_and_a_path_that_is_not_its_record_is_refused() {
+    let mount = tempfile::tempdir().unwrap();
+    let folder = mount.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    let file = folder.join("plan.txt");
+    std::fs::write(&file, "Spring planting").unwrap();
+    let id = fs_protocol::FileDocumentId::new();
+    let index = fs_protocol::projection::DocumentIndexExactV2 {
+        schema_version: fs_protocol::projection::DOCUMENT_INDEX_V2_VERSION,
+        revision: "ab".repeat(32),
+        record: fs_protocol::projection::DocumentIndexEntryV1 {
+            document_id: id,
+            path: "/notes/plan.txt".to_owned(),
+            is_dir: false,
+        },
+    };
+    let name = format!(
+        "{}{}",
+        fs_protocol::projection::DOCUMENT_INDEX_BY_ID_XATTR_PREFIX,
+        id.0
+    );
+    host_fs::attributes::set(mount.path(), name, &serde_json::to_vec(&index).unwrap())
+        .expect("the tests' filesystem keeps user attributes, as a mount's does");
+    let resolved = super::mounted_node(mount.path(), FILES_WORKSPACE, id, Some(&file))
+        .expect("the mount names where its record is");
+    assert_eq!(resolved.host, file);
+    assert!(!resolved.directory);
+    // A file that carries another record's path is not the record.
+    assert!(
+        super::mounted_node(mount.path(), FILES_WORKSPACE, id, Some(mount.path())).is_none(),
+        "a path its record does not name is refused"
+    );
+}
+
+#[test]
+fn a_grant_ends_when_the_person_who_gave_it_loses_the_workspace() {
+    let workspace = Arc::new(FakeWorkspace::new(FILES_WORKSPACE));
+    let rig = rig_with(Some(files(&workspace)));
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig;
+    let chosen = directory.path().join("plan.txt");
+    std::fs::write(&chosen, "Spring planting").unwrap();
+    workspace.place(&chosen);
+
+    let picking = link
+        .picker(tilo_dialogs::unavailable_picker())
+        .pick(PickRequest::open("Import a plan", "Import"));
+    answer_with(&questions, &[&chosen]);
+    let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the pick answered nothing");
+    };
+
+    workspace.remove_person();
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(&reference, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a grant its person can no longer make gives the app nothing"
     );
 }

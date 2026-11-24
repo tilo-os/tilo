@@ -51,7 +51,7 @@ pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, Invited, KeptCaller, device_agent_id};
 pub mod signed_invocation;
-pub use signed_invocation::{SignedCall, SignedInvocation};
+pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
 mod catalogue;
 mod changes;
 mod confirmation;
@@ -447,7 +447,23 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
         }
     }
     let address = &target.address;
+    // The workspace's mail accounts in its tree (`workspace/mail-accounts`) take the steps their
+    // `tilo.accounts` action takes; adding one there is `add`.
+    let in_mail_accounts = target.provider == WORKSPACE_GOVERNANCE_PROVIDER
+        && address
+            .resource
+            .strip_prefix(workspace_governance_resource("").as_str())
+            .and_then(|rest| rest.strip_suffix(WORKSPACE_MAIL_ACCOUNTS))
+            .and_then(|workspace| workspace.strip_suffix('/'))
+            .is_some_and(|workspace| !workspace.is_empty() && !workspace.contains('/'));
     let mut effects = match target.provider.as_str() {
+        _ if in_mail_accounts => person_accounts::effects(
+            person_accounts::RESOURCE,
+            match address.action.as_str() {
+                "add" => person_accounts::ADD_MAIL,
+                action => action,
+            },
+        ),
         person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
         model_providers::PROVIDER => model_providers::effects(&address.action),
         person_connections::PROVIDER => person_connections::effects(&address.action),
@@ -2395,6 +2411,13 @@ pub struct RemoteActionFrame {
     /// ([`Self::workspace`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The input serial the person's press that ran this request travelled with, as the
+    /// compositor issued it to the window the app's connection is: what a host checks to admit
+    /// the request as the person, once. Only an app whose window received the press can name
+    /// it: a synthetic or replayed serial proves nothing, and a request naming none followed no
+    /// press. It is transport, never part of the invocation's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press: Option<u32>,
 }
 
 /// Why bytes are not a usable [`RemoteActionFrame`].
@@ -2416,7 +2439,15 @@ impl RemoteActionFrame {
             version: REMOTE_ACTIONS_VERSION,
             message,
             workspace: None,
+            press: None,
         }
+    }
+
+    /// The same request, asked by the person's press the compositor issued `serial` with.
+    #[must_use]
+    pub fn pressed(mut self, press: Option<u32>) -> Self {
+        self.press = press;
+        self
     }
 
     /// The same request, asked in `workspace` (none: the device's own).

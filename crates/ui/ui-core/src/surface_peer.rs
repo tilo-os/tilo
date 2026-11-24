@@ -275,7 +275,7 @@ impl PeerTransport for SurfacePeer {
                 });
                 Ok(())
             }
-            CollabRequest::RemoteAction { message } => self
+            CollabRequest::RemoteAction { message, .. } => self
                 .outgoing
                 .send(message.into())
                 .map_err(|_| String::from("the session closed the actions socket")),
@@ -418,6 +418,7 @@ mod tests {
                 correlation: 7,
                 query: CatalogueQuery::default(),
             },
+            press: None,
         })
         .expect("sent");
         let body = FRAMING

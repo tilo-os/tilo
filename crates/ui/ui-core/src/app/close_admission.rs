@@ -423,7 +423,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         // Sent, not waited for: a closing window asks each pass whether the workspace answered
         // ([`Self::kept_before_close`]).
-        let mut errors = crate::component_lifecycle::checkpoint_components(self.root_widget.as_mut());
+        let mut errors =
+            crate::component_lifecycle::checkpoint_components(self.root_widget.as_mut());
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
@@ -671,6 +672,7 @@ impl App {
                 self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::RemoteAction {
                         message: tilo_actions::remote::RemoteActionMessage::observe(id),
+                        press: None,
                     },
                 );
             }

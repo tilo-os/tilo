@@ -146,7 +146,7 @@ impl MediaQueue {
                     self.owners
                         .insert(request.owner.clone(), (binding.clone(), request.clone()));
                     requests.push(request);
-                } else if let CollabRequest::RemoteAction { message } = request {
+                } else if let CollabRequest::RemoteAction { message, .. } = request {
                     if matches!(
                         message,
                         tilo_actions::remote::RemoteActionMessage::ResourceRead { .. }

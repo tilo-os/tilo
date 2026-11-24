@@ -228,150 +228,157 @@ mod cases {
     /// The sessions the history lists: one working now and one earlier.
     fn sessions_of() -> Json {
         json!({
-            "sessions": [
-                {
-                    "id": "run-2",
-                    "agent": {
-                        "name": "Claude Code #2",
-                        "rgb": [90, 120, 200],
-                        "identity": "claude",
-                        "relation": "software",
-                        "on_behalf_of": "Ada",
-                        "for_reader": true,
-                        "task": null,
-                    },
-                    "workspace": "Studio",
-                    "instruction": "Tidy the notes",
-                    "decision": null,
-                    "started_ms": 1_795_500_600_000_i64,
-                    "last_ms": 1_795_502_400_000_i64,
-                    "range": {"from": "aa", "to": "bb"},
-                    "in_effect": [],
-                    "changes_total": 0,
-                    "undo_blocked": null,
-                    "now": "cargo test",
-                    "now_kind": "running",
-                    "actions": [
-                        {
-                            "range": {"from": "aa", "to": "bb"},
-                            "changes": 4,
-                            "at_ms": 1_795_502_400_000_i64,
-                            "summary": "Edited src/notes.rs",
-                            "kind": "file",
-                            "place": "src/notes.rs",
-                            "target": {
-                                "app_id": "so.tilo.notes",
-                                "app_label": "Notes",
-                                "id": "note-1",
-                                "kind": "tl.so.tilo.notes.Note",
-                                "label": "Plan",
-                            },
-                            "title": "",
-                            "cwd": "",
-                            "output": [],
-                            "more": false,
-                            "exit": null,
-                            "ended_ms": null,
-                            "diff": [
-                                {"side": "removed", "text": "old line"},
-                                {"side": "added", "text": "new line"},
-                            ],
-                            "app_id": "so.tilo.notes",
-                            "record": "note-1",
-                            "execution": null,
-                            "undo_label": "Undo this change",
-                            "undo_verb": "undo-change",
-                        },
-                        {
-                            "range": {"from": "bb", "to": "cc"},
-                            "changes": 1,
-                            "at_ms": 1_795_502_700_000_i64,
-                            "summary": "Ran cargo test",
-                            "kind": "command",
-                            "place": "cargo test",
-                            "target": {
-                                "app_id": "so.tilo.terminal",
-                                "app_label": "Terminal",
-                                "id": "shell-1",
-                                "kind": "terminal.session",
-                                "label": "Shell",
-                            },
-                            "title": "",
-                            "cwd": "~/notes",
-                            "output": ["running 3 tests", "test ok"],
-                            "more": true,
-                            "exit": 0,
-                            "ended_ms": 1_795_502_820_000_i64,
-                            "diff": [],
-                            "app_id": "so.tilo.terminal",
-                            "record": "shell-1",
-                            "execution": {
-                                "workspace": null,
-                                "app_id": "so.tilo.terminal",
-                                "record": "shell-1",
-                                "execution": "exec-1",
-                            },
-                            "undo_label": "Undo this run",
-                            "undo_verb": "undo-entry",
-                        },
-                    ],
-                },
-                {
-                    "id": "run-1",
-                    "agent": {
-                        "name": "Cursor #7",
-                        "rgb": [200, 120, 90],
-                        "identity": "cursor",
-                        "relation": "software",
-                        "on_behalf_of": "Bo",
-                        "for_reader": false,
-                        "task": null,
-                    },
-                    "workspace": "Elsewhere",
-                    "instruction": "Draft the letter",
-                    "decision": null,
-                    "started_ms": 1_795_490_000_000_i64,
-                    "last_ms": 1_795_491_000_000_i64,
-                    "range": {"from": "01", "to": "02"},
-                    "in_effect": [],
-                    "changes_total": 0,
-                    "undo_blocked": null,
-                    "now": "",
-                    "now_kind": "",
-                    "actions": [
-                        {
-                            "range": {"from": "01", "to": "02"},
-                            "changes": 2,
-                            "at_ms": 1_795_491_000_000_i64,
-                            "summary": "Wrote a paragraph",
-                            "kind": "record",
-                            "place": "doc-1",
-                            "target": {
-                                "app_id": "so.tilo.word-processor",
-                                "app_label": "Word Processor",
-                                "id": "doc-1",
-                                "kind": "tl.so.tilo.word-processor.Document",
-                                "label": "Letter",
-                            },
-                            "title": "",
-                            "cwd": "",
-                            "output": [],
-                            "more": false,
-                            "exit": null,
-                            "ended_ms": null,
-                            "diff": [],
-                            "app_id": "so.tilo.word-processor",
-                            "record": "doc-1",
-                            "execution": null,
-                            "undo_label": null,
-                            "undo_verb": null,
-                        }
-                    ],
-                },
-            ],
+            "sessions": [working_session(), earlier_session()],
             "total": 2,
             "pending": false,
             "mutations": true,
+        })
+    }
+
+    /// The session working now.
+    fn working_session() -> Json {
+        json!({
+            "id": "run-2",
+            "agent": {
+                "name": "Claude Code #2",
+                "rgb": [90, 120, 200],
+                "identity": "claude",
+                "relation": "software",
+                "on_behalf_of": "Ada",
+                "for_reader": true,
+                "task": null,
+            },
+            "workspace": "Studio",
+            "instruction": "Tidy the notes",
+            "decision": null,
+            "started_ms": 1_795_500_600_000_i64,
+            "last_ms": 1_795_502_400_000_i64,
+            "range": {"from": "aa", "to": "bb"},
+            "in_effect": [],
+            "changes_total": 0,
+            "undo_blocked": null,
+            "now": "cargo test",
+            "now_kind": "running",
+            "actions": [
+                {
+                    "range": {"from": "aa", "to": "bb"},
+                    "changes": 4,
+                    "at_ms": 1_795_502_400_000_i64,
+                    "summary": "Edited src/notes.rs",
+                    "kind": "file",
+                    "place": "src/notes.rs",
+                    "target": {
+                        "app_id": "so.tilo.notes",
+                        "app_label": "Notes",
+                        "id": "note-1",
+                        "kind": "tl.so.tilo.notes.Note",
+                        "label": "Plan",
+                    },
+                    "title": "",
+                    "cwd": "",
+                    "output": [],
+                    "more": false,
+                    "exit": null,
+                    "ended_ms": null,
+                    "diff": [
+                        {"side": "removed", "text": "old line"},
+                        {"side": "added", "text": "new line"},
+                    ],
+                    "app_id": "so.tilo.notes",
+                    "record": "note-1",
+                    "execution": null,
+                    "undo_label": "Undo this change",
+                    "undo_verb": "undo-change",
+                },
+                {
+                    "range": {"from": "bb", "to": "cc"},
+                    "changes": 1,
+                    "at_ms": 1_795_502_700_000_i64,
+                    "summary": "Ran cargo test",
+                    "kind": "command",
+                    "place": "cargo test",
+                    "target": {
+                        "app_id": "so.tilo.terminal",
+                        "app_label": "Terminal",
+                        "id": "shell-1",
+                        "kind": "terminal.session",
+                        "label": "Shell",
+                    },
+                    "title": "",
+                    "cwd": "~/notes",
+                    "output": ["running 3 tests", "test ok"],
+                    "more": true,
+                    "exit": 0,
+                    "ended_ms": 1_795_502_820_000_i64,
+                    "diff": [],
+                    "app_id": "so.tilo.terminal",
+                    "record": "shell-1",
+                    "execution": {
+                        "workspace": null,
+                        "app_id": "so.tilo.terminal",
+                        "record": "shell-1",
+                        "execution": "exec-1",
+                    },
+                    "undo_label": "Undo this run",
+                    "undo_verb": "undo-entry",
+                },
+            ],
+        })
+    }
+
+    /// The session that ran earlier, in another workspace.
+    fn earlier_session() -> Json {
+        json!({
+            "id": "run-1",
+            "agent": {
+                "name": "Cursor #7",
+                "rgb": [200, 120, 90],
+                "identity": "cursor",
+                "relation": "software",
+                "on_behalf_of": "Bo",
+                "for_reader": false,
+                "task": null,
+            },
+            "workspace": "Elsewhere",
+            "instruction": "Draft the letter",
+            "decision": null,
+            "started_ms": 1_795_490_000_000_i64,
+            "last_ms": 1_795_491_000_000_i64,
+            "range": {"from": "01", "to": "02"},
+            "in_effect": [],
+            "changes_total": 0,
+            "undo_blocked": null,
+            "now": "",
+            "now_kind": "",
+            "actions": [
+                {
+                    "range": {"from": "01", "to": "02"},
+                    "changes": 2,
+                    "at_ms": 1_795_491_000_000_i64,
+                    "summary": "Wrote a paragraph",
+                    "kind": "record",
+                    "place": "doc-1",
+                    "target": {
+                        "app_id": "so.tilo.word-processor",
+                        "app_label": "Word Processor",
+                        "id": "doc-1",
+                        "kind": "tl.so.tilo.word-processor.Document",
+                        "label": "Letter",
+                    },
+                    "title": "",
+                    "cwd": "",
+                    "output": [],
+                    "more": false,
+                    "exit": null,
+                    "ended_ms": null,
+                    "diff": [],
+                    "app_id": "so.tilo.word-processor",
+                    "record": "doc-1",
+                    "execution": null,
+                    "undo_label": null,
+                    "undo_verb": null,
+                }
+            ],
         })
     }
 
@@ -483,7 +490,7 @@ mod cases {
     }
 
     fn press(view: &mut ViewInstance, label: &str) {
-        let key = button(view, label).key.clone();
+        let key = button(view, label).key;
         view.fire(&key, "press").unwrap();
         view.poll_patches().unwrap();
     }
@@ -497,7 +504,7 @@ mod cases {
     }
 
     fn activate(view: &mut ViewInstance, title: &str) {
-        let key = row(view, title).key.clone();
+        let key = row(view, title).key;
         view.fire(&key, "activate").unwrap();
         view.poll_patches().unwrap();
     }
@@ -523,8 +530,10 @@ mod cases {
                 Some(Value::Int(seconds)) => *seconds == 1,
                 _ => false,
             })
-            .map(|node| node.key.clone())
-            .unwrap_or_else(|| panic!("the window counts each second:\n{}", dump(view.tree())));
+            .map_or_else(
+                || panic!("the window counts each second:\n{}", dump(view.tree())),
+                |node| node.key.clone(),
+            );
         view.fire(&every, "tick").unwrap();
         view.poll_patches().unwrap();
     }
@@ -945,7 +954,7 @@ mod cases {
         console.publish();
         let card = console.card("Claude Code");
         let mut view = console.open(&card);
-        let key = button(&view, "Copy link").key.clone();
+        let key = button(&view, "Copy link").key;
         view.fire(&key, "press").unwrap();
         view.poll_patches().unwrap();
         match view.poll_events().as_slice() {

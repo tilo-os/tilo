@@ -595,6 +595,7 @@ impl App {
             .push_back(HeldOwnInvocation {
                 request,
                 since: crate::time::now(),
+                press: crate::press::current(),
             });
         self.publish_action_surface();
         // Still waiting, and the first to wait: a route that never opens brings
@@ -640,6 +641,7 @@ impl App {
                     .manager
                     .send(CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Invoke(request),
+                        press: held.press,
                     })
             {
                 continue;
@@ -1250,6 +1252,7 @@ impl App {
                     broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
                     send(CollabRequest::RemoteAction {
                         message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                        press: crate::press::current(),
                     });
                 },
             );
@@ -2008,6 +2011,7 @@ impl App {
             .manager
             .send(CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                press: crate::press::current(),
             });
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
@@ -2967,6 +2971,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
             .insert(BrokerReply::Receipt(request.invocation), request_id);
         self.manager.send(CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            press: crate::press::current(),
         });
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }

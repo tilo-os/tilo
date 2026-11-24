@@ -103,7 +103,7 @@ view editor(s: Slide) {
             }
         }
 
-        fn editing(&self, view: &tilolang_runtime::ViewInstance) -> Option<String> {
+        fn editing(view: &tilolang_runtime::ViewInstance) -> Option<String> {
             match view.view_state("editing") {
                 Some(Value::Text(text)) => Some(String::from(&*text)),
                 Some(other) => panic!("editing reads {other:?}"),
@@ -135,7 +135,7 @@ view editor(s: Slide) {
             let shapes = e.shapes();
             assert_eq!(shapes.len(), 1, "{}", dump(view.tree()));
             let id = shapes[0].id_string();
-            assert_eq!(e.editing(&view).as_deref(), Some(id.as_str()));
+            assert_eq!(Editor::editing(&view).as_deref(), Some(id.as_str()));
 
             // The box the action made is the one the view edits now.
             let typed = inputs(&view);
@@ -161,7 +161,7 @@ view editor(s: Slide) {
             let shapes = e.shapes();
             assert_eq!(shapes.len(), 1);
             let id = shapes[0].id_string();
-            assert_eq!(e.editing(&view).as_deref(), Some(id.as_str()));
+            assert_eq!(Editor::editing(&view).as_deref(), Some(id.as_str()));
 
             // The second box is refused: the view keeps the first one it was set to, and no
             // box is made.
@@ -171,7 +171,7 @@ view editor(s: Slide) {
                 "{refused}"
             );
             assert_eq!(e.shapes().len(), 1);
-            assert_eq!(e.editing(&view).as_deref(), Some(id.as_str()));
+            assert_eq!(Editor::editing(&view).as_deref(), Some(id.as_str()));
         }
     }
 }

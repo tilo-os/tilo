@@ -79,6 +79,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 
 const BTN_LEFT: u32 = 0x110;
 const KEY_A: u32 = 30;
+const KEY_B: u32 = 48;
 const KEY_ESCAPE: u32 = 1;
 const KEY_LEFTCTRL: u32 = 29;
 const KEY_LEFTALT: u32 = 56;
@@ -307,6 +308,68 @@ tilo_test_env::scenario! {
             |compositor, _| compositor.windows().len() == 1,
         );
         assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
+    }
+
+    phase a_press_the_person_makes_in_a_window_is_theirs_to_prove_a_call_with;
+    // The compositor saw the input, so it is what can say a call followed a press: every press
+    // it delivers to a window is recorded with the serial it issued to that window, and the
+    // releases are not presses at all.
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let _client = mapped_client(&mut compositor, "pressed", (200, 100), [0, 255, 0, 255]);
+        let window = compositor.windows()[0].0.id;
+        compositor
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            })
+            .unwrap();
+        let pressed = compositor
+            .last_input_serial(window)
+            .expect("the press reached the window with its serial");
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            })
+            .unwrap();
+        assert_eq!(
+            compositor.person_presses().take(),
+            [(window, pressed)],
+            "the press, and not its release"
+        );
+
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: true,
+            })
+            .unwrap();
+        let typed = compositor
+            .last_input_serial(window)
+            .expect("the key reached the window with its serial");
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: false,
+            })
+            .unwrap();
+        assert_eq!(compositor.person_presses().take(), [(window, typed)]);
+
+        // Another device's input through the shared seat is never the person's own press.
+        compositor
+            .input_remote(InputEvent::Key {
+                keycode: KEY_B,
+                pressed: true,
+            })
+            .unwrap();
+        assert!(
+            compositor.person_presses().take().is_empty(),
+            "a remote key proves nothing"
+        );
     }
 
     phase a_panel_shown_while_its_frame_settles_keeps_the_keyboard_from_the_policys_window;

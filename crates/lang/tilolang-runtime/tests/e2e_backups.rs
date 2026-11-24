@@ -32,10 +32,6 @@ mod cases {
     }
 
     impl Engine {
-        fn asked(&self) -> Vec<(String, String)> {
-            self.calls.borrow().clone()
-        }
-
         /// How the job stands, as the engine that runs it says it now.
         fn said(&self) -> String {
             let state = self.state.borrow().clone();
@@ -175,8 +171,8 @@ mod cases {
                 "id": "local-destination",
                 "name": "backup-drive",
                 "kind": "local_folder",
-                "used_bytes": 312000000000_i64,
-                "total_bytes": 500000000000_i64,
+                "used_bytes": 312_000_000_000_i64,
+                "total_bytes": 500_000_000_000_i64,
                 "encrypted": false,
                 "health": "unknown",
             }],
@@ -185,12 +181,12 @@ mod cases {
                     "id": "1795080000",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
-                    "taken_unix_seconds": 1795080000_i64,
+                    "taken_unix_seconds": 1_795_080_000_i64,
                     "label": "",
                     "kind": "unknown",
                     "retention": "unknown",
-                    "size_bytes": 9700000000_i64,
-                    "delta_bytes": 9700000000_i64,
+                    "size_bytes": 9_700_000_000_i64,
+                    "delta_bytes": 9_700_000_000_i64,
                     "files_changed": 312,
                     "status": "complete",
                     "failure": "",
@@ -203,12 +199,12 @@ mod cases {
                     "id": "1795076400",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
-                    "taken_unix_seconds": 1795076400_i64,
+                    "taken_unix_seconds": 1_795_076_400_i64,
                     "label": "Before the upgrade",
                     "kind": "manual",
                     "retention": "kept",
-                    "size_bytes": 9500000000_i64,
-                    "delta_bytes": 180000000_i64,
+                    "size_bytes": 9_500_000_000_i64,
+                    "delta_bytes": 180_000_000_i64,
                     "files_changed": 211,
                     "status": "complete",
                     "failure": "",
@@ -278,13 +274,6 @@ mod cases {
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -389,7 +378,6 @@ mod cases {
 
     /// Every node of a component, by its kind.
     fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        let mut found = Vec::new();
         fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
             if node.kind == kind {
                 found.push(node);
@@ -398,6 +386,7 @@ mod cases {
                 walk(child, kind, found);
             }
         }
+        let mut found = Vec::new();
         walk(tree, kind, &mut found);
         found
     }

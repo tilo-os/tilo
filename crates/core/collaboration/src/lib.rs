@@ -529,8 +529,14 @@ pub enum CollabRequest {
     /// One remote-action request to the session's action host: list the
     /// actions offered to this connection, invoke one, observe or cancel an
     /// invocation. The answer arrives as [`CollabEvent::RemoteAction`].
+    ///
+    /// `press` is the input serial the person's press that ran the request
+    /// travelled with, as the compositor issued it to this app's window: a
+    /// request naming none followed no press, and one naming a serial the
+    /// compositor did not issue to the window proves nothing.
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
+        press: Option<u32>,
     },
     /// Write or read this app's resources in the device's one store, which answers with
     /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own; the command is

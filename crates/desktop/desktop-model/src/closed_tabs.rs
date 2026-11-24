@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use crate::apps::{app_ids_match, canonical_app_id};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
-use crate::layout::{Tab, WindowGroup};
+use crate::layout::{Tab, TileContent, WindowGroup};
 use crate::tree::Layout;
 use crate::tree::Workspace;
 use crate::width::WindowWidth;
@@ -47,6 +47,10 @@ pub struct ClosedTab {
     /// Whether the window went away by itself ([`Leaving::WindowWent`]) rather
     /// than the person closing it.
     pub window_went: bool,
+    /// The launch that opens the window again on what it showed, when the one
+    /// it came from is known: an app that ended leaves it
+    /// ([`Workspace::hold_ended`]). `None` asks the tile's app for its window.
+    pub launch: Option<String>,
 }
 
 /// Where a reopen put a window back.
@@ -58,6 +62,9 @@ pub struct Reopened {
     /// The monitor the group made again goes back to, when the close
     /// remembered one; `None` when the window went into a group still there.
     pub display: Option<String>,
+    /// The launch that opens it again on what it showed, when the close knew it
+    /// ([`ClosedTab::launch`]).
+    pub launch: Option<String>,
 }
 
 /// Why a window left its group: a person closed it, it went away by itself,
@@ -70,7 +77,7 @@ pub enum Leaving {
     /// The window went away by itself while its tab was on the shell: its
     /// app closed it, or ended. Remembered as a close the person can undo,
     /// and the place an app that stopped working says so in
-    /// ([`Workspace::reopen_closed_tab`]).
+    /// ([`Workspace::hold_ended`]).
     WindowWent,
     /// The window moves elsewhere in the desktop, or leaves it as a whole
     /// workspace or strip goes: nothing was closed, and nothing is
@@ -109,6 +116,17 @@ impl ClosedTabs {
     pub fn take_newest(&mut self, pick: impl Fn(&ClosedTab) -> bool) -> Option<ClosedTab> {
         let at = self.entries.iter().rposition(pick)?;
         self.entries.remove(at)
+    }
+
+    /// The newest close `pick` takes, left on the stack.
+    fn newest_mut(&mut self, pick: impl Fn(&ClosedTab) -> bool) -> Option<&mut ClosedTab> {
+        self.entries.iter_mut().rev().find(|entry| pick(entry))
+    }
+
+    /// Whether a close of the window `tab` is remembered.
+    #[must_use]
+    pub fn holds(&self, tab: TabId) -> bool {
+        self.entries.iter().any(|entry| entry.tab.id == tab)
     }
 
     #[must_use]
@@ -160,6 +178,19 @@ impl Workspace {
             return false;
         };
         let closing_id = closing.id;
+        // The card an ended app left closes: the close remembered is the window's own
+        // ([`Self::hold_ended`]), now the person's, newest, so a reopen brings back the window on
+        // what it showed rather than the card.
+        if matches!(closing.tile, TileContent::AppPlaceholder { .. })
+            && let Some(mut window) = self
+                .closed_tabs
+                .take_newest(|entry| entry.tab.id == closing_id)
+        {
+            window.window_went = leaving == Leaving::WindowWent;
+            self.closed_tabs.push(window);
+            self.end_window_shares(closing_id);
+            return true;
+        }
         let entry = ClosedTab {
             strip: strip_id,
             group: holding.id,
@@ -170,6 +201,7 @@ impl Workspace {
             tab: closing.relaunchable(),
             display,
             window_went: leaving == Leaving::WindowWent,
+            launch: None,
         };
         self.closed_tabs.push(entry);
         self.end_window_shares(closing_id);
@@ -213,11 +245,55 @@ impl Workspace {
         })
     }
 
-    /// Put the window `tab` back where it was, as [`Self::reopen_closed`] does, when it went away
-    /// by itself ([`Leaving::WindowWent`]): a window whose app stopped working takes its place
-    /// again to say so. A window the person closed stays closed: only their reopen brings it back.
-    pub fn reopen_closed_tab(&mut self, tab: TabId) -> Option<Reopened> {
-        self.reopen_closed_where(None, |entry| entry.tab.id == tab && entry.window_went)
+    /// Put the window `tab` back where it was, as [`Self::reopen_closed`] does: exactly that
+    /// close, whatever closed after it. A window whose app ended stands in its place as the card
+    /// that says so: the window takes its place again over the card.
+    pub fn reopen_closed_window(&mut self, tab: TabId) -> Option<Reopened> {
+        self.reopen_closed_where(None, |entry| entry.tab.id == tab)
+    }
+
+    /// Keep the place of the window `tab`, whose app ended by itself, to say so in, and remember
+    /// `launch` as what opens it again on what it showed: the window put back where it stood when
+    /// it went away by itself (never a window the person closed), or kept where it stands. Its
+    /// close stays remembered while the card stands in its place, so the person's reopen of it
+    /// brings back the window ([`Self::reopen_closed_window`]). False when it is neither.
+    pub fn hold_ended(&mut self, tab: TabId, launch: &str) -> bool {
+        if let Some(entry) = self
+            .closed_tabs
+            .newest_mut(|entry| entry.tab.id == tab && entry.window_went)
+        {
+            entry.launch = Some(launch.to_owned());
+            let entry = entry.clone();
+            return self.holds(tab) || self.put_back(entry, None).is_some();
+        }
+        let Some((strip, group, at)) = self.position_of(tab) else {
+            return false;
+        };
+        let Some(holding) = self
+            .strips
+            .get(strip)
+            .and_then(|at| at.window_groups.get(group).map(|holding| (at.id, holding)))
+        else {
+            return false;
+        };
+        let (strip_id, holding) = holding;
+        let Some(standing) = holding.tabs.get(at) else {
+            return false;
+        };
+        let entry = ClosedTab {
+            strip: strip_id,
+            group: holding.id,
+            group_index: group,
+            tab_index: at,
+            group_width: holding.width,
+            whole_group: holding.tabs.len() == 1,
+            tab: standing.relaunchable(),
+            display: None,
+            window_went: true,
+            launch: Some(launch.to_owned()),
+        };
+        self.closed_tabs.push(entry);
+        true
     }
 
     fn reopen_closed_where(
@@ -228,54 +304,98 @@ impl Workspace {
         loop {
             let entry = self.closed_tabs.take_newest(&pick)?;
             let tab = entry.tab.id;
-            if self.holds(tab) {
-                continue;
-            }
-            let mut display = None;
-            let strip_id = if let Some((strip, group)) = self.group_position(entry.group) {
-                let id = self.strips.get(strip)?.id;
-                let holding = self.strips.get_mut(strip)?.window_groups.get_mut(group)?;
-                let at = entry.tab_index.min(holding.tabs.len());
-                holding.tabs.insert(at, entry.tab);
-                holding.activate_tab(tab);
-                id
-            } else {
-                let strip = self
-                    .strips
-                    .iter()
-                    .position(|strip| strip.id == entry.strip)
-                    .or_else(|| {
-                        focused_strip.and_then(|focused| {
-                            self.strips.iter().position(|strip| strip.id == focused)
-                        })
-                    })
-                    .unwrap_or(0);
-                let at = entry
-                    .group_index
-                    .min(self.strips.get(strip)?.window_groups.len());
+            if let Some((strip, group, at)) = self.position_of(tab) {
+                // The card an ended app left holds the window's place: the window takes it again.
+                // Any other window standing under this id was brought back already, by a peer's
+                // tree or a document: its close is undone, and it is not opened twice.
                 let holding = self.strips.get_mut(strip)?;
-                let id = holding.id;
-                holding.window_groups.insert(
-                    at,
-                    WindowGroup {
-                        id: entry.group,
-                        active_tab: tab,
-                        tabs: vec![entry.tab],
-                        width: entry.group_width,
-                        maximized: false,
-                        focus_history: Vec::new(),
-                    },
-                );
-                display = entry.display;
-                id
-            };
-            return Some(Reopened {
-                strip: strip_id,
-                group: entry.group,
-                tab,
-                display,
-            });
+                let strip_id = holding.id;
+                let held = holding.window_groups.get_mut(group)?;
+                let standing = held.tabs.get_mut(at)?;
+                if !matches!(standing.tile, TileContent::AppPlaceholder { .. }) {
+                    continue;
+                }
+                *standing = entry.tab;
+                held.activate_tab(tab);
+                return Some(Reopened {
+                    strip: strip_id,
+                    group: held.id,
+                    tab,
+                    display: None,
+                    launch: entry.launch,
+                });
+            }
+            return self.put_back(entry, focused_strip);
         }
+    }
+
+    /// Put `entry`'s window back where it stood: into its group at its old index when that group
+    /// is still there, else into the group made again at its old place in its strip, or in
+    /// `focused_strip` when that strip is gone too, or the first strip.
+    fn put_back(&mut self, entry: ClosedTab, focused_strip: Option<StripId>) -> Option<Reopened> {
+        let tab = entry.tab.id;
+        let launch = entry.launch.clone();
+        let mut display = None;
+        let strip_id = if let Some((strip, group)) = self.group_position(entry.group) {
+            let id = self.strips.get(strip)?.id;
+            let holding = self.strips.get_mut(strip)?.window_groups.get_mut(group)?;
+            let at = entry.tab_index.min(holding.tabs.len());
+            holding.tabs.insert(at, entry.tab);
+            holding.activate_tab(tab);
+            id
+        } else {
+            let strip = self
+                .strips
+                .iter()
+                .position(|strip| strip.id == entry.strip)
+                .or_else(|| {
+                    focused_strip.and_then(|focused| {
+                        self.strips.iter().position(|strip| strip.id == focused)
+                    })
+                })
+                .unwrap_or(0);
+            let at = entry
+                .group_index
+                .min(self.strips.get(strip)?.window_groups.len());
+            let holding = self.strips.get_mut(strip)?;
+            let id = holding.id;
+            holding.window_groups.insert(
+                at,
+                WindowGroup {
+                    id: entry.group,
+                    active_tab: tab,
+                    tabs: vec![entry.tab],
+                    width: entry.group_width,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                },
+            );
+            display = entry.display;
+            id
+        };
+        Some(Reopened {
+            strip: strip_id,
+            group: entry.group,
+            tab,
+            display,
+            launch,
+        })
+    }
+
+    /// The strip, group and tab indices of window `tab`, wherever it stands.
+    fn position_of(&self, tab: TabId) -> Option<(usize, usize, usize)> {
+        self.strips.iter().enumerate().find_map(|(strip, at)| {
+            at.window_groups
+                .iter()
+                .enumerate()
+                .find_map(|(group, holding)| {
+                    holding
+                        .tabs
+                        .iter()
+                        .position(|held| held.id == tab)
+                        .map(|index| (strip, group, index))
+                })
+        })
     }
 
     /// Whether this workspace holds window `tab`.
@@ -314,6 +434,30 @@ impl Layout {
             .iter_mut()
             .find(|candidate| candidate.id() == workspace)?
             .reopen_closed(focused, app)?;
+        self.active = workspace;
+        self.active_strip.insert(workspace, reopened.strip);
+        self.set_active_group(reopened.strip, reopened.group);
+        if let Some(monitor) = &reopened.display {
+            self.outputs.return_home(reopened.group, monitor);
+        }
+        self.outputs.note_focus(reopened.strip, reopened.group);
+        Some(reopened)
+    }
+
+    /// Put the window `tab` back where it was and focus it, as [`Self::reopen_closed`] does, in
+    /// whichever workspace remembers its close: exactly that window, whatever closed after it.
+    /// `None`, changing nothing, when no workspace remembers it.
+    pub fn reopen_closed_window(&mut self, tab: TabId) -> Option<Reopened> {
+        let workspace = self
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.closed_tabs().holds(tab))?
+            .id();
+        let reopened = self
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id() == workspace)?
+            .reopen_closed_window(tab)?;
         self.active = workspace;
         self.active_strip.insert(workspace, reopened.strip);
         self.set_active_group(reopened.strip, reopened.group);

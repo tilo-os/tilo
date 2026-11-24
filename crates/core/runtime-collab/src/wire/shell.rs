@@ -163,6 +163,17 @@ pub enum ShellCall {
         #[serde(default)]
         pressed: Option<ShellPress>,
     },
+    /// The person pressed in `window` on this shell's screen, delivered with the input serial
+    /// `serial` the compositor issued to that window while it had focus and did not send
+    /// elsewhere: what lets a call an app's window makes that names `serial` run as the person,
+    /// once. Only the shell connection, which the compositor told, may send one, and a shell
+    /// names only the device's own person's press.
+    Press {
+        /// The window the press reached, by its tab id, as `device.Window.key` names it.
+        window: u64,
+        /// The input serial the compositor issued to that window with the press.
+        serial: u32,
+    },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.
     Writes,
@@ -389,6 +400,8 @@ pub enum ShellReply {
     /// the app's primary). `None` when the device took more than it kept told, so the shell reads
     /// everything it follows again.
     Writes(Option<Vec<DocumentWritten>>),
+    /// A [`ShellCall::Press`]: the press is recorded, and proves one call.
+    Pressed,
     /// A [`ShellCall::Resources`]: the store's `tilo_resource_store::wire::Reply` as JSON, or why
     /// the command was not run.
     Resources(Result<String, String>),

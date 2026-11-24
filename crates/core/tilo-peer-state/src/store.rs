@@ -15,12 +15,14 @@
 //! in an earlier layout before version 5 ([`FRAMES_VERSION`]); opening one
 //! moves its frames into segments, each as this build writes it, once.
 //!
-//! Beside its frames, a store keeps each workspace's channel governance: for
-//! each route a channel's group frames take ([`neighbour_wire::retention`]),
-//! the newest frame, one file each under `channels/<workspace>/`
-//! ([`Store::keep_channel`]). A device that links later joins each channel's
-//! group from them. A device's own state beside them is kept whole under
-//! `state/` ([`Store::keep_state`]).
+//! Beside its frames, a store keeps each workspace's governance: for each
+//! route a channel's group frames take ([`neighbour_wire::retention`]), the
+//! newest frame, and each change to the workspace's own state as a frame of
+//! its own, one file each under `channels/<workspace>/`
+//! ([`Store::keep_channel`], [`Store::keep_workspace_governance`]). A device
+//! that links later joins each channel's group from them and is replayed the
+//! workspace's changes before the records they govern. A device's own state
+//! beside them is kept whole under `state/` ([`Store::keep_state`]).
 //!
 //! The files are its backend's ([`Backend`]), which moves their bytes and
 //! nothing else: a directory on the device's disk ([`FsBackend`]), or on a
@@ -1370,6 +1372,53 @@ impl Store {
             return Ok(false);
         };
         let bytes = postcard::to_allocvec(message)?;
+        self.keep_at(workspace, route, author, bytes)
+    }
+
+    /// Keep `message`, `author`'s change to `workspace`'s own state, as a
+    /// channel frame of a route of its own: each change keeps one, so none
+    /// replaces the change before it, and a device that links later is
+    /// replayed them in the order they were made, before the records they
+    /// govern. Returns whether the store holds anything new; a message that
+    /// is no change to `workspace`'s own state is not kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame cannot be written. The store keeps
+    /// the frames before it then.
+    pub fn keep_workspace_governance(
+        &self,
+        workspace: WorkspaceId,
+        author: [u8; 32],
+        message: &NeighbourMsg,
+    ) -> Result<bool, StoreError> {
+        let NeighbourMsg::SyncResp {
+            workspace: named,
+            changes,
+        } = message
+        else {
+            return Ok(false);
+        };
+        if changes.is_empty() || WorkspaceId::parse(named) != Some(workspace) {
+            return Ok(false);
+        }
+        let bytes = postcard::to_allocvec(message)?;
+        let mut seed = b"workspace-governance\0".to_vec();
+        seed.extend_from_slice(workspace.as_uuid().as_bytes());
+        seed.extend_from_slice(blake3::hash(&bytes).as_bytes());
+        let route = *blake3::hash(&seed).as_bytes();
+        self.keep_at(workspace, route, author, bytes)
+    }
+
+    /// Keep `bytes`, `author`'s channel frame of `route`, replacing a frame
+    /// of the same route that says the same: false when one does already.
+    fn keep_at(
+        &self,
+        workspace: WorkspaceId,
+        route: [u8; 32],
+        author: [u8; 32],
+        bytes: Vec<u8>,
+    ) -> Result<bool, StoreError> {
         let mut held = self.held.lock_recover();
         if held
             .workspaces
@@ -3818,6 +3867,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(last.frames.len(), 1);
+    }
+
+    /// The workspace's own published changes are kept, each beside the
+    /// others in the order they were made: a device that links later is
+    /// replayed them before the records they govern. A change already here
+    /// is not kept twice, one that changes nothing is not kept, and neither
+    /// is another workspace's.
+    #[test]
+    fn a_workspace_keeps_the_changes_it_publishes_in_order() {
+        let (dir, store) = open();
+        let publish = |workspace: WorkspaceId, change: &[u8]| NeighbourMsg::SyncResp {
+            changes: vec![change.to_vec()],
+            workspace: workspace.to_string(),
+        };
+        let first = publish(workspace(), b"first");
+        let second = publish(workspace(), b"second");
+        assert!(
+            store
+                .keep_workspace_governance(workspace(), [1; 32], &first)
+                .unwrap()
+        );
+        assert!(
+            store
+                .keep_workspace_governance(workspace(), [1; 32], &second)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .keep_workspace_governance(workspace(), [1; 32], &first)
+                .unwrap(),
+            "a change already here is not kept twice"
+        );
+        assert!(
+            !store
+                .keep_workspace_governance(
+                    workspace(),
+                    [1; 32],
+                    &NeighbourMsg::SyncResp {
+                        changes: Vec::new(),
+                        workspace: workspace().to_string(),
+                    },
+                )
+                .unwrap(),
+            "a message that changes nothing is not kept"
+        );
+        let other = WorkspaceId::from_u128(8);
+        assert!(
+            !store
+                .keep_workspace_governance(
+                    workspace(),
+                    [1; 32],
+                    &publish(other, b"another workspace's"),
+                )
+                .unwrap(),
+            "another workspace's change is not kept here"
+        );
+        let kept: Vec<NeighbourMsg> = store
+            .channels(workspace())
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect();
+        assert_eq!(
+            kept,
+            vec![first, second],
+            "the changes are served in the order they were made"
+        );
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.channels(workspace()).len(),
+            2,
+            "a restart serves them still"
+        );
     }
 
     /// Two frames with other bytes at one author's sequence number are both

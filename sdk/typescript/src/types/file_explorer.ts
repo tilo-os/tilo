@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@696e1f431c7248bb";
+export const SURFACE = "so.tilo.file-explorer@dd3290d42b0cc4c0";
 
 /** How a folder's entries read. One of "name", "size", "modified", "format". */
 export type SortBy = "name" | "size" | "modified" | "format";
@@ -36,14 +36,13 @@ export interface ReadListingArgs {
 export interface ChangedArgs {
 }
 
+/** The arguments of `preview_step`. */
+export interface PreviewStepArgs {
+}
+
 /** The arguments of `go`. */
 export interface GoArgs {
   place: string;
-}
-
-/** The arguments of `show`. */
-export interface ShowArgs {
-  path: string;
 }
 
 /** The arguments of `back`. */
@@ -56,6 +55,49 @@ export interface ForwardArgs {
 
 /** The arguments of `up`. */
 export interface UpArgs {
+}
+
+/** The arguments of `show`. */
+export interface ShowArgs {
+  path: string;
+}
+
+/** The arguments of `extract_into`. */
+export interface ExtractIntoArgs {
+  path: string;
+  folder: string;
+}
+
+/** The arguments of `move_into`. */
+export interface MoveIntoArgs {
+  folder: string;
+}
+
+/** The arguments of `drop_into`. */
+export interface DropIntoArgs {
+  paths: string[];
+  folder: string;
+}
+
+/** The arguments of `copy_into`. */
+export interface CopyIntoArgs {
+  folder: string;
+}
+
+/** The arguments of `put_into`. */
+export interface PutIntoArgs {
+  paths: string[];
+  folder: string;
+  moving: boolean;
+}
+
+/** The arguments of `poll_transfers`. */
+export interface PollTransfersArgs {
+}
+
+/** The arguments of `dismiss_transfer`. */
+export interface DismissTransferArgs {
+  transfer: Transfer;
 }
 
 /** The arguments of `dismiss_notice`. */
@@ -85,6 +127,19 @@ export interface ChooseViewArgs {
 /** The arguments of `toggle_hidden`. */
 export interface ToggleHiddenArgs {
   hidden: boolean;
+}
+
+/** The arguments of `set_zoom`. */
+export interface SetZoomArgs {
+  step: number;
+}
+
+/** The arguments of `zoom_in`. */
+export interface ZoomInArgs {
+}
+
+/** The arguments of `zoom_out`. */
+export interface ZoomOutArgs {
 }
 
 /** The arguments of `open_entry`. */
@@ -358,6 +413,123 @@ export function recent(ws: tilo.Workspace, path: string): Recent {
   return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 
+/** Preview — `tl.so.tilo.file-explorer.Preview`. */
+export interface Preview extends tilo.Resource {
+  "3knlafaw": string;  // path
+  "2gbzq5wu": string;  // modified
+  e52oeizb: unknown | null;  // file
+}
+
+/** The actions `Preview` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PREVIEW_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.Preview` kind at `path`. */
+export function preview(ws: tilo.Workspace, path: string): Preview {
+  return resourceProxy(ws, path, SURFACE, PREVIEW_ACTIONS) as unknown as Preview;
+}
+
+/** Destination — `tl.so.tilo.file-explorer.Destination`. */
+export interface Destination extends tilo.Resource {
+  "3wtmjgc5": string;  // name
+  gpo7gdkp: string;  // path
+}
+
+/** The actions `Destination` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DESTINATION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.Destination` kind at `path`. */
+export function destination(ws: tilo.Workspace, path: string): Destination {
+  return resourceProxy(ws, path, SURFACE, DESTINATION_ACTIONS) as unknown as Destination;
+}
+
+/** Transfer — `tl.so.tilo.file-explorer.Transfer`. */
+export interface Transfer extends tilo.Resource {
+  holiaqgm: string;  // job
+  dtg3bicb: string;  // label
+  b4sboihw: number;  // done
+  yqeek7os: number;  // total
+  o5vail2q: string;  // current
+  gdzzzq6x: string;  // failed
+}
+
+/** The actions `Transfer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TRANSFER_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.Transfer` kind at `path`. */
+export function transfer(ws: tilo.Workspace, path: string): Transfer {
+  return resourceProxy(ws, path, SURFACE, TRANSFER_ACTIONS) as unknown as Transfer;
+}
+
+/** FileFacts — `tl.so.tilo.file-explorer.FileFacts`. */
+export interface FileFacts extends tilo.Resource {
+  foqi2yof: number;  // width
+  sg7ksmy3: number;  // height
+  opvq63ti: number;  // duration
+  wzwzsjca: number;  // pages
+  nea4pran: string;  // codec
+  nyczknd7: string;  // container
+}
+
+/** The actions `FileFacts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FILEFACTS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.FileFacts` kind at `path`. */
+export function fileFacts(ws: tilo.Workspace, path: string): FileFacts {
+  return resourceProxy(ws, path, SURFACE, FILEFACTS_ACTIONS) as unknown as FileFacts;
+}
+
+/** TransferAsk — `tl.so.tilo.file-explorer.TransferAsk`. */
+export interface TransferAsk extends tilo.Resource {
+  wsdpc7wm: string[];  // paths
+  "3s3dhes2": string;  // folder
+  "3ebinaph": boolean;  // moving
+}
+
+/** The actions `TransferAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TRANSFERASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.TransferAsk` kind at `path`. */
+export function transferAsk(ws: tilo.Workspace, path: string): TransferAsk {
+  return resourceProxy(ws, path, SURFACE, TRANSFERASK_ACTIONS) as unknown as TransferAsk;
+}
+
+/** TransferStarted — `tl.so.tilo.file-explorer.TransferStarted`. */
+export interface TransferStarted extends tilo.Resource {
+  l4hyxvom: string;  // job
+}
+
+/** The actions `TransferStarted` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TRANSFERSTARTED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.TransferStarted` kind at `path`. */
+export function transferStarted(ws: tilo.Workspace, path: string): TransferStarted {
+  return resourceProxy(ws, path, SURFACE, TRANSFERSTARTED_ACTIONS) as unknown as TransferStarted;
+}
+
+/** TransferState — `tl.so.tilo.file-explorer.TransferState`. */
+export interface TransferState extends tilo.Resource {
+  cjszmwp5: string;  // state
+  xy4h2hjf: number;  // done
+  xqn7tfzw: number;  // total
+  mfmf4wlj: string;  // current
+  xxm5zyoq: string;  // error
+}
+
+/** The actions `TransferState` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TRANSFERSTATE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.file-explorer.TransferState` kind at `path`. */
+export function transferState(ws: tilo.Workspace, path: string): TransferState {
+  return resourceProxy(ws, path, SURFACE, TRANSFERSTATE_ACTIONS) as unknown as TransferState;
+}
+
 /** Session — `tl.so.tilo.file-explorer.Session`. */
 export interface Session extends tilo.Resource {
   zxu7qmx7: string;  // here
@@ -365,20 +537,24 @@ export interface Session extends tilo.Resource {
   hm8xkfti: boolean;  // ascending
   gkgwx8bk: boolean;  // hidden
   "31bypi4c": boolean;  // grid
+  "2myooacl": number;  // zoom
   "9cdifavr": string[];  // went
   "4tiugype": string[];  // ahead
   "6twkbcct": string[];  // carrying
   "5y3gacnc": boolean;  // cutting
   "9psytdam": Array<tilo.Entry<Listing>>;  // listings
+  "2kuloiux": Array<tilo.Entry<Preview>>;  // previews
   "8kzpf3es": unknown | null;  // preview
   omzv6cq5: string;  // previewed
   l1bciwln: string;  // words
+  "27yiejjv": FileFacts | null;  // facts
   wduoe4ej: string[];  // chosen
   zgzedmq4: string;  // selected
   kljwn54u: string[];  // templates
   uswipaet: string;  // opening
   v4v6h4ut: unknown[];  // openers
   fpb2xkum: string;  // notice
+  "3jhnrnyu": Array<tilo.Entry<Transfer>>;  // transfers
 }
 
 /** The actions `Session` reaches before it is read: `ws` calls them without a
@@ -406,18 +582,16 @@ export interface Files extends tilo.Resource {
   changed(): Promise<void>;
   /** Runs `changed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   changedMany(items: ChangedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Makes the previews of a few pictures in the folder shown that have none yet, as the window shows it: a folder of photographs fills with their pictures while the person looks at it, without the window waiting for every one when the folder is read. */
+  preview_step(): Promise<void>;
+  /** Runs `preview_step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  preview_stepMany(items: PreviewStepArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Goes to the place `place`, reading it: a folder, the trash, the recent files or the apps. */
   go(args: {
     place: string;
   }): Promise<void>;
   /** Runs `go` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   goMany(items: GoArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Shows the place `path` names: the folder itself, or the folder holding the file, with that file marked. Another app asks this when it shows where something it made or saved stands; a person opens a file with `open_entry` instead, which opens what the file holds. */
-  show(args: {
-    path: string;
-  }): Promise<void>;
-  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Goes back to the place the person came from. */
   back(): Promise<void>;
   /** Runs `back` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -430,6 +604,60 @@ export interface Files extends tilo.Resource {
   up(): Promise<void>;
   /** Runs `up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   upMany(items: UpArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows `path` in this window: the folder itself when it is one, and the folder that holds it with the entry chosen when it is a file. It is how another app sends a person to a file it made, and how an agent or a link brings them to one, so the person reads where it stands in its folder. */
+  show(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Extracts the archive at `path` into `folder`, into a folder named after it there: what the rows that offer a folder to extract into ask. */
+  extract_into(args: {
+    path: string;
+    folder: string;
+  }): Promise<void>;
+  /** Runs `extract_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  extract_intoMany(items: ExtractIntoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves the entries the person chose into `folder`, keeping a taken name both. */
+  move_into(args: {
+    folder: string;
+  }): Promise<void>;
+  /** Runs `move_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_intoMany(items: MoveIntoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves the entries the person dragged onto the folder `folder`, by their `paths`, as 'Move to…' does, keeping a taken name both. A folder let go on itself, inside itself or on the folder its entries already stand in moves nothing. */
+  drop_into(args: {
+    paths: string[];
+    folder: string;
+  }): Promise<void>;
+  /** Runs `drop_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  drop_intoMany(items: DropIntoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Copies the entries the person chose into `folder`, keeping a taken name both. */
+  copy_into(args: {
+    folder: string;
+  }): Promise<void>;
+  /** Runs `copy_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  copy_intoMany(items: CopyIntoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work: the window shows how far it has got and can stop it. What arrives under a name the folder already holds lands as “name (2)”, so nothing is replaced. */
+  put_into(args: {
+    paths: string[];
+    folder: string;
+    moving: boolean;
+  }): Promise<void>;
+  /** Runs `put_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  put_intoMany(items: PutIntoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks how far each transfer under way has got. One that finished leaves the window and the folder is read again; one that failed stays, saying why, until it is dismissed. */
+  poll_transfers(): Promise<void>;
+  /** Runs `poll_transfers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  poll_transfersMany(items: PollTransfersArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the transfer `transfer`: the entry it was on is taken away, and what it finished stays. */
+  stop_transfer(args: {
+    transfer: Transfer;
+  }): Promise<void>;
+  /** Takes a transfer that stopped short out of the window. */
+  dismiss_transfer(args: {
+    transfer: Transfer;
+  }): Promise<void>;
+  /** Runs `dismiss_transfer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dismiss_transferMany(items: DismissTransferArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sends the entries the person chose to the nearby device `nearby`, as Nearby Send offers it. */
   send_nearby(args: {
     nearby: string;
@@ -469,6 +697,20 @@ export interface Files extends tilo.Resource {
   }): Promise<void>;
   /** Runs `toggle_hidden` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggle_hiddenMany(items: ToggleHiddenArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Draws the entries at `step`: 0 smaller, 1 regular, 2 larger, as the two keys step it. */
+  set_zoom(args: {
+    step: number;
+  }): Promise<void>;
+  /** Runs `set_zoom` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_zoomMany(items: SetZoomArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Draws the entries one step larger. */
+  zoom_in(): Promise<void>;
+  /** Runs `zoom_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  zoom_inMany(items: ZoomInArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Draws the entries one step smaller. */
+  zoom_out(): Promise<void>;
+  /** Runs `zoom_out` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  zoom_outMany(items: ZoomOutArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Opens the entry `e`: a folder in this window, a file in the app that opens its kind. */
   open_entry(args: {
     path: string;
@@ -618,7 +860,7 @@ export interface Files extends tilo.Resource {
   }): Promise<void>;
   /** Runs `compress_selection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   compress_selectionMany(items: CompressSelectionArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Pastes what the person carries into the place shown. A name the folder already holds is kept both: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is overwritten. */
+  /** Pastes what the person carries into the place shown, as the device's own work that says how far it has got. A name the folder already holds is kept both: what arrives lands as “name (2)”, so nothing is overwritten. */
   paste(): Promise<void>;
   /** Runs `paste` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pasteMany(items: PasteArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -680,7 +922,7 @@ export interface Files extends tilo.Resource {
 
 /** The actions `Files` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const FILES_ACTIONS = ["read_listing", "read_listingMany", "changed", "changedMany", "go", "goMany", "show", "showMany", "back", "backMany", "forward", "forwardMany", "up", "upMany", "send_nearby", "dismiss_notice", "dismiss_noticeMany", "sort_by", "sort_byMany", "ascending", "ascendingMany", "show_grid", "show_gridMany", "choose_view", "choose_viewMany", "toggle_hidden", "toggle_hiddenMany", "open_entry", "open_entryMany", "find_openers", "find_openersMany", "open_with", "open_withMany", "close_openers", "close_openersMany", "open_terminal", "open_terminalMany", "compress_entry", "compress_entryMany", "extract_entry", "extract_entryMany", "touch_entry", "touch_entryMany", "choose", "chooseMany", "select_all", "select_allMany", "clear_selection", "clear_selectionMany", "note_recent", "note_recentMany", "new_folder", "new_folderMany", "start_new_file", "start_new_fileMany", "new_from_template", "new_from_templateMany", "new_file", "new_fileMany", "import_dropped", "import_droppedMany", "open_drive", "rename_entry", "rename_entryMany", "trash_entries", "trash_entriesMany", "restore_entry", "restore_entryMany", "delete_permanently", "delete_permanentlyMany", "empty_trash", "empty_trashMany", "carry", "carryMany", "carry_selection", "carry_selectionMany", "compress_selection", "compress_selectionMany", "paste", "pasteMany", "free_name", "key_on", "key_onMany", "carry_row", "carry_rowMany", "trash_row", "trash_rowMany", "add_favorite", "add_favoriteMany", "remove_favorite", "remove_favoriteMany", "inspect", "inspectMany", "name_it", "name_itMany", "open_app"] as const;
+export const FILES_ACTIONS = ["read_listing", "read_listingMany", "changed", "changedMany", "preview_step", "preview_stepMany", "go", "goMany", "back", "backMany", "forward", "forwardMany", "up", "upMany", "show", "showMany", "extract_into", "extract_intoMany", "move_into", "move_intoMany", "drop_into", "drop_intoMany", "copy_into", "copy_intoMany", "put_into", "put_intoMany", "poll_transfers", "poll_transfersMany", "stop_transfer", "dismiss_transfer", "dismiss_transferMany", "send_nearby", "dismiss_notice", "dismiss_noticeMany", "sort_by", "sort_byMany", "ascending", "ascendingMany", "show_grid", "show_gridMany", "choose_view", "choose_viewMany", "toggle_hidden", "toggle_hiddenMany", "set_zoom", "set_zoomMany", "zoom_in", "zoom_inMany", "zoom_out", "zoom_outMany", "open_entry", "open_entryMany", "find_openers", "find_openersMany", "open_with", "open_withMany", "close_openers", "close_openersMany", "open_terminal", "open_terminalMany", "compress_entry", "compress_entryMany", "extract_entry", "extract_entryMany", "touch_entry", "touch_entryMany", "choose", "chooseMany", "select_all", "select_allMany", "clear_selection", "clear_selectionMany", "note_recent", "note_recentMany", "new_folder", "new_folderMany", "start_new_file", "start_new_fileMany", "new_from_template", "new_from_templateMany", "new_file", "new_fileMany", "import_dropped", "import_droppedMany", "open_drive", "rename_entry", "rename_entryMany", "trash_entries", "trash_entriesMany", "restore_entry", "restore_entryMany", "delete_permanently", "delete_permanentlyMany", "empty_trash", "empty_trashMany", "carry", "carryMany", "carry_selection", "carry_selectionMany", "compress_selection", "compress_selectionMany", "paste", "pasteMany", "free_name", "key_on", "key_onMany", "carry_row", "carry_rowMany", "trash_row", "trash_rowMany", "add_favorite", "add_favoriteMany", "remove_favorite", "remove_favoriteMany", "inspect", "inspectMany", "name_it", "name_itMany", "open_app"] as const;
 
 /** The `tl.so.tilo.file-explorer.Files` kind at `path`. */
 export function files(ws: tilo.Workspace, path: string): Files {

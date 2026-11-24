@@ -436,6 +436,10 @@ pub(crate) fn render_past<A: ResourceApp>(
     Ok(PastVersion { preview, live })
 }
 
+/// What builds a past version's root over its document, or says why it cannot.
+#[cfg(not(target_family = "wasm"))]
+type RootBuilder<'a> = dyn Fn(&AutoCommit) -> Result<ResourceRoot, String> + 'a;
+
 /// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
 /// draw it: what `render` answers for a version.
 #[cfg(not(target_family = "wasm"))]
@@ -464,10 +468,7 @@ pub(crate) fn draw_past<A: ResourceApp>(
 #[inline(never)]
 fn draw_over(
     doc: AutoCommit,
-    (label, root): (
-        &'static str,
-        &dyn Fn(&AutoCommit) -> Result<ResourceRoot, String>,
-    ),
+    (label, root): (&'static str, &RootBuilder<'_>),
     bounds: Rect,
     scene: &mut ui_core::vello::Scene,
     transform: ui_core::vello::kurbo::Affine,

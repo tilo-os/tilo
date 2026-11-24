@@ -112,10 +112,7 @@ impl DesktopHandle {
                 if workspace.strips.len() <= 1 {
                     return None;
                 }
-                let at = workspace
-                    .strips
-                    .iter()
-                    .position(|held| held.id == strip)?;
+                let at = workspace.strips.iter().position(|held| held.id == strip)?;
                 let target = workspace
                     .strips
                     .get(at.saturating_add(1))
@@ -2665,7 +2662,10 @@ mod tests {
         );
         assert!(handle.snapshot("g", vec![]).entries.is_empty());
         handle
-            .dispatch(ChromeEffect::ReopenClosed { app: None })
+            .dispatch(ChromeEffect::ReopenClosed {
+                app: None,
+                window: None,
+            })
             .unwrap();
         settle(&handle);
         assert_eq!(

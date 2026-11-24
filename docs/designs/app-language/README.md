@@ -232,7 +232,9 @@ pastes declares `uses clipboard`; a view does neither, since it is drawn again f
 shown.
 
 `file.text()` reads a file's content as text, and `file.bytes()` the bytes it holds: what an
-action writes where it wants a file a person dropped or chose, with `File.write`. A file handed to
+action writes where it wants a file a person dropped or chose, with `File.write`. `File.copy_to(path,
+to)` copies the entry at a path to a path named whole, as `File.write` writes one, so a copy beside
+an entry whose name is taken keeps both. A file handed to
 an action has no path of its own, so its content is the only way to place it. `file.image_info()`
 says what an image's own container states: its upright width and height, the
 capture time, the EXIF orientation, and the place the camera recorded. `file.cropped(x, y, width,
@@ -240,7 +242,10 @@ height)`, `file.turned(quarters)`, `file.resized(width, height)` and `file.encod
 work on its pixels and answer a new `File` kept in the content store. The decode turns the picture
 upright first, so a crop fraction and a size are of the picture a viewer shows, and a turn is
 clockwise. An action that reads or makes pixels declares `uses image`; a view does not, since it is
-drawn again from what it is shown.
+drawn again from what it is shown. `File.preview(path, size)` answers a preview of the file at a
+path from the device's own preview cache, no larger than `size` pixels a side: what a folder of
+pictures draws without reading every one through the app, and `None` for a file no preview stands
+for.
 
 `file.choose(a, accept: [...])` asks the person for files and runs `a` with what they chose: the one
 file the next parameter takes, or every file when it is a `List<File>`. `file.choose_folder(a,

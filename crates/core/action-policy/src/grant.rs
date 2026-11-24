@@ -449,6 +449,28 @@ impl Grant {
     pub fn is_live(&self, cx: &Context<'_>) -> bool {
         self.lifetime.is_live_at(Some(cx.now_unix_ms))
     }
+
+    /// Whether this grant still stands as `policy` reads it at `cx`: live, and, when it names
+    /// an app, given by a person who still reaches its node for every kind it carries.
+    ///
+    /// A person's grant to an app is theirs: losing the workspace, losing the node or taking a
+    /// narrower role ends what they gave, with nothing to revoke.
+    #[must_use]
+    pub fn stands_in(&self, policy: &crate::WorkspacePolicy, cx: &Context<'_>) -> bool {
+        if !self.is_live(cx) {
+            return false;
+        }
+        if !matches!(self.grantee, Grantee::App(_)) {
+            return true;
+        }
+        let Some(person) = self.granted_by.person_id() else {
+            return false;
+        };
+        let now = cx.now_unix_ms / 1000;
+        self.kinds
+            .iter()
+            .all(|kind| policy.answer_at(person, &self.node, kind, now) == Answer::Allow)
+    }
 }
 
 /// What liveness depends on where a decision is made.

@@ -44,6 +44,16 @@
 //! as its asked record, and their approve admits the same call again, held
 //! to every refusal here once more.
 //!
+//! A use is decided once, when its call is allowed: by the person's yes on its asked record, or
+//! by the grant their "Always" left for this agent, item and places. What the use then writes in
+//! the vault (the use, a renewed code's counter, a key kept from an item) is a step its action
+//! declares, and the write keeps the call that was allowed beside it, with how it was allowed.
+//! Nobody signed a turn's call, so this server signs it as the device that carried it out for
+//! that person: the write names the agent for its person, never the person as its maker
+//! ([`Workspaces::write_vault`]). Every device reading the vault then admits the step as the
+//! call's effect, and decides nothing else of the agent again; a step the action does not
+//! declare, or an agent's call that keeps no word of how it was allowed, is refused.
+//!
 //! Another use by reference (a key added to a web call, a variable handed
 //! to a command) is one more arm of [`Use`]: what it wants of the vault and
 //! how it is carried out. The refusals, the asking and the leave are the
@@ -938,6 +948,30 @@ fn use_node(
         .kind(person_vault::use_word(target))
         .resource(use_resource(item, places))
         .action(&target.address.action)
+}
+
+/// Whether `grant` is a leave its person gave for one use of a vault item ([`use_node`]): the
+/// use's word stands where a kind does, and names the very app and action it stands under.
+pub(super) fn is_use_leave(grant: &tilo_action_policy::Grant) -> bool {
+    use tilo_action_policy::{Level, Segment};
+    let named = |level: Level| {
+        grant
+            .node
+            .segments()
+            .iter()
+            .find_map(|segment| match segment {
+                Segment::Name(at, name) if *at == level => Some(name.as_str()),
+                _ => None,
+            })
+    };
+    let (Some(app), Some(kind), Some(action)) =
+        (named(Level::App), named(Level::Kind), named(Level::Action))
+    else {
+        return false;
+    };
+    kind.strip_prefix(app)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest == action)
 }
 
 /// [`use_node`] in the workspace of the turn `using`.

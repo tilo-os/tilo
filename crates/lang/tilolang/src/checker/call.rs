@@ -3827,6 +3827,7 @@ impl Checker<'_> {
             "list"
                 | "stat"
                 | "read"
+                | "preview"
                 | "watch"
                 | "open"
                 | "mkdir"
@@ -3834,6 +3835,7 @@ impl Checker<'_> {
                 | "rename"
                 | "move"
                 | "copy"
+                | "copy_to"
                 | "remove"
                 | "trash"
                 | "trash_entries"
@@ -3920,6 +3922,10 @@ impl Checker<'_> {
             "list" => "`File.list(path)`: a folder's entries, within what the app was granted",
             "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
             "read" => "`File.read(path)`: the bytes a path holds",
+            "preview" => {
+                "`File.preview(path, size)`: a preview of the file at a path, no larger than \
+                 `size` pixels a side, or none when it has none"
+            }
             "watch" => {
                 "`File.watch(path, run)`: one of this package's actions, run when the folder changes"
             }
@@ -3932,6 +3938,9 @@ impl Checker<'_> {
             "rename" => "`File.rename(path, name)`: the entry renamed in its own folder",
             "move" => "`File.move(path, folder)`: the entry moved into that folder",
             "copy" => "`File.copy(path, folder)`: a copy of the entry in that folder",
+            "copy_to" => {
+                "`File.copy_to(path, to)`: a copy of the entry at `to`, a path named whole"
+            }
             "remove" => "`File.remove(path)`: the entry removed for good, folder and all",
             "trash" => "`File.trash(path)`: the entry put in this device's trash",
             "trash_entries" => "`File.trash_entries()`: what this device's trash holds",
@@ -3946,7 +3955,8 @@ impl Checker<'_> {
         };
         let wanted = match method {
             "trash_entries" => 0,
-            "watch" | "write" | "rename" | "move" | "copy" | "compress" | "extract" => 2,
+            "watch" | "write" | "rename" | "move" | "copy" | "copy_to" | "compress" | "extract"
+            | "preview" => 2,
             _ => 1,
         };
         if args.len() != wanted {
@@ -3970,6 +3980,10 @@ impl Checker<'_> {
             span,
             &format!("`File.{method}`"),
         );
+        if method == "preview" {
+            // A preview is made from the file's pixels, as a thumbnail is.
+            self.reads(crate::effects::Effect::Image, span, "`File.preview`");
+        }
         // An archive's two ends: entries packed into a new file, and an archive extracted into
         // a folder it makes. Both answer how many entries went.
         let counted = Ty::Result(Box::new(Ty::Int), Box::new(Ty::Text));
@@ -4024,6 +4038,14 @@ impl Checker<'_> {
                 result(Ty::Option(Box::new(entry()))),
             ),
             "read" => Ex::host(Imp::FileReadPath, vec![path], result(Ty::Bytes)),
+            "preview" => {
+                let size = self.expr_as(&args[1].value, &Ty::Int);
+                Ex::host(
+                    Imp::FilePreview,
+                    vec![path, size],
+                    result(Ty::Option(Box::new(Ty::File))),
+                )
+            }
             "watch" => {
                 let run = self.expr_as(&args[1].value, &Ty::Text);
                 Ex::host(Imp::FileWatch, vec![path, run], result(Ty::Text))
@@ -4044,6 +4066,10 @@ impl Checker<'_> {
             "copy" => {
                 let folder = self.expr_as(&args[1].value, &Ty::Text);
                 Ex::host(Imp::FileCopy, vec![path, folder], result(entry()))
+            }
+            "copy_to" => {
+                let to = self.expr_as(&args[1].value, &Ty::Text);
+                Ex::host(Imp::FileCopyTo, vec![path, to], result(entry()))
             }
             "remove" => Ex::host(Imp::FileRemove, vec![path], result(Ty::Bool)),
             "trash" => Ex::host(Imp::FileTrash, vec![path], result(trashed())),

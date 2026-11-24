@@ -61,6 +61,12 @@ APP_HEADER = re.compile(
 )
 
 
+def package_tagline_key(app_id: str) -> str:
+    """The catalogue key of a package's tagline: its `app` header id with every character a Fluent
+    key does not take written `-`, then `-tagline` (`d-so-tilo-discord-tagline`)."""
+    return "d-" + re.sub(r"[^A-Za-z0-9_-]", "-", app_id) + "-tagline"
+
+
 def tl_package(root: Path, app: str) -> tuple[Path, dict[str, str]] | None:
     """The tilolang package that is the app `app`: its directory and what its `app` header
     declares. An app ships as a package the language builds, so it has no `tilo-app.toml` of its
@@ -90,8 +96,9 @@ def tl_package(root: Path, app: str) -> tuple[Path, dict[str, str]] | None:
 
 def taglines(root: Path, app: str) -> dict[str, str]:
     """The app's tag line per language: a Rust app's own `search/<tag>.ftl`'s `app-tagline`, or
-    the tilolang package's `app` header, which says it in English. A language the app does not
-    translate its tag line in falls back to English as the entry is written."""
+    the tilolang package's `locales/<language>.ftl`'s `d-<id>-tagline`, which a language words for
+    itself; the package's `app` header says it in English. A language the app does not translate
+    its tag line in falls back to English as the entry is written."""
     search = root / "apps" / app / "search"
     found: dict[str, str] = {}
     if search.is_dir():
@@ -102,10 +109,19 @@ def taglines(root: Path, app: str) -> dict[str, str]:
                 key, value = line.split("=", 1)
                 if key.strip() == TAGLINE_MESSAGE and value.strip():
                     found[source.stem.split("-")[0].lower()] = value.strip()
-    if not found:
-        package = tl_package(root, app)
-        if package is not None and package[1].get("tagline", "").strip():
-            found["en"] = package[1]["tagline"].strip()
+    package = tl_package(root, app)
+    if package is not None:
+        directory, fields = package
+        key = package_tagline_key(fields["id"])
+        for source in sorted((directory / "locales").glob("*.ftl")):
+            for line in source.read_text(encoding="utf-8").splitlines():
+                if line[:1].isspace() or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                if name.strip() == key and value.strip():
+                    found[source.stem.split("-")[0].lower()] = value.strip()
+        if "en" not in found and fields.get("tagline", "").strip():
+            found["en"] = fields["tagline"].strip()
     if "en" not in found:
         die(f"{app}: apps/{app}/search/en.ftl or the app's package needs an {TAGLINE_MESSAGE}")
     for tag, value in found.items():

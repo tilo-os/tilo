@@ -111,6 +111,7 @@ mod tests {
     use super::*;
     use crate::chart_palette::ChartPalette;
     use crate::theme::Theme;
+    use crate::widget::plot::PlotMarks;
 
     #[test]
     fn samples_bin_into_bars_in_the_themes_first_palette_colour() {
@@ -160,8 +161,19 @@ mod tests {
     }
 
     #[test]
-    fn empty_samples_make_an_empty_histogram_rather_than_no_chart() {
+    fn empty_samples_leave_nothing_to_show_rather_than_empty_bins() {
         let chart = HistogramChart::from_props("k", HistogramProps::default());
-        assert_eq!(chart.plot.series()[0].data.len(), 12);
+        assert!(
+            chart
+                .plot
+                .series()
+                .iter()
+                .all(|series| series.data.is_empty()),
+            "nothing measured bins nothing"
+        );
+        assert!(
+            chart.plot.marks.items().is_empty(),
+            "so the chart says it has nothing to show instead of drawing axes around zeros"
+        );
     }
 }

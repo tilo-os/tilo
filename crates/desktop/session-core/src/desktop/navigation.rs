@@ -133,9 +133,7 @@ pub struct Destination {
 }
 
 /// A share of its strip a window takes in one step.
-#[derive(
-    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum WidthPreset {
     /// Half the strip.
@@ -269,16 +267,6 @@ pub enum LayoutEffect {
         #[param(decimal, "The tab whose app to end")]
         tab: String,
     },
-
-    /// Ask for the app again
-    /// The app whose window ended, asked for again in the same tab: what the card's Reopen does.
-    #[effect(on = Window, kind = "outside")]
-    #[effect(own_device)]
-    ReopenWindow {
-        /// The tab's id.
-        #[param(decimal, "The tab whose app to ask for again")]
-        tab: String,
-    },
 }
 
 /// A window the shell shows, as a declared type: what its own verbs act on.
@@ -375,6 +363,17 @@ pub enum ChromeEffect {
         /// The page.
         #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
         link: String,
+    },
+
+    /// Show in Files
+    /// The folder that holds `path` in the file manager, with the file itself chosen: what an app
+    /// that saved a file offers, and what a link to one opens.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    ShowInFiles {
+        /// The path to show.
+        #[param("The file or folder to show in Files")]
+        path: String,
     },
 
     /// Move a tab elsewhere
@@ -653,13 +652,17 @@ pub enum ChromeEffect {
     },
 
     /// Reopen what was closed last
-    /// In the workspace shown, where it was, and focus it.
+    /// In the workspace shown, where it was, and focus it. A window named by its id comes back
+    /// itself, on what it showed, wherever it was closed: what an ended app's card reopens.
     #[effect(kind = "outside")]
     #[effect(own_device)]
     ReopenClosed {
         /// Only a window of this app; any window when absent.
         #[param("Only a window of this app, its id or short name")]
         app: Option<String>,
+        /// Exactly this window, by its id.
+        #[param(decimal, "Exactly this window, by its id")]
+        window: Option<String>,
     },
 
     /// Share a window
@@ -1037,9 +1040,7 @@ impl From<ChromeEffect> for Verb {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, tilo_resource::JsonSchema)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -1076,6 +1077,8 @@ pub enum Admitted {
     Dismiss(RouteIds),
     /// Reopen the newest close of the active workspace, of the app when one is named.
     Reopen(WorkspaceId, Option<String>),
+    /// Reopen exactly the closed window by its id, wherever it was closed.
+    ReopenWindow(TabId),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
     /// Cover the display with the window, or give it back.
@@ -1325,7 +1328,6 @@ fn admit_layout(verb: &LayoutEffect, tree: &Layout) -> Result<Admitted, String> 
         | LayoutEffect::ChooseSearchRow { .. }
         | LayoutEffect::Launchpad { .. }
         | LayoutEffect::WaitWindow { .. }
-        | LayoutEffect::ReopenWindow { .. }
         | LayoutEffect::ForceQuitApp { .. } => Err("The shell carries this out itself".into()),
     }
 }
@@ -1436,7 +1438,14 @@ fn admit_chrome(
             (None, Some(group)) => named(group_route(tree, group)?, name, tree),
             (None, None) => Err("Name a tab, a window, a strip or a workspace to rename".into()),
         },
-        ChromeEffect::ReopenClosed { app } => admit_reopen(tree, app.as_ref()),
+        ChromeEffect::ReopenClosed {
+            window: Some(window),
+            ..
+        } => window
+            .parse()
+            .map(Admitted::ReopenWindow)
+            .map_err(|_| format!("{window} names no window")),
+        ChromeEffect::ReopenClosed { app, window: None } => admit_reopen(tree, app.as_ref()),
         ChromeEffect::ShareWindow { group, on } => {
             group_route(tree, group).map(|ids| Admitted::ShareWindow(ids, *on))
         }
@@ -1520,6 +1529,7 @@ fn admit_chrome(
         | ChromeEffect::WorkspaceMenu
         | ChromeEffect::About { .. }
         | ChromeEffect::OpenSettings { .. }
+        | ChromeEffect::ShowInFiles { .. }
         | ChromeEffect::SwitchWorkspace {
             workspace: None, ..
         } => Err("The surfaces carry this out themselves".into()),

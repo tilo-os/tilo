@@ -1455,7 +1455,8 @@ pub(crate) mod entry_tests {
     }
 
     /// Moderation takes a person's membership away and the entry keeps them out
-    /// for the day; an idle member the host prunes is let in again at once.
+    /// for the day; a ban keeps them out until a moderator lifts it, and lifting
+    /// it lets them in again at once.
     #[tokio::test]
     async fn a_person_moderation_removed_is_refused_at_the_entry_for_the_day() {
         let dir = tempfile::tempdir().unwrap();
@@ -1505,13 +1506,32 @@ pub(crate) mod entry_tests {
                 .await
         );
 
-        // A moderator lets them in again: the entry opens with the ban.
+        // A ban keeps them out past the day; a person only removed was never banned, so lifting
+        // a ban is what lets them in again, and the entry opens with it.
+        workspaces
+            .ban_member(
+                &workspace,
+                &owner,
+                RemoveMemberRequest {
+                    request_id: [8; 32],
+                    user_public_key: guest.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            workspaces
+                .admit_listed(&workspace, &join)
+                .await
+                .unwrap_err(),
+            EntryRefusal::Banned
+        );
         workspaces
             .unban_member(
                 &workspace,
                 &owner,
                 RemoveMemberRequest {
-                    request_id: [8; 32],
+                    request_id: [9; 32],
                     user_public_key: guest.user_public_key,
                 },
             )

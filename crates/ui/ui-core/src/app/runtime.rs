@@ -487,6 +487,9 @@ pub(super) enum BrokerReply {
 pub(super) struct HeldOwnInvocation {
     pub(super) request: tilo_actions::remote::InvokeRequest,
     pub(super) since: crate::time::Instant,
+    /// The input serial of the press the invocation followed, if it followed one: kept from the
+    /// moment it was made, not from the pass that finally sends it.
+    pub(super) press: Option<u32>,
 }
 
 impl ActionRuntime {

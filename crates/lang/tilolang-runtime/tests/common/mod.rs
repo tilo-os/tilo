@@ -740,45 +740,56 @@ pub fn built(name: &str) -> Vec<App> {
         &tilolang::source::apps_of(&platform),
     )
     .unwrap_or_else(|e| panic!("apps/tl/{name}: {e}"));
-    let mut cache = BUILT.get_or_init(Default::default).lock().unwrap();
+    let cache = BUILT.get_or_init(Default::default);
     let mut out: Vec<App> = Vec::new();
     for dir in dirs {
         let dir = dir.canonicalize().unwrap_or(dir);
-        let app = match cache.get(&dir) {
-            Some(app) => app.clone(),
-            None => {
-                let source = tilolang::PackageSource::read_dir(&dir).unwrap();
-                let ids = tilolang::source::read_ids(&dir).unwrap();
-                let mut imports = platform.clone();
-                imports.extend(out.iter().map(|used| used.meta().clone()));
-                let compiled = tilolang::compile_package_source_with(
-                    &source,
-                    &ids,
-                    &imports,
-                    &mut tilolang::SeededEntropy(0),
+        let app = cached(cache, &dir, || {
+            let source = tilolang::PackageSource::read_dir(&dir).unwrap();
+            let ids = tilolang::source::read_ids(&dir).unwrap();
+            let mut imports = platform.clone();
+            imports.extend(out.iter().map(|used| used.meta().clone()));
+            let compiled = tilolang::compile_package_source_with(
+                &source,
+                &ids,
+                &imports,
+                &mut tilolang::SeededEntropy(0),
+            )
+            .unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
+            assert_eq!(
+                compiled.ids.to_text(),
+                ids.to_text(),
+                "{}/app.ids is out of date: run `tilolang build` on it",
+                dir.display()
+            );
+            let (_, uses) = source.header();
+            App {
+                compiled,
+                platform: tilolang_tilo::platform_apps::platform_packages_of(
+                    uses.iter().map(String::as_str),
                 )
-                .unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
-                assert_eq!(
-                    compiled.ids.to_text(),
-                    ids.to_text(),
-                    "{}/app.ids is out of date: run `tilolang build` on it",
-                    dir.display()
-                );
-                let (_, uses) = source.header();
-                let app = App {
-                    compiled,
-                    platform: tilolang_tilo::platform_apps::platform_packages_of(
-                        uses.iter().map(String::as_str),
-                    )
-                    .expect("the platform's packages read"),
-                };
-                cache.insert(dir, app.clone());
-                app
+                .expect("the platform's packages read"),
             }
-        };
+        });
         out.push(app);
     }
     out
+}
+
+/// `dir`'s app from `cache`, built with `build` when it holds none. The cache stays held while
+/// the build runs, so a directory is compiled once even when two tests want it at once.
+fn cached(
+    cache: &std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, App>>,
+    dir: &std::path::Path,
+    build: impl FnOnce() -> App,
+) -> App {
+    let mut held = cache.lock().unwrap();
+    if let Some(app) = held.get(dir) {
+        return app.clone();
+    }
+    let app = build();
+    held.insert(dir.to_owned(), app.clone());
+    app
 }
 
 /// The app `apps/tl/<name>` as [`built`] builds it.

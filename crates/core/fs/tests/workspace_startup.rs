@@ -159,9 +159,11 @@ tilo_test_env::scenario! {
     {
         let profile = Profile::new();
         profile.identity();
-        std::fs::create_dir_all(profile.path("run/tilo/services")).expect("create services dir");
+        // The device's daemon serves the trees at `files_tree_socket` of the account: among its
+        // sockets, `$XDG_RUNTIME_DIR/tilo` ([`tilo_paths::machine::daemon_sockets`]).
+        std::fs::create_dir_all(profile.path("run/tilo")).expect("create the daemon's sockets dir");
         let _service =
-            std::os::unix::net::UnixListener::bind(profile.path("run/tilo/services/files-tree.sock"))
+            std::os::unix::net::UnixListener::bind(profile.path("run/tilo/files-tree.sock"))
                 .expect("stand in for the workspace service");
         let output = profile.launch(&[]);
         assert!(

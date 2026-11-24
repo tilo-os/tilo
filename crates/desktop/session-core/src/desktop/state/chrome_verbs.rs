@@ -155,6 +155,7 @@ impl DesktopHandle {
             | ChromeEffect::FixedShortcut { .. }
             | ChromeEffect::JoinWorkspace
             | ChromeEffect::OpenSettings { .. }
+            | ChromeEffect::ShowInFiles { .. }
             | ChromeEffect::LeaveWorkspace { .. }
             | ChromeEffect::DeleteWorkspace { .. }
             | ChromeEffect::WorkspaceSettings => Carried::Done,
@@ -325,6 +326,10 @@ impl DesktopHandle {
             }
             ChromeEffect::OpenSettings { link } => {
                 self.ask(DesktopAsk::OpenSettings(link.clone()));
+                Some(Carried::Done)
+            }
+            ChromeEffect::ShowInFiles { path } => {
+                self.ask(DesktopAsk::ShowInFiles(path.clone()));
                 Some(Carried::Done)
             }
             ChromeEffect::LeaveWorkspace { workspace } => report(

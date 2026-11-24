@@ -2398,7 +2398,12 @@ fn close_then_open_again(status: &str) {
     tilo_test_env::exited("the app's second process", second_pid);
     session
         .handle()
-        .dispatch(tilo_session_core::desktop::navigation::ChromeEffect::ReopenClosed { app: None })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::ReopenClosed {
+                app: None,
+                window: None,
+            },
+        )
         .expect("the session takes the reopen");
     until(&mut session, "the closed window is back", |session| {
         group_ids(session)

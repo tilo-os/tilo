@@ -141,7 +141,6 @@ pub struct Shown {
 pub fn shell_resource(
     windows: &[Shown],
     not_responding: &[u64],
-    ended: &[u64],
     displays: &[u32],
     search: Option<OpenSearch<'_>>,
 ) -> ResourceSpec {
@@ -162,7 +161,7 @@ pub fn shell_resource(
     });
     let windows = windows
         .iter()
-        .map(|shown| window_row(shown, not_responding, ended));
+        .map(|shown| window_row(shown, not_responding));
     let search = search.map(search_resource);
     offer::<LayoutEffect>(typed_resource::<Shell>(
         SHELL_RESOURCE,
@@ -173,25 +172,20 @@ pub fn shell_resource(
 
 /// One window of the shell: focusing and closing it, and — a window of another desktop —
 /// reading it through the shell, and — one whose app stopped answering — waiting for it or force
-/// quitting its app, and — one whose app ended — asking for its app again in the same place. Its
-/// verbs name the window they act on, as its row does.
+/// quitting its app. Its verbs name the window they act on, as its row does.
 ///
 /// The bar's window bar, a page and an agent read the same verbs by the same address.
-fn window_row(shown: &Shown, not_responding: &[u64], ended: &[u64]) -> ResourceSpec {
+fn window_row(shown: &Shown, not_responding: &[u64]) -> ResourceSpec {
     let tab = shown.tab.to_string();
     let names = &[("window", shown.title.as_str().into())];
     let hung = not_responding.contains(&shown.tab);
-    let gone = ended.contains(&shown.tab);
     let mut bindings = RowBindings::new()
         .bind(LayoutEffect::FOCUS, [("tab", tab.clone().into())])
         .bind(LayoutEffect::CLOSE_TAB, [("tab", tab.clone().into())]);
     if hung {
         bindings = bindings
             .bind(LayoutEffect::WAIT_WINDOW, [("tab", tab.clone().into())])
-            .bind(LayoutEffect::FORCE_QUIT_APP, [("tab", tab.clone().into())]);
-    }
-    if gone {
-        bindings = bindings.bind(LayoutEffect::REOPEN_WINDOW, [("tab", tab.into())]);
+            .bind(LayoutEffect::FORCE_QUIT_APP, [("tab", tab.into())]);
     }
     let mut row =
         LiveRow::typed_with::<Window>(tab_resource_id(shown.tab), shown.title.clone(), &bindings)
@@ -207,12 +201,6 @@ fn window_row(shown: &Shown, not_responding: &[u64], ended: &[u64]) -> ResourceS
                 LayoutEffect::FORCE_QUIT_APP,
                 t_args("shell-force-quit-window", names),
             );
-    }
-    if gone {
-        row = row.labelled(
-            LayoutEffect::REOPEN_WINDOW,
-            t_args("shell-reopen-window", names),
-        );
     }
     let mut window = row.into_resource();
     // A window of another desktop has no surface of its own to ask what it shows: the shell
@@ -408,7 +396,6 @@ mod catalogue_tests {
             shell_resource(
                 &windows,
                 &[8],
-                &[],
                 &[1],
                 Some(OpenSearch {
                     query: "scr",

@@ -52,7 +52,7 @@ tilo-automation = { path = "../../crates/core/automation" }
 tilo-test-env = { path = "../../tools/test-env" }
 # The bridge program is checked against tl Chat's real published actions: its package on a
 # record, read as the server reads it.
-tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service", features = ["agents"] }
+tilolang-workspace = { path = "../../crates/lang/tilolang-workspace" }
 
 [lints]
 workspace = true

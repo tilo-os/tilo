@@ -39,7 +39,6 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                 original: Mutex::new(None),
-                pressed: false.into(),
             });
             let rig = Rig::with_services(
                 &env,
@@ -145,15 +144,10 @@ struct ObservedLauncher {
     requests: Mutex<Vec<ObservedLaunch>>,
     adoption: Mutex<Option<crate::apps::services::LaunchAdoption>>,
     original: Mutex<Option<crate::apps::services::ObservedApplicationLaunch>>,
-    /// Whether the person pressed in the app that asks to open one.
-    pressed: std::sync::atomic::AtomicBool,
 }
 impl crate::apps::services::LauncherServices for ObservedLauncher {
     fn applications(&self) -> Vec<crate::apps::services::LaunchableApplication> {
         Vec::new()
-    }
-    fn person_initiated(&self, _: &str) -> bool {
-        self.pressed.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn launch(
         &self,
@@ -225,7 +219,6 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
-                    pressed: true.into(),
                 });
                 if matches!(
                     scenario,
@@ -260,9 +253,17 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 let handle = caller.handle.clone();
                 let root = format!("tapp:{}", "12".repeat(32));
                 let selected = root.clone();
+                // The person's press in this connection's window, which the launch names.
+                rig.state.bind_window_instance_for_test(905, 12);
+                rig.state.note_press(12, 5);
                 let pending = tokio::task::spawn_local(async move {
                     handle
-                        .launch_installed_application("so.tilo.word-processor", Some(&selected))
+                        .launch_installed_application_pressed(
+                            "so.tilo.word-processor",
+                            Some(&selected),
+                            None,
+                            Some(5),
+                        )
                         .await
                 });
                 certified_launch_wait(&started_rx).await;
@@ -333,7 +334,6 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
                 requests: Mutex::new(Vec::new()),
                 adoption: Mutex::new(None),
                 original: Mutex::new(None),
-                pressed: true.into(),
             });
             let rig = Rig::with_services(
                 &env,
@@ -371,7 +371,6 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
-                    pressed: false.into(),
                 });
                 let rig = Rig::with_services(
                     &env,
@@ -477,7 +476,6 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     requests: Mutex::new(vec![]),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
-                    pressed: false.into(),
                 });
                 let rig = Rig::with_services(
                     &env,

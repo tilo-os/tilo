@@ -1319,7 +1319,7 @@ mod cases {
         s.rt.settle().unwrap();
         s.rt.settle().unwrap();
         let delivered = s.sink.delivered();
-        let (capability, payload) = delivered
+        let (_capability, payload) = delivered
             .iter()
             .find(|(capability, _)| capability == "caldav.answer")
             .unwrap_or_else(|| panic!("the organiser is told: {delivered:?}"));
@@ -1657,7 +1657,7 @@ mod cases {
             .iter()
             .filter_map(|b| {
                 text_prop_opt(b, "label")
-                    .filter(|t| t != "")
+                    .filter(|t| !t.is_empty())
                     .or_else(|| text_prop_opt(b, "accessible_name"))
             })
             .collect();

@@ -15,11 +15,10 @@ use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipC
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
-    ActsAsScout, Started, declare_app, declare_built_in_app, governor, on_issue_change,
-    save_signed, test_host,
+    ActsAsScout, Started, declare_app, on_issue_change, save_signed,
 };
 
-use super::mount;
+use super::{Device, Write, mount, write};
 
 /// An app's write of a record a saved shortcut watches fires it once, on the device that wrote
 /// it; looking again at the same record fires nothing more. A write whose resource the
@@ -29,30 +28,10 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     use tilo_resource_store::wire::Command;
     use tilo_resource_store::{Cell, Resource, Stamp, Value};
 
-    let dir = tempfile::tempdir().unwrap();
-    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
-    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
-        dir.path(),
-        &key,
-        &cert,
-        keys,
-    )
-    .await;
-    let workspaces = host.workspaces();
-    mount(workspaces);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
-    declare_built_in_app(&host, "so.tilo.tasks");
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: "so.tilo.tasks".into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let device = Device::start("Tasks", Some("so.tilo.tasks")).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
     let mut shortcut = on_issue_change();
     let Some(TriggerSpec::ResourceChanged { filter, .. }) = shortcut.triggers.first_mut() else {
         panic!("the shortcut watches a resource");
@@ -106,7 +85,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     let firings = started.0.lock().unwrap().clone();
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(firings[0].shortcut, "tidy");
-    host.shutdown().await;
+    device.shutdown().await;
 }
 /// A shortcut is armed by following its save: a record written right after the shortcut is saved
 /// fires it, while the runner runs as a device runs it, with no wait for a clock.
@@ -115,30 +94,10 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
     use tilo_resource_store::wire::Command;
     use tilo_resource_store::{Cell, Resource, Stamp, Value};
 
-    let dir = tempfile::tempdir().unwrap();
-    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
-    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
-        dir.path(),
-        &key,
-        &cert,
-        keys,
-    )
-    .await;
-    let workspaces = host.workspaces();
-    mount(workspaces);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
-    declare_built_in_app(&host, "so.tilo.tasks");
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: "so.tilo.tasks".into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let device = Device::start("Tasks", Some("so.tilo.tasks")).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
 
     // The runner runs before the shortcut exists, with nothing to arm.
     let started = Arc::new(Started::default());
@@ -203,7 +162,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
         "armed by its save, not by a clock: {:?}",
         begun.elapsed()
     );
-    host.shutdown().await;
+    device.shutdown().await;
 }
 /// A turn starts only on a change the agent may read: a message that was removed before the
 /// turn began, and one a broker refuses the agent, are both refused, in words the person who
@@ -220,23 +179,10 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
 
     const CHAT: &str = "so.tilo.chat";
     const MESSAGE: &str = "tl.so.tilo.chat.Message";
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let host = test_host(dir.path(), &key, &cert).await;
-    let workspaces = host.workspaces();
-    mount(workspaces);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Chat").await.unwrap().workspace;
-    declare_built_in_app(&host, CHAT);
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let device = Device::start("Chat", Some(CHAT)).await;
+    let cert = &device.cert;
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
     let person = hex::encode(cert.user_public_key);
     // The id Chat's declaration keeps for `send`: what a change its program makes claims.
     let send = tilolang_workspace::records::built_in(CHAT)
@@ -382,7 +328,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     .await
     .expect("a message removed before the turn began is refused");
     assert!(refused.contains("no longer"), "{refused}");
-    host.shutdown().await;
+    device.shutdown().await;
 }
 /// An agent's triggers fire on a message that mentions it, one in its direct conversation and
 /// one an outside author's provider carried in, and each starts one turn of the agent, placed
@@ -394,37 +340,15 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
 )]
 async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answer() {
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_resource_store::wire::{Command, Edit};
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
     use tilo_workspace_service::agents::triggered::{self, Where};
 
     const CHAT: &str = "so.tilo.chat";
     const MESSAGE: &str = "tl.so.tilo.chat.Message";
-    let dir = tempfile::tempdir().unwrap();
-    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
-    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
-        dir.path(),
-        &key,
-        &cert,
-        keys,
-    )
-    .await;
-    let workspaces = host.workspaces();
-    mount(workspaces);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
+    let device = Device::start("Chat", Some(CHAT)).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
     workspaces.run_agents(Arc::new(ActsAsScout));
-    let workspace = workspaces.create("Chat").await.unwrap().workspace;
-    declare_built_in_app(&host, CHAT);
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let workspace = device.workspace.clone();
     save_signed(
         workspaces,
         &workspace,
@@ -467,81 +391,33 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
                      fields: Vec<(&str, &str)>,
                      sets: Vec<(&str, Vec<serde_json::Value>)>,
                      content: Vec<(&str, serde_json::Value)>| {
-        // The write serves an invocation of `by`'s, as the chat app's write for an action that
-        // was delivered to it. An agent's change is the person's it works for.
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
-            .then(|| hex::encode(cert.user_public_key));
-        let stamp = Stamp {
-            verb: send.clone(),
-            invoker: Stamp::by(by),
-            acted_for,
-            invocation: invocation.0.to_string(),
-            at: jiff::Timestamp::now().to_string(),
-            ..Stamp::default()
-        };
-        // A direct conversation is read by the people it names, so its write names no readers.
-        let readers = if kind == "tl.so.tilo.chat.Direct" {
-            String::new()
-        } else {
-            "*".to_owned()
-        };
-        let mut held: std::collections::BTreeMap<String, Cell> = fields
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
-            .collect();
-        // A set's members are the values the index holds, each kept as the JSON text it reads
-        // back as: a direct conversation's `people` is how its type names who reads it.
-        for (name, members) in sets {
-            held.insert(
-                name.to_owned(),
-                Cell::Set(
-                    members
-                        .into_iter()
-                        .map(|member| Value::Text(member.to_string()))
-                        .collect(),
-                ),
-            );
-        }
-        let mut commands = vec![Command::Put {
-            kind: kind.into(),
-            id: id.into(),
-            resource: Resource {
-                readers,
-                parent: parent.map(str::to_owned),
-                order: None,
-                fields: held,
-            },
-            stamp: stamp.clone(),
-        }];
-        if !content.is_empty() {
-            commands.push(Command::Edit {
-                kind: kind.into(),
-                id: id.into(),
-                edits: content
+        write(
+            workspaces,
+            &workspace,
+            &cert,
+            CHAT,
+            Write {
+                kind,
+                id,
+                parent,
+                verb: &send,
+                by,
+                // A direct conversation is read by the people it names, so its write names no
+                // readers.
+                readers: if kind == "tl.so.tilo.chat.Direct" {
+                    ""
+                } else {
+                    "*"
+                },
+                fields: fields
                     .into_iter()
-                    .map(|(field, value)| Edit::Set {
-                        field: field.into(),
-                        value,
-                    })
+                    .map(|(name, value)| (name, value.to_owned()))
                     .collect(),
-                stamp,
-            });
-        }
-        let caller = tilo_actions::remote::Caller::authenticated(
-            cert.user_public_key,
-            cert.device_public_key,
+                sets,
+                edits: content,
+            },
         )
-        .in_workspace(&workspace);
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                CHAT, &workspace, caller,
-            )
-            .serving(vec![(invocation, by.clone())]);
-        workspaces
-            .resource_command(&context, Command::Batch(commands))
-            .await
-            .unwrap();
+        .await;
     };
     // Rich text whose words are `words`, mentioning the agent where `mention` says.
     let rich = |words: &str, mention: bool| {
@@ -551,16 +427,6 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
             json!([])
         };
         json!({"blocks": [{"text": words, "marks": marks}]})
-    };
-    // What the runner fires on the records written since it last looked.
-    let mut fired = async |runner: &mut Runner| {
-        let mut since = Vec::new();
-        while let Ok(write) = writes.try_recv() {
-            since.push(write);
-        }
-        let before = started.0.lock().unwrap().len();
-        runner.pass(since).await;
-        started.0.lock().unwrap()[before..].to_vec()
     };
     // One member of a conversation, as the app keeps it in `people`.
     let actor = |who: &Who| json!({"actor": serde_json::to_value(who).unwrap()});
@@ -590,7 +456,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         vec![("people", people(vec![actor(&person), actor(&scout)]))],
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "making the conversations asks nothing: {now:?}"
@@ -607,7 +473,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Scout, look at this", true),
     )
     .await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
     let event: DocumentEvent =
@@ -672,7 +538,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Scout here: done", true),
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(now.is_empty(), "the agent's answer fires nothing: {now:?}");
 
     // In its direct conversation — it is one of the conversation's people — a member's message
@@ -687,7 +553,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Can you help?", false),
     )
     .await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     put(
         MESSAGE,
@@ -699,7 +565,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Sure.", false),
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "its reply in the direct conversation fires nothing: {now:?}"
@@ -717,7 +583,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Vec::new(),
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(now.is_empty(), "opening a thread asks nothing: {now:?}");
     put(
         MESSAGE,
@@ -729,7 +595,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("In the thread?", false),
     )
     .await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
@@ -752,7 +618,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Scout, a question from outside", true),
     )
     .await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
@@ -770,12 +636,12 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         body("Lunch?", false),
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "a message that names nobody fires nothing: {now:?}"
     );
-    host.shutdown().await;
+    device.shutdown().await;
 }
 /// An agent's new-mail trigger fires once on a message the workspace received — written by
 /// Mail's outside origin — and starts one turn of the agent, placed once workspace-wide. The
@@ -789,8 +655,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
 async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     use tilo_action_policy::Actor as Who;
     use tilo_app_id::AppId;
-    use tilo_resource_store::wire::Command;
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use tilo_resource_store::Stamp;
     use tilo_workspace_service::agents::triggered::{self, Where};
 
     const MAIL: &str = "so.tilo.mail";
@@ -798,7 +663,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     const MESSAGE: &str = "tl.so.tilo.mail.Message";
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
     let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
@@ -872,52 +737,27 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
                      verb: &str,
                      by: &Who,
                      fields: Vec<(&str, &str)>| {
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-        let stamp = Stamp {
-            verb: verb.to_owned(),
-            invoker: Stamp::by(by),
-            invocation: invocation.0.to_string(),
-            at: jiff::Timestamp::now().to_string(),
-            ..Stamp::default()
-        };
-        let command = Command::Put {
-            kind: kind.into(),
-            id: id.into(),
-            resource: Resource {
-                readers: "*".into(),
-                parent: parent.map(str::to_owned),
-                order: None,
+        write(
+            workspaces,
+            &workspace,
+            &cert,
+            MAIL,
+            Write {
+                kind,
+                id,
+                parent,
+                verb,
+                by,
+                readers: "*",
                 fields: fields
                     .into_iter()
-                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
+                    .map(|(name, value)| (name, value.to_owned()))
                     .collect(),
+                sets: Vec::new(),
+                edits: Vec::new(),
             },
-            stamp,
-        };
-        let caller = tilo_actions::remote::Caller::authenticated(
-            cert.user_public_key,
-            cert.device_public_key,
         )
-        .in_workspace(&workspace);
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                MAIL, &workspace, caller,
-            )
-            .serving(vec![(invocation, by.clone())]);
-        workspaces
-            .resource_command(&context, command)
-            .await
-            .unwrap();
-    };
-    // What the runner fires on the records written since it last looked.
-    let mut fired = async |runner: &mut Runner| {
-        let mut since = Vec::new();
-        while let Ok(write) = writes.try_recv() {
-            since.push(write);
-        }
-        let before = started.0.lock().unwrap().len();
-        runner.pass(since).await;
-        started.0.lock().unwrap()[before..].to_vec()
+        .await;
     };
 
     put(
@@ -929,7 +769,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         Vec::new(),
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "a conversation arriving asks nothing: {now:?}"
@@ -945,7 +785,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         vec![("mailbox", "inbox"), ("subject", "Hello")],
     )
     .await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
     let event: DocumentEvent =
@@ -1000,7 +840,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         vec![("mailbox", "inbox")],
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "a message written here fires nothing: {now:?}"
@@ -1016,7 +856,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         vec![("mailbox", "sent")],
     )
     .await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "a copy of what the account sent fires nothing: {now:?}"
@@ -1035,36 +875,14 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
 async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_agents_own_write() {
     use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_resource_store::wire::{Command, Edit};
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use tilo_resource_store::{Resource, Stamp};
     use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE, MODERATION, Where};
 
-    let dir = tempfile::tempdir().unwrap();
-    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
-    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
-        dir.path(),
-        &key,
-        &cert,
-        keys,
-    )
-    .await;
-    let workspaces = host.workspaces();
-    mount(workspaces);
-    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
+    let device = Device::start("Moderation", Some(CHAT)).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
     workspaces.run_agents(Arc::new(ActsAsScout));
-    // Chat's types are declared so a write to its record is judged by them, as the tests that
-    // write a built-in app's record do.
-    declare_built_in_app(&host, CHAT);
-    let workspace = workspaces.create("Moderation").await.unwrap().workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let workspace = device.workspace.clone();
     // The Moderator's one shortcut: the chat watch, not the agent's own triggers.
     save_signed(
         workspaces,
@@ -1098,45 +916,24 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
                      by: &Who,
                      verb: &str,
                      fields: Vec<(&str, String)>| {
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
-            .then(|| hex::encode(cert.user_public_key));
-        let stamp = Stamp {
-            verb: verb.into(),
-            invoker: Stamp::by(by),
-            acted_for,
-            invocation: invocation.0.to_string(),
-            at: jiff::Timestamp::now().to_string(),
-            ..Stamp::default()
-        };
-        let command = Command::Put {
-            kind: kind.into(),
-            id: id.into(),
-            resource: Resource {
-                readers: "*".into(),
-                parent: parent.map(str::to_owned),
-                order: None,
-                fields: fields
-                    .into_iter()
-                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value))))
-                    .collect(),
+        write(
+            workspaces,
+            &workspace,
+            &cert,
+            CHAT,
+            Write {
+                kind,
+                id,
+                parent,
+                verb,
+                by,
+                readers: "*",
+                fields,
+                sets: Vec::new(),
+                edits: Vec::new(),
             },
-            stamp,
-        };
-        let caller = tilo_actions::remote::Caller::authenticated(
-            cert.user_public_key,
-            cert.device_public_key,
         )
-        .in_workspace(&workspace);
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                CHAT, &workspace, caller,
-            )
-            .serving(vec![(invocation, by.clone())]);
-        workspaces
-            .resource_command(&context, command)
-            .await
-            .unwrap();
+        .await;
     };
     // A member posts a message in the channel: what the watch fires on.
     let post = async |id: &str, by: &Who| {
@@ -1212,20 +1009,10 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
             .await
             .unwrap();
     };
-    // What the runner fires on the records written since it last looked.
-    let mut fired = async |runner: &mut Runner| {
-        let mut since = Vec::new();
-        while let Ok(write) = writes.try_recv() {
-            since.push(write);
-        }
-        let before = started.0.lock().unwrap().len();
-        runner.pass(since).await;
-        started.0.lock().unwrap()[before..].to_vec()
-    };
 
     // A member posts: one firing, and the turn it names is the agent's answer there.
     post("m-1", &person).await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
@@ -1280,7 +1067,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 
     // The agent writes the message again as its removal: its own change fires nothing.
     post("m-1", &scout).await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(
         now.is_empty(),
         "the agent's own write fires nothing: {now:?}"
@@ -1288,13 +1075,13 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 
     // A message it writes itself, as its warning reply, fires nothing either.
     post("m-2", &scout).await;
-    let now = fired(&mut runner).await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
     assert!(now.is_empty(), "the agent's reply fires nothing: {now:?}");
 
     // A report filed against a message is the watch's other place: one firing, answered on the
     // moderation record, the same report the agent reads.
     report("report-1", &person, "spam").await;
-    let firings = fired(&mut runner).await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
@@ -1339,5 +1126,5 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
         started.0.lock().unwrap().is_empty(),
         "a watch turned off fires nothing"
     );
-    host.shutdown().await;
+    device.shutdown().await;
 }

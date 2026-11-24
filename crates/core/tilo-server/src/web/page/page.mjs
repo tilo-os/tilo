@@ -507,6 +507,13 @@ function start() {
       page.dataset.callsLost = String(Number(page.dataset.callsLost ?? 0) + 1);
     });
   };
+  // What this page's call counted, as the browser's own call keeps it (`web/voice.mjs`'s
+  // `stats()`): the frames it heard and sent and the pictures it received. A walk that has to
+  // know a call was carried reads these rather than what the call drew. Null until a view asks
+  // the page for its call, and after the page is left (pagehide closes it).
+  globalThis.tiloCallStats = () => {
+    try { return callPeer?.voice?.call?.stats?.() ?? null; } catch { return null; }
+  };
   const pageCalls = () => {
     callsStarted ??= (async () => {
       const {origin} = config.link;

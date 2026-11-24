@@ -190,6 +190,10 @@ mod cases {
             }
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a query's whole numbers are far inside i64"
+        )]
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
@@ -234,14 +238,14 @@ mod cases {
                 Value::List(items) => items,
                 other => panic!("{held} reads {other:?}"),
             };
-            let first = outcomes
+
+            outcomes
                 .into_iter()
                 .find_map(|item| match item {
                     Value::Ref(r) => Some(Rc::unwrap_or_clone(r.target)),
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("no {held} record"));
-            first
+                .unwrap_or_else(|| panic!("no {held} record"))
         }
 
         fn window(&self) -> ViewInstance {
@@ -254,7 +258,7 @@ mod cases {
         }
 
         /// The editor's node: the field the SQL is typed into.
-        fn editor(&self, window: &ViewInstance) -> UiNode {
+        fn editor(window: &ViewInstance) -> UiNode {
             of_kind(window.tree(), "ui.TextInput")
                 .into_iter()
                 .find(|node| {
@@ -270,15 +274,14 @@ mod cases {
         /// Types `sql` into the shared editor, as a person does.
         fn type_sql(&self, sql: &str) {
             let window = self.window();
-            let editor = self.editor(&window);
+            let editor = Self::editor(&window);
             window.edit(&editor.key, &Value::text(sql)).unwrap();
         }
 
         fn is_busy(&self) -> bool {
             self.sessions()
                 .first()
-                .map(|s| !self.text(s, "busy").is_empty())
-                .unwrap_or(false)
+                .is_some_and(|s| !self.text(s, "busy").is_empty())
         }
 
         /// Drives the job in flight the way the device does: waits for the engine to end it, then
@@ -536,11 +539,10 @@ mod cases {
                 Value::List(secrets) => {
                     let held = secrets
                         .into_iter()
-                        .filter_map(|item| match item {
+                        .find_map(|item| match item {
                             Value::Ref(r) => Some(Rc::unwrap_or_clone(r.target)),
                             _ => None,
                         })
-                        .next()
                         .expect("this device keeps the password");
                     assert_eq!(c.text(&held, "password"), "hunter2");
                 }
@@ -571,7 +573,11 @@ mod cases {
             assert_eq!(c.status(), "2 in under a millisecond");
             let listed = c.tables();
             assert!(
-                listed.iter().any(|t| t.ends_with(".notes")),
+                listed.iter().any(|t| {
+                    std::path::Path::new(t)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("notes"))
+                }),
                 "the new table reached the catalog: {listed:?}"
             );
         }

@@ -51,6 +51,15 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "show-in-files"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+type = "text"
+
+[[resources.verbs]]
 id = "move-tab"
 kind = "outside"
 
@@ -133,6 +142,7 @@ type = "int"
 [[resources.verbs.params]]
 name = "preset"
 required = false
+type = "text"
 
 [[resources.verbs]]
 id = "equalize"
@@ -374,6 +384,11 @@ name = "app"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "window"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "share-window"
 kind = "outside"
@@ -465,6 +480,9 @@ type = "text"
 [[resources.verbs.params]]
 name = "action"
 required = true
+
+[resources.verbs.params.type]
+named = "ScrollAction"
 
 [[resources.verbs]]
 id = "history"
@@ -682,6 +700,41 @@ type = "text"
 name = "on"
 required = true
 type = "bool"
+
+[[resources.types]]
+name = "ScrollAction"
+
+[[resources.types.cases]]
+name = "line"
+label = "Line"
+
+[[resources.types.cases.fields]]
+name = "0"
+type = "int"
+
+[[resources.types.cases]]
+name = "page"
+label = "Page"
+
+[[resources.types.cases.fields]]
+name = "0"
+type = "int"
+
+[[resources.types.cases]]
+name = "absolute"
+label = "Absolute"
+
+[[resources.types.cases.fields]]
+name = "0"
+type = "float"
+
+[[resources.types.cases]]
+name = "start"
+label = "Start"
+
+[[resources.types.cases]]
+name = "end"
+label = "End"
 
 [[resources]]
 id = "desktop:shell"
@@ -1048,11 +1101,6 @@ params = []
 
 [[resources.verbs]]
 id = "force-quit-app"
-kind = "outside"
-params = []
-
-[[resources.verbs]]
-id = "reopen-window"
 kind = "outside"
 params = []
 

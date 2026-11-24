@@ -1112,19 +1112,21 @@ mod tests {
             assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
         }
 
-        phase an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it;
+        phase a_persons_call_opens_where_they_are_and_an_apps_beside_it;
+        // A call the person's press admitted runs as the person, whichever app asked: their view
+        // is where it opens. An app's own call, with no press behind it, opens beside it.
         {
             let workspace = workspace();
             let workspace_id = workspace.id().to_string();
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
             let tree = tree.shared();
-            let (state, _bridge) = AppBrokerState::test_state(
-                Some(tree.authority()),
-                crate::apps::services::ProcessServices {
-                    launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
-                    ..tree.services()
-                },
+            let (state, _bridge) = AppBrokerState::test_state(Some(tree.authority()), tree.services());
+            let person = Caller::local_person("owner").in_workspace(&workspace_id);
+            assert_eq!(
+                state.launch_place(&person, &workspace_id, None),
+                LaunchPlace::Focus,
+                "a link clicked in Chat, run as the person, opens where they are"
             );
             let chat = Caller::local_app("so.tilo.chat").in_workspace(&workspace_id);
             let beside_chat = LaunchPlace::Beside {
@@ -1132,13 +1134,17 @@ mod tests {
             };
             assert_eq!(
                 state.launch_place(&chat, &workspace_id, None),
-                LaunchPlace::Focus,
-                "a link the person clicked in Chat opens where they are"
-            );
-            assert_eq!(
-                state.launch_place(&chat, &workspace_id, None),
                 beside_chat,
-                "the press proved one open; Chat's next one, on its own, opens beside it"
+                "Chat's own call opens beside it"
+            );
+            let scope = crate::apps::services::LaunchScope {
+                app_id: "so.tilo.chat".into(),
+                workspace_id: workspace_id.clone(),
+            };
+            assert_eq!(
+                state.launch_place(&chat, &workspace_id, Some(&scope)),
+                beside_chat,
+                "the view an app's own action opens stands beside it"
             );
             let agent = agent_of(&workspace_id);
             assert_eq!(
@@ -1167,34 +1173,6 @@ mod tests {
             );
             let mut stream = streams.try_recv().expect("the app came up on the record");
             assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
-        }
-    }
-
-    /// A host that remembers which apps the person pressed in, and lets each
-    /// press prove one open.
-    struct Pressed(Mutex<Vec<String>>);
-
-    impl crate::apps::services::LauncherServices for Pressed {
-        fn applications(&self) -> Vec<crate::apps::services::LaunchableApplication> {
-            Vec::new()
-        }
-        fn launch(
-            &self,
-            _: &str,
-            _: &tilo_desktop_model::Workspace,
-            _: Option<&str>,
-            _: &LaunchPlace,
-        ) -> Result<(), String> {
-            Err("nothing launches here".into())
-        }
-        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
-            false
-        }
-        fn person_initiated(&self, app_id: &str) -> bool {
-            let mut pressed = self.0.lock().expect("presses");
-            let before = pressed.len();
-            pressed.retain(|app| app != app_id);
-            pressed.len() != before
         }
     }
 

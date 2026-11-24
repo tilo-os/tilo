@@ -355,7 +355,10 @@ impl Invocations {
                 RemoteActionMessage::ResourceRead { correlation, .. } => (None, Some(*correlation)),
                 _ => (None, None),
             };
-            if send(CollabRequest::RemoteAction { message }) {
+            if send(CollabRequest::RemoteAction {
+                message,
+                press: None,
+            }) {
                 continue;
             }
             if let Some(invocation) = invocation {

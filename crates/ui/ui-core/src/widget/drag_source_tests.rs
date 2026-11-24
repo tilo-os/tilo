@@ -367,3 +367,192 @@ fn a_drag_carried_away_lands_nowhere_here() {
     }));
     assert!(drag_bus::take("elsewhere", everywhere()).is_some());
 }
+
+/// What a row standing for `files` carries on the bus.
+fn files_payload(files: &[&str]) -> crate::dnd::DragPayload {
+    crate::dnd::DragPayload::Custom {
+        kind: super::FILES_PAYLOAD.to_owned(),
+        blob: files
+            .iter()
+            .flat_map(|file| [file.as_bytes(), b"\0"].concat())
+            .collect(),
+    }
+}
+
+/// A row's files the desktop carried, dropped back on the window they came from, land on the
+/// target under the pointer as the row's own drag: a file manager's entry let go over a folder
+/// row reaches that folder with every file it carried, at the point the person let go, once. A
+/// file this window never offered is another app's and no target here takes it.
+#[test]
+fn files_the_desktop_carried_back_land_on_the_target_under_the_pointer() {
+    let queue = crate::Intents::default();
+    let target = |key: &str, height: f32| {
+        Box::new(
+            crate::widget::DropTarget::new(
+                key,
+                Box::new(Spacer::fixed(height)) as Element,
+                crate::component::Event::View(crate::component::Intent::new(&queue, key, "drop")),
+            )
+            .with_files(crate::component::Event::View(
+                crate::component::Intent::new(&queue, key, "drop_files"),
+            )),
+        ) as Element
+    };
+    let mut laid = Laid::of(
+        crate::widget::arrange::Stack::stack()
+            .gap(crate::tokens::Rhythm::None)
+            .push_part(crate::widget::arrange::Part::new(target("music", 60.0)))
+            .push_part(crate::widget::arrange::Part::new(target("photos", 120.0))),
+        300.0,
+        300.0,
+    );
+    let doc = automerge::AutoCommit::new();
+    let (song, cover) = (
+        "/home/ada/Downloads/song.ogg",
+        "/home/ada/Downloads/cover.jpg",
+    );
+    drag_bus::offer(
+        "row".into(),
+        files_payload(&[song, cover]),
+        "song.ogg".into(),
+        vec![song.into(), cover.into()],
+    );
+
+    // The desktop's drag comes over the window, the pointer moves with it into the second
+    // target, and both files are let go there.
+    laid.send(&winit::event::WindowEvent::HoveredFile(song.into()));
+    laid.send(&crate::synthetic_input::cursor_moved(50.0, 100.0));
+    laid.widget.update(&doc, &automerge::ROOT);
+    assert!(queue.take().is_empty(), "a hover drops nothing");
+    laid.send(&winit::event::WindowEvent::DroppedFile(song.into()));
+    laid.send(&winit::event::WindowEvent::DroppedFile(cover.into()));
+    laid.widget.update(&doc, &automerge::ROOT);
+    assert_eq!(
+        queue.take(),
+        vec![crate::component::Fired {
+            key: "photos".to_owned(),
+            event: "drop_files".to_owned(),
+            value: Some(crate::component::Value::List(vec![
+                crate::component::Value::List(vec![
+                    crate::component::Value::Text(song.to_owned()),
+                    crate::component::Value::Text(cover.to_owned()),
+                ]),
+                crate::component::Value::List(vec![
+                    crate::component::Value::Int(50),
+                    crate::component::Value::Int(40),
+                ]),
+            ])),
+            gesture: None,
+        }],
+        "the target under the pointer takes the row's files once, where they were let go"
+    );
+    assert!(
+        !drag_bus::came_back_nowhere(std::path::Path::new(song)),
+        "the drag is over once every file came back"
+    );
+
+    // Another app's file dropped on the same target is not this window's drag.
+    laid.send(&winit::event::WindowEvent::DroppedFile(
+        "/home/ada/elsewhere.txt".into(),
+    ));
+    laid.widget.update(&doc, &automerge::ROOT);
+    assert!(
+        queue.take().is_empty(),
+        "no target takes another app's files"
+    );
+}
+
+/// A row's files the desktop carried, let go on their own window where no target is, land
+/// nowhere: the window does not take its own files in again, and a drop after the person pressed
+/// elsewhere is another app's, even of the same file.
+#[test]
+fn files_the_desktop_carried_back_onto_no_target_land_nowhere() {
+    let song = std::path::Path::new("/home/ada/Downloads/song.ogg");
+    let offer = || {
+        drag_bus::offer(
+            "row".into(),
+            files_payload(&["/home/ada/Downloads/song.ogg"]),
+            "song.ogg".into(),
+            vec![song.to_path_buf()],
+        );
+    };
+    offer();
+    assert!(drag_bus::came_back_nowhere(song), "the window's own drag");
+    assert!(
+        drag_bus::take("anywhere", everywhere()).is_none(),
+        "it lands nowhere"
+    );
+
+    offer();
+    drag_bus::forget_offer();
+    assert!(
+        !drag_bus::came_back_nowhere(song),
+        "after a press, another app's"
+    );
+}
+
+/// Where no desktop carries a drag (a browser, a window of its own), a row standing for device
+/// files drags them on the window's own bus, and a target there takes them as the files they are.
+#[test]
+fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
+    let queue = crate::Intents::default();
+    let target = crate::widget::DropTarget::new(
+        "folder",
+        Box::new(Spacer::fixed(120.0)) as Element,
+        crate::component::Event::View(crate::component::Intent::new(&queue, "folder", "drop")),
+    )
+    .with_files(crate::component::Event::View(
+        crate::component::Intent::new(&queue, "folder", "drop_files"),
+    ));
+    let source = DragSource::new(
+        "row",
+        Box::new(Spacer::fixed(40.0)) as Element,
+        "",
+        "notes.md",
+    )
+    .with_files(vec!["/home/ada/notes.md".into()]);
+    let mut laid = Laid::of(
+        crate::widget::arrange::Stack::stack()
+            .gap(crate::tokens::Rhythm::None)
+            .push_part(crate::widget::arrange::Part::new(Box::new(source)))
+            .push_part(crate::widget::arrange::Part::new(Box::new(target))),
+        300.0,
+        300.0,
+    );
+    let from = laid.source_centre();
+    laid.drag((from.x, from.y), (from.x, 120.0));
+    // A process whose host carries its drags (another test of this process may have said so)
+    // hands the files to the desktop instead: they come back where they were let go, and the
+    // pointer travels with the desktop's drag, so the target under it is the one they are let
+    // go on.
+    if drag_bus::offered().is_some() {
+        laid.send(&crate::synthetic_input::cursor_moved(from.x, 120.0));
+        laid.send(&winit::event::WindowEvent::DroppedFile(
+            "/home/ada/notes.md".into(),
+        ));
+    }
+    let doc = automerge::AutoCommit::new();
+    laid.widget.update(&doc, &automerge::ROOT);
+    let fired = queue.take();
+    drag_bus::end(None);
+    assert_eq!(
+        fired
+            .iter()
+            .map(|f| (f.key.as_str(), f.event.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("folder", "drop_files")],
+        "the files land as files: {fired:?}"
+    );
+    assert_eq!(
+        fired[0].value,
+        Some(crate::component::Value::List(vec![
+            crate::component::Value::List(vec![crate::component::Value::Text(
+                "/home/ada/notes.md".to_owned()
+            )]),
+            crate::component::Value::List(vec![
+                crate::component::Value::Int(60),
+                crate::component::Value::Int(80),
+            ]),
+        ]))
+    );
+}

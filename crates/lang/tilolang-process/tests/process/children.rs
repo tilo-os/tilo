@@ -355,6 +355,7 @@ fn child_sent(sent: &Sent) -> Option<tilo_actions::remote::InvokeRequest> {
         .find_map(|request| match request {
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             } => Some(request.clone()),
             _ => None,
         })

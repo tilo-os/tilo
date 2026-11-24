@@ -94,6 +94,27 @@ impl super::AppBrokerState {
             .min()
     }
 
+    /// The local app window whose connection is `peer_id`, while it is connected: the one the
+    /// shell recorded for a connection it made, or a window that named itself on its own route.
+    pub(super) fn window_of_peer(&self, peer_id: u64) -> Option<u64> {
+        let windows = self.window_instances.lock().ok()?;
+        if let Some(instance) = windows.get(&peer_id) {
+            return Some(*instance);
+        }
+        self.channels
+            .lock()
+            .ok()?
+            .iter()
+            .find_map(|(key, subscribers)| {
+                subscribers
+                    .context
+                    .iter()
+                    .any(|sub| sub.peer_id == peer_id)
+                    .then(|| continuation_tab(&CrdtRoute::from_channel_key(key)))
+                    .flatten()
+            })
+    }
+
     /// Stand in for the launcher's handoff naming `peer_id` the connection
     /// of the window the shell launched as `instance`.
     #[cfg(any(test, feature = "test-support"))]

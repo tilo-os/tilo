@@ -44688,6 +44688,316 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.file-explorer.Preview.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.Preview.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "path"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.Preview.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.Destination.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.Destination.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "path"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.Destination.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.Transfer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.Transfer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "job",
+              "label",
+              "current",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.Transfer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.FileFacts.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.FileFacts.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "codec",
+              "container"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.FileFacts.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.TransferAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "folder"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "moving"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferStarted.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.TransferStarted.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "job"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferStarted.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferState.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.file-explorer.TransferState.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "current",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.file-explorer.TransferState.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
       "tl.so.tilo.file-explorer.Session.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -44798,6 +45108,12 @@
         "required": [],
         "description": "Runs when a watched folder changes: reads the folder shown again."
       },
+      "tl.so.tilo.file-explorer.Files.preview_step.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Makes the previews of a few pictures in the folder shown that have none yet, as the window\nshows it: a folder of photographs fills with their pictures while the person looks at it,\nwithout the window waiting for every one when the folder is read."
+      },
       "tl.so.tilo.file-explorer.Files.go.Arguments": {
         "type": "object",
         "properties": {
@@ -44809,18 +45125,6 @@
           "place"
         ],
         "description": "Goes to the place `place`, reading it: a folder, the trash, the recent files or the apps."
-      },
-      "tl.so.tilo.file-explorer.Files.show.Arguments": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "description": "Shows the place `path` names: the folder itself, or the folder holding the file, with that file\nmarked. Another app asks this when it shows where something it made or saved stands; a person\nopens a file with `open_entry` instead, which opens what the file holds."
       },
       "tl.so.tilo.file-explorer.Files.back.Arguments": {
         "type": "object",
@@ -44839,6 +45143,188 @@
         "properties": {},
         "required": [],
         "description": "Goes to the folder above the one shown."
+      },
+      "tl.so.tilo.file-explorer.Files.show.Arguments": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": "Shows `path` in this window: the folder itself when it is one, and the folder that holds it with\nthe entry chosen when it is a file. It is how another app sends a person to a file it made, and\nhow an agent or a link brings them to one, so the person reads where it stands in its folder."
+      },
+      "tl.so.tilo.file-explorer.Files.extract_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "folder"
+        ],
+        "description": "Extracts the archive at `path` into `folder`, into a folder named after it there: what the\nrows that offer a folder to extract into ask."
+      },
+      "tl.so.tilo.file-explorer.Files.move_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder"
+        ],
+        "description": "Moves the entries the person chose into `folder`, keeping a taken name both."
+      },
+      "tl.so.tilo.file-explorer.Files.drop_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "folder": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paths",
+          "folder"
+        ],
+        "description": "Moves the entries the person dragged onto the folder `folder`, by their `paths`, as \"Move to…\"\ndoes, keeping a taken name both. A folder let go on itself, inside itself or on the folder its\nentries already stand in moves nothing."
+      },
+      "tl.so.tilo.file-explorer.Files.copy_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder"
+        ],
+        "description": "Copies the entries the person chose into `folder`, keeping a taken name both."
+      },
+      "tl.so.tilo.file-explorer.Files.put_into.Arguments": {
+        "type": "object",
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "moving": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "paths",
+          "folder",
+          "moving"
+        ],
+        "description": "Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work:\nthe window shows how far it has got and can stop it. What arrives under a name the folder\nalready holds lands as “name (2)”, so nothing is replaced."
+      },
+      "tl.so.tilo.file-explorer.Files.poll_transfers.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks how far each transfer under way has got. One that finished leaves the window and the\nfolder is read again; one that failed stays, saying why, until it is dismissed."
+      },
+      "tl.so.tilo.file-explorer.Files.stop_transfer.Arguments": {
+        "type": "object",
+        "properties": {
+          "transfer": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.file-explorer.Transfer",
+            "type": "object"
+          }
+        },
+        "required": [
+          "transfer"
+        ],
+        "description": "Stops the transfer `transfer`: the entry it was on is taken away, and what it finished stays."
+      },
+      "tl.so.tilo.file-explorer.Files.dismiss_transfer.Arguments": {
+        "type": "object",
+        "properties": {
+          "transfer": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.file-explorer.Transfer",
+            "type": "object"
+          }
+        },
+        "required": [
+          "transfer"
+        ],
+        "description": "Takes a transfer that stopped short out of the window."
       },
       "tl.so.tilo.file-explorer.Files.send_nearby.Arguments": {
         "type": "object",
@@ -44935,6 +45421,30 @@
           "hidden"
         ],
         "description": "Shows or hides the names that start with a dot."
+      },
+      "tl.so.tilo.file-explorer.Files.set_zoom.Arguments": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step"
+        ],
+        "description": "Draws the entries at `step`: 0 smaller, 1 regular, 2 larger, as the two keys step it."
+      },
+      "tl.so.tilo.file-explorer.Files.zoom_in.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Draws the entries one step larger."
+      },
+      "tl.so.tilo.file-explorer.Files.zoom_out.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Draws the entries one step smaller."
       },
       "tl.so.tilo.file-explorer.Files.open_entry.Arguments": {
         "type": "object",
@@ -45248,7 +45758,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Pastes what the person carries into the place shown. A name the folder already holds is kept\nboth: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is\noverwritten."
+        "description": "Pastes what the person carries into the place shown, as the device's own work that says how\nfar it has got. A name the folder already holds is kept both: what arrives lands as\n“name (2)”, so nothing is overwritten."
       },
       "tl.so.tilo.file-explorer.Files.free_name.Arguments": {
         "type": "object",
@@ -108372,6 +108882,132 @@
     },
     {
       "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Preview",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Preview.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Preview",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Preview.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Preview",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Preview.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Destination",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Destination.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Destination",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Destination.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Destination",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Destination.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Transfer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Transfer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Transfer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Transfer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Transfer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Transfer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.FileFacts",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.FileFacts.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.FileFacts",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.FileFacts.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.FileFacts",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.FileFacts.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferStarted",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferStarted",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferStarted",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferState",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferState.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferState",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferState.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.TransferState",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferState.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.Session",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Session.$create.Arguments"
@@ -108421,14 +109057,14 @@
     {
       "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.Files",
-      "action": "go",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.go.Arguments"
+      "action": "preview_step",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.preview_step.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.Files",
-      "action": "show",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.show.Arguments"
+      "action": "go",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.go.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
@@ -108447,6 +109083,60 @@
       "resource": "tl.so.tilo.file-explorer.Files",
       "action": "up",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.up.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "show",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.show.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "extract_into",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.extract_into.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "move_into",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.move_into.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "drop_into",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.drop_into.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "copy_into",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.copy_into.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "put_into",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.put_into.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "poll_transfers",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.poll_transfers.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "stop_transfer",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.stop_transfer.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "dismiss_transfer",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.dismiss_transfer.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
@@ -108495,6 +109185,24 @@
       "resource": "tl.so.tilo.file-explorer.Files",
       "action": "toggle_hidden",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.toggle_hidden.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "set_zoom",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.set_zoom.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "zoom_in",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.zoom_in.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "zoom_out",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.zoom_out.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

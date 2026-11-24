@@ -101,6 +101,10 @@ pub(crate) struct Peer {
     /// whose server does not answer is not asked again at every look, each of which would wait
     /// for it while no folder is added, moved or removed.
     unentered: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Unentered>>,
+    /// Why each workspace's files were last said in the log not to be shown here: a look that
+    /// fails the same way again says nothing more, so a folder that cannot be mounted here is
+    /// told once, not every few seconds for as long as the device runs.
+    told: std::sync::Mutex<std::collections::HashMap<WorkspaceId, String>>,
 }
 
 /// A workspace this device could not enter: why, how often in a row, and when it is tried again.
@@ -157,6 +161,7 @@ impl Peer {
             connected: std::sync::atomic::AtomicBool::new(false),
             failed: std::sync::Mutex::new(Vec::new()),
             unentered: std::sync::Mutex::new(std::collections::HashMap::new()),
+            told: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -359,6 +364,11 @@ impl Peer {
                 Ok(shown) => {
                     shown.replica.set_paused(folder.paused);
                     self.held.lock().await.push(shown);
+                    // Shown now: a later failure is news again.
+                    self.told
+                        .lock()
+                        .map(|mut told| told.remove(&entry.workspace))
+                        .ok();
                 }
                 Err(error) => self.fail(entry.workspace, &format!("{error:#}")),
             }
@@ -366,7 +376,13 @@ impl Peer {
     }
 
     fn fail(&self, workspace: WorkspaceId, why: &str) {
-        tracing::warn!(%workspace, why, "a workspace's files are not shown here");
+        let told_already = self
+            .told
+            .lock()
+            .is_ok_and(|mut told| told.insert(workspace, why.to_owned()).as_deref() == Some(why));
+        if !told_already {
+            tracing::warn!(%workspace, why, "a workspace's files are not shown here");
+        }
         self.not_shown(workspace, why);
     }
 

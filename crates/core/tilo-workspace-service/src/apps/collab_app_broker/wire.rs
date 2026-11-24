@@ -686,95 +686,94 @@ impl JoinedChannel {
         // the device's own person: what a press in it asks is theirs, within what they may do.
         let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
         let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
-        // An app's request continuing an invocation someone asked of it (an
-        // edit its effect submits, another app's action its effect calls) is
-        // decided as that invocation's caller, under its ownership; its open
-        // of an application, else as the person whose press it follows.
-        // Anything else, including what continues an invocation the app made
-        // of itself, is the app's own API's to decide.
-        let (decided, continued_origin) = if current.agent_id.is_none() {
-            match self.state.app_request_caller(
-                self.peer_id,
-                &route.app_id,
-                &person,
-                &request.message,
-            ) {
-                Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
-                Some(Err(refused)) => (Some(Err(refused)), None),
-                None => (None, None),
-            }
-        } else {
-            (
-                self.state.continued_caller(self.peer_id, &request.message),
-                None,
-            )
-        };
-        let caller = match decided {
-            Some(Ok(caller)) => caller,
-            Some(Err(refused)) => return Ok(ready(*refused)),
-            None if current.agent_id.is_some() => person.clone(),
-            None => match self.state.app_api(&person, &route.app_id, &request.message) {
-                Ok(caller) => caller,
-                Err(refusal) => return Ok(ready(*refusal)),
-            },
-        };
-        // A call of the app's own kept for its person is followed and cancelled where it waits.
-        if let Some(answer) =
-            self.state
-                .answer_kept_app_call(&route.app_id, &caller, &request.message)
-        {
-            return Ok(answer);
-        }
-        if tilo_actions::remote::refuse(
-            &request.message,
-            tilo_actions::remote::ActionCallError::UnknownAction,
-        )
-        .is_none()
-        {
-            return Err(BrokerError::failed(
-                "only remote-action requests are answered".into(),
-            ));
-        }
-        // An application reaching for another app's action it holds no grant for waits for the
-        // person using it, or is refused.
-        if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
-            (caller.acting().app(), &request.message)
-            && let Err(refused) = self.state.app_action_consent(&person, app_id, invoke)
-        {
-            return refusal(&request.message, refused);
-        }
-        // What an app calls as its person that waits for their yes is kept for them to answer
-        // ([`super::app_asks`]); an agent's waits through its own dispatch.
-        let keeps = current.agent_id.is_none();
-        let app_id = route.app_id.clone();
-        // The app's call of its own action that the person's press in its window made is
-        // theirs: what its code asks while it runs is decided as them, not as the app.
-        let pressed = continued_origin.is_none()
-            && keeps
-            && self
-                .state
-                .pressed_own_call(&route.app_id, &person, &request.message);
-        let provider = action_provider::ConnectionActionProvider {
-            state: Arc::clone(&self.state),
-            own_peer: self.peer_id,
-            origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
-                route,
-                time: original_time,
-                admitted: Box::new(current),
-                pressed,
-            }),
-        };
-        let asking = match &request.message {
-            tilo_actions::remote::RemoteActionMessage::Invoke(invoke) if keeps => {
-                Some((provider.clone(), caller.clone(), invoke.clone()))
-            }
-            _ => None,
-        };
-        let answer = tilo_actions::remote::serve(&provider, &caller, request.message);
+        let press = request.press;
         let state = Arc::clone(&self.state);
-        // Awaited on this local set, which is also where an application's
-        // directory answers; the connection's other calls keep flowing.
+        let peer_id = self.peer_id;
+        // The reminder waits for the person's press's attestation when the shell link still
+        // carries it: the call may reach the broker before the compositor's note does.
         Ok(Box::pin(async move {
+            // An app's request continuing an invocation someone asked of it (an
+            // edit its effect submits, another app's action its effect calls) is
+            // decided as that invocation's caller, under its ownership; its open
+            // of an application, else as the person whose press it follows.
+            // Anything else, including what continues an invocation the app made
+            // of itself, is the app's own API's to decide.
+            let (decided, continued_origin) = if current.agent_id.is_none() {
+                match state
+                    .app_request_caller(peer_id, &route.app_id, &person, &request.message, press)
+                    .await
+                {
+                    Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+                    Some(Err(refused)) => (Some(Err(refused)), None),
+                    None => (None, None),
+                }
+            } else {
+                (state.continued_caller(peer_id, &request.message), None)
+            };
+            let caller = match decided {
+                Some(Ok(caller)) => caller,
+                Some(Err(refused)) => return Ok(*refused),
+                None if current.agent_id.is_some() => person.clone(),
+                None => match state.app_api(&person, &route.app_id, &request.message) {
+                    Ok(caller) => caller,
+                    Err(refusal) => return Ok(*refusal),
+                },
+            };
+            // A call of the app's own kept for its person is followed and cancelled where it waits.
+            if let Some(answer) =
+                state.answer_kept_app_call(&route.app_id, &caller, &request.message)
+            {
+                return answer.await;
+            }
+            if tilo_actions::remote::refuse(
+                &request.message,
+                tilo_actions::remote::ActionCallError::UnknownAction,
+            )
+            .is_none()
+            {
+                return Err(BrokerError::failed(
+                    "only remote-action requests are answered".into(),
+                ));
+            }
+            // An application reaching for another app's action it holds no grant for waits for the
+            // person using it, or is refused.
+            if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
+                (caller.acting().app(), &request.message)
+                && let Err(refused) = state.app_action_consent(&person, app_id, invoke)
+            {
+                return match refusal(&request.message, refused) {
+                    Ok(answer) => answer.await,
+                    Err(error) => Err(error),
+                };
+            }
+            // What an app calls as its person that waits for their yes is kept for them to answer
+            // ([`super::app_asks`]); an agent's waits through its own dispatch.
+            let keeps = current.agent_id.is_none();
+            let app_id = route.app_id.clone();
+            // The app's call of its own action that the person's press in its window made is
+            // theirs: what its code asks while it runs is decided as them, not as the app.
+            let pressed = continued_origin.is_none()
+                && keeps
+                && state.pressed_own_call(&route.app_id, &person, &request.message);
+            let provider = action_provider::ConnectionActionProvider {
+                state: Arc::clone(&state),
+                own_peer: peer_id,
+                origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
+                    route,
+                    time: original_time,
+                    admitted: Box::new(current),
+                    pressed,
+                }),
+            };
+            let asking = match &request.message {
+                tilo_actions::remote::RemoteActionMessage::Invoke(invoke) if keeps => {
+                    Some((provider.clone(), caller.clone(), invoke.clone()))
+                }
+                _ => None,
+            };
+            let answer = tilo_actions::remote::serve(&provider, &caller, request.message);
+            // Awaited on this local set, which is also where an application's
+            // directory answers; the connection's other calls keep flowing.
             let answer = match answer {
                 Some(answer) => answer.await,
                 None => None,
@@ -1075,13 +1074,14 @@ impl JoinedChannel {
     }
 
     /// Open the installed app `app_id` (from `package_root`, if named) for
-    /// the person's press or the invocation `on_behalf_of` (UUID bytes),
-    /// answered once it started or failed to.
+    /// the person's press, serial `press`, or the invocation `on_behalf_of`
+    /// (UUID bytes), answered once it started or failed to.
     pub(super) fn launch(
         self: &Rc<Self>,
         app_id: &str,
         package_root: &str,
         on_behalf_of: &[u8],
+        press: Option<u32>,
     ) -> Answer<Reply> {
         let refuse =
             |error: BrokerError| -> Answer<Reply> { Box::pin(std::future::ready(Err(error))) };
@@ -1094,13 +1094,14 @@ impl JoinedChannel {
             Ok(root) => root,
             Err(error) => return refuse(error),
         };
-        // An app opens another only for the person's press in it or an
-        // invocation delivered to it ([`app_open_api`]); an agent's own
-        // connection, by its own grants.
+        // An app opens another only for the person's press in its window, which `press` names,
+        // or an invocation delivered to it ([`app_open_api`]); an agent's own connection, by its
+        // own grants. The press's attestation travels the shell link, so it is taken here as it
+        // stands: this call waits for nothing.
         if self.verified_identity.agent_id.is_none()
             && self
                 .state
-                .app_open_authority(self.peer_id, &self.route().app_id, parent)
+                .app_open_authority_now(self.peer_id, &self.route().app_id, parent, press)
                 .is_none()
         {
             return refuse(BrokerError::failed(
@@ -1712,11 +1713,12 @@ impl WireConnection {
                 app_id,
                 package_root,
                 on_behalf_of,
+                press,
             } => {
                 let answer = self.channel(&record).map(|session| {
                     session
                         .channel
-                        .launch(&app_id, &package_root, &on_behalf_of)
+                        .launch(&app_id, &package_root, &on_behalf_of, press)
                 });
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }

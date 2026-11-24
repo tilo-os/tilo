@@ -595,4 +595,159 @@ mod tests {
             Answer::Allow
         );
     }
+
+    /// A workspace with `owner` and a member `ada` in `role`.
+    fn workspace_with(role: Role) -> WorkspacePolicy {
+        let mut policy = WorkspacePolicy::new("ws", "owner");
+        policy.add_member("ada", role);
+        policy
+    }
+
+    /// One file of the workspace's tree, as a chosen file's node is named.
+    fn file_node() -> TreePath {
+        TreePath::workspace("ws")
+            .app(crate::roles::FILES_APP)
+            .kind("file")
+            .resource("record")
+    }
+
+    /// The grant an app is given on that file, by `person`, for reading and, with `write`,
+    /// changing it.
+    fn app_grant(person: &str, write: bool) -> Grant {
+        Grant::new(
+            format!(
+                "chosen:so.tilo.settings:record:{}",
+                if write { "write" } else { "read" }
+            ),
+            Grantee::app("so.tilo.settings"),
+            file_node(),
+            if write {
+                KindSet::READ_UNDOABLE
+            } else {
+                KindSet::READ
+            },
+            Answer::Allow,
+            Grantee::person(person),
+        )
+    }
+
+    #[test]
+    fn a_member_grants_an_app_on_a_node_they_reach() {
+        let mut policy = workspace_with(Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("an editor opens a file they can read in an app");
+        let held = policy
+            .grants
+            .iter()
+            .find(|grant| grant.grantee == Grantee::app("so.tilo.settings"))
+            .expect("the workspace keeps the grant");
+        assert_eq!(
+            held.granted_by,
+            Grantee::person("ada"),
+            "history names them"
+        );
+        assert!(
+            held.stands_in(&policy, &Context::at(0)),
+            "the app holds what its person still reaches"
+        );
+    }
+
+    #[test]
+    fn a_member_cannot_grant_on_a_node_they_do_not_reach() {
+        let mut policy = workspace_with(Role::Editor);
+        policy.grant(Grant::new(
+            "denied-to-ada",
+            Grantee::person("ada"),
+            file_node(),
+            KindSet::ALL,
+            Answer::Deny,
+            Grantee::person("owner"),
+        ));
+        assert!(
+            policy
+                .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+                .is_err(),
+            "a node they are refused is no node to open in an app"
+        );
+    }
+
+    #[test]
+    fn a_member_cannot_grant_more_than_they_hold_and_a_reader_grants_no_write() {
+        // A viewer reads and does not change: reading is theirs to give, changing is not.
+        let mut policy = workspace_with(Role::Viewer);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("a reader opens a file they can read");
+        assert!(
+            policy
+                .change_as_at("ada", Change::Grant(app_grant("ada", true)), 0)
+                .is_err(),
+            "a reader cannot give what they do not hold"
+        );
+    }
+
+    #[test]
+    fn an_app_grant_ends_when_its_person_loses_the_workspace() {
+        let mut policy = workspace_with(Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("the grant stands");
+        policy
+            .change_as_at(
+                "owner",
+                Change::RemoveMember {
+                    person: "ada".to_owned(),
+                },
+                0,
+            )
+            .expect("the owner removes them");
+        let held = policy
+            .grants
+            .iter()
+            .find(|grant| grant.grantee == Grantee::app("so.tilo.settings"))
+            .expect("the grant is still recorded");
+        assert!(
+            !held.stands_in(&policy, &Context::at(0)),
+            "what they gave ends with their reach, with nothing to revoke"
+        );
+    }
+
+    #[test]
+    fn the_person_who_gave_an_app_grant_takes_it_back_and_another_member_does_not() {
+        let mut policy = workspace_with(Role::Editor);
+        policy.add_member("bob", Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("the grant stands");
+        let id = GrantId::new("chosen:so.tilo.settings:record:read");
+        assert!(
+            policy
+                .change_as_at("bob", Change::Revoke(id.clone()), 0)
+                .is_err(),
+            "another member can neither reach nor take back what they gave"
+        );
+        policy
+            .change_as_at("ada", Change::Revoke(id.clone()), 0)
+            .expect("the person who gave it takes it back");
+        assert!(
+            !policy.grants.iter().any(|grant| grant.id == id),
+            "the grant is gone"
+        );
+    }
+
+    #[test]
+    fn a_sharing_manager_takes_an_app_grant_back() {
+        let mut policy = workspace_with(Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("the grant stands");
+        policy
+            .change_as_at(
+                "owner",
+                Change::Revoke(GrantId::new("chosen:so.tilo.settings:record:read")),
+                0,
+            )
+            .expect("whoever manages the file's sharing takes it back");
+    }
 }

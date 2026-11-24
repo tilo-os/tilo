@@ -707,6 +707,30 @@ async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     stop(server, serving).await;
 }
 
+/// The readiness probe a deployment's ingress and the local stack ask, `GET /mode`, says the
+/// server is up, also on a host that sends a browser's other addresses to its site.
+#[tokio::test]
+async fn the_readiness_probe_answers_a_get() {
+    let root = SigningKey::from_bytes(&[153; 32]);
+    let host = host(&root, 154, tilo_user_identity::DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of_at(
+        &server,
+        &host,
+        Some("https://app.example/"),
+    )))
+    .await;
+
+    let probe = "GET /mode HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let (status, head, body) = exchange(addr, probe, b"").await;
+    assert_eq!(status, 200, "{head}");
+    let mode: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(mode["server"], "up", "{mode}");
+
+    stop(server, serving).await;
+}
+
 /// One request to the listener at `addr`: its status, its header block
 /// (lowercased) and its body.
 async fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> (u16, String, Vec<u8>) {

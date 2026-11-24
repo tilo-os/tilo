@@ -596,6 +596,7 @@ fn resolve_asked(session: &Session, step: &str, approval: &str) -> bool {
     session.sent.borrow().iter().any(|request| {
         let collaboration::CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(request),
+            ..
         } = request
         else {
             return false;
@@ -678,6 +679,7 @@ fn a_running_turn_is_stopped_from_its_message() {
     let cancelled = session.sent.borrow().iter().any(|request| {
         let collaboration::CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(request),
+            ..
         } = request
         else {
             return false;

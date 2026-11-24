@@ -20,7 +20,9 @@ words are its sources', and a second copy is one that can go stale.
 
 A locale may add messages of its own: the arrival screen's German jokes are
 written for German speakers and have no English source. Those are not drift —
-they are listed in [`LOCALE_ONLY`], and the source needs nothing.
+they are listed in [`LOCALE_ONLY`], and the source needs nothing. A package's
+tagline is the same: its header says it in English, and each language words it
+for itself.
 
 A key a catalogue defines twice is not drift either: Fluent keeps one message
 per key, so the second one breaks the whole file at load. It fails here, in
@@ -73,6 +75,14 @@ LOCALE = re.compile(r'"([A-Za-z][A-Za-z0-9-]*)"')
 # Keys a locale adds on purpose: copy written for speakers of that language,
 # with no source-language original.
 LOCALE_ONLY: dict[tuple[str, str], set[str]] = {}
+# A package's tagline in a language's own words. The package's header says it
+# in English, so a translation adds the key with no source original.
+TAGLINE = re.compile(r"^d-[A-Za-z0-9_-]+-tagline$")
+
+
+def locale_native(key: str) -> bool:
+    """Whether `key` is one a language words for itself: a package's tagline."""
+    return TAGLINE.match(key) is not None
 
 
 def catalogues(root: Path) -> list[Path]:
@@ -184,7 +194,7 @@ def unnamed(root: Path) -> list[tuple[str, str, Path, str, int]]:
                 continue
             allowed = LOCALE_ONLY.get((unit, locale), set())
             for key, line in keys_of(path).items():
-                if key not in source and key not in allowed:
+                if key not in source and key not in allowed and not locale_native(key):
                     extra.append((unit, locale, path, key, line))
     return extra
 
@@ -352,7 +362,7 @@ def drift_in(root: Path, touched: list[Path], units: list[Path], catalogues: lis
             for key, line in sorted(keys.items(), key=lambda item: item[1]):
                 if key in was.get(locale, {}):
                     continue
-                if key not in source and key not in allowed:
+                if key not in source and key not in allowed and not locale_native(key):
                     problems.append(f"{name}:{line}: {key} has no {SOURCE_LOCALE} text")
     return problems
 

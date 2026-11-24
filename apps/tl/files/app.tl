@@ -75,6 +75,64 @@ type Recent (title: name) {
     opened: Time
 }
 
+/// The preview made for the picture at `path`, kept once so the window draws it again without
+/// asking the device each time; the file is none while the device says it has no preview, and
+/// `modified` is when the picture changed as it did when the preview was made, so one made
+/// before the picture changed is made again.
+type Preview (title: path) {
+    path: Text = ""
+    modified: Time
+    file: Option<File> = .none
+}
+
+/// A folder an entry can be put in, offered by the rows that move, copy and extract into one.
+type Destination (title: name) {
+    name: Text = ""
+    path: Text = ""
+}
+
+/// A copy or a move the device carries out as its own work, so a large one says how far it has
+/// got and can be stopped: what it is doing, in the person's words, and how it stands.
+type Transfer (title: label) {
+    /// The device's job; empty once it ended.
+    job: Text = ""
+    /// What it does: "Copying 3 items to “Pictures”".
+    label: Text = ""
+    /// Bytes written, of how many.
+    done: Int = 0
+    total: Int = 0
+    /// The entry it is on.
+    current: Text = ""
+    /// Why it stopped short; empty while it runs or once it finished.
+    failed: Text = ""
+}
+
+/// What a file's header says it is: a picture's size, how long a recording plays, how many pages
+/// a document has, and its codec and container; `0` or empty where it says nothing.
+type FileFacts {
+    width: Int = 0
+    height: Int = 0
+    /// How long it plays, in milliseconds.
+    duration: Int = 0
+    pages: Int = 0
+    codec: Text = ""
+    container: Text = ""
+}
+
+/// What a transfer asks of the device: the entries at `paths` put into `folder`.
+type TransferAsk {
+    paths: List<Text>
+    folder: Text
+    moving: Bool
+}
+
+/// How far a transfer has got, as the device records it.
+type TransferState {
+    done: Int
+    total: Int
+    current: Text
+}
+
 /// One person's window on this device's files: where they are, how they look, what they marked,
 /// what they carry, and the folders this window has read. It is the reader's own, so two people
 /// at one workspace never turn each other's pages.
@@ -87,6 +145,8 @@ type Session (readers: author) {
     hidden: Bool = false
     /// Whether the listing draws as a grid.
     grid: Bool = false
+    /// How large the entries stand: 0 smaller, 1 regular, 2 larger.
+    zoom: Int = 1
     /// The places gone before and put away, so back and forward walk the way the person came.
     went: List<Text>
     ahead: List<Text>
@@ -95,10 +155,14 @@ type Session (readers: author) {
     cutting: Bool = false
     /// The folders this window has read.
     listings: Collection<Listing>
+    /// The previews it has drawn of the pictures it listed, by the path of each.
+    previews: Collection<Preview>
     /// The picture a chosen file shows, when it is one, and the text a chosen file holds.
     preview: Option<File> = .none
     previewed: Text = ""
     words: Text = ""
+    /// What the chosen file's own header says it is, as the device read it.
+    facts: Option<FileFacts> = .none
     /// The entries the person chose, by their paths, the entry the inspector shows last among
     /// them; empty while nothing is chosen.
     chosen: List<Text>
@@ -111,6 +175,8 @@ type Session (readers: author) {
     openers: List<host.DocumentApp>
     /// The last thing that went wrong, for the window to say; empty while nothing did.
     notice: Text = ""
+    /// The copies and moves under way from this window, and the ones that stopped short.
+    transfers: Collection<Transfer>
 }
 
 /// The workspace's Files: one window per person, the places they marked, and what they opened.
@@ -213,6 +279,58 @@ action changed(f: Files) uses files, time {
     read_listing(f, s.here)
 }
 
+/// Makes the previews of a few pictures in the folder shown that have none yet, as the window
+/// shows it: a folder of photographs fills with their pictures while the person looks at it,
+/// without the window waiting for every one when the folder is read.
+action preview_step(f: Files) uses files, image {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if let l = place_listing(s) {
+        let waiting = l.entries.filter(
+            e -> not e.folder and is_picture(e.name) and not preview_fresh(s, e),
+        )
+        for e in waiting.take(6) {
+            let made = File.preview(e.path, 512)
+            if let held = s.previews.find(p -> p.path == e.path) {
+                held.modified = e.modified
+                match made {
+                    .ok(found) => {
+                        held.file = found
+                    }
+                    .err(_) => {
+                        held.file = .none
+                    }
+                }
+            } else {
+                match made {
+                    .ok(found) => {
+                        s.previews.insert(Preview(path: e.path, modified: e.modified, file: found))
+                    }
+                    .err(_) => {
+                        s.previews.insert(Preview(path: e.path, modified: e.modified))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The preview drawn for the picture at `path`, or none while it has not been made.
+fn preview_of(s: Session, path: Text) -> Option<Preview> {
+    s.previews.find(p -> p.path == path)
+}
+
+/// Whether the preview drawn for the entry `e` was made from the picture as it stands now.
+fn preview_fresh(s: Session, e: Entry) -> Bool {
+    if let p = preview_of(s, e.path) { p.modified == e.modified } else { false }
+}
+
+/// Whether the folder shown holds a picture with no preview of it as it stands now.
+fn previews_waiting(s: Session) -> Bool {
+    if let l = place_listing(s) {
+        l.entries.any(e -> not e.folder and is_picture(e.name) and not preview_fresh(s, e))
+    } else { false }
+}
+
 /// Goes to the place `place`, reading it: a folder, the trash, the recent files or the apps.
 action go(f: Files, place: Text) uses files, time {
     require place != "" "A place is named by its path"
@@ -230,30 +348,6 @@ action go(f: Files, place: Text) uses files, time {
     s.previewed = ""
     s.words = ""
     read_listing(f, place)
-}
-
-/// Shows the place `path` names: the folder itself, or the folder holding the file, with that file
-/// marked. Another app asks this when it shows where something it made or saved stands; a person
-/// opens a file with `open_entry` instead, which opens what the file holds.
-action show(f: Files, path: Text) uses files, time {
-    require path.trim() != "" "A place is named by its path"
-    let path = path.trim()
-    let s = f.sessions.first() ?? f.sessions.insert(Session())
-    let found = match File.stat(path) {
-        .ok(entry) => entry,
-        .err(_) => .none,
-    }
-    let folder = match found {
-        .some(entry) => if entry.folder { entry.path } else { parent_of(entry.path) },
-        .none => path,
-    }
-    go(f, folder)
-    if let entry = found {
-        if not entry.folder {
-            s.selected = entry.path
-            s.chosen = [entry.path]
-        }
-    }
 }
 
 /// Goes back to the place the person came from.
@@ -285,6 +379,175 @@ action up(f: Files) uses files, time {
     require not at_top(f) "This is already the top folder"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     go(f, if folder_place(s.here) { parent_of(s.here) } else { "~" })
+}
+
+/// Shows `path` in this window: the folder itself when it is one, and the folder that holds it with
+/// the entry chosen when it is a file. It is how another app sends a person to a file it made, and
+/// how an agent or a link brings them to one, so the person reads where it stands in its folder.
+action show(f: Files, path: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if path == "" {
+        go(f, "~")
+        return
+    }
+    match File.stat(path) {
+        .err(why) => {
+            s.notice = "Couldn’t look at “{name_of(path)}”: {why}"
+        }
+        .ok(found) => {
+            if let e = found {
+                if e.folder {
+                    go(f, e.path)
+                } else {
+                    let folder = parent_of(e.path)
+                    if s.here != folder {
+                        s.went = s.went + [s.here]
+                        s.ahead = []
+                    }
+                    s.here = folder
+                    s.selected = ""
+                    s.chosen = []
+                    s.opening = ""
+                    s.openers = []
+                    s.preview = .none
+                    s.previewed = ""
+                    s.words = ""
+                    read_listing(f, folder)
+                    if let picked = place_entry(f, e.path) {
+                        s.chosen = [e.path]
+                        s.selected = e.path
+                        inspect(f, picked.path)
+                    }
+                }
+            } else {
+                s.notice = "“{name_of(path)}” is not here anymore"
+            }
+        }
+    }
+}
+
+/// Extracts the archive at `path` into `folder`, into a folder named after it there: what the
+/// rows that offer a folder to extract into ask.
+action extract_into(f: Files, path: Text, folder: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let to = free_name(f, folder, stem_of(name_of(path)))
+    match File.extract(path, join(folder, to)) {
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t extract “{name_of(path)}”: {why}"
+        }
+    }
+}
+
+/// Moves the entries the person chose into `folder`, keeping a taken name both.
+action move_into(f: Files, folder: Text) uses files, time {
+    put_into(f, acted_on(f), folder, true)
+}
+
+/// Moves the entries the person dragged onto the folder `folder`, by their `paths`, as "Move to…"
+/// does, keeping a taken name both. A folder let go on itself, inside itself or on the folder its
+/// entries already stand in moves nothing.
+action drop_into(f: Files, paths: List<Text>, folder: Text) uses files, time {
+    if paths.is_empty()
+        or paths.any(p -> p == folder or folder.starts_with(p + "/") or parent_of(p) == folder) {
+        return
+    }
+    put_into(f, paths, folder, true)
+}
+
+/// Copies the entries the person chose into `folder`, keeping a taken name both.
+action copy_into(f: Files, folder: Text) uses files, time {
+    put_into(f, acted_on(f), folder, false)
+}
+
+/// Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work:
+/// the window shows how far it has got and can stop it. What arrives under a name the folder
+/// already holds lands as “name (2)”, so nothing is replaced.
+action put_into(f: Files, paths: List<Text>, folder: Text, moving: Bool) uses files, time {
+    require not paths.is_empty() "Choose a file first"
+    require folder_place(folder) "Choose a folder to put them in"
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let what = if paths.len() == 1 {
+        "“{name_of(paths.first() ?? "")}”"
+    } else { "{paths.len()} items" }
+    let label = if moving {
+        "Moving {what} to “{name_of(folder)}”"
+    } else {
+        "Copying {what} to “{name_of(folder)}”"
+    }
+    let t = s.transfers.insert(Transfer(label: label))
+    match engine.start(
+        "transfer",
+        json.encode(TransferAsk(paths: paths, folder: folder, moving: moving)),
+        done: j -> transfer_ended(f, t, j),
+        progress: j -> transfer_moved(t, j),
+    ) {
+        .err(why) => {
+            s.transfers.remove(t)
+            s.notice = "Couldn’t put them there: {why}"
+        }
+        .ok(job) => {
+            t.job = job
+        }
+    }
+}
+
+/// How far the transfer `t` has got, as the device records each move.
+action transfer_moved(t: Transfer, j: host.Job) {
+    match json.decode<TransferState>(j.detail) {
+        .ok(state) => {
+            t.done = state.done
+            t.total = state.total
+            t.current = state.current
+        }
+        .err(_) => {}
+    }
+}
+
+/// The transfer `t` ended: one that finished leaves the window and the folder is read again; one
+/// that failed stays, saying why, until it is dismissed.
+action transfer_ended(f: Files, t: Transfer, j: host.Job) uses files, time {
+    transfer_moved(t, j)
+    t.job = ""
+    if j.state == .failed {
+        t.failed = j.error
+    }
+    if let s = f.sessions.first() {
+        read_listing(f, s.here)
+        if j.state != .failed {
+            s.transfers.remove(t)
+        }
+    }
+}
+
+/// Stops the transfer `transfer`: the entry it was on is taken away, and what it finished stays.
+action stop_transfer(f: Files, transfer: Transfer) uses files, time (icon: .x) {
+    require transfer.job != "" "It has already stopped"
+    engine.cancel(transfer.job)
+}
+
+/// Takes a transfer that stopped short out of the window.
+action dismiss_transfer(f: Files, transfer: Transfer) {
+    if let s = f.sessions.first() { s.transfers.remove(transfer) }
+}
+
+
+/// The files a drag of `e` carries: every chosen entry when `e` is one of them, else `e` alone.
+fn dragged(s: Session, e: Entry) -> List<Text> {
+    if s.chosen.contains(e.path) { s.chosen } else { [e.path] }
+}
+
+/// The folders a "Move to…", "Copy to…" or "Extract to…" row offers: the folders beside the
+/// entries, the places the sidebar knows, and the person's favorites.
+fn destinations(f: Files, s: Session) -> List<Destination> {
+    let beside = if let l = place_listing(s) {
+        l.entries.filter(e -> e.folder).map(e -> Destination(name: e.name, path: e.path))
+    } else { [] }
+    let places = f.places
+        .filter(p -> folder_place(p.path) and p.path != s.here and p.path != "/")
+        .map(p -> Destination(name: p.label, path: p.path))
+    let favorites = f.favorites.map(p -> Destination(name: p.place, path: p.place))
+    beside + places + favorites
 }
 
 /// Sends the entries the person chose to the nearby device `nearby`, as Nearby Send offers it.
@@ -335,6 +598,22 @@ action choose_view(f: Files, i: Int) {
 action toggle_hidden(f: Files, hidden: Bool) (icon: .eye, label: "Show hidden files") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     s.hidden = hidden
+}
+
+/// Draws the entries at `step`: 0 smaller, 1 regular, 2 larger, as the two keys step it.
+action set_zoom(f: Files, step: Int) {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.zoom = step.max(0).min(2)
+}
+
+/// Draws the entries one step larger.
+action zoom_in(f: Files) {
+    if let s = f.sessions.first() { set_zoom(f, s.zoom + 1) }
+}
+
+/// Draws the entries one step smaller.
+action zoom_out(f: Files) {
+    if let s = f.sessions.first() { set_zoom(f, s.zoom - 1) }
 }
 
 /// Opens the entry `e`: a folder in this window, a file in the app that opens its kind.
@@ -521,6 +800,19 @@ action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .
         return
     }
     let named = if name.trim() == "" { "New folder" } else { name.trim() }
+    if named.contains("/") {
+        s.notice = "A name cannot hold a slash"
+        return
+    }
+    match File.stat(join(s.here, named)) {
+        .ok(found) => {
+            if found != .none {
+                s.notice = "“{named}” is already here"
+                return
+            }
+        }
+        .err(_) => {}
+    }
     match File.mkdir(join(s.here, named)) {
         .ok(_) => { read_listing(f, s.here) }
         .err(why) => {
@@ -550,6 +842,10 @@ action new_from_template(f: Files, template: Text, typed: Text) uses files, time
         return
     }
     let named = if typed.trim() == "" { template } else { typed.trim() }
+    if named.contains("/") {
+        s.notice = "A name cannot hold a slash"
+        return
+    }
     match File.read(join("~/Templates", template)) {
         .ok(bytes) => {
             match File.write(join(s.here, named), bytes) {
@@ -576,6 +872,19 @@ action new_file(f: Files, name: Text = "New file.txt") uses files, time (icon: .
         return
     }
     let named = if name.trim() == "" { "New file.txt" } else { name.trim() }
+    if named.contains("/") {
+        s.notice = "A name cannot hold a slash"
+        return
+    }
+    match File.stat(join(s.here, named)) {
+        .ok(found) => {
+            if found != .none {
+                s.notice = "“{named}” is already here"
+                return
+            }
+        }
+        .err(_) => {}
+    }
     match File.write(join(s.here, named), Bytes.from_base64("")) {
         .ok(_) => {
             read_listing(f, s.here)
@@ -637,7 +946,19 @@ action open_drive(f: Files, drive_id: Text) uses files, time {
 /// Renames the entry at `path` to `name` in its own folder.
 action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .pencil) {
     require name.trim() != "" "A name cannot be empty"
+    require not name.trim().contains("/") "A name cannot hold a slash"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if name.trim() != name_of(path) {
+        match File.stat(join(parent_of(path), name.trim())) {
+            .ok(found) => {
+                if found != .none {
+                    s.notice = "“{name.trim()}” is already here"
+                    return
+                }
+            }
+            .err(_) => {}
+        }
+    }
     match File.rename(path, name.trim()) {
         .ok(_) => { read_listing(f, s.here) }
         .err(why) => {
@@ -749,9 +1070,9 @@ action compress_selection(f: Files, zip: Bool) uses files, time {
     }
 }
 
-/// Pastes what the person carries into the place shown. A name the folder already holds is kept
-/// both: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is
-/// overwritten.
+/// Pastes what the person carries into the place shown, as the device's own work that says how
+/// far it has got. A name the folder already holds is kept both: what arrives lands as
+/// “name (2)”, so nothing is overwritten.
 action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste", key: "Ctrl+V") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if not folder_place(s.here) or s.carrying.is_empty() {
@@ -761,34 +1082,13 @@ action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste",
         return
     }
     let moving = s.cutting
-    for path in s.carrying {
-        if moving and parent_of(path) == s.here {
-            // A cut entry is already here: there is nothing to do.
-        } else {
-            let name = free_name(f, s.here, name_of(path))
-            let source = if moving and name != name_of(path) {
-                match File.rename(path, name) {
-                    .ok(moved) => moved.path,
-                    .err(why) => {
-                        s.notice = "Couldn’t rename “{name_of(path)}”: {why}"
-                        path
-                    }
-                }
-            } else { path }
-            let outcome = if moving { File.move(source, s.here) } else { File.copy(path, s.here) }
-            match outcome {
-                .ok(_) => {}
-                .err(why) => {
-                    s.notice = "Couldn’t paste “{name_of(path)}”: {why}"
-                }
-            }
-        }
-    }
+    // A cut entry already here has nowhere to go.
+    let going = s.carrying.filter(path -> not moving or parent_of(path) != s.here)
+    if not going.is_empty() { put_into(f, going, s.here, moving) }
     if moving {
         s.carrying = []
         s.cutting = false
     }
-    read_listing(f, s.here)
 }
 
 /// A name `folder` does not hold yet, for an entry that would land as `name`: the name itself, or
@@ -853,6 +1153,7 @@ action inspect(f: Files, path: Text) uses files {
     s.previewed = path
     s.preview = .none
     s.words = ""
+    s.facts = .none
     let found = match File.stat(path) {
         .ok(entry) => entry,
         .err(_) => .none,
@@ -860,6 +1161,15 @@ action inspect(f: Files, path: Text) uses files {
     if let e = found {
         if e.folder {
             return
+        }
+        match engine.call("facts", e.path) {
+            .ok(text) => match json.decode<FileFacts>(text) {
+                .ok(facts) => {
+                    s.facts = .some(facts)
+                }
+                .err(_) => {}
+            },
+            .err(_) => {}
         }
         if is_picture(e.name) and e.size < 20000000 {
             match File.read(e.path) {
@@ -905,17 +1215,18 @@ fn folder_place(place: Text) -> Bool {
     place != "trash" and place != "recent" and place != "applications"
 }
 
-/// The folder above `path`, or `/` for the top.
+/// The folder above `path`, or `/` for the top, and `~` for the places directly in the home
+/// folder, which are named from it rather than from `/`.
 fn parent_of(path: Text) -> Text {
     if path == "/" or path == "" or path == "~" {
         "/"
     } else {
-        let parts = path.split("/").filter(p -> p != "")
-        if parts.len() <= 1 {
-            "/"
-        } else {
-            "/" + parts.take(parts.len() - 1).join("/")
-        }
+        let home = path.starts_with("~")
+        let parts = path.split("/").filter(p -> p != "" and p != "~")
+        let above = if parts.len() <= 1 { "" } else { parts.take(parts.len() - 1).join("/") }
+        if home {
+            if above == "" { "~" } else { "~/" + above }
+        } else if above == "" { "/" } else { "/" + above }
     }
 }
 
@@ -1010,6 +1321,18 @@ fn is_text(name: Text) -> Bool {
         ext == "ftl",
     ]
         .any(x -> x)
+}
+
+/// How long a recording plays, as a clock reads it: `0:42`, `1:05`, `1:02:03`.
+fn playing_time(ms: Int) -> Text {
+    let seconds = ms / 1000
+    let minutes = seconds / 60
+    let clock = if seconds % 60 < 10 { "0{seconds % 60}" } else { "{seconds % 60}" }
+    if minutes < 60 {
+        return "{minutes}:{clock}"
+    }
+    let within = if minutes % 60 < 10 { "0{minutes % 60}" } else { "{minutes % 60}" }
+    "{minutes / 60}:{within}:{clock}"
 }
 
 /// How many bytes read to a person: `4.2 MB`, `812 B`.
@@ -1114,6 +1437,10 @@ view files(f: Files) {
     if let s = f.sessions.first() {
         let listing = place_listing(s)
         let visible: List<Entry> = if let l = listing { shown(l, s, found) } else { [] }
+        // The previews of the pictures in the folder shown fill in while the window shows it.
+        if previews_waiting(s) {
+            every 1s: preview_step(f)
+        }
         ui.NavShell(
             content_kind: if s.grid { .grid } else { .list },
             title: name_of(s.here),
@@ -1157,6 +1484,9 @@ view files(f: Files) {
                         ) {
                             on act: dismiss_notice(f)
                         }
+                    }
+                    for t in s.transfers {
+                        transfer_row(f, t)
                     }
                     if naming != "" {
                         naming_row(f, s, naming, name)
@@ -1431,6 +1761,12 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
             ) {
                 on choose: toggle_hidden(f, not s.hidden)
             }
+            ui.MenuItem("Larger", icon: .zoom_in, key: "Ctrl+=", disabled: s.zoom == 2) {
+                on choose: zoom_in(f)
+            }
+            ui.MenuItem("Smaller", icon: .zoom_out, key: "Ctrl+-", disabled: s.zoom == 0) {
+                on choose: zoom_out(f)
+            }
             ui.MenuItem("New folder", icon: .folder_plus) {
                 on choose: set(naming, "new").then(set(name, ""))
             }
@@ -1552,17 +1888,18 @@ view entry_list(
         for e in entries {
             ui.ListItem(value: e.path, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
                 on shortcut(k): key_on(f, e.path, k)
-                ui.ListRow(
-                    title: e.name,
-                    icon: if e.folder {
-                        .folder
-                    } else if is_picture(e.name) {
-                        .file_image
-                    } else if is_text(e.name) { .file_text } else { .file },
-                    meta: e.modified,
-                    value: if e.folder { "" } else { size_of(e.size) },
-                ) {
-                    on activate: open_entry(f, e.path)
+                // Picked up and dragged, an entry leaves Files as the file itself — with the rest
+                // of the chosen entries when it is one of them — for an app beside it to take, or
+                // a folder's row here; a press that does not travel still opens it.
+                ui.DragSource("", files: dragged(s, e), title: e.name) {
+                    if e.folder {
+                        ui.DropTarget {
+                            on drop_files(paths: List<Text>): drop_into(f, paths, e.path)
+                            entry_row(f, e, s.zoom == 0)
+                        }
+                    } else {
+                        entry_row(f, e, s.zoom == 0)
+                    }
                 }
                 menu: {
                     if e.folder {
@@ -1594,6 +1931,11 @@ view entry_list(
                             ui.MenuItem("Extract", icon: .archive) {
                                 on choose: extract_entry(f, e.path)
                             }
+                            for d in destinations(f, s) {
+                                ui.MenuItem("Extract to “{d.name}”", group: "Extract to…") {
+                                    on choose: extract_into(f, e.path, d.path)
+                                }
+                            }
                         } else {
                             ui.MenuItem("Open with…", icon: .external_link) {
                                 on choose: find_openers(f, e.path)
@@ -1608,6 +1950,16 @@ view entry_list(
                             on choose: if acted_on(f).contains(e.path) {
                                 compress_selection(f, false)
                             } else { compress_entry(f, e.path, false) }
+                        }
+                        for d in destinations(f, s) {
+                            ui.MenuItem("Move to “{d.name}”", group: "Move to…") {
+                                on choose: move_into(f, d.path)
+                            }
+                        }
+                        for d in destinations(f, s) {
+                            ui.MenuItem("Copy to “{d.name}”", group: "Copy to…") {
+                                on choose: copy_into(f, d.path)
+                            }
                         }
                         ui.MenuItem("Rename", icon: .pencil) {
                             on choose: set(naming, e.path).then(set(name, e.name))
@@ -1633,29 +1985,30 @@ view entry_list(
     }
 }
 
-/// A folder as cards, each opening what it stands for.
+/// A folder as cards, each opening what it stands for: a picture shows the preview the device
+/// made of it, and everything else its kind's glyph.
 view entry_grid(f: Files, s: Session, entries: List<Entry>) {
     ui.Scroll {
         page(full) {
-            ui.CardGrid(name: "Files", card_width: .regular) {
+            // A card stands for a resource, and an entry of this device's disk is no resource:
+            // the card carries the entry's own words and a press names its path.
+            grid(min: if s.zoom == 0 { 8rem } else if s.zoom == 2 { 16rem } else { 12rem }) {
                 for e in entries {
-                    // A card stands for a resource: a device entry has none, so the card keeps
-                    // the entry it was made from and the press names its path.
-                    ui.CardGridCard(item: e, title: e.name) {
+                    ui.Card(title: e.name) {
                         on activate: open_entry(f, e.path)
                         body: {
-                            stack(gap: .tight) {
-                                ui.Icon(
-                                    if e.folder {
-                                        .folder
-                                    } else if is_picture(e.name) {
-                                        .file_image
-                                    } else if is_text(e.name) { .file_text } else { .file },
-                                    size: .large,
-                                    secondary: not e.folder,
-                                )
-                                if not e.folder {
-                                    text(size_of(e.size), role: .caption, secondary: true)
+                            ui.DragSource("", files: dragged(s, e), title: e.name) {
+                                if e.folder {
+                                    ui.DropTarget {
+                                        on drop_files(paths: List<Text>): drop_into(
+                                            f,
+                                            paths,
+                                            e.path,
+                                        )
+                                        entry_card(s, e)
+                                    }
+                                } else {
+                                    entry_card(s, e)
                                 }
                             }
                         }
@@ -1663,6 +2016,79 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
                 }
             }
         }
+    }
+}
+
+/// A copy or a move from this window: what it does and the entry it is on, how far it has got,
+/// and a press that stops it; one that stopped short says why.
+view transfer_row(f: Files, t: Transfer) {
+    stack(padding: .related) {
+        ui.ListRow(
+            title: t.label,
+            secondary: if t.failed != "" {
+                t.failed
+            } else if t.total > 0 {
+                "{size_of(t.done)} of {size_of(t.total)} · {t.current}"
+            } else { t.current },
+            mark: if t.failed != "" { .triangle_alert } else { .copy },
+        )
+        if t.failed == "" {
+            ui.ProgressBar(
+                value: if t.total > 0 { t.done.to_float() / t.total.to_float() } else { 0.0 },
+                label: t.label,
+            )
+            ui.Button("Stop", icon: .x, role: .plain) {
+                on press: stop_transfer(f, t)
+            }
+        } else {
+            ui.Button("Dismiss", icon: .x, role: .plain) {
+                on press: dismiss_transfer(f, t)
+            }
+        }
+    }
+}
+
+/// One entry's card: a picture's preview the device made, or its kind's glyph, and a file's size.
+view entry_card(s: Session, e: Entry) {
+    stack(gap: .tight) {
+        if let drawn = preview_of(s, e.path) {
+            if let picture = drawn.file {
+                ui.Image(src: picture.url, alt: e.name, fit: .cover)
+            } else {
+                ui.Icon(.file_image, size: .large, secondary: true)
+            }
+        } else {
+            ui.Icon(
+                if e.folder {
+                    .folder
+                } else if is_picture(e.name) {
+                    .file_image
+                } else if is_text(e.name) { .file_text } else { .file },
+                size: .large,
+                secondary: not e.folder,
+            )
+        }
+        if not e.folder {
+            text(size_of(e.size), role: .caption, secondary: true)
+        }
+    }
+}
+
+/// One entry's row: what it is called, what it holds and when it changed, opening it when pressed.
+/// `smaller` draws it as one quiet line, as the smaller zoom step does.
+view entry_row(f: Files, e: Entry, smaller: Bool) {
+    ui.ListRow(
+        title: e.name,
+        icon: if e.folder {
+            .folder
+        } else if is_picture(e.name) {
+            .file_image
+        } else if is_text(e.name) { .file_text } else { .file },
+        meta: e.modified,
+        value: if e.folder { "" } else { size_of(e.size) },
+        dense: smaller,
+    ) {
+        on activate: open_entry(f, e.path)
     }
 }
 
@@ -1729,6 +2155,23 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                 ui.Property("Type", kind_of(e))
                 if not e.folder {
                     ui.Property("Size", size_of(e.size))
+                }
+                if let x = s.facts {
+                    if x.width > 0 {
+                        ui.Property("Dimensions", "{x.width} × {x.height} px")
+                    }
+                    if x.duration > 0 {
+                        ui.Property("Duration", playing_time(x.duration))
+                    }
+                    if x.pages > 0 {
+                        ui.Property("Pages", "{x.pages}")
+                    }
+                    if x.codec != "" {
+                        ui.Property("Codec", x.codec)
+                    }
+                    if x.container != "" and x.container != x.codec {
+                        ui.Property("Container", x.container)
+                    }
                 }
                 ui.Property("Modified", e.modified)
                 ui.Property("Location", parent_of(e.path), copyable: true)

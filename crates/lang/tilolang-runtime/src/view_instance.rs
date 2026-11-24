@@ -15,9 +15,9 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION,
-    REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
-    UNDO_ACTION,
+    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, MARK_SEEN_ACTION,
+    OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION,
+    THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -61,6 +61,9 @@ pub enum ViewEvent {
     /// Copy link was chosen on `target`, a resource of `app`: the window's host mints its link
     /// and puts it on the person's clipboard.
     CopyLink { target: ResourceRef, app: String },
+    /// Export was chosen on `target`, a resource of `app`: the window's host saves it as a file
+    /// where the person says ([`crate::export`]).
+    Export { target: ResourceRef, app: String },
 }
 
 /// A step of the person's own in the system's call held on a resource.
@@ -1011,10 +1014,13 @@ impl ViewInstance {
             THEN_ACTION => self.run_then(aref, gesture),
             SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
             ANSWER_ACTION => self.answer_steps(aref, gesture),
-            COPY_LINK_ACTION => self.copy_link(aref),
+            COPY_LINK_ACTION | EXPORT_ACTION => self.system_offer(aref),
             // The system's Copy link as a resource's own verb (`card.share_link()`): an action
             // of the type, whose id ends in the verb the system answers it by.
-            action if crate::host_ui::system_verb(action) == Some(tilo_actions::remote::SHARE_LINK_ACTION) => {
+            action
+                if crate::host_ui::system_verb(action)
+                    == Some(tilo_actions::remote::SHARE_LINK_ACTION) =>
+            {
                 self.copy_link_of(aref)
             }
             CHOOSE_ACTION => self.platform_choose(aref, false),
@@ -1067,15 +1073,24 @@ impl ViewInstance {
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
-    /// Copy link was chosen on a resource: the window's host mints its link and copies it.
-    fn copy_link(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+    /// Copy link or Export was chosen on a resource: the window's host mints its link and
+    /// copies it, or saves it as a file.
+    fn system_offer(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
         let [Value::Ref(r), Value::Text(app)] = aref.args.as_slice() else {
-            return Err(RuntimeError::BadArgs("a malformed copy link".into()));
+            return Err(RuntimeError::BadArgs(format!(
+                "a malformed `{}`",
+                aref.action
+            )));
         };
-        self.events.borrow_mut().push(ViewEvent::CopyLink {
-            target: ResourceRef::clone(&r.target),
-            app: app.clone(),
-        });
+        let target = ResourceRef::clone(&r.target);
+        let app = app.clone();
+        self.events
+            .borrow_mut()
+            .push(if aref.action == EXPORT_ACTION {
+                ViewEvent::Export { target, app }
+            } else {
+                ViewEvent::CopyLink { target, app }
+            });
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
@@ -1095,7 +1110,7 @@ impl ViewInstance {
         let Some(app) = app else {
             return Err(RuntimeError::NotFound(format!("type {}", r.target.ty)));
         };
-        self.copy_link(&ActionRef::new(
+        self.system_offer(&ActionRef::new(
             COPY_LINK_ACTION,
             vec![Value::Ref(r.clone()), Value::text(app)],
         ))

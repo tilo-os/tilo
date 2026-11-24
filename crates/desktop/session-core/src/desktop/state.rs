@@ -116,8 +116,9 @@ pub trait TileSource {
 
     /// The person reopened `tab` where they closed it, and its window is gone: the tab holds the
     /// app that opens it again, and waits for that app's window to take it. What the source needs
-    /// to ask for the app.
-    fn reopened(&mut self, _workspace: &Workspace, _tab: &Tab) {}
+    /// to ask for the app: `launch` when the close remembered what opens the window on what it
+    /// showed ([`tilo_desktop_model::ClosedTab::launch`]), else the tile's app.
+    fn reopened(&mut self, _workspace: &Workspace, _tab: &Tab, _launch: Option<&str>) {}
 
     /// The applications desktop search offers to open, each an id [`Self::launch`] accepts,
     /// followed by those this desktop cannot run (`unavailable` set), which search lists with their
@@ -446,7 +447,10 @@ impl DesktopHandle {
         };
         if offered && action == REOPEN_CLOSED {
             // Undo after a close reopens as Shift+Super+T does, through the same command.
-            let _ = self.dispatch(ChromeEffect::ReopenClosed { app: None });
+            let _ = self.dispatch(ChromeEffect::ReopenClosed {
+                app: None,
+                window: None,
+            });
         } else if offered {
             // A notice the shell itself put up: whoever showed it takes its buttons.
             self.shared

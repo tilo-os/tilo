@@ -31,8 +31,9 @@ pub use list::PART_BYTES;
 pub use memory::MemoryBackend;
 pub use reference::{ContentRef, content_address, is_sealed, valid_reference};
 pub use tilo_content_types::{
-    BLOB_SCHEME, ContentMeta, DocumentFormat, ImageFormat, RECORDING, RECORDING_MAGIC,
-    document_format, image_format, image_size, opened_as, opened_by, sniff, valid_hash,
+    BLOB_SCHEME, ContentMeta, DocumentFormat, FACTS_SCAN_BYTES, ImageFormat, MediaFacts, RECORDING,
+    RECORDING_MAGIC, document_format, facts, has_facts, image_format, image_size, opened_as,
+    opened_by, sniff, valid_hash,
 };
 #[cfg(feature = "dir")]
 pub use workspaces::WorkspaceStores;

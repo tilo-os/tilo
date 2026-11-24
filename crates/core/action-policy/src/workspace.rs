@@ -786,11 +786,11 @@ impl WorkspacePolicy {
         Self::resolved(&verdict, approved)
     }
 
-    /// [`Self::admit_action`] for placing `grant`: a grant assigns one of the
-    /// workspace's saved sets ([`roles::preset_assigned`]) when a grant on that
+    /// [`Self::admit_action`] for placing `grant`: a grant assigns one of
+    /// the workspace's saved sets ([`roles::preset_assigned`]) when a grant on that
     /// set's assignment node allows it, and any other grant when the
     /// workspace's own grant action does.
-    fn admit_grant(
+    fn admit_grant_action(
         &self,
         actor: &Authority<'_>,
         grant: &Grant,
@@ -1022,9 +1022,68 @@ impl WorkspacePolicy {
             )));
         }
         match change {
-            Change::Grant(grant) => self.admit_grant(actor, grant, cx, approved),
+            Change::Grant(grant) => self.admit_grant(actor_person, actor, grant, cx, approved),
+            Change::Revoke(id) => self.admit_revoke(actor_person, actor, id, cx, approved),
             change => self.admit_action(actor, change.action(), cx, approved),
         }
+    }
+
+    /// Whether `grant` is one of the workspace's people giving an app what they reach
+    /// themselves: recorded and signed as them, on a node they can read, for kinds no wider
+    /// than they hold there. A person's file is theirs to open in an app, and the app reaches
+    /// exactly what they do on that node, so no one widens access this way.
+    fn app_grant_of_member(
+        &self,
+        actor_person: &str,
+        actor: &Authority<'_>,
+        grant: &Grant,
+        cx: &Context<'_>,
+    ) -> bool {
+        matches!(grant.grantee, Grantee::App(_))
+            && grant.answer == Answer::Allow
+            && grant.granted_by.person_id() == Some(actor_person)
+            && self.role_of(actor_person).is_some()
+            && actor.decide(&grant.node, ActionKind::Read, cx).answer == Answer::Allow
+            && Self::check_within(actor, grant, cx).is_ok()
+            && self.check_not_held_off(actor, cx).is_ok()
+    }
+
+    /// The grant `change` places, `actor_person`'s own to write when it is an app's and they
+    /// reach the node; every other grant is the workspace's `grant` action to allow.
+    fn admit_grant(
+        &self,
+        actor_person: &str,
+        actor: &Authority<'_>,
+        grant: &Grant,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<Vec<GrantId>, Refusal> {
+        if self.app_grant_of_member(actor_person, actor, grant, cx) {
+            return Ok(Vec::new());
+        }
+        self.admit_grant_action(actor, grant, cx, approved)
+    }
+
+    /// The revocation of a grant: its own person's to take back when they gave an app what they
+    /// reached, and otherwise the workspace's `revoke` action to allow. Nobody else ends another
+    /// person's app grant.
+    fn admit_revoke(
+        &self,
+        actor_person: &str,
+        actor: &Authority<'_>,
+        id: &GrantId,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<Vec<GrantId>, Refusal> {
+        let held = self.grants.iter().find(|grant| &grant.id == id);
+        if held.is_some_and(|grant| {
+            matches!(grant.grantee, Grantee::App(_))
+                && grant.granted_by.person_id() == Some(actor_person)
+                && self.check_not_held_off(actor, cx).is_ok()
+        }) {
+            return Ok(Vec::new());
+        }
+        self.admit_action(actor, governance::REVOKE, cx, approved)
     }
 
     /// The member person `change`, an agent change, is made for when the

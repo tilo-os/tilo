@@ -1,5 +1,5 @@
 //! Chat's share of what the system does for every app: a person's card, opened where a person
-//! shows (a message's author, the workspace's people), and a conversation exported as a file.
+//! shows (a message's author, the workspace's people), and a problem report's recording.
 //! The system's own words show as their ids here (`tilolang-person-moderator`): no words are given.
 
 use crate::fixtures::{Replica, Workspace, target};
@@ -240,75 +240,6 @@ fn the_people_page_opens_each_persons_card() {
             "{who} is {standing}: {said:?}"
         );
     }
-}
-
-/// A conversation exports as one file: Markdown under its name, each message under the name it
-/// shows with, when it was written and what it says, in order. The channel's menu offers it, and
-/// an agent asks the same action for the text.
-#[test]
-fn a_channel_exports_its_messages_as_markdown_in_order() {
-    let (ada, root) = workspace();
-    let design = call_as(
-        &ada,
-        "ada",
-        "new_channel",
-        vec![Value::resource(&root), Value::text("design")],
-    );
-    ada.commit();
-    call_as(
-        &ada,
-        "ben",
-        "send",
-        vec![design.clone(), rich("Shipping at four.")],
-    );
-    call_as(
-        &ada,
-        "ada",
-        "send",
-        vec![design.clone(), rich("Two lines:\nthis one too.")],
-    );
-    call_as(
-        &ada,
-        "ada",
-        "relay",
-        vec![
-            design.clone(),
-            rich("Morning."),
-            Value::text("Robin"),
-            Value::text("Discord"),
-        ],
-    );
-    ada.commit();
-
-    let Value::Text(file) = call_as(&ada, "cy", "export", vec![design.clone()]) else {
-        panic!("an export is text");
-    };
-    assert!(file.starts_with("# #design\n\n"), "{file}");
-    // Each message opens its own line, in the order they were said; a message's later lines
-    // stand indented under it.
-    let opens: Vec<&str> = file.lines().filter(|line| line.starts_with("- ")).collect();
-    assert_eq!(opens.len(), 3, "{file}");
-    assert!(
-        opens[0].starts_with("- **ben** (") && opens[0].ends_with("): Shipping at four."),
-        "{file}"
-    );
-    assert!(
-        opens[1].starts_with("- **ada** (") && opens[1].ends_with("): Two lines:"),
-        "{file}"
-    );
-    assert!(file.contains("\n  this one too.\n"), "{file}");
-    assert!(
-        opens[2].starts_with("- **Robin**") && opens[2].ends_with(": Morning."),
-        "{file}"
-    );
-
-    let channel = open(&ada, &target(&design));
-    let offered = channel
-        .tree()
-        .of_kind("ui.MenuItem")
-        .into_iter()
-        .any(|item| item.props.get("label") == Some(&Value::text("Export conversation…")));
-    assert!(offered, "the channel's menu offers the export");
 }
 
 /// A problem report carries a recording of what happened, and its row in #feedback offers to

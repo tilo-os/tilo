@@ -104,6 +104,14 @@ class CatalogueCoverageTests(unittest.TestCase):
             "app/locales/de-DE.ftl": "a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n",
         }), [])
 
+    def test_a_tagline_a_language_words_for_itself_is_not_drift(self):
+        code, out, err = run({
+            "app/locales/en-US.ftl": SOURCE,
+            "app/locales/de-DE.ftl": "a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n\n"
+                                     "d-test-app-tagline = Ein Satz auf Deutsch\n",
+        })
+        self.assertEqual(code, 0, (out, err))
+
     def test_the_listing_names_each_untranslated_key_and_passes(self):
         code, out, _ = run({
             "app/locales/en-US.ftl": SOURCE,
@@ -338,6 +346,12 @@ class StagedCatalogueCoverageTests(unittest.TestCase):
         self.assertEqual(problems, [
             "app/locales/de-DE.ftl:6: d has no en-US text",
         ])
+
+    def test_a_tag_line_a_language_words_for_itself_is_not_drift(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": SOURCE})
+        self.stage({"app/locales/de-DE.ftl": SOURCE + "\nd-test-app-tagline = Ein Satz\n"})
+        self.assertEqual(coverage.staged_drift(self.root), [])
 
     def test_a_key_a_staged_catalogue_defines_twice_is_refused(self):
         self.commit({"app/locales/en-US.ftl": SOURCE,

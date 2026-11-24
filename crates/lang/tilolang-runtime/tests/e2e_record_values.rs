@@ -100,7 +100,7 @@ action keep(l: Line, found_text: Text, one_text: Text) {
         }
     }
 
-    /// Each stop the line holds, as (name, seq, late, from_name).
+    /// Each stop the line holds, as (name, seq, late, `from_name`).
     fn stops(rt: &Runtime, line: &ResourceRef) -> Vec<(String, i64, bool, String)> {
         let Value::List(items) = rt.read(line, "stops").unwrap() else {
             panic!("a list of stops");

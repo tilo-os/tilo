@@ -1200,6 +1200,18 @@ fn cors(
 }
 
 async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
+    // The deployment's readiness probe: what its ingress asks before a page is
+    // reached, and what an operator's uptime check reads. It is a GET, which
+    // every other route here past the pages refuses.
+    if request.uri().path() == "/mode" {
+        if request.method() != Method::GET {
+            return status(StatusCode::METHOD_NOT_ALLOWED, "GET");
+        }
+        return json(&serde_json::json!({
+            "server": "up",
+            "revision": std::env::var("TILO_SOURCE_REVISION").unwrap_or_default(),
+        }));
+    }
     // The fetch proxy takes the method of the request it relays.
     if request
         .uri()
@@ -1350,17 +1362,6 @@ async fn route(
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Body>, Response<Body>> {
     let path = request.uri().path().to_owned();
-    // The deployment's readiness probe: what its ingress asks before a page is
-    // reached, and what an operator's uptime check reads.
-    if path == "/mode" {
-        if request.method() != hyper::Method::GET {
-            return Err(status(StatusCode::METHOD_NOT_ALLOWED, "GET"));
-        }
-        return Ok(json(&serde_json::json!({
-            "server": "up",
-            "revision": std::env::var("TILO_SOURCE_REVISION").unwrap_or_default(),
-        })));
-    }
     // A site's own paths for the public directory — `/directory` and each
     // entry below it — reach the same routes as their versions below the
     // prefix, so a host a site's person dials by the address its `entry.json`

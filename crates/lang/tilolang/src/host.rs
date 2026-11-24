@@ -737,7 +737,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "modified",
                 "Time",
-                "When its content last changed; 0 when the disk does not say.",
+                "When its content last changed; the epoch when the disk does not say.",
             ),
             ("hidden", "Bool", "Whether its name starts with a dot."),
         ],
@@ -776,7 +776,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "deleted",
                 "Time",
-                "When it was trashed; 0 when the trash does not say.",
+                "When it was trashed; the epoch when the trash does not say.",
             ),
         ],
     },

@@ -246,7 +246,9 @@ struct Inner {
     /// Made by [`RemoteActions::current`] with no provider entered: served by the provider entered on its
     /// thread when it first sends under one.
     unbound: bool,
-    outbox: Vec<RemoteActionMessage>,
+    /// What the app asked before its transport was entered, each with the input serial of the
+    /// press it followed, if any.
+    outbox: Vec<(RemoteActionMessage, Option<u32>)>,
     next_correlation: u64,
     catalogue: HashMap<u64, CatalogueWalk>,
     invocations: HashMap<InvocationId, Running>,
@@ -687,8 +689,12 @@ impl RemoteActions {
                     Some((Arc::clone(provider), caller.clone()))
                 }
             };
+            // Only an invocation can run as the person: what a call names is the press behind it.
+            let press = matches!(message, RemoteActionMessage::Invoke(_))
+                .then(crate::press::current)
+                .flatten();
             if served.is_none() {
-                inner.outbox.push(message);
+                inner.outbox.push((message, press));
                 inner.wake.wake();
                 return;
             }
@@ -698,7 +704,10 @@ impl RemoteActions {
         let Some((provider, caller)) = served else {
             return;
         };
-        for message in asked_before.into_iter().chain([message]) {
+        for (message, _) in asked_before
+            .into_iter()
+            .chain(std::iter::once((message, None)))
+        {
             let Some(answer) = serve(&provider, &caller, message) else {
                 continue;
             };
@@ -1011,7 +1020,7 @@ impl Collaborative for RemoteActions {
         self.poll();
         std::mem::take(&mut self.lock().outbox)
             .into_iter()
-            .map(|message| CollabRequest::RemoteAction { message })
+            .map(|(message, press)| CollabRequest::RemoteAction { message, press })
             .collect()
     }
 

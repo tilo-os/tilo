@@ -832,3 +832,152 @@ fn a_picture_of_another_apps_window_is_refused() {
         "nothing of another app's window is stood: {frames:?}"
     );
 }
+
+/// Each start the launcher at `handed` made, oldest first: its process id, the instance it was
+/// told it opens, and what it was handed.
+fn starts(handed: &Path) -> Vec<(u32, u64, String)> {
+    fs::read_to_string(handed)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, ' ');
+            let pid = parts.next()?.parse().ok()?;
+            let instance = parts.next()?.parse().ok()?;
+            Some((pid, instance, parts.next().unwrap_or_default().to_owned()))
+        })
+        .collect()
+}
+
+/// Run `action` of `resource` the session publishes, with `arguments`, as an agent or a view calls it.
+fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_json::Value) {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("arguments are an object");
+    };
+    session
+        .invoke(resource, action, &arguments)
+        .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+}
+
+/// An app whose process ends under its window leaves the card in its place, and the card's Reopen,
+/// `reopen-closed` naming that window, asks for the app again on the record it had, in the tab it
+/// stood in: that window, though another window of the same app closed after it.
+#[test]
+fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("handed");
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s %s %s\\n' \"$$\" \"${{TILO_CONTINUITY_INSTANCE:-}}\" \"$*\" >> '{handed}'\n\
+             hold\n",
+            handed = handed.display(),
+        ),
+    )
+    .unwrap();
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = session(apps.clone());
+
+    apps.open(&Launch::Record {
+        app: APP.to_owned(),
+        record: RECORD.to_owned(),
+        visitor: false,
+    })
+    .expect("the app opens on its record");
+    let (pid, tab, asked) = crate::common::wait_for(&mut session, "the app starts", |_| {
+        starts(&handed).first().cloned()
+    });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window_of(tab, pid)).unwrap());
+    crate::common::wait_for(&mut session, "the window stands in its tab", |session| {
+        (tabs_of(session, APP) == vec![tab]).then_some(())
+    });
+    let place = |session: &Session| {
+        session.handle().read(|tree| {
+            tree.workspaces.iter().find_map(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .enumerate()
+                        .find_map(|(at, group)| {
+                            group
+                                .tabs
+                                .iter()
+                                .position(|held| held.id == tab)
+                                .map(|index| (strip.id, group.id, at, index))
+                        })
+                })
+            })
+        })
+    };
+    let stood = place(&session).expect("the window has a place");
+
+    // The app's process ends under its window, as a crash ends it.
+    let killed = std::process::Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(killed.success(), "the app's process is ended");
+    crate::common::wait_for(&mut session, "the card in the window's place", |session| {
+        session
+            .accessible_labels()
+            .join("\n")
+            .contains("Tasks stopped working")
+            .then_some(())
+    });
+
+    // Another window of the same app opens and the person closes it: the newest close of the app
+    // is now that one, not the window whose app ended.
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window(77)).unwrap());
+    let other = crate::common::wait_for(&mut session, "the other window", |session| {
+        tabs_of(session, APP).into_iter().find(|held| *held != tab)
+    });
+    invoke(
+        &mut session,
+        &tilo_session_core::desktop::verbs::tab_resource_id(other),
+        "close-tab",
+        serde_json::json!({}),
+    );
+    crate::common::wait_for(&mut session, "the other window closed", |session| {
+        (!tabs_of(session, APP).contains(&other)).then_some(())
+    });
+
+    // The card's Reopen.
+    invoke(
+        &mut session,
+        tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+        "reopen-closed",
+        serde_json::json!({ "window": tab.to_string() }),
+    );
+    let (again, instance, handed_again) =
+        crate::common::wait_for(&mut session, "the app starts again", |_| {
+            starts(&handed).get(1).cloned()
+        });
+    assert_ne!(again, pid, "a new process of the app");
+    assert_eq!(instance, tab, "it opens in the tab the window stood in");
+    assert_eq!(handed_again, asked, "on the record it had");
+    assert!(
+        asked.contains("7a110d00-0000-4000-8000-000000000009"),
+        "the launch names the record: {asked}"
+    );
+    assert_eq!(place(&session), Some(stood), "in the place it stood");
+    assert_eq!(
+        tabs_of(&session, APP),
+        vec![tab],
+        "the window the person closed stays closed"
+    );
+
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window_of(tab, again)).unwrap());
+    crate::common::wait_for(&mut session, "the window back in place", |session| {
+        let shown = session.accessible_labels().join("\n");
+        (!shown.contains("stopped working") && tabs_of(session, APP) == vec![tab]).then_some(())
+    });
+    assert_eq!(place(&session), Some(stood), "where it stood");
+}

@@ -288,7 +288,7 @@ pub fn verify_served(
 /// change names.
 pub fn verify_recorded(
     context: &tilo_actions::ActionContext,
-    (workspace, keeper): (&str, Option<&str>),
+    (workspace, keeper): (&str, Option<RecordHost<'_>>),
     revocations: &RevocationList,
     at_ns: u64,
 ) -> Result<Option<DeviceCert>, InvocationError> {
@@ -318,19 +318,8 @@ pub fn verify_recorded(
     // Or it is a step the called action declares it takes in another record, written by the
     // device that keeps that record. A host that ran another resource's action for the call, or
     // another action on it, is refused here.
-    let named = &statement.target.address.resource;
-    let in_resource = match &context.resource {
-        Some(resource) => &resource.kind == named || &resource.id == named,
-        None => context.what.is_none(),
-    };
-    let names_verb = match &context.what {
-        Some(tilo_actions::Did::Verb(verb)) => {
-            verb.action.action == statement.target.address.action
-        }
-        _ => true,
-    };
-    let named = (in_resource && names_verb) || declared_step(context, &statement.target, keeper);
-    if !named {
+    let declared = outside_call(context, &statement.target);
+    if declared && !declared_step(context, &statement.target, keeper.map(|keeper| keeper.app)) {
         return Err(StatementMismatch::Target.into());
     }
     let cert = signer_of(
@@ -342,6 +331,16 @@ pub fn verify_recorded(
             Some(statement.issued_at_ns.min(at_ns)),
         ),
     )?;
+    // The device that keeps the record carried the call out itself, for an agent acting for a
+    // person (a turn it runs, or a call it admitted again on its person's yes), and signed it
+    // as the device that did: the step is one the called action declares, and the change names
+    // the agent and its person. It never names the person as having made it themselves.
+    if declared
+        && keeper.is_some_and(|keeper| *keeper.device == cert.device_public_key)
+        && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
+    {
+        return Ok(Some(cert));
+    }
     // The signer is a person the change names: the invoker, the person it works for, or one
     // further down its chain who bounds that work (the person an agent belongs to when it
     // answers someone else, the starter's person of a sub-agent). Each of them bounds what the
@@ -356,6 +355,48 @@ pub fn verify_recorded(
     }
     agent_signed(invoker, &cert)?;
     Ok(Some(cert))
+}
+
+/// The device that keeps a record for the workspace (its host, a governor's device), as a
+/// change it signed is read: the app of the record, and the device's key. A step a called action
+/// declares it takes in that record counts only from it ([`verify_recorded`]).
+#[derive(Clone, Copy, Debug)]
+pub struct RecordHost<'a> {
+    /// The app of the record the change is in.
+    pub app: &'a str,
+    /// The device that signed the change.
+    pub device: &'a [u8; 32],
+}
+
+/// Whether the change `context` records is outside the call `target` names: another resource
+/// than the call's, or another verb than the one it asked. Such a change counts only as a step
+/// the called action declares ([`verify_recorded`]).
+fn outside_call(
+    context: &tilo_actions::ActionContext,
+    target: &tilo_actions::remote::RemoteActionTarget,
+) -> bool {
+    let named = &target.address.resource;
+    let in_resource = match &context.resource {
+        Some(resource) => &resource.kind == named || &resource.id == named,
+        None => context.what.is_none(),
+    };
+    let names_verb = match &context.what {
+        Some(tilo_actions::Did::Verb(verb)) => verb.action.action == target.address.action,
+        _ => true,
+    };
+    !(in_resource && names_verb)
+}
+
+/// Whether the change `context` records is a step the call it keeps declares, rather than the
+/// call's own action on its own resource: what the device that keeps the record took for the
+/// call ([`verify_recorded`] checks that it may). Such a step is decided as the call's effect:
+/// its caller's, under the call that was allowed, never again as an edit the agent makes.
+#[must_use]
+pub fn declared_effect(context: &tilo_actions::ActionContext) -> bool {
+    context
+        .signed
+        .as_deref()
+        .is_some_and(|call| outside_call(context, &call.signed.statement().target))
 }
 
 /// Whether `context` records a step the action `target` names declares it takes
@@ -407,7 +448,7 @@ fn declares(
 /// The first check that fails, as [`InvocationError`].
 pub fn verify_carried(
     signed: &SignedInvocation,
-    (workspace, kept): (&str, bool),
+    (workspace, keeper): (&str, Option<&[u8; 32]>),
     record: &collab_types::receipt::WrittenDocument<'_>,
     claim: &collab_types::claim::ChangeClaim,
     revocations: &RevocationList,
@@ -423,28 +464,14 @@ pub fn verify_carried(
     // was made for one call that named neither or only one. Or, where the
     // device that signed the change keeps the record (`kept`), every verb the
     // claim names is a step the called action declares it takes there.
-    let named = &statement.target.address.resource;
-    let in_record =
-        named == record.document || named == record.app || claim_names_kind(claim, named);
-    let verbs: Vec<&tilo_actions::ActionKey> = claim
-        .action
-        .members()
-        .into_iter()
-        .filter_map(|member| match member {
-            collab_types::claim::ClaimedAction::Verb { action, .. } => Some(action),
-            _ => None,
-        })
-        .collect();
-    let names_verb = verbs
-        .iter()
-        .all(|action| action.action == statement.target.address.action);
-    let declared = kept
+    let outside = carried_effect(signed, record, claim);
+    let verbs = claimed_verbs(claim);
+    let declared = keeper.is_some()
         && !verbs.is_empty()
         && verbs
             .iter()
             .all(|action| declares(&statement.target, record.app, &action.kind, &action.action));
-    let named = (in_record && names_verb) || declared;
-    if !named {
+    if outside && !declared {
         return Err(StatementMismatch::Target.into());
     }
     let cert = signer_of(
@@ -453,14 +480,55 @@ pub fn verify_carried(
         revocations,
         (statement.issued_at_ns, None),
     )?;
-    let person = hex::encode(cert.user_public_key);
     let invoker = claim.invoker.as_deref();
+    // The keeper carried out a call for an agent acting for a person, and signed it as the
+    // device that did: as [`verify_recorded`] reads it.
+    if outside
+        && keeper.is_some_and(|device| *device == cert.device_public_key)
+        && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
+    {
+        return Ok(cert);
+    }
+    let person = hex::encode(cert.user_public_key);
     let names_signer = invoker.is_some_and(|acting| acting.people().contains(&person.as_str()));
     if !names_signer {
         return Err(InvocationError::NotInvoker);
     }
     agent_signed(invoker, &cert)?;
     Ok(cert)
+}
+
+/// The verbs `claim` names.
+fn claimed_verbs(claim: &collab_types::claim::ChangeClaim) -> Vec<&tilo_actions::ActionKey> {
+    claim
+        .action
+        .members()
+        .into_iter()
+        .filter_map(|member| match member {
+            collab_types::claim::ClaimedAction::Verb { action, .. } => Some(action),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the sealed change `claim` describes, of `record`, is outside the call `signed`: not
+/// the record, app or kind it names, or another verb than the one it asked. As
+/// [`declared_effect`] says of an open change, such a change counts only as a step the called
+/// action declares.
+#[must_use]
+pub fn carried_effect(
+    signed: &SignedInvocation,
+    record: &collab_types::receipt::WrittenDocument<'_>,
+    claim: &collab_types::claim::ChangeClaim,
+) -> bool {
+    let target = &signed.statement().target;
+    let named = &target.address.resource;
+    let in_record =
+        named == record.document || named == record.app || claim_names_kind(claim, named);
+    let names_verb = claimed_verbs(claim)
+        .iter()
+        .all(|action| action.action == target.address.action);
+    !(in_record && names_verb)
 }
 
 /// Whether the claim names `kind` as the resource kind of one of its actions.
@@ -676,6 +744,19 @@ fn agent_signed(
         (Some(agent), true) if !certified_for(cert, agent) => Err(InvocationError::NotInvoker),
         _ => Ok(()),
     }
+}
+
+/// Whether `signed` is signed as a change naming `acting` needs its call signed
+/// ([`verify_recorded`]): by a device of a person `acting` names, and for an agent with a key of
+/// its own, by that key. A host keeps such a call as it is; any other it carries out for an agent
+/// it signs itself, as the device that carried it out.
+#[must_use]
+pub fn signs_for(acting: &tilo_action_policy::Acting, signed: &SignedInvocation) -> bool {
+    let Ok(cert) = decode_cert(signed.signer_cert()) else {
+        return false;
+    };
+    let person = hex::encode(cert.user_public_key);
+    acting.people().contains(&person.as_str()) && agent_signed(Some(acting), &cert).is_ok()
 }
 
 /// That `signed`'s signature verifies under the key it names.
@@ -1208,14 +1289,90 @@ mod tests {
                 context
             };
             let none = RevocationList::new();
+            let host = [7; 32];
+            let keeper = |app| RecordHost { app, device: &host };
             let kept_by = |keeper| verify_recorded(&step("keep-sealed"), (WORKSPACE, keeper), &none, NOW);
-            assert_eq!(kept_by(Some("so.tilo.passwords")), Ok(Some(cert)));
+            assert_eq!(kept_by(Some(keeper("so.tilo.passwords"))), Ok(Some(cert)));
             let refused = Err(InvocationError::Mismatch(StatementMismatch::Target));
             assert_eq!(kept_by(None), refused);
-            assert_eq!(kept_by(Some("so.tilo.notes")), refused);
+            assert_eq!(kept_by(Some(keeper("so.tilo.notes"))), refused);
             assert_eq!(
-                verify_recorded(&step("remove-sealed"), (WORKSPACE, Some("so.tilo.passwords")), &none, NOW),
+                verify_recorded(&step("remove-sealed"), (WORKSPACE, Some(keeper("so.tilo.passwords"))), &none, NOW),
                 refused
+            );
+        }
+
+        phase a_records_host_signs_only_the_steps_it_takes_for_an_agents_call;
+        // The host carries out a turn of Ada's agent and signs the call itself, as the device
+        // that carried it out: the step the use declares counts from that host, naming the agent
+        // for Ada. The same call from another device, a step it does not declare, and one that
+        // names Ada as having made it herself are refused.
+        {
+            use tilo_actions::remote::person_vault;
+            let (host_root, _) = UserIdentity::generate("Host", 1);
+            let host_key = SigningKey::from_bytes(&[41; 32]);
+            let host = cert_of(&host_root, &host_key, None);
+            let mut filling = request();
+            filling.target = person_vault::page_target();
+            let asked = signed(&filling, &host, &host_key, NOW);
+            let ada = hex::encode([3; 32]);
+            let agent = Acting::agent("assistant").acting_for(Acting::person(ada.clone()));
+            let passwords = tilo_action_policy::roles::WORKSPACE_VAULT_KIND;
+            let step = |verb: &str, acting: &Acting| tilo_actions::ActionContext {
+                source_invocation: Some(asked.invocation),
+                signed: tilo_actions::remote::SignedCall::of(&asked).map(Box::new),
+                invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
+                resource: Some(tilo_actions::ActionResource {
+                    id: "vault-record".into(),
+                    kind: passwords.into(),
+                    label: String::new(),
+                }),
+                what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                    action: tilo_actions::ActionKey {
+                        app: String::new(),
+                        kind: passwords.into(),
+                        action: verb.into(),
+                    },
+                    args: std::collections::BTreeMap::new(),
+                })),
+                ..tilo_actions::ActionContext::default()
+            };
+            let none = RevocationList::new();
+            let keeper = |device| {
+                Some(RecordHost {
+                    app: "so.tilo.passwords",
+                    device,
+                })
+            };
+            let used = step("keep-uses", &agent);
+            assert!(declared_effect(&used));
+            assert_eq!(
+                verify_recorded(&used, (WORKSPACE, keeper(&host.device_public_key)), &none, NOW),
+                Ok(Some(host.clone()))
+            );
+            assert!(
+                verify_recorded(&used, (WORKSPACE, keeper(&[9; 32])), &none, NOW).is_err(),
+                "another device than the keeper signed it"
+            );
+            assert_eq!(
+                verify_recorded(
+                    &step("keep-sealed", &agent),
+                    (WORKSPACE, keeper(&host.device_public_key)),
+                    &none,
+                    NOW
+                ),
+                Err(InvocationError::Mismatch(StatementMismatch::Target)),
+                "a fill writes down its use and keeps no item"
+            );
+            assert_eq!(
+                verify_recorded(
+                    &step("keep-uses", &Acting::person(ada)),
+                    (WORKSPACE, keeper(&host.device_public_key)),
+                    &none,
+                    NOW
+                ),
+                Err(InvocationError::NotInvoker),
+                "the host never names the person as having made it"
             );
         }
 

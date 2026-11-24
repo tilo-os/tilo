@@ -79,7 +79,7 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (
-            tilo_session_core::desktop::verbs::shell_resource(&[], &[], &[], &[], None),
+            tilo_session_core::desktop::verbs::shell_resource(&[], &[], &[], None),
             Some(<LayoutEffect as Effect>::declaration),
         ),
         (
@@ -104,7 +104,6 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
             title: String::new(),
             foreign: None,
         }],
-        &[0],
         &[0],
         &[],
         None,

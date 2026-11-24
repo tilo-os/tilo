@@ -184,11 +184,7 @@ mod tests {
             assert!(Space::is_size("rem"), "a view computes a place in pixels from it");
             let told = space.with_rem(20.0);
             assert_eq!(told.field("rem"), Some(20.0));
-            assert_eq!(
-                told.followed(41.0, 30.0).rem,
-                20.0,
-                "a size that moves keeps the rem it was drawn at"
-            );
+            assert!((told.followed(41.0, 30.0).rem - 20.0).abs() < f64::EPSILON, "a size that moves keeps the rem it was drawn at");
             assert_eq!(
                 space.with_rem(0.0).field("rem"),
                 Some(DEFAULT_REM),

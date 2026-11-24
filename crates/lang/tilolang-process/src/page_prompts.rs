@@ -125,7 +125,10 @@ fn note(
         signed: None,
     };
     let message = RemoteActionMessage::Invoke(request);
-    if send(CollabRequest::RemoteAction { message }) {
+    if send(CollabRequest::RemoteAction {
+        message,
+        press: None,
+    }) {
         true
     } else {
         tracing::warn!(kind, "a note's call did not reach the dispatch");
@@ -163,7 +166,10 @@ impl PagePrompts {
                 let message = RemoteActionMessage::Cancel {
                     invocation: raised.invocation,
                 };
-                if !send(CollabRequest::RemoteAction { message }) {
+                if !send(CollabRequest::RemoteAction {
+                    message,
+                    press: None,
+                }) {
                     tracing::warn!(kind, id, "a prompt's call was not withdrawn");
                 }
             }
@@ -200,7 +206,10 @@ impl PagePrompts {
             signed: None,
         };
         let message = RemoteActionMessage::Invoke(request);
-        if send(CollabRequest::RemoteAction { message }) {
+        if send(CollabRequest::RemoteAction {
+            message,
+            press: None,
+        }) {
             self.raised.insert(key, Raised { invocation, no });
         } else {
             tracing::warn!(kind, id, "a prompt's call did not reach the dispatch");
@@ -251,7 +260,10 @@ impl PagePrompts {
             let message = RemoteActionMessage::Cancel {
                 invocation: raised.invocation,
             };
-            if !send(CollabRequest::RemoteAction { message }) {
+            if !send(CollabRequest::RemoteAction {
+                message,
+                press: None,
+            }) {
                 tracing::warn!("a closed page's call was not withdrawn");
             }
         }
@@ -301,6 +313,7 @@ mod tests {
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             },
         ] = sent.as_slice()
         else {
@@ -372,6 +385,7 @@ mod tests {
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             },
         ] = sent.as_slice()
         else {
@@ -409,6 +423,7 @@ mod tests {
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             },
         ] = sent.as_slice()
         else {
@@ -439,7 +454,8 @@ mod tests {
             matches!(
                 sent.as_slice(),
                 [CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation: stopped }
+                    message: RemoteActionMessage::Cancel { invocation: stopped },
+                    ..
                 }] if *stopped == invocation
             ),
             "{sent:?}"

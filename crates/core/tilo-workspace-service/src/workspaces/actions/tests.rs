@@ -134,30 +134,35 @@ pub(crate) async fn answered(
     if !matches!(first.status, ReceiptStatus::Accepted) {
         return Ok(first);
     }
-    let Some(workspace_id) = workspace_id else {
-        return Ok(first);
-    };
     let (Some(service), Some(store)) =
         (workspaces.inner.jobs.governance(), workspaces.asked_store())
     else {
         return Ok(first);
     };
-    let here = service.in_workspace(workspace_id);
-    let workspace = workspace_id.to_string();
     // Whether it waits for its person, or ends first. It is answered the moment its record
     // shows, which the host may record as waiting a moment later: the answer stands either way.
+    // A call no workspace was named for (one the host's own actions answer) is found by its
+    // record, which names the workspace it waits in.
     let kept = tilo_test_env::within("the call waits for its person or ends", async {
         loop {
-            if let Some(waiting) = store
-                .waiting_in(&workspace)
-                .into_iter()
-                .find(|waiting| waiting.invocation == request.invocation)
+            let named = workspace_id.map(|id| id.to_string()).or_else(|| {
+                store
+                    .record(&request.invocation.0.to_string())
+                    .map(|at| at.workspace)
+            });
+            if let Some(workspace) = named
+                && let Some(waiting) = store
+                    .waiting_in(&workspace)
+                    .into_iter()
+                    .find(|waiting| waiting.invocation == request.invocation)
             {
-                return Some(waiting);
+                return Some((waiting, WorkspaceId::parse(&workspace)));
             }
-            if here
-                .observe(caller, &request.invocation)
-                .is_some_and(|state| state.is_terminal())
+            if let Some(id) = workspace_id
+                && service
+                    .in_workspace(id)
+                    .observe(caller, &request.invocation)
+                    .is_some_and(|state| state.is_terminal())
             {
                 return None;
             }
@@ -165,9 +170,16 @@ pub(crate) async fn answered(
         }
     })
     .await;
-    let Some(waiting) = kept else {
-        return ended_as(&here, caller, request.invocation).await;
+    let Some((waiting, workspace_id)) = kept else {
+        return match workspace_id {
+            Some(id) => ended_as(&service.in_workspace(id), caller, request.invocation).await,
+            None => Ok(first),
+        };
     };
+    let Some(workspace_id) = workspace_id else {
+        return Ok(first);
+    };
+    let here = service.in_workspace(workspace_id);
     // It waits in its asked record: nobody answering here leaves it there, and the caller hears
     // what its person is shown.
     let Some(answering) = &answering else {
