@@ -912,8 +912,10 @@ impl Workspaces {
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
 
-    /// The operation `request` names, which `device` may carry out.
-    /// Unknown and forbidden are the same answer.
+    /// The operation `request` names, which `device` may carry out. An
+    /// operation the host does not publish is unknown; one it publishes, which
+    /// `device` may not carry out, is refused with the reason why: the
+    /// operations are the same on every host, so saying so tells nobody more.
     fn account_operation(
         &self,
         device: &DeviceCert,
@@ -923,17 +925,15 @@ impl Workspaces {
         let (verb, operation) = ACCOUNT_VERBS
             .iter()
             .find(|(verb, _)| verb.id == address.action)
+            .filter(|_| address.resource == HOST_WORKSPACES_RESOURCE)
             .ok_or(ActionCallError::UnknownAction)?;
-        if address.resource != HOST_WORKSPACES_RESOURCE
-            || !self.permits(
-                device,
-                None,
-                WorkspaceOp::Host(*operation),
-                tilo_clock::unix_now_ns(),
-            )
-        {
-            return Err(ActionCallError::UnknownAction);
-        }
+        self.authorize(
+            device,
+            None,
+            WorkspaceOp::Host(*operation),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok((verb, *operation))
     }
 

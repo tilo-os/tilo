@@ -194,9 +194,11 @@ impl Workspaces {
         };
         let invocation = request.invocation;
         let providers = self.providers();
-        let answer = providers.invoke(caller, request).ok_or_else(|| ActionCallError::Refused {
-            reason: format!("no app process runs {app}'s {record} here"),
-        })?;
+        let answer = providers
+            .invoke(caller, request)
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: format!("no app process runs {app}'s {record} here"),
+            })?;
         let receipt = tokio::task::spawn_blocking(move || answer.wait_timeout(APP_ACTION_WAIT))
             .await
             .map_err(|error| ActionCallError::Unavailable {

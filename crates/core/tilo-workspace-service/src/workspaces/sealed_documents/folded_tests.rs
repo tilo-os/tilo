@@ -72,7 +72,13 @@ fn send_member_fields(
     to: usize,
 ) {
     for index in from..to {
-        send_member_field(member, session, workspace, field, &format!("{field} {index}"));
+        send_member_field(
+            member,
+            session,
+            workspace,
+            field,
+            &format!("{field} {index}"),
+        );
     }
 }
 
@@ -97,11 +103,7 @@ fn send_member_field(
 /// own writes travel.
 async fn both_authors_write(
     (workspaces, workspace): (&Workspaces, &str),
-    (governor, member, session): (
-        &DeviceCert,
-        &SealingMember,
-        &Session,
-    ),
+    (governor, member, session): (&DeviceCert, &SealingMember, &Session),
     writes: usize,
 ) {
     governor_writes_sealed(workspaces, workspace, governor, "governor", writes).await;
@@ -154,7 +156,13 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
         session,
     ) = lounge_with_link().await;
     for index in 0..WRITES {
-        send_member_field(&member, &session, &workspace, "member", &format!("member {index}"));
+        send_member_field(
+            &member,
+            &session,
+            &workspace,
+            "member",
+            &format!("member {index}"),
+        );
     }
     follows_field(
         &workspaces,

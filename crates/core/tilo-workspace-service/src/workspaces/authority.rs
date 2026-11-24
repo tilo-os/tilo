@@ -230,15 +230,18 @@ impl Workspaces {
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
-            // What anyone may do here is for a host that keeps workspaces of
-            // people's own: making theirs and listing them.
-            let anyones = matches!(
-                operation,
+            // What anyone may do here with workspaces of their own is for a host
+            // that keeps them: making, deleting and branching one, and listing
+            // them. A host that keeps none lists to the people it knows all the
+            // same: whom its operator trusts and the members of the workspaces
+            // it holds.
+            let anyones = match operation {
                 ServiceOperation::CreateOwnWorkspace
-                    | ServiceOperation::ListWorkspaces
-                    | ServiceOperation::DeleteOwnWorkspace
-                    | ServiceOperation::BranchOwnWorkspace
-            ) && device.user_public_key != host;
+                | ServiceOperation::DeleteOwnWorkspace
+                | ServiceOperation::BranchOwnWorkspace => true,
+                ServiceOperation::ListWorkspaces => !self.knows_at_host(device),
+                _ => false,
+            } && device.user_public_key != host;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",

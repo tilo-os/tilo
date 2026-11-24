@@ -355,10 +355,10 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         (CREATE_WORKSPACE, json!({ "name": "Theirs" })),
         (LIST_WORKSPACES, json!({})),
     ] {
-        assert_eq!(
-            invoke(&host, &stranger, host_request(action, argument)).await,
-            Err(ActionCallError::UnknownAction),
-            "{action}"
+        let refused = invoke(&host, &stranger, host_request(action, argument)).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::Refused { .. })),
+            "{action}: {refused:?}"
         );
     }
     assert_eq!(workspaces.list().await.len(), 1, "nothing was created");

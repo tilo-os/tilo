@@ -8,18 +8,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_actions::remote::asked::{
-    self, AskedDispatch, AskedFacts, Offer, RecordRef, Resolve,
-};
+use tilo_actions::remote::asked::{self, AskedDispatch, AskedFacts, Offer, RecordRef, Resolve};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget, workspace_invocations,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
-use tilo_agent_session::shell::{
-    Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell,
-};
+use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell};
 
 use super::providers::Reach;
 use super::terminal::{self, TerminalService};
@@ -88,7 +84,10 @@ impl ActionProvider for App {
         _: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.calls.lock().unwrap().push(request.confirmation.clone());
+        self.calls
+            .lock()
+            .unwrap()
+            .push(request.confirmation.clone());
         if !matches!(request.confirmation, Some(Confirmation::Asked(_))) {
             let facts = AskedFacts {
                 verb: "hand".into(),
@@ -114,11 +113,7 @@ impl ActionProvider for App {
         None
     }
 
-    fn cancel(
-        &self,
-        _: &Caller,
-        _: &InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
@@ -231,8 +226,8 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     let workspaces = server.workspaces().clone();
     let summary = workspaces.create("Home").await.unwrap();
     let workspace = summary.workspace.clone();
-    let caller =
-        Caller::authenticated(owner.user_public_key, owner.device_public_key).in_workspace(&workspace);
+    let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+        .in_workspace(&workspace);
 
     let app = Arc::new(App::default());
     workspaces.providers().provide_app(

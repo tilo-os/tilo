@@ -36,13 +36,13 @@ use tilo_actions::remote::person_accounts::{
 };
 // A message as text is read for sending in one place, `Leaving::read`; only
 // this file's tests still name one.
-#[cfg(test)]
-use tilo_actions::remote::person_accounts::SendMail;
 use tilo_actions::remote::model_providers::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
+#[cfg(test)]
+use tilo_actions::remote::person_accounts::SendMail;
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts, model_providers,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, model_providers, person_accounts,
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;

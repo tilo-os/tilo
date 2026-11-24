@@ -56,7 +56,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING,
-    formats, mcp_server, person_accounts, person_connections, model_providers, person_telling,
+    formats, mcp_server, model_providers, person_accounts, person_connections, person_telling,
     person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
@@ -2077,8 +2077,10 @@ impl Workspaces {
                     (
                         person_accounts::PROVIDER,
                         person_accounts::ADD_MAIL_WITH_ITEM
-                    ) | (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM)
-                        | (person_vault::PROVIDER, person_vault::ASK)
+                    ) | (
+                        model_providers::PROVIDER,
+                        model_providers::SET_KEY_FROM_ITEM
+                    ) | (person_vault::PROVIDER, person_vault::ASK)
                 ) =>
             {
                 self.vault_use_invoke(workspace_id, caller, certificate, request)
@@ -4432,12 +4434,12 @@ impl AppActionServer for GovernedServer {
     }
 }
 
+#[cfg(test)]
+mod model_answers_tests;
 #[cfg(all(test, feature = "agents"))]
 mod openai_sign_in_tests;
 #[cfg(test)]
 mod person_learned_tests;
-#[cfg(test)]
-mod model_answers_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

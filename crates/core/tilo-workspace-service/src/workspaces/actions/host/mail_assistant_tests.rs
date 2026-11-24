@@ -1030,7 +1030,11 @@ fn account_asking(setup: &Setup, adding: Value) -> InvokeRequest {
 
 /// The addresses the workspace keeps.
 async fn kept_accounts(setup: &Setup) -> Vec<String> {
-    let listed: MailAccounts = read(setup.ask(&setup.ada(), person_accounts::LIST, json!({})).await);
+    let listed: MailAccounts = read(
+        setup
+            .ask(&setup.ada(), person_accounts::LIST, json!({}))
+            .await,
+    );
     listed
         .accounts
         .into_iter()

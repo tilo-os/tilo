@@ -16,8 +16,8 @@ use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, Tool
 use serde_json::{Value, json};
 use test_http::Responder;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, model_providers,
-    person_vault,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget,
+    model_providers, person_vault,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
@@ -662,9 +662,15 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
     .unwrap();
 
     let turn = serde_json::to_value(asking("Summarise my day")).unwrap();
-    let hers = ask_own(&host, workspace_id, &ada, model_providers::ASK, turn.clone())
-        .await
-        .unwrap();
+    let hers = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        model_providers::ASK,
+        turn.clone(),
+    )
+    .await
+    .unwrap();
     let hers: Result<ModelResponse, ModelError> = serde_json::from_value(hers).unwrap();
     let hers = hers.unwrap();
     assert!(
@@ -930,9 +936,15 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
             "{which}"
         );
         said.push(reason.clone());
-        let hers = ask_own(&service, workspace_id, &ada, model_providers::LIST, json!({}))
-            .await
-            .unwrap();
+        let hers = ask_own(
+            &service,
+            workspace_id,
+            &ada,
+            model_providers::LIST,
+            json!({}),
+        )
+        .await
+        .unwrap();
         assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
         said.push(hers.to_string());
         assert_eq!(
@@ -1008,9 +1020,15 @@ async fn a_first_key_the_provider_turns_away_is_not_kept() {
         )
     };
     let configured = || async {
-        let hers = ask_own(&service, workspace_id, &ada, model_providers::LIST, json!({}))
-            .await
-            .unwrap();
+        let hers = ask_own(
+            &service,
+            workspace_id,
+            &ada,
+            model_providers::LIST,
+            json!({}),
+        )
+        .await
+        .unwrap();
         hers["providers"][0]["configured"].clone()
     };
 
@@ -1287,8 +1305,8 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
 async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
     use std::sync::Arc;
 
-    use tilo_actions::remote::invocation_record::Invocations;
     use tilo_actions::InvocationId;
+    use tilo_actions::remote::invocation_record::Invocations;
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
         InvokeRequest, Pending, settle_with,

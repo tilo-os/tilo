@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_actions::remote::{person_accounts, model_providers, person_vault};
+use tilo_actions::remote::{model_providers, person_accounts, person_vault};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 

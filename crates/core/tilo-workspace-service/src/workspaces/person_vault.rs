@@ -38,8 +38,8 @@ use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultChang
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::model_providers::{self, ProviderView, SetKey, SetKeyFromItem};
+use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, AskForItem, Asked, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
     ItemUses, ItemView, KeepConnectorSecret, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
@@ -626,8 +626,10 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
         (
             person_accounts::PROVIDER,
             person_accounts::ADD_MAIL_WITH_ITEM
-        ) | (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM)
-            | (person_vault::PROVIDER, person_vault::FILL_PAGE)
+        ) | (
+            model_providers::PROVIDER,
+            model_providers::SET_KEY_FROM_ITEM
+        ) | (person_vault::PROVIDER, person_vault::FILL_PAGE)
     ) {
         return None;
     }

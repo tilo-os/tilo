@@ -21,7 +21,7 @@ use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::remote::{person_accounts, model_providers, person_vault};
+use tilo_actions::remote::{model_providers, person_accounts, person_vault};
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, governed};

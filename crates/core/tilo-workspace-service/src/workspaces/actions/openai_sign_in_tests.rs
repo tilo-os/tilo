@@ -153,7 +153,10 @@ async fn no_agent_signs_in_on_its_own(
     ada: &DeviceCert,
 ) {
     let assistant = super::tests::caller(ada).delegated_to("assistant");
-    for verb in [model_providers::BEGIN_SIGN_IN, model_providers::CANCEL_SIGN_IN] {
+    for verb in [
+        model_providers::BEGIN_SIGN_IN,
+        model_providers::CANCEL_SIGN_IN,
+    ] {
         let unasked = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
             matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
@@ -161,7 +164,10 @@ async fn no_agent_signs_in_on_its_own(
         );
     }
     let refusing = Answering::declining();
-    for verb in [model_providers::BEGIN_SIGN_IN, model_providers::CANCEL_SIGN_IN] {
+    for verb in [
+        model_providers::BEGIN_SIGN_IN,
+        model_providers::CANCEL_SIGN_IN,
+    ] {
         let refused = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
             matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
@@ -221,9 +227,15 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
         provider.models.iter().any(|model| model.id == "gpt-5.5"),
         "{provider:?}"
     );
-    let listed = ask_own(&actions, workspace_id, &ada, model_providers::LIST, json!({}))
-        .await
-        .unwrap();
+    let listed = ask_own(
+        &actions,
+        workspace_id,
+        &ada,
+        model_providers::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert_eq!(listed["defaultProvider"], json!(provider.id), "{listed}");
     // A JSON web token begins with an encoded `{"`: none is in what a page reads.
     assert!(!listed.to_string().contains("eyJ"), "{listed}");

@@ -552,8 +552,8 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
 #[tokio::test]
 async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     use tilo_actions::remote::{
-        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, model_providers,
-        person_vault,
+        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, model_providers,
+        person_accounts, person_vault,
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -1735,7 +1735,10 @@ fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
             model_providers::REMOVE_PROVIDER,
             json!({"provider": provider}),
         ),
-        (model_providers::REFRESH_MODELS, json!({"provider": provider})),
+        (
+            model_providers::REFRESH_MODELS,
+            json!({"provider": provider}),
+        ),
         (
             model_providers::ADD_MODEL,
             json!({"provider": provider, "model": "typed"}),
@@ -2121,9 +2124,15 @@ async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
     let chosen = asks_for_level(&actions, workspace_id, &ada, &provider, Some("low")).await;
     assert!(chosen.is_ok(), "a member's own choice is taken: {chosen:?}");
     assert_eq!(chosen.unwrap()["reasoning"], json!("low"));
-    let listed = ask_own(&actions, workspace_id, &ada, model_providers::LIST, json!({}))
-        .await
-        .unwrap();
+    let listed = ask_own(
+        &actions,
+        workspace_id,
+        &ada,
+        model_providers::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         listed["providers"][0]["reasoning"],
         json!("low"),
@@ -2511,9 +2520,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     };
 
     // Every member reads the lists, and an Editor by role alone changes none.
-    let read = ask(&ada, TRUSTED_ATTESTORS, json!({}))
-        .await
-        .unwrap();
+    let read = ask(&ada, TRUSTED_ATTESTORS, json!({})).await.unwrap();
     assert_eq!(read["attestors"], json!([]));
     assert_eq!(read["revoked"], json!([]));
     let read = ask(&ada, REGISTRIES, json!({})).await.unwrap();
@@ -2559,9 +2566,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["attestors"][0]["id"], "acme/1");
     assert_eq!(added["attestors"][0]["pubkey_hex"], attestor_key);
     assert_eq!(added["attestors"][0]["scope"], "prefix:so.tilo.");
-    let listed = ask(&ada, TRUSTED_ATTESTORS, json!({}))
-        .await
-        .unwrap();
+    let listed = ask(&ada, TRUSTED_ATTESTORS, json!({})).await.unwrap();
     assert_eq!(listed["attestors"], added["attestors"]);
 
     let removed = ask(&ada, REMOVE_ATTESTOR, json!({ "id": "acme/1" }))
@@ -2580,9 +2585,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(revoked["revoked"][0]["pubkey_hex"], refused_key);
     assert_eq!(revoked["revoked"][0]["reason"], "lost key");
     assert_eq!(
-        ask(&ada, REVOKED_PUBLISHERS, json!({}))
-            .await
-            .unwrap()["revoked"],
+        ask(&ada, REVOKED_PUBLISHERS, json!({})).await.unwrap()["revoked"],
         revoked["revoked"]
     );
 
@@ -2600,13 +2603,9 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["registries"][0]["enabled"], true);
     assert_eq!(added["registries"][0]["channel"], "stable");
 
-    let disabled = ask(
-        &ada,
-        DISABLE_REGISTRY,
-        json!({ "name": "Tilo main" }),
-    )
-    .await
-    .unwrap();
+    let disabled = ask(&ada, DISABLE_REGISTRY, json!({ "name": "Tilo main" }))
+        .await
+        .unwrap();
     assert_eq!(disabled["registries"][0]["enabled"], false);
     let enabled = ask(&ada, ENABLE_REGISTRY, json!({ "name": "Tilo main" }))
         .await

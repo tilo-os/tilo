@@ -188,7 +188,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     assert!(offered(&host, &guest, &caller(&guest)).await.is_empty());
     assert!(matches!(
         create_own(&host, &guest, json!({})).await,
-        Err(ActionCallError::UnknownAction)
+        Err(ActionCallError::Refused { .. })
     ));
 
     assert!(
@@ -1521,7 +1521,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     );
     assert!(matches!(
         on_host(&host, &narrow, &as_key(&narrow), delete_request(&workspace)).await,
-        Err(ActionCallError::UnknownAction)
+        Err(ActionCallError::Refused { .. })
     ));
     // Nor does anyone else, who learns only that it is not theirs.
     let (_, stranger) = guest_device();
