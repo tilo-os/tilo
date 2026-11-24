@@ -55,3 +55,26 @@ fn accounts_record(write: &tilo_workspace_service::workspaces::ResourceWrite) ->
     write.app == tilo_app_id::apps::SETTINGS
         && write.record == tilo_workspace_service::workspaces::account_logins::accounts_document()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The daemon publishes the accounts reading before any of its own tasks run: building it
+    /// where no Tokio runtime is entered must not panic, which is what the in-process daemon
+    /// does.
+    #[test]
+    fn publishing_the_accounts_reading_needs_no_entered_runtime() {
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime to hold a workspace");
+        let (workspaces, _dir, _key, _cert, _paths) = runtime.block_on(async {
+            crate::device::workspaces::ServiceWorkspaces::test_hosting_person(
+                tilo_server_protocol::WorkspaceId::from_u128(1),
+            )
+            .await
+        });
+        // Outside the runtime: publishing spawns the watcher on the process's own runtime.
+        let served = published(&workspaces);
+        drop(served);
+        drop(runtime);
+    }
+}
