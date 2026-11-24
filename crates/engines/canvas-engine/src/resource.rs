@@ -1084,21 +1084,6 @@ impl Artwork {
 }
 
 impl Artwork {
-    /// Apply `invoke` to `doc` through the API, as a replica of it does. A
-    /// blank document is initialized first, its genesis and its storage
-    /// version, as an action API's resource is before its first change.
-    #[cfg(test)]
-    pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
-        use tilo_resource::__private::ReadDoc as _;
-        use tilo_resource::Resource as _;
-        if doc.length(&tilo_ui::automerge::ROOT) == 0 {
-            Self::initialize(doc).expect("a blank artwork initializes");
-        }
-        let mut replica = tilo_resource::Replica::<Self>::from_doc(std::mem::take(doc));
-        replica.apply(invoke).expect("the change applies");
-        *doc = std::mem::take(replica.doc_mut());
-    }
-
     /// The artwork settled as a verb reads it, and its state before the verb.
     fn as_read(&mut self) -> Self {
         self.settle();

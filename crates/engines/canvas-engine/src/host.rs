@@ -47,372 +47,409 @@ fn reference(address: &str) -> Option<&str> {
 ///
 /// Why the records are not an artwork.
 pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
-    #[derive(serde::Deserialize)]
-    struct Records {
-        #[serde(default)]
-        title: String,
-        #[serde(default = "wide")]
-        width: f64,
-        #[serde(default = "tall")]
-        height: f64,
-        #[serde(default)]
-        ground_texture: String,
-        #[serde(default)]
-        ground_colour: String,
-        #[serde(default)]
-        layers: Vec<RecordLayer>,
-        /// Media presets saved in the artwork.
-        #[serde(default)]
-        media: Vec<RecordMedium>,
-        #[serde(default)]
-        marks: Vec<RecordMark>,
-        #[serde(default)]
-        selection: Option<RecordArea>,
-        /// The picture the artwork is compared against; never part of the work.
-        #[serde(default)]
-        reference: Option<RecordReference>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordReference {
-        #[serde(default)]
-        image: String,
-        #[serde(default)]
-        frame: Option<[f64; 4]>,
-        #[serde(default = "one")]
-        opacity: f64,
-        #[serde(default = "yes")]
-        visible: bool,
-    }
-    impl Default for RecordLayer {
-        fn default() -> Self {
-            Self {
-                name: String::new(),
-                group: String::new(),
-                mask_of: String::new(),
-                base: one(),
-                invert: false,
-                clip: false,
-                unlinked: false,
-                medium: String::new(),
-                opacity: one(),
-                visible: yes(),
-                locked: false,
-                texture: 0.0,
-            }
-        }
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordLayer {
-        #[serde(default)]
-        name: String,
-        /// Organisational folder of layers; empty for an ungrouped layer.
-        #[serde(default)]
-        group: String,
-        /// The layer's name this layer masks; empty for an ordinary layer.
-        #[serde(default)]
-        mask_of: String,
-        /// A mask's grey before any mark.
-        #[serde(default = "one")]
-        base: f64,
-        #[serde(default)]
-        invert: bool,
-        /// Clipped to the layer below.
-        #[serde(default)]
-        clip: bool,
-        #[serde(default)]
-        unlinked: bool,
-        #[serde(default)]
-        medium: String,
-        #[serde(default = "one")]
-        opacity: f64,
-        #[serde(default = "yes")]
-        visible: bool,
-        #[serde(default)]
-        locked: bool,
-        #[serde(default)]
-        texture: f64,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordMedium {
-        #[serde(default)]
-        id: String,
-        #[serde(default)]
-        label: String,
-        /// `oil` or `watercolour`.
-        #[serde(default)]
-        engine: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default)]
-        params: BTreeMap<String, f64>,
-        #[serde(default)]
-        ground: Option<String>,
-        #[serde(default)]
-        palette: Vec<RecordPigment>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordPigment {
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        colour: String,
-        #[serde(default)]
-        granulation: f64,
-        #[serde(default = "one")]
-        strength: f64,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordMark {
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        layer: RecordLayer,
-        #[serde(default)]
-        kind: String,
-        /// Organisational folder of marks; empty for ungrouped.
-        #[serde(default)]
-        group: String,
-        /// `x, y, pressure` in turn, as a package keeps a stroke.
-        #[serde(default)]
-        points: Vec<f64>,
-        #[serde(default)]
-        d: String,
-        #[serde(default = "width_default")]
-        size: f64,
-        #[serde(default)]
-        colour: String,
-        #[serde(default)]
-        brush: String,
-        #[serde(default = "one")]
-        opacity: f64,
-        /// A gradient fill, drawn instead of the plain colour: `linear` or `radial`, its ends and
-        /// its stops.
-        #[serde(default)]
-        gradient_kind: String,
-        #[serde(default)]
-        gradient_x0: f64,
-        #[serde(default)]
-        gradient_y0: f64,
-        #[serde(default)]
-        gradient_x1: f64,
-        #[serde(default)]
-        gradient_y1: f64,
-        #[serde(default)]
-        gradient_offsets: Vec<f64>,
-        #[serde(default)]
-        gradient_colours: Vec<String>,
-        /// A text mark: its words, where its first baseline starts, its type and its setting.
-        #[serde(default)]
-        text: String,
-        #[serde(default)]
-        font: String,
-        #[serde(default)]
-        weight: i64,
-        #[serde(default)]
-        italic: bool,
-        #[serde(default)]
-        align: String,
-        #[serde(default)]
-        line_height: f64,
-        #[serde(default)]
-        tracking: f64,
-        #[serde(default)]
-        text_path: String,
-        /// On a painted layer: paint into what is still wet, and the medium's parameter
-        /// overrides.
-        #[serde(default)]
-        wet: bool,
-        #[serde(default)]
-        params: BTreeMap<String, f64>,
-        /// A picture's bytes, by the address it is kept at, and the frame it is drawn in.
-        #[serde(default)]
-        src: String,
-        #[serde(default)]
-        x: f64,
-        #[serde(default)]
-        y: f64,
-        #[serde(default)]
-        width: f64,
-        #[serde(default)]
-        height: f64,
-        /// How the mark mixes with what is beneath it; empty or `normal` is plain.
-        #[serde(default)]
-        blend: String,
-        /// The picture's frame inside its own pixels, as fractions of them.
-        #[serde(default)]
-        crop_x: f64,
-        #[serde(default)]
-        crop_y: f64,
-        #[serde(default = "one")]
-        crop_width: f64,
-        #[serde(default = "one")]
-        crop_height: f64,
-        /// A turn inside the frame, in degrees.
-        #[serde(default)]
-        straighten: f64,
-        #[serde(default)]
-        flip_h: bool,
-        #[serde(default)]
-        flip_v: bool,
-        /// Non-destructive colour and tone adjustments of the mark.
-        #[serde(default)]
-        exposure: f64,
-        #[serde(default)]
-        contrast: f64,
-        #[serde(default)]
-        highlights: f64,
-        #[serde(default)]
-        shadows: f64,
-        #[serde(default)]
-        saturation: f64,
-        #[serde(default)]
-        vibrance: f64,
-        #[serde(default)]
-        hue: f64,
-        #[serde(default)]
-        temperature: f64,
-        #[serde(default)]
-        tint: f64,
-        #[serde(default)]
-        grayscale: bool,
-        #[serde(default)]
-        invert: bool,
-        #[serde(default)]
-        blur: f64,
-        #[serde(default)]
-        sharpen: f64,
-        #[serde(default)]
-        vignette: f64,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecordArea {
-        #[serde(default)]
-        d: String,
-        #[serde(default)]
-        feather: f64,
-    }
-    fn wide() -> f64 {
-        1024.0
-    }
-    fn tall() -> f64 {
-        768.0
-    }
-    fn one() -> f64 {
-        1.0
-    }
-    fn yes() -> bool {
-        true
-    }
-    fn width_default() -> f64 {
-        6.0
-    }
-    fn slug(name: &str) -> String {
-        let mut out = String::new();
-        for ch in name.trim().to_lowercase().chars() {
-            if ch.is_ascii_alphanumeric() {
-                out.push(ch);
-            } else if !out.ends_with('-') && !out.is_empty() {
-                out.push('-');
-            }
-        }
-        let out = out.trim_matches('-').to_owned();
-        if out.is_empty() {
-            "layer".to_owned()
-        } else {
-            out
-        }
-    }
-    fn order_key(index: usize) -> String {
-        format!("{index:08}")
-    }
-    /// An adjustment's step, absent when it does nothing.
-    fn set(value: f64) -> Option<f64> {
-        (value.abs() > f64::EPSILON).then_some(value)
-    }
-    fn adjust_of(mark: &RecordMark) -> Option<Adjust> {
-        let adjust = Adjust {
-            exposure: set(mark.exposure),
-            contrast: set(mark.contrast),
-            highlights: set(mark.highlights),
-            shadows: set(mark.shadows),
-            saturation: set(mark.saturation),
-            vibrance: set(mark.vibrance),
-            hue: set(mark.hue),
-            temperature: set(mark.temperature),
-            tint: set(mark.tint),
-            curve: None,
-            grayscale: mark.grayscale.then_some(true),
-            invert: mark.invert.then_some(true),
-            blur: set(mark.blur),
-            sharpen: set(mark.sharpen),
-            vignette: set(mark.vignette),
-        };
-        (adjust.exposure.is_some()
-            || adjust.contrast.is_some()
-            || adjust.highlights.is_some()
-            || adjust.shadows.is_some()
-            || adjust.saturation.is_some()
-            || adjust.vibrance.is_some()
-            || adjust.hue.is_some()
-            || adjust.temperature.is_some()
-            || adjust.tint.is_some()
-            || adjust.grayscale.is_some()
-            || adjust.invert.is_some()
-            || adjust.blur.is_some()
-            || adjust.sharpen.is_some()
-            || adjust.vignette.is_some())
-        .then_some(adjust)
-    }
-    /// The picture's crop, when it shows less than all of it.
-    fn crop_of(mark: &RecordMark) -> Option<[f64; 4]> {
-        let crop = [mark.crop_x, mark.crop_y, mark.crop_width, mark.crop_height];
-        let full = [
-            crop[0].abs() < f64::EPSILON,
-            crop[1].abs() < f64::EPSILON,
-            (crop[2] - 1.0).abs() < f64::EPSILON,
-            (crop[3] - 1.0).abs() < f64::EPSILON,
-        ];
-        (!full.iter().all(|held| *held)).then_some(crop)
-    }
-    /// A picture turned in its frame, in degrees.
-    fn straighten_of(mark: &RecordMark) -> Option<f64> {
-        set(mark.straighten)
-    }
-    /// A flip about the middle of the picture's frame, as an affine transform.
-    fn flip_of(mark: &RecordMark) -> Option<[f64; 6]> {
-        if !mark.flip_h && !mark.flip_v {
-            return None;
-        }
-        let sx = if mark.flip_h { -1.0 } else { 1.0 };
-        let sy = if mark.flip_v { -1.0 } else { 1.0 };
-        let cx = mark.x + mark.width / 2.0;
-        let cy = mark.y + mark.height / 2.0;
-        Some([sx, 0.0, 0.0, sy, cx - sx * cx, cy - sy * cy])
-    }
     let records: Records = serde_json::from_str(json)
         .map_err(|error| format!("this is not a Canvas artwork: {error}"))?;
-    let mut art = Artwork::default();
-    art.title = records.title;
+    let mut art = Artwork {
+        title: records.title.clone(),
+        ..Artwork::default()
+    };
     if records.width >= 16.0 && records.width <= 8192.0 {
         art.width = records.width;
     }
     if records.height >= 16.0 && records.height <= 8192.0 {
         art.height = records.height;
     }
-    art.ground = Ground {
+    art.ground = ground_of(&records);
+    for layer in layers_of(&records) {
+        art.put_layer(layer);
+    }
+    for (id, medium) in media_of(&records) {
+        art.media.insert(id, medium);
+    }
+    art.reference = reference_of(&records);
+    for mark in marks_of(&records) {
+        art.put_mark(mark);
+    }
+    art.selection = selection_of(&records);
+    art.settle();
+    Ok(art)
+}
+
+#[derive(serde::Deserialize)]
+struct Records {
+    #[serde(default)]
+    title: String,
+    #[serde(default = "wide")]
+    width: f64,
+    #[serde(default = "tall")]
+    height: f64,
+    #[serde(default)]
+    ground_texture: String,
+    #[serde(default)]
+    ground_colour: String,
+    #[serde(default)]
+    layers: Vec<RecordLayer>,
+    /// Media presets saved in the artwork.
+    #[serde(default)]
+    media: Vec<RecordMedium>,
+    #[serde(default)]
+    marks: Vec<RecordMark>,
+    #[serde(default)]
+    selection: Option<RecordArea>,
+    /// The picture the artwork is compared against; never part of the work.
+    #[serde(default)]
+    reference: Option<RecordReference>,
+}
+#[derive(serde::Deserialize)]
+struct RecordReference {
+    #[serde(default)]
+    image: String,
+    #[serde(default)]
+    frame: Option<[f64; 4]>,
+    #[serde(default = "one")]
+    opacity: f64,
+    #[serde(default = "yes")]
+    visible: bool,
+}
+impl Default for RecordLayer {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            group: String::new(),
+            mask_of: String::new(),
+            base: one(),
+            invert: false,
+            clip: false,
+            unlinked: false,
+            medium: String::new(),
+            opacity: one(),
+            visible: yes(),
+            locked: false,
+            texture: 0.0,
+        }
+    }
+}
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent property the layer's record keeps"
+)]
+#[derive(serde::Deserialize)]
+struct RecordLayer {
+    #[serde(default)]
+    name: String,
+    /// Organisational folder of layers; empty for an ungrouped layer.
+    #[serde(default)]
+    group: String,
+    /// The layer's name this layer masks; empty for an ordinary layer.
+    #[serde(default)]
+    mask_of: String,
+    /// A mask's grey before any mark.
+    #[serde(default = "one")]
+    base: f64,
+    #[serde(default)]
+    invert: bool,
+    /// Clipped to the layer below.
+    #[serde(default)]
+    clip: bool,
+    #[serde(default)]
+    unlinked: bool,
+    #[serde(default)]
+    medium: String,
+    #[serde(default = "one")]
+    opacity: f64,
+    #[serde(default = "yes")]
+    visible: bool,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    texture: f64,
+}
+#[derive(serde::Deserialize)]
+struct RecordMedium {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    /// `oil` or `watercolour`.
+    #[serde(default)]
+    engine: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    params: BTreeMap<String, f64>,
+    #[serde(default)]
+    ground: Option<String>,
+    #[serde(default)]
+    palette: Vec<RecordPigment>,
+}
+#[derive(serde::Deserialize)]
+struct RecordPigment {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    colour: String,
+    #[serde(default)]
+    granulation: f64,
+    #[serde(default = "one")]
+    strength: f64,
+}
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent property the mark's record keeps"
+)]
+#[derive(serde::Deserialize)]
+struct RecordMark {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    layer: RecordLayer,
+    #[serde(default)]
+    kind: String,
+    /// Organisational folder of marks; empty for ungrouped.
+    #[serde(default)]
+    group: String,
+    /// `x, y, pressure` in turn, as a package keeps a stroke.
+    #[serde(default)]
+    points: Vec<f64>,
+    #[serde(default)]
+    d: String,
+    #[serde(default = "width_default")]
+    size: f64,
+    #[serde(default)]
+    colour: String,
+    #[serde(default)]
+    brush: String,
+    #[serde(default = "one")]
+    opacity: f64,
+    /// A gradient fill, drawn instead of the plain colour: `linear` or `radial`, its ends and
+    /// its stops.
+    #[serde(default)]
+    gradient_kind: String,
+    #[serde(default)]
+    gradient_x0: f64,
+    #[serde(default)]
+    gradient_y0: f64,
+    #[serde(default)]
+    gradient_x1: f64,
+    #[serde(default)]
+    gradient_y1: f64,
+    #[serde(default)]
+    gradient_offsets: Vec<f64>,
+    #[serde(default)]
+    gradient_colours: Vec<String>,
+    /// A text mark: its words, where its first baseline starts, its type and its setting.
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    font: String,
+    #[serde(default)]
+    weight: i64,
+    #[serde(default)]
+    italic: bool,
+    #[serde(default)]
+    align: String,
+    #[serde(default)]
+    line_height: f64,
+    #[serde(default)]
+    tracking: f64,
+    #[serde(default)]
+    text_path: String,
+    /// On a painted layer: paint into what is still wet, and the medium's parameter
+    /// overrides.
+    #[serde(default)]
+    wet: bool,
+    #[serde(default)]
+    params: BTreeMap<String, f64>,
+    /// A picture's bytes, by the address it is kept at, and the frame it is drawn in.
+    #[serde(default)]
+    src: String,
+    #[serde(default)]
+    x: f64,
+    #[serde(default)]
+    y: f64,
+    #[serde(default)]
+    width: f64,
+    #[serde(default)]
+    height: f64,
+    /// How the mark mixes with what is beneath it; empty or `normal` is plain.
+    #[serde(default)]
+    blend: String,
+    /// The picture's frame inside its own pixels, as fractions of them.
+    #[serde(default)]
+    crop_x: f64,
+    #[serde(default)]
+    crop_y: f64,
+    #[serde(default = "one")]
+    crop_width: f64,
+    #[serde(default = "one")]
+    crop_height: f64,
+    /// A turn inside the frame, in degrees.
+    #[serde(default)]
+    straighten: f64,
+    #[serde(default)]
+    flip_h: bool,
+    #[serde(default)]
+    flip_v: bool,
+    /// Non-destructive colour and tone adjustments of the mark.
+    #[serde(default)]
+    exposure: f64,
+    #[serde(default)]
+    contrast: f64,
+    #[serde(default)]
+    highlights: f64,
+    #[serde(default)]
+    shadows: f64,
+    #[serde(default)]
+    saturation: f64,
+    #[serde(default)]
+    vibrance: f64,
+    #[serde(default)]
+    hue: f64,
+    #[serde(default)]
+    temperature: f64,
+    #[serde(default)]
+    tint: f64,
+    #[serde(default)]
+    grayscale: bool,
+    #[serde(default)]
+    invert: bool,
+    #[serde(default)]
+    blur: f64,
+    #[serde(default)]
+    sharpen: f64,
+    #[serde(default)]
+    vignette: f64,
+}
+#[derive(serde::Deserialize)]
+struct RecordArea {
+    #[serde(default)]
+    d: String,
+    #[serde(default)]
+    feather: f64,
+}
+fn wide() -> f64 {
+    1024.0
+}
+fn tall() -> f64 {
+    768.0
+}
+fn one() -> f64 {
+    1.0
+}
+fn yes() -> bool {
+    true
+}
+fn width_default() -> f64 {
+    6.0
+}
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.trim().to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_owned();
+    if out.is_empty() {
+        "layer".to_owned()
+    } else {
+        out
+    }
+}
+fn order_key(index: usize) -> String {
+    format!("{index:08}")
+}
+/// An adjustment's step, absent when it does nothing.
+fn set(value: f64) -> Option<f64> {
+    (value.abs() > f64::EPSILON).then_some(value)
+}
+fn adjust_of(mark: &RecordMark) -> Option<Adjust> {
+    let adjust = Adjust {
+        exposure: set(mark.exposure),
+        contrast: set(mark.contrast),
+        highlights: set(mark.highlights),
+        shadows: set(mark.shadows),
+        saturation: set(mark.saturation),
+        vibrance: set(mark.vibrance),
+        hue: set(mark.hue),
+        temperature: set(mark.temperature),
+        tint: set(mark.tint),
+        curve: None,
+        grayscale: mark.grayscale.then_some(true),
+        invert: mark.invert.then_some(true),
+        blur: set(mark.blur),
+        sharpen: set(mark.sharpen),
+        vignette: set(mark.vignette),
+    };
+    (adjust.exposure.is_some()
+        || adjust.contrast.is_some()
+        || adjust.highlights.is_some()
+        || adjust.shadows.is_some()
+        || adjust.saturation.is_some()
+        || adjust.vibrance.is_some()
+        || adjust.hue.is_some()
+        || adjust.temperature.is_some()
+        || adjust.tint.is_some()
+        || adjust.grayscale.is_some()
+        || adjust.invert.is_some()
+        || adjust.blur.is_some()
+        || adjust.sharpen.is_some()
+        || adjust.vignette.is_some())
+    .then_some(adjust)
+}
+/// The picture's crop, when it shows less than all of it.
+fn crop_of(mark: &RecordMark) -> Option<[f64; 4]> {
+    let crop = [mark.crop_x, mark.crop_y, mark.crop_width, mark.crop_height];
+    let full = [
+        crop[0].abs() < f64::EPSILON,
+        crop[1].abs() < f64::EPSILON,
+        (crop[2] - 1.0).abs() < f64::EPSILON,
+        (crop[3] - 1.0).abs() < f64::EPSILON,
+    ];
+    (!full.iter().all(|held| *held)).then_some(crop)
+}
+/// A picture turned in its frame, in degrees.
+fn straighten_of(mark: &RecordMark) -> Option<f64> {
+    set(mark.straighten)
+}
+/// A flip about the middle of the picture's frame, as an affine transform.
+fn flip_of(mark: &RecordMark) -> Option<[f64; 6]> {
+    if !mark.flip_h && !mark.flip_v {
+        return None;
+    }
+    let sx = if mark.flip_h { -1.0 } else { 1.0 };
+    let sy = if mark.flip_v { -1.0 } else { 1.0 };
+    let cx = mark.x + mark.width / 2.0;
+    let cy = mark.y + mark.height / 2.0;
+    Some([sx, 0.0, 0.0, sy, cx - sx * cx, cy - sy * cy])
+}
+
+/// The ground the artwork paints on, the records' defaults filled in.
+fn ground_of(records: &Records) -> Ground {
+    Ground {
         texture: if records.ground_texture.is_empty() {
             "paper".to_owned()
         } else {
-            records.ground_texture
+            records.ground_texture.clone()
         },
         colour: if records.ground_colour.is_empty() {
             "#f4efe3".to_owned()
         } else {
-            records.ground_colour
+            records.ground_colour.clone()
         },
-    };
-    for (index, layer) in records.layers.iter().enumerate() {
-        art.put_layer(Layer {
+    }
+}
+
+/// The artwork's layers in the order the records keep them, with the empty
+/// artwork's one layer when they name none.
+fn layers_of(records: &Records) -> Vec<Layer> {
+    let mut layers: Vec<Layer> = records
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(index, layer)| Layer {
             id: slug(&layer.name),
             name: layer.name.clone(),
             group: layer.group.clone(),
@@ -428,146 +465,188 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
             invert: layer.invert,
             clip: layer.clip,
             unlinked: layer.unlinked,
-        });
-    }
-    if records.layers.is_empty() {
-        art.put_layer(Layer {
+        })
+        .collect();
+    if layers.is_empty() {
+        layers.push(Layer {
             id: "layer-1".to_owned(),
             name: "Layer 1".to_owned(),
             order: order_key(0),
             ..Layer::default()
         });
     }
-    for medium in &records.media {
-        let spec = crate::media::MediumSpec {
-            id: medium.id.clone(),
-            label: medium.label.clone(),
-            engine: medium.engine.clone(),
-            description: medium.description.clone(),
-            params: medium.params.clone(),
-            ground: medium.ground.clone(),
-            palette: medium
-                .palette
-                .iter()
-                .map(|pigment| crate::media::PigmentSpec {
-                    name: pigment.name.clone(),
-                    colour: pigment.colour.clone(),
-                    granulation: pigment.granulation.clamp(0.0, 1.0),
-                    strength: pigment.strength,
-                })
-                .collect(),
-        };
-        art.media.insert(medium.id.clone(), spec);
-    }
-    if let Some(reference) = &records.reference {
-        if !reference.image.is_empty() {
-            art.reference = Some(crate::model::Reference {
-                image: reference.image.clone(),
-                frame: reference.frame,
-                opacity: reference.opacity.clamp(0.0, 1.0),
-                visible: reference.visible,
-            });
-        }
-    }
-    for (index, mark) in records.marks.iter().enumerate() {
-        let mut style = Style {
-            opacity: Some(mark.opacity.clamp(0.0, 1.0)),
-            brush: crate::brushes::stored(&mark.brush),
-            ..Style::default()
-        };
-        let colour = if mark.colour.is_empty() {
-            "#1d1b19".to_owned()
-        } else {
-            mark.colour.clone()
-        };
-        let shape = if mark.kind == "stroke" {
-            // The ink the hand paints in is the stroke's colour; a shape is filled with it.
-            style.stroke = Some(colour);
-            Shape::Stroke {
-                points: mark.points.chunks_exact(3).map(<[f64]>::to_vec).collect(),
-                size: mark.size,
-                forks: None,
-                spread: None,
-                dabs: None,
-                scatter: None,
-                dab_length: None,
-                hatch: None,
-            }
-        } else if mark.kind == "text" {
-            style.fill = Some(colour);
-            Shape::Text {
-                x: mark.x,
-                y: mark.y,
-                text: mark.text.clone(),
-                size: mark.size,
-                font: (!mark.font.is_empty()).then(|| mark.font.clone()),
-                weight: u16::try_from(mark.weight).ok().filter(|weight| *weight > 0),
-                italic: mark.italic,
-                align: (!mark.align.is_empty()).then(|| mark.align.clone()),
-                line_height: set(mark.line_height),
-                width: None,
-                tracking: set(mark.tracking),
-                path: (!mark.text_path.is_empty()).then(|| mark.text_path.clone()),
-            }
-        } else if mark.kind == "image" {
-            Shape::Image {
-                src: mark.src.clone(),
-                x: mark.x,
-                y: mark.y,
-                width: mark.width,
-                height: mark.height,
-                crop: crop_of(mark),
-                straighten: straighten_of(mark),
-            }
-        } else {
-            style.fill = Some(colour);
-            Shape::Path { d: mark.d.clone() }
-        };
-        if !mark.blend.is_empty() && mark.blend != "normal" {
-            style.blend = Some(mark.blend.clone());
-        }
-        style.wet = mark.wet;
-        style.params = mark.params.clone();
-        if !mark.gradient_kind.is_empty() && mark.gradient_offsets.len() >= 2 {
-            let count = mark.gradient_offsets.len().min(mark.gradient_colours.len());
-            style.gradient = Some(crate::model::Gradient {
-                kind: mark.gradient_kind.clone(),
-                from: [mark.gradient_x0, mark.gradient_y0],
-                to: [mark.gradient_x1, mark.gradient_y1],
-                stops: mark
-                    .gradient_offsets
+    layers
+}
+
+/// The media presets the artwork saved, each with its id.
+fn media_of(records: &Records) -> Vec<(String, crate::media::MediumSpec)> {
+    records
+        .media
+        .iter()
+        .map(|medium| {
+            let spec = crate::media::MediumSpec {
+                id: medium.id.clone(),
+                label: medium.label.clone(),
+                engine: medium.engine.clone(),
+                description: medium.description.clone(),
+                params: medium.params.clone(),
+                ground: medium.ground.clone(),
+                palette: medium
+                    .palette
                     .iter()
-                    .zip(mark.gradient_colours.iter())
-                    .take(count)
-                    .map(|(at, colour)| (*at, colour.clone()))
+                    .map(|pigment| crate::media::PigmentSpec {
+                        name: pigment.name.clone(),
+                        colour: pigment.colour.clone(),
+                        granulation: pigment.granulation.clamp(0.0, 1.0),
+                        strength: pigment.strength,
+                    })
                     .collect(),
-                focal: None,
-            });
+            };
+            (medium.id.clone(), spec)
+        })
+        .collect()
+}
+
+/// The picture the artwork is compared against, when it names one.
+fn reference_of(records: &Records) -> Option<crate::model::Reference> {
+    let reference = records.reference.as_ref()?;
+    if reference.image.is_empty() {
+        return None;
+    }
+    Some(crate::model::Reference {
+        image: reference.image.clone(),
+        frame: reference.frame,
+        opacity: reference.opacity.clamp(0.0, 1.0),
+        visible: reference.visible,
+    })
+}
+
+/// The artwork's marks, in the order the records keep them.
+fn marks_of(records: &Records) -> Vec<Mark> {
+    records
+        .marks
+        .iter()
+        .enumerate()
+        .map(|(index, mark)| mark_of(index, mark))
+        .collect()
+}
+
+/// One mark of the record, as the engine keeps it.
+fn mark_of(index: usize, mark: &RecordMark) -> Mark {
+    let mut style = style_of(mark);
+    let shape = shape_of(mark, &mut style);
+    if !mark.blend.is_empty() && mark.blend != "normal" {
+        style.blend = Some(mark.blend.clone());
+    }
+    style.wet = mark.wet;
+    style.params = mark.params.clone();
+    style.gradient = gradient_of(mark);
+    Mark {
+        id: format!("mark-{index}"),
+        layer: slug(&mark.layer.name),
+        order: order_key(index),
+        name: mark.name.clone(),
+        shape,
+        style,
+        transform: flip_of(mark),
+        group: mark.group.clone(),
+        clip: String::new(),
+        area: String::new(),
+    }
+}
+
+/// What a mark is drawn with: its opacity, brush and adjustments.
+fn style_of(mark: &RecordMark) -> Style {
+    let mut style = Style {
+        opacity: Some(mark.opacity.clamp(0.0, 1.0)),
+        brush: crate::brushes::stored(&mark.brush),
+        ..Style::default()
+    };
+    style.adjust = adjust_of(mark);
+    style
+}
+
+/// What a mark draws, its colour reaching the style's stroke or fill.
+fn shape_of(mark: &RecordMark, style: &mut Style) -> Shape {
+    let colour = if mark.colour.is_empty() {
+        "#1d1b19".to_owned()
+    } else {
+        mark.colour.clone()
+    };
+    if mark.kind == "stroke" {
+        // The ink the hand paints in is the stroke's colour; a shape is filled with it.
+        style.stroke = Some(colour);
+        Shape::Stroke {
+            points: mark.points.chunks_exact(3).map(<[f64]>::to_vec).collect(),
+            size: mark.size,
+            forks: None,
+            spread: None,
+            dabs: None,
+            scatter: None,
+            dab_length: None,
+            hatch: None,
         }
-        let adjust = adjust_of(mark);
-        style.adjust = adjust;
-        art.put_mark(Mark {
-            id: format!("mark-{index}"),
-            layer: slug(&mark.layer.name),
-            order: order_key(index),
-            name: mark.name.clone(),
-            shape,
-            style,
-            transform: flip_of(mark),
-            group: mark.group.clone(),
-            clip: String::new(),
-            area: String::new(),
-        });
+    } else if mark.kind == "text" {
+        style.fill = Some(colour);
+        Shape::Text {
+            x: mark.x,
+            y: mark.y,
+            text: mark.text.clone(),
+            size: mark.size,
+            font: (!mark.font.is_empty()).then(|| mark.font.clone()),
+            weight: u16::try_from(mark.weight).ok().filter(|weight| *weight > 0),
+            italic: mark.italic,
+            align: (!mark.align.is_empty()).then(|| mark.align.clone()),
+            line_height: set(mark.line_height),
+            width: None,
+            tracking: set(mark.tracking),
+            path: (!mark.text_path.is_empty()).then(|| mark.text_path.clone()),
+        }
+    } else if mark.kind == "image" {
+        Shape::Image {
+            src: mark.src.clone(),
+            x: mark.x,
+            y: mark.y,
+            width: mark.width,
+            height: mark.height,
+            crop: crop_of(mark),
+            straighten: straighten_of(mark),
+        }
+    } else {
+        style.fill = Some(colour);
+        Shape::Path { d: mark.d.clone() }
     }
-    if let Some(area) = records.selection {
-        art.selection = Some(Selection {
-            d: area.d,
-            feather: area.feather.clamp(0.0, 500.0),
-            matte: None,
-        });
+}
+
+/// A mark's gradient fill, when its record names one with at least two stops.
+fn gradient_of(mark: &RecordMark) -> Option<crate::model::Gradient> {
+    if mark.gradient_kind.is_empty() || mark.gradient_offsets.len() < 2 {
+        return None;
     }
-    art.settle();
-    Ok(art)
+    let count = mark.gradient_offsets.len().min(mark.gradient_colours.len());
+    Some(crate::model::Gradient {
+        kind: mark.gradient_kind.clone(),
+        from: [mark.gradient_x0, mark.gradient_y0],
+        to: [mark.gradient_x1, mark.gradient_y1],
+        stops: mark
+            .gradient_offsets
+            .iter()
+            .zip(mark.gradient_colours.iter())
+            .take(count)
+            .map(|(at, colour)| (*at, colour.clone()))
+            .collect(),
+        focal: None,
+    })
+}
+
+/// The area the person selected, when the records keep one.
+fn selection_of(records: &Records) -> Option<Selection> {
+    let area = records.selection.as_ref()?;
+    Some(Selection {
+        d: area.d.clone(),
+        feather: area.feather.clamp(0.0, 500.0),
+        matte: None,
+    })
 }
 
 /// The artwork `file` holds, as a fresh document.
@@ -694,7 +773,8 @@ pub fn wand(picture: &[u8], request: &str) -> Result<String, String> {
             width / f64::from(image.width.max(1)),
             height / f64::from(image.height.max(1)),
         );
-        path = tilo_ui::kurbo::Affine::translate((x, y)) * scale * path;
+        path.apply_affine(scale);
+        path.apply_affine(tilo_ui::kurbo::Affine::translate((x, y)));
     }
     Ok(path.to_svg())
 }
@@ -930,12 +1010,15 @@ pub fn save(art: &Artwork, pictures: &[(String, Vec<u8>)]) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
+/// An opened package: the artwork's JSON and the pictures it carried.
+type OpenedArtwork = (String, Vec<(String, Vec<u8>)>);
+
 /// A `.artwork` package opened: the artwork's JSON and the pictures it carried.
 ///
 /// # Errors
 ///
 /// Why the file is no artwork, or cannot be read.
-pub fn open(archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub fn open(archive: &[u8]) -> Result<OpenedArtwork, String> {
     let store = ContentStore::memory();
     let file = unpack(archive, &store)?;
     let art = artwork_of(&file)?;
