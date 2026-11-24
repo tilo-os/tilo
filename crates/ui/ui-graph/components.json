@@ -4338,7 +4338,7 @@
     },
     {
       "name": "MediaCard",
-      "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item or on its own.",
+      "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item, on its own, or compact in a band (a pill with the art and the title in one row, `compact`).",
       "props": [
         {
           "name": "item",
@@ -4393,6 +4393,11 @@
               }
             }
           }
+        },
+        {
+          "name": "compact",
+          "doc": "It stands in a band as a pill rather than as a card: a bar control high, its art at the leading edge and its title beside it. A media session's live view gives this so the shell's bar shows what plays in the bar's own band.",
+          "type": "bool"
         },
         {
           "name": "selected",

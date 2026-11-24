@@ -232,7 +232,8 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> El
 }
 
 /// One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines
-/// under it. A view gives it as a grid's item or on its own.
+/// under it. A view gives it as a grid's item, on its own, or compact in a band (a pill with the
+/// art and the title in one row, `compact`).
 #[derive(Component, Default)]
 #[component(
     name = "MediaCard",
@@ -257,6 +258,10 @@ pub struct MediaCardProps {
     pub meta: Vec<String>,
     /// The shape of its art, `square` unless said.
     pub aspect: Option<MediaAspect>,
+    /// It stands in a band as a pill rather than as a card: a bar control high, its art at the
+    /// leading edge and its title beside it. A media session's live view gives this so the
+    /// shell's bar shows what plays in the bar's own band.
+    pub compact: bool,
     /// Whether it is the selected card.
     pub selected: bool,
     /// It was pressed: open what it stands for.
@@ -277,6 +282,7 @@ pub(crate) fn card(props: MediaCardProps) -> MediaCard {
         icon,
         meta,
         aspect,
+        compact,
         selected,
         activate,
         pictures,
@@ -292,7 +298,7 @@ pub(crate) fn card(props: MediaCardProps) -> MediaCard {
     if let Some(aspect) = aspect {
         card = card.aspect(aspect);
     }
-    card = card.selected(selected);
+    card = card.compact(compact).selected(selected);
     match activate {
         Event::None => card,
         Event::Action(binding) => card.on_action(binding),
