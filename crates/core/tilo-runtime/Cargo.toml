@@ -58,6 +58,10 @@ anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
 key-group = { path = "../key-group" }
+# The hint a joining device is handed of the server it enters its workspace through.
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+# Bounds the lines a tilolang process writes to its stderr.
+wire-frame = { path = "../../platform/wire-frame" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
 collab-types = { path = "../collab-types" }

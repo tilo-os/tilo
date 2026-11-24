@@ -20105,6 +20105,7 @@ dependencies = [
  "tilo-content",
  "tilo-content-device",
  "tilo-control",
+ "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-dialogs",
@@ -20147,6 +20148,7 @@ dependencies = [
  "tracing-subscriber",
  "ush",
  "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
