@@ -500,7 +500,7 @@ impl FrameReader {
         message.msg_iov = &raw mut iov;
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len();
+        message.msg_controllen = control_len(&control)?;
         // SAFETY: `recvmsg` reads the descriptor and writes only the buffers above.
         let read = unsafe { libc::recvmsg(self.stream.as_raw_fd(), &mut message, 0) };
         if read < 0 {
@@ -541,6 +541,12 @@ impl FrameReader {
 fn cmsg_space(bytes: usize) -> usize {
     // SAFETY: `CMSG_SPACE` is a size computation.
     unsafe { libc::CMSG_SPACE(u32::try_from(bytes).unwrap_or(u32::MAX)) as usize }
+}
+
+/// `control`'s length as `msghdr::msg_controllen`: `usize` on glibc, `socklen_t` on musl.
+#[cfg(unix)]
+fn control_len<T: TryFrom<usize>>(control: &[u8]) -> std::io::Result<T> {
+    T::try_from(control.len()).map_err(|_| std::io::Error::other("control buffer too large"))
 }
 
 /// Write `line` as one frame, carrying `fds` as `SCM_RIGHTS`: the descriptors travel in the same
@@ -599,7 +605,7 @@ fn write_piece(stream: &Stream, bytes: &[u8], fds: &[Descriptor]) -> std::io::Re
     };
     if !fds.is_empty() {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len();
+        message.msg_controllen = control_len(&control)?;
         // SAFETY: the header is empty and the control buffer has room for one message.
         let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
         if header.is_null() {
@@ -611,9 +617,10 @@ fn write_piece(stream: &Stream, bytes: &[u8], fds: &[Descriptor]) -> std::io::Re
         unsafe {
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
+            // `cmsg_len` is `usize` on glibc and `socklen_t` on musl.
             (*header).cmsg_len = libc::CMSG_LEN(
                 u32::try_from(fds.len() * std::mem::size_of::<RawFd>()).unwrap_or(u32::MAX),
-            ) as usize;
+            ) as _;
             let data = libc::CMSG_DATA(header).cast::<RawFd>();
             for (at, fd) in fds.iter().enumerate() {
                 *data.add(at) = fd.as_raw_fd();
