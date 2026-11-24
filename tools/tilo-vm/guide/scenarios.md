@@ -162,7 +162,7 @@ The steps prove, in order:
 | Step | What it proves | Needs |
 |---|---|---|
 | `identity` | each device's account holds the one identity the person signed in with | an identity made through published actions (first use is a UI ceremony today) |
-| `devices` | every device lists all of them as the person's own | the fleet enrolled by ticket under one identity |
+| `devices` | every device lists all of them as the person's own | the fleet added by ticket under one identity |
 | `second-output` | the x86 desktop drives two virtual outputs | a second display adapter on the desktop VM |
 | `outputs` | all three outputs are in the person's shared display view | the `person_displays` view published as an action |
 | `arrangement` | the outputs sit in one arrangement the pointer crosses | an action that places a display |
