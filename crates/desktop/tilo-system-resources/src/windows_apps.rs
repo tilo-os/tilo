@@ -97,6 +97,27 @@ pub enum Source {
     FoundBySetup,
 }
 
+/// Whether the person may do something with a Windows program, or how one of its ways to open
+/// stands: one plain boolean on the wire, and a named type here.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(transparent)]
+pub struct Allowed(pub bool);
+
+impl Allowed {
+    #[must_use]
+    pub const fn yes(self) -> bool {
+        self.0
+    }
+}
+
+impl From<bool> for Allowed {
+    fn from(allowed: bool) -> Self {
+        Self(allowed)
+    }
+}
+
 /// One Windows program a person can open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsApp {
@@ -125,26 +146,26 @@ pub struct WindowsApp {
     pub access: Access,
     /// How its route keeps it apart from the rest of the computer.
     pub fallback_detail: String,
-    pub launch_available: bool,
+    pub launch_available: Allowed,
     #[serde(default)]
     pub launch_unavailable_reason: Option<String>,
     /// Whether a document this computer chose opens in it.
-    pub portal_file_open_available: bool,
+    pub portal_file_open_available: Allowed,
     #[serde(default)]
     pub portal_file_open_unavailable_reason: Option<String>,
-    pub route_override_available: bool,
+    pub route_override_available: Allowed,
     #[serde(default)]
     pub route_override_unavailable_reason: Option<String>,
-    pub can_retry_install: bool,
-    pub can_escalate_install_to_vm: bool,
-    pub can_remove_launcher: bool,
-    pub can_vendor_uninstall: bool,
-    pub can_delete_data: bool,
-    pub can_publish_vm_candidate: bool,
+    pub can_retry_install: Allowed,
+    pub can_escalate_install_to_vm: Allowed,
+    pub can_remove_launcher: Allowed,
+    pub can_vendor_uninstall: Allowed,
+    pub can_delete_data: Allowed,
+    pub can_publish_vm_candidate: Allowed,
     /// How its installation went, in the service's words.
     #[serde(default)]
     pub installation: Option<String>,
-    pub vm_fallback_available: bool,
+    pub vm_fallback_available: Allowed,
     #[serde(default)]
     pub vm_fallback_unavailable_reason: Option<String>,
 }
