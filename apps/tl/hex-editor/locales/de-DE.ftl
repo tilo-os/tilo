@@ -485,6 +485,7 @@ d-lsmhjlew-why = Grund
 
 d-ki2kthjn = Datei öffnen
     .doc = Öffnet eine Datei, die eine Person gewählt hat oder die eine andere App übergab, als eigenen Puffer.
+    .did = öffnete eine Datei
 
 d-ki2kthjn-file = Datei
 
@@ -501,6 +502,7 @@ d-gdczru47-length = Länge
 
 d-wydoopxa = Neue leere Datei
     .doc = Ein leerer Puffer, in den Bytes getippt werden, gespeichert, wo die Person es sagt.
+    .did = startete einen leeren Puffer
 
 d-eziyendc = Leerer Puffer
 
@@ -513,6 +515,8 @@ d-5ptrab3k-file = Datei
 
 d-wucjou7l = Speichern
     .doc = Speichert den Puffer, woher er kam, oder fragt wo, wenn er noch nirgends steht.
+    .did = speicherte die Datei
+    .w-this-file-stands-nowhere-on-this = Diese Datei steht noch nirgends auf diesem Gerät: nutze Speichern unter
 
 d-o7q63qsf = Bytes speichern
     .doc = Die Bytes als Datei, die die Person mit der Speicherauswahl des Systems ablegt, die das Fenster zeigt.
@@ -706,11 +710,60 @@ d-cgsqzkz4-len = Länge
 d-umksjjan = Speichern
 
 d-it2igfh4 = Bibliothek
+    .w-hex-editor = Hex-Editor
+    .w-open-file = Datei öffnen
+    .w-new-empty-file = Neue leere Datei
+    .w-no-file-open = Keine Datei geöffnet
+    .w-open-a-file-to-read-its = Öffne eine Datei, um ihre Bytes zu lesen, oder starte eine leere und tippe Bytes ein.
+    .w-open-files = Geöffnete Dateien
+    .w-close = Schließen
+    .w-changed = { $size_text } · { $edited } geändert
+    .w-not-on-disk = Nicht auf der Platte
+    .w-saved = Auf der Platte
 
 d-hecirnqi = Dokument
+    .w-dismiss = Verwerfen
+    .w-de-ad-be-ef = de ad be ef
+    .w-words-in-the-bytes = Wörter in den Bytes
+    .w-read-as = Lesen als
+    .w-hex = Hex
+    .w-text = Text
+    .w-match-case = Groß-/Kleinschreibung beachten
+    .w-whole-word = Ganzes Wort
+    .w-close = Schließen
+    .w-what-to-put-there = Was dort stehen soll
+    .w-replace-all = Alle ersetzen
+    .w-first-matches = Erste { $len } Treffer
+    .w-matches = { $len } Treffer
+    .w-0x1f-or-31 = 0x1F oder 31
+    .w-reading-the-file = Datei wird gelesen…
 
 d-c3gyftot = Werkzeugleiste
+    .w-save = Speichern
+    .w-save-as = Speichern unter
+    .w-edit-mode = Bearbeitungsmodus
+    .w-overwrite = Überschreiben
+    .w-insert = Einfügemodus
+    .w-keys-type = Tasten schreiben
+    .w-hex = Hex
+    .w-text = Text
+    .w-edit = Bearbeiten
+    .w-find-bytes = Bytes suchen
+    .w-find-and-replace = Suchen und ersetzen
+    .w-go-to-offset = Zum Offset springen
+    .w-copy = Kopieren
+    .w-cut = Ausschneiden
+    .w-paste = Einfügen
+    .w-select-all = Alles auswählen
+    .w-inspector = Inspektor
 
 d-em4nrjtr = Inspektor
+    .w-inspector = Inspektor
+    .w-byte-order = Byte-Reihenfolge
+    .w-little = Little
+    .w-big = Big
 
 d-jdsqkjn7 = Status
+    .w-offset-0x = Offset 0x{ $cursor_hex }
+    .w-selected = { $byte_count } ausgewählt
+    .w-edited = { $byte_count } geändert
