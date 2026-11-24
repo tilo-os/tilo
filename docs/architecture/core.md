@@ -141,7 +141,7 @@ An app is a package installed in a workspace, written in tilolang or Rust
 against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
-controls name fields and actions). Installing it publishes all three into the
+controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. Installing it publishes all three into the
 workspace's tree. That tree is the only registry. Installing, updating,
 pinning and removing an app are actions on its resource there, admitted by
 the ordinary grants. A device keeps the packages its workspaces name in one
