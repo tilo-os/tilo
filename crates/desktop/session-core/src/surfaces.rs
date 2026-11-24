@@ -94,6 +94,20 @@ pub trait Published {
         look: &mut Look<'_>,
     ) -> Result<ResourceOperationStart, ApiError>;
 
+    /// Run its published action `address` after the person answered the question its contract
+    /// asks. A surface that keeps its calls itself ([`Self::invoke`]) answers the same way.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    fn invoke_confirmed(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
+        self.invoke(address, arguments, look)
+    }
+
     /// Run its published action `address` as `actor` (an agent, a script):
     /// who the change it makes is attributed to. The person's own input is
     /// [`Self::invoke`], and is theirs.
@@ -413,6 +427,22 @@ impl Surfaces {
         self.publishing(address)?
             .borrow_mut()
             .invoke(address, arguments, look)
+    }
+
+    /// Invoke the published action `address` after the person answered the question its contract
+    /// asks (`invoke_confirmed` on the service holding it).
+    ///
+    /// # Errors
+    /// No surface publishes it, or the surface refused.
+    pub fn invoke_confirmed(
+        &self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
+        self.publishing(address)?
+            .borrow_mut()
+            .invoke_confirmed(address, arguments, look)
     }
 
     /// Invoke the published action `address` as `actor` (an agent, a

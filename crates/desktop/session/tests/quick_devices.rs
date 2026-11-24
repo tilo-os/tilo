@@ -156,9 +156,9 @@ fn press(session: &mut Session, name: &str) {
     crate::common::wait_for(session, format!("the control {name:?}"), |session| {
         session.settle_services();
         session.step(REFRESH).expect("step");
-        crate::common::control_on_screen(session, name).then_some(())
+        crate::common::on_screen_at(session, name, WIDTH, TALL).then_some(())
     });
-    crate::common::press_control(session, name);
+    crate::common::press_at(session, name, WIDTH, TALL);
 }
 
 /// The presses `calls` took, once the last one is `part` on `row`.
@@ -384,7 +384,7 @@ fn the_clipboard_pastes_a_copy_and_the_keyboard_chooses_one() {
         session.settle_services();
         session.step(REFRESH).expect("step");
         (here(session) == "quick-settings"
-            && crate::common::control_on_screen(session, copied).is_some())
+            && crate::common::on_screen_at(session, copied, WIDTH, TALL).is_some())
         .then_some(())
     });
     press(&mut session, copied);
@@ -406,7 +406,7 @@ fn the_clipboard_pastes_a_copy_and_the_keyboard_chooses_one() {
         session.settle_services();
         session.step(REFRESH).expect("step");
         (here(session) == "quick-settings"
-            && crate::common::control_on_screen(session, copied).is_some())
+            && crate::common::on_screen_at(session, copied, WIDTH, TALL).is_some())
         .then_some(())
     });
     tap(&mut session, KEY_TAB);

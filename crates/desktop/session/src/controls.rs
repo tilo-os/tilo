@@ -107,6 +107,13 @@ pub enum SessionCommand {
     /// Stop a remote person driving this machine's state, as `Super+Escape` asks: everything stays
     /// as it is, and their input stops.
     CutRemoteInput,
+    /// Run the call the person approved on an irreversible action's question: the same address and
+    /// arguments the press made, through the API's confirmed path.
+    ConfirmedCall {
+        resource: String,
+        action: String,
+        arguments: Map<String, Value>,
+    },
 }
 
 /// A step of the magnifier.
@@ -537,6 +544,28 @@ impl crate::Session {
             SessionCommand::OpenPowerMenu => {
                 self.shared.surfaces.open(crate::device_lists::POWER);
                 Ok(())
+            }
+            SessionCommand::ConfirmedCall {
+                resource,
+                action,
+                arguments,
+            } => {
+                let address = ActionAddress::new(resource, action);
+                let mut look = crate::look::look(&mut self.compositor, Some(&self.content));
+                match self
+                    .shared
+                    .published
+                    .invoke_confirmed(&address, &arguments, &mut look)
+                {
+                    Ok(_) => self
+                        .settle()
+                        .map_err(|error| Error::Io(std::io::Error::other(error.to_string()))),
+                    // A refusal is said where the person made the call, as any refusal is.
+                    Err(refused) => {
+                        self.shared.handle.acknowledge(refused.to_string());
+                        Ok(())
+                    }
+                }
             }
             SessionCommand::Power(effect) => {
                 self.shared.power_effect(effect);

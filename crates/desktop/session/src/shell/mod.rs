@@ -121,6 +121,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::live_list::surface(),
         crate::shell::state::overlays_surface(),
         crate::shell::state::power_menu_surface(),
+        crate::shell::state::confirm_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
         crate::clipboard::surface(),
@@ -1937,6 +1938,10 @@ impl crate::Session {
                 .unwrap_or_default()
         });
         let resources = published.resources();
+        // What an irreversible action asks before it runs: the person's yes, through the shell's
+        // one question, and the call kept until they answer it.
+        let confirmation = Rc::clone(&self.shared.confirmation);
+        let overlays = &self.shared.overlays;
         shell.serve(
             |resource, action, name| {
                 tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
@@ -1969,9 +1974,33 @@ impl crate::Session {
                         )
                         .map_err(|error| error.to_string());
                 }
+                let address = ActionAddress::new(resource, action);
+                // An action whose contract waits for the person's yes runs only once they gave
+                // it: the press asks here, and the call runs when they answer. Shift skips a
+                // question only where Undo takes the action back, as it does everywhere.
+                // A question asks a yes; one whose contract wants a typed phrase keeps its own
+                // flow, which this question cannot stand in for.
+                if let Some((owner, spec)) = tilo_actions::api::locate(&resources, &address)
+                    && matches!(
+                        spec.confirmation_for_json(arguments),
+                        tilo_actions::ConfirmationPolicy::Confirm
+                    )
+                    && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
+                {
+                    confirmation.ask(crate::confirmation::Waiting {
+                        resource: resource.to_owned(),
+                        action: action.to_owned(),
+                        arguments: arguments.clone(),
+                        question: crate::confirmation::question_for(spec, owner),
+                    });
+                    // The question stands over the surface that asked it, which stays up under
+                    // it: answering it comes back to what the person was looking at.
+                    overlays.open_over(Part::Confirm, None);
+                    return Ok(());
+                }
                 published
                     .invoke(
-                        &ActionAddress::new(resource, action),
+                        &address,
                         arguments,
                         &mut tilo_session_core::surfaces::Look::none(),
                     )

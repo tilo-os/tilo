@@ -1174,6 +1174,10 @@ impl Session {
             },
         );
 
+        // The one call waiting for the person's yes: what an irreversible action presses for,
+        // shared by the shell's reading and the serve that raises it.
+        let confirmation = Rc::new(crate::confirmation::Confirmation::default());
+
         // Setup last.
         let setup = mount_setup(
             &mut compositor,
@@ -1606,6 +1610,7 @@ impl Session {
                 locking: options.verifier.available(),
             },
             Rc::clone(&commands),
+            Rc::clone(&confirmation),
         );
         services
             .borrow_mut()
@@ -1775,6 +1780,7 @@ impl Session {
             super_tap,
             super_peek,
             commands,
+            confirmation,
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
             readings,

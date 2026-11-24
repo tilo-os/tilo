@@ -109,6 +109,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("said", "Said", "session:notice"),
     ("overlays", "Overlays", "desktop:overlays"),
     ("power_menu", "PowerMenu", "desktop:power-menu"),
+    ("confirm", "Confirm", "desktop:confirm"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
     ("server", "Server", "device:server"),

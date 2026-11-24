@@ -49,6 +49,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/chrome.tl"),
     ),
     (
+        "confirm.tl",
+        include_str!("../../../../apps/tl/shell/confirm.tl"),
+    ),
+    (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
     ),

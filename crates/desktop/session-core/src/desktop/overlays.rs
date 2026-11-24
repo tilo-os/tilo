@@ -144,6 +144,9 @@ impl Overlay {
 /// one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Part {
+    /// A question the person must answer before an irreversible action runs: over everything,
+    /// its answer the only one that runs it.
+    Confirm,
     /// The search palette: over everything, the window it was opened from under it.
     Search,
     /// The About sheet: this computer's name and which Tilo it runs.
@@ -170,7 +173,8 @@ pub enum Part {
 
 impl Part {
     /// Every part, topmost first.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::Confirm,
         Self::Search,
         Self::About,
         Self::Emoji,
@@ -187,6 +191,7 @@ impl Part {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Confirm => "confirm",
             Self::Search => "search",
             Self::About => "about",
             Self::Emoji => "emoji",
@@ -210,7 +215,7 @@ impl Part {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
-            Self::Search | Self::About => Role::Dialog,
+            Self::Confirm | Self::Search | Self::About => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
             Self::Power
             | Self::WindowMenu
@@ -233,7 +238,7 @@ impl Part {
     pub const fn anchor(self) -> Anchor {
         match self {
             Self::Overview | Self::Strips => Anchor::Fill,
-            Self::Search | Self::About | Self::Emoji => Anchor::Center,
+            Self::Confirm | Self::Search | Self::About | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu => Anchor::TopLeading(0.0),
             Self::Power | Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
@@ -251,6 +256,11 @@ impl Part {
             Self::QuickSettings | Self::Centre | Self::Power => Size {
                 width: Some(POPOVER_WIDTH),
                 height: None,
+            },
+            // A question is as wide as a sheet, and as tall as the two lines it says.
+            Self::Confirm => Size {
+                width: Some(CONFIRM_WIDTH),
+                height: Some(CONFIRM_HEIGHT),
             },
             _ => Size {
                 width: None,
@@ -280,6 +290,10 @@ pub const POPOVER_WIDTH: f64 = 380.0;
 
 /// The height a popover's window starts at, before it asks for the height of the page it shows.
 pub const POPOVER_HEIGHT: f64 = 640.0;
+
+/// The width and height a question's room is measured at: what the shell draws its dialog in.
+pub const CONFIRM_WIDTH: f64 = 560.0;
+pub const CONFIRM_HEIGHT: f64 = 320.0;
 
 /// The gap between a popover and the edges of its display: the corner margin every surface the
 /// shell hangs at a corner keeps (the banners, the notification centre, quick settings), so they

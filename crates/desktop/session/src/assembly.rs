@@ -115,6 +115,10 @@ pub(crate) struct Shared {
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,
+    /// The one call waiting for the person's yes before an irreversible action runs, and the
+    /// question that asks it.
+    #[cfg(target_os = "linux")]
+    pub(crate) confirmation: Rc<crate::confirmation::Confirmation>,
     /// What the session's own resources read of this device.
     #[cfg(target_os = "linux")]
     pub(crate) controls: Rc<RefCell<crate::controls::ControlsReading>>,

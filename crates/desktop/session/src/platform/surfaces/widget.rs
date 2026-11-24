@@ -558,6 +558,9 @@ impl WidgetSurface {
 
     fn input(&mut self, event: &WindowEvent) {
         let _placed = self.placed();
+        // What a confirmation asks depends on the modifiers the person holds: the toolkit's one
+        // rule skips a question Shift was held for, where Undo takes the action back.
+        ui::widget::context_menu::note_input(event);
         self.host.send(event);
         self.owe();
     }

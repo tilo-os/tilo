@@ -75,6 +75,8 @@ mod clipboard_reading;
 mod closed_tasks;
 #[path = "collab.rs"]
 mod collab;
+#[path = "confirm.rs"]
+mod confirm;
 #[path = "controllers.rs"]
 mod controllers;
 #[path = "delete_workspace.rs"]
