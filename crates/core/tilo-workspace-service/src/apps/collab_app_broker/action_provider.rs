@@ -787,7 +787,7 @@ impl AppBrokerState {
     /// Whether `caller` may act in `workspace`. A caller confined to a workspace
     /// was admitted to it by its connection; any other caller must be a
     /// member.
-    fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
+    pub(crate) fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         match caller.workspace() {
             // Confinement says which workspace a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership

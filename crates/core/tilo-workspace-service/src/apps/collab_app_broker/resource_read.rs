@@ -84,6 +84,19 @@ impl AppBrokerState {
         Ok((decided, Reader::Person(person.to_owned())))
     }
 
+    /// Who `caller`, a caller inside this device, reads `workspace`'s records as: the person
+    /// signed in here, or before anyone signs in, this device in the workspace it founded.
+    ///
+    /// # Errors
+    /// A caller that reads no records here, as [`Self::reader`] refuses it.
+    pub(crate) fn reading_caller(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<Caller, ActionCallError> {
+        self.reader(caller, workspace).map(|(decided, _)| decided)
+    }
+
     /// The device as the reader, with nobody signed in here: what runs on this device reads the
     /// records of the workspace founded on it, decided as the person its own certificate names,
     /// and through its app when an app asks. Another device, an agent or a bot reads nothing as

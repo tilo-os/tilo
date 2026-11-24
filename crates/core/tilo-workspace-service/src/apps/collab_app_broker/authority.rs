@@ -173,7 +173,7 @@ impl AppBrokerState {
         )
     }
     /// The broker actor `caller` is in `workspace`.
-    pub(super) fn caller_actor(
+    pub(crate) fn caller_actor(
         &self,
         caller: &tilo_actions::remote::Caller,
         workspace: &str,

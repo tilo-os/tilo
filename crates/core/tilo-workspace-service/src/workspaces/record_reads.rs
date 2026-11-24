@@ -2,13 +2,13 @@
 //! asks.
 //!
 //! A host is a device that stores more, and it answers every workspace it holds alike: one it
-//! founded, the person's own, one it hosts. Another device reads for the certificate this device
-//! holds for it in the workspace the record is in, decided by that workspace's governance, record
-//! by record, as every member's read is: a device of the person's reads what the person may, an
-//! agent's grant what its grants reach, in a workspace its scope reaches. A caller inside this
-//! device (an app, the person signed in here, an agent acting for them) reads by the grants the
-//! apps this device serves decide for it. Any other caller's read goes whole to the app action
-//! server this host was given, when it was given one.
+//! founded, the person's own, one it hosts. Every read is decided by the workspace the record is
+//! in alone, through its governance as this device holds it ([`StatePeer`]): the caller as the
+//! actor it is there (a person, an app acting for one, an agent by its key's grant), with the
+//! smaller of the two grants where it acts for someone, and a device the workspace admitted by
+//! its membership besides. The workspace a caller's connection was admitted to widens nothing.
+//! A read of a workspace this device does not hold goes whole to the app action server this host
+//! was given, when it was given one.
 //!
 //! Who is in a workspace ([`PRESENCE`]) is read here too, as the resource it is: what the
 //! workspace's roster names, with the devices each is present on as presence on this device hears
@@ -55,8 +55,8 @@ pub type Admitted = Arc<dyn Fn(&Caller, &str) -> Result<(), ActionCallError> + S
 
 /// Who reads a record for its caller.
 enum Route {
-    /// Another device, for the certificate this device holds for it there.
-    Certified(Workspaces),
+    /// A workspace this device holds, the read decided by its governance already.
+    Held(Workspaces),
     /// A caller inside this device, by its grants.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     Inside(Arc<Broker>),
@@ -172,93 +172,173 @@ impl RecordReads {
         Some(if mine { Ok(reads) } else { Err(refused()) })
     }
 
-    /// The certificate this device holds for `caller`'s device in `workspace`, when it holds
-    /// one that is the caller's own: signed by its person, and no stand-in.
-    fn certificate(
-        workspaces: &Workspaces,
-        caller: &Caller,
-        workspace: &str,
-    ) -> Option<tilo_user_identity::DeviceCert> {
-        let (person, device) = (*caller.user_public_key()?, *caller.device_public_key()?);
-        let workspaces = workspaces.clone();
-        let workspace = workspace.to_owned();
-        let certificate = crate::device_documents::on_its_own(async move {
-            workspaces
-                .state(&workspace)
-                .await?
-                .certificates()
-                .into_iter()
-                .find(|certificate| certificate.device_public_key == device)
-        })?;
-        (certificate.user_public_key == person
-            && tilo_user_identity::verify_device_cert(&certificate).is_ok()
-            && !certificate.capabilities.stand_in)
-            .then_some(certificate)
-    }
-
-    /// Whether `caller`, for the device `certificate` names, may read `address` now: an agent's
-    /// in a workspace its scope reaches, and every device's as the workspace's governance grants
-    /// it the record. Every member's device sees who else is there, and a key is read as
-    /// [`Self::reads_key`] decides. A call an app makes is decided by the grants the apps here
-    /// give that app besides.
+    /// Whether `caller` may read `address` now, decided by the workspace the address names
+    /// alone, through its governance as this device holds it (`state`). Its grants find the key
+    /// the caller reads as: one revoked, expired or scoped to another workspace reads nothing. A
+    /// device the workspace admitted reads as its membership lets it, within its certificate's
+    /// scope, and every caller as the actor it is there, the smaller grant where it acts for
+    /// someone. Every member sees who else is there, and a key is read as [`Self::reads_key`]
+    /// decides.
     fn may_read(
         &self,
-        workspaces: &Workspaces,
-        certificate: &tilo_user_identity::DeviceCert,
+        state: &StatePeer,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<(), ActionCallError> {
-        #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
-        let _ = caller;
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if caller.acting().app().is_some()
-            && let Some(broker) = self.broker()
-        {
-            broker.may_read_record(caller, address)?;
+        let now = tilo_clock::wall();
+        let device = caller.device_public_key().copied();
+        if let Some(device) = device {
+            Self::key_reaches(state, &device, &address.workspace, now)?;
         }
-        if certificate
-            .capabilities
-            .agent
-            .as_ref()
-            .is_some_and(|scope| !scope.reaches(&address.workspace))
-        {
+        if address.app == KEY_GRANTS {
+            return Self::reads_key(state, caller, &address.record, now).map_err(|_| refused());
+        }
+        let member = device.and_then(|device| {
+            state
+                .certificates()
+                .into_iter()
+                .find(|certificate| certificate.device_public_key == device)
+        });
+        if let Some(certificate) = &member {
+            if certificate
+                .capabilities
+                .agent
+                .as_ref()
+                .is_some_and(|scope| !scope.reaches(&address.workspace))
+            {
+                return Err(refused());
+            }
+            if address.app != PRESENCE {
+                state
+                    .check_document_read(
+                        certificate.device_public_key,
+                        &address.app,
+                        &address.record,
+                        now,
+                    )
+                    .map_err(|_| refused())?;
+            }
+        }
+        self.actor_reads(state, caller, member.is_some(), address, now)
+    }
+
+    /// Whether `caller` reads `address` as the actor it is in the workspace the address names,
+    /// by that workspace's governed policy: an app acting for a person, an agent for its person,
+    /// each the smaller of its own grant and theirs. A caller inside this device that the
+    /// workspace did not admit as a device reads as the apps here name it (the person signed in,
+    /// or before anyone signs in, this device in the workspace it founded).
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    fn actor_reads(
+        &self,
+        state: &StatePeer,
+        caller: &Caller,
+        member: bool,
+        address: &ResourceAddress,
+        now: web_time::SystemTime,
+    ) -> Result<(), ActionCallError> {
+        use tilo_action_policy::{ActionKind, Answer};
+        let workspace =
+            tilo_server_protocol::WorkspaceId::parse(&address.workspace).ok_or_else(refused)?;
+        let policy = super::describe(workspace, "", state).ok_or_else(refused)?;
+        let broker = self.broker();
+        let decided = match (&broker, member) {
+            (Some(broker), false) => broker.reading_caller(caller, &address.workspace)?,
+            _ => match caller.workspace() {
+                Some(admitted) if admitted != address.workspace => {
+                    caller.clone().in_workspace(&address.workspace)
+                }
+                _ => caller.clone(),
+            },
+        };
+        let actor = match &broker {
+            Some(broker) => broker.caller_actor(&decided, &address.workspace),
+            None => tilo_broker_core::actor::BrokerActor::for_caller(&decided),
+        };
+        let seconds = now
+            .duration_since(web_time::SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        if !Broker::may_act_in(&decided, &policy, seconds) {
             return Err(refused());
         }
         if address.app == PRESENCE {
             return Ok(());
         }
-        let workspaces = workspaces.clone();
-        let certificate = certificate.clone();
-        let (workspace, app, record) = (
-            address.workspace.clone(),
-            address.app.clone(),
-            address.record.clone(),
-        );
-        crate::device_documents::on_its_own(async move {
-            let state = workspaces
-                .state(&workspace)
-                .await
-                .ok_or("this device does not hold the workspace".to_owned())?;
-            let now = tilo_clock::wall();
-            if app == KEY_GRANTS {
-                return Self::reads_key(&state, &certificate, &record, now);
-            }
-            state.check_document_read(certificate.device_public_key, &app, &record, now)
-        })
-        .map_err(|_| refused())
+        let node = collab_types::document_node(&address.workspace, &address.app, &address.record);
+        if actor.answer_in(&policy, &node, ActionKind::Read, seconds) == Answer::Allow {
+            Ok(())
+        } else {
+            Err(refused())
+        }
     }
 
-    /// Whether the device `certificate` names reads the key `grant` of `state`'s workspace now: a
-    /// key its own grant and the grants it minted, a device of a person every grant of theirs,
-    /// and whoever the workspace lets revoke its grants every one.
+    /// Without the apps' policy a device reads by its membership alone, and nothing else reads.
+    #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+    fn actor_reads(
+        &self,
+        _state: &StatePeer,
+        _caller: &Caller,
+        member: bool,
+        _address: &ResourceAddress,
+        _now: web_time::SystemTime,
+    ) -> Result<(), ActionCallError> {
+        if member { Ok(()) } else { Err(refused()) }
+    }
+
+    /// Whether the key `device` reads as, as `state`'s workspace records its grant, still reaches
+    /// `workspace`: live, unexpired and scoped to it. A device the workspace records no key of is
+    /// decided by its membership alone.
+    fn key_reaches(
+        state: &StatePeer,
+        device: &[u8; 32],
+        workspace: &str,
+        now: web_time::SystemTime,
+    ) -> Result<(), ActionCallError> {
+        let id = WorkspaceGrant::id_of(device);
+        let now_ms = now
+            .duration_since(web_time::SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
+        match state
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .find(|grant| grant.id == id)
+        {
+            Some(grant)
+                if grant.revoked_ms.is_some()
+                    || grant.expires_ms.is_some_and(|until| until <= now_ms)
+                    || grant
+                        .scope
+                        .as_deref()
+                        .is_some_and(|scope| scope != workspace) =>
+            {
+                Err(refused())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether `caller` reads the key `grant` of `state`'s workspace now: a key its own grant and
+    /// the grants it minted, a device of a person every grant of theirs, and whoever the
+    /// workspace lets revoke its grants every one.
     fn reads_key(
         state: &StatePeer,
-        certificate: &tilo_user_identity::DeviceCert,
+        caller: &Caller,
         grant: &str,
         now: web_time::SystemTime,
     ) -> Result<(), String> {
-        let own = WorkspaceGrant::id_of(&certificate.device_public_key);
-        let person = hex::encode(certificate.user_public_key);
+        let (Some(device), Some(person)) = (caller.device_public_key(), caller.user_public_key())
+        else {
+            return Err("only a device reads a workspace's keys".to_owned());
+        };
+        let own = WorkspaceGrant::id_of(device);
+        let persons_device = state
+            .certificates()
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == *device)
+            .is_some_and(|certificate| certificate.capabilities.agent.is_none());
+        let person = hex::encode(person);
         let theirs = state
             .governance()
             .workspace_grants()
@@ -267,11 +347,11 @@ impl RecordReads {
             .is_some_and(|held| {
                 held.id == own
                     || held.parent.as_deref() == Some(own.as_str())
-                    || (certificate.capabilities.agent.is_none() && held.person == person)
+                    || (persons_device && held.person == person)
             });
         if theirs
             || state
-                .reads_every_key(certificate.device_public_key, now)
+                .reads_every_key(*device, now)
                 .map_err(|error| error.to_string())?
         {
             Ok(())
@@ -280,13 +360,20 @@ impl RecordReads {
         }
     }
 
-    /// Who reads `address` for `caller`, decided already for another device.
+    /// `workspace` as this device holds it, when it does.
+    fn held(workspaces: &Workspaces, workspace: &str) -> Option<StatePeer> {
+        let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
+        crate::device_documents::on_its_own(async move { workspaces.state(&workspace).await })
+    }
+
+    /// Who reads `address` for `caller`: this device, for a workspace it holds, once that
+    /// workspace's governance let the caller read it; the app action server, for any other.
     fn route(&self, caller: &Caller, address: &ResourceAddress) -> Result<Route, ActionCallError> {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
-            && let Some(certificate) = Self::certificate(&workspaces, caller, &address.workspace)
+            && let Some(state) = Self::held(&workspaces, &address.workspace)
         {
-            self.may_read(&workspaces, &certificate, caller, address)?;
-            return Ok(Route::Certified(workspaces));
+            self.may_read(&state, caller, address)?;
+            return Ok(Route::Held(workspaces));
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if let Some(broker) = self.broker() {
@@ -302,7 +389,7 @@ impl RecordReads {
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
         let here = match route {
-            Route::Certified(workspaces) => {
+            Route::Held(workspaces) => {
                 let mut here = Vec::new();
                 super::PresentDevices::attach(&workspaces, &address.workspace, &mut here);
                 Some(here)
@@ -326,7 +413,7 @@ impl RecordReads {
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
         let workspaces = match route {
-            Route::Certified(workspaces) => workspaces,
+            Route::Held(workspaces) => workspaces,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             Route::Inside(broker) => return broker.read_record(caller, address),
             Route::Served(served) => return served.read(caller, address),
@@ -408,24 +495,26 @@ impl ResourceReads for RecordReads {
             return Self::key(route, caller, address);
         }
         let workspaces = match route {
-            Route::Certified(workspaces) => workspaces,
+            Route::Held(workspaces) => workspaces,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             Route::Inside(broker) => return broker.read_record(caller, address),
             Route::Served(served) => return served.read(caller, address),
         };
-        let (workspace, app, record) = (
+        let (held, workspace, app, record) = (
+            workspaces.clone(),
             address.workspace.clone(),
             address.app.clone(),
             address.record.clone(),
         );
         let bytes = crate::device_documents::on_its_own(async move {
-            workspaces
-                .resource_document(&workspace, &app, &record)
-                .await
+            held.resource_document(&workspace, &app, &record).await
         })
         .map_err(|error| ActionCallError::Unavailable {
             reason: error.to_string(),
         })?;
+        // Decided again before the copy is handed out: a grant revoked while it was read cuts it.
+        let state = Self::held(&workspaces, &address.workspace).ok_or_else(refused)?;
+        self.may_read(&state, caller, address)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
@@ -442,7 +531,7 @@ impl ResourceReads for RecordReads {
             .as_ref()
             .and_then(WeakWorkspaces::upgrade)
             .ok_or_else(refused)?;
-        let certificate = Self::certificate(&workspaces, caller, workspace).ok_or_else(refused)?;
+        let state = Self::held(&workspaces, workspace).ok_or_else(refused)?;
         let listed = workspaces
             .own_listing(workspace)
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
@@ -454,10 +543,7 @@ impl ResourceReads for RecordReads {
                 app,
                 record,
             })
-            .filter(|address| {
-                self.may_read(&workspaces, &certificate, caller, address)
-                    .is_ok()
-            })
+            .filter(|address| self.may_read(&state, caller, address).is_ok())
             .collect())
     }
 
@@ -489,7 +575,7 @@ impl ResourceReads for RecordReads {
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
         match self.route(caller, address)? {
-            Route::Certified(_) => Err(ActionCallError::Unavailable {
+            Route::Held(_) => Err(ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             }),
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
@@ -532,7 +618,7 @@ impl ResourceReads for RecordReads {
             return Ok(());
         }
         let workspaces = match route {
-            Route::Certified(workspaces) => workspaces,
+            Route::Held(workspaces) => workspaces,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             Route::Inside(broker) => return broker.watch_record(caller, address, wake),
             Route::Served(served) => return served.watch(caller, address, wake),
@@ -567,3 +653,7 @@ impl ResourceReads for RecordReads {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "record_reads_tests.rs"]
+mod tests;
