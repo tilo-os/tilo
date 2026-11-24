@@ -35,7 +35,8 @@ impl Checker<'_> {
         }
         let r = self.expr(&a.value, None);
         match &r.ty {
-            Ty::Record(_) => Some(r),
+            // A union of record types is a resource too: whichever record it holds.
+            Ty::Record(_) | Ty::Union(_) => Some(r),
             Ty::Error => None,
             other => {
                 let t = self.show(other);
@@ -414,7 +415,7 @@ impl Checker<'_> {
         }
         let r = self.expr(&target.value, None);
         match &r.ty {
-            Ty::Record(_) => {}
+            Ty::Record(_) | Ty::Union(_) => {}
             Ty::Error => return Ex::error(),
             other => {
                 let t = self.show(other);
