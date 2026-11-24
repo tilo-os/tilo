@@ -25,7 +25,6 @@ use runtime_collab::CollabClient;
 use tilo_actions::ApiError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_model::{
     GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -33,6 +32,9 @@ use tilo_desktop_model::{
 use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, AppSocket, Launches, Lists, Options, Session};
+use tilo_session_core::desktop::verbs::{
+    CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
+};
 
 use crate::common::{shot, until, wait_for};
 
@@ -1104,7 +1106,8 @@ fn the_notes_app(
         let (reader, writer) = stream.into_split();
         let (client, carrying) = CollabClient::over(reader, writer);
         tokio::spawn(carrying);
-        let handle = crate::common::held::opened(&client, &notes_route()).await
+        let handle = crate::common::held::opened(&client, &notes_route())
+            .await
             .expect("the app the session launched joins the workspace's route");
         let context = handle
             .subscribe_context()
@@ -1168,8 +1171,7 @@ fn following_someone_tells_the_window_app_whose_view_is_theirs() {
     // The app of the Notes window is on the workspace's route.
     let (joined, app_joined) = std::sync::mpsc::channel();
     let (told, hears) = std::sync::mpsc::channel();
-    let app =
-        std::thread::spawn(move || the_notes_app(&socket, joined, told));
+    let app = std::thread::spawn(move || the_notes_app(&socket, joined, told));
     until(&mut session, "the app joins the workspace's route", |_| {
         app_joined.try_recv().is_ok()
     });
@@ -1463,12 +1465,17 @@ fn the_follow_banner_opens_the_followed_persons_card() {
 fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
     let _settled = ui::motion::testing::settled();
     let (_home, _settings) = settings_home();
-    settings_store::widgets::PEOPLE_OVERLAY
-        .set(settings_store::widgets::PeopleOverlayPrefs {
-            pinned: true,
-            edge: settings_store::widgets::DockEdge::Right,
-        })
-        .expect("the roster was kept on screen before");
+    // Kept on a device whose session is not running yet, as the CLI keeps it there: the session
+    // that follows starts with the roster on screen. The overlay is the device's own setting, and
+    // a device whose session never ran has not named its key yet, so its section stands where the
+    // settings outside the session make it: `devices//settings/widgets`.
+    let address = settings_store::placement::address("widgets", None, "");
+    settings_store::outside::set_on_this_device(
+        address.id.as_str(),
+        &settings_store::workspace::verb("people_overlay"),
+        &serde_json::json!({"pinned": true, "edge": "right"}),
+    )
+    .expect("the roster was kept on screen before");
 
     let own = OwnPresence {
         label: "Quinten".to_owned(),

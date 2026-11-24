@@ -2552,11 +2552,23 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
 #[test]
 fn the_shell_starts_on_the_picture_the_person_chose() {
     let _settled = ui::motion::testing::settled();
+    // The choice is made on a device whose session is not running, as `tilo` makes it there: kept
+    // for the session that follows, and left at once for what the device's processes read.
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+    settings_store::outside::set_on_this_device(
+        "settings/appearance",
+        &settings_store::workspace::verb("wallpaper"),
+        &serde_json::json!("dunes"),
+    )
+    .expect("the choice is written on the device");
     let state = tempfile::tempdir().expect("a state directory");
-    settings_store::appearance::WALLPAPER
-        .set(Some("dunes".to_owned()))
-        .expect("the choice is written");
-    let mut session = session_keeping(state.path());
+    // The device's records, held in this process as its daemon keeps them: where the session puts
+    // what the next one starts with.
+    let mut session = crate::common::headless(Options {
+        state: Some(state.path().to_path_buf()),
+        records: Some(tilo_session_client::device_records::DeviceRecords::held()),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     let records = session
         .device_records()
@@ -2571,9 +2583,6 @@ fn the_shell_starts_on_the_picture_the_person_chose() {
         kept.get("workspaces").is_none(),
         "and none of them has one of its own yet: {kept}"
     );
-    settings_store::appearance::WALLPAPER
-        .set(None)
-        .expect("the choice is cleared");
 }
 
 /// The workspace switcher offers making, joining and settings; branching and leaving stay
