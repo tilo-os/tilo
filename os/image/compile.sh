@@ -170,7 +170,7 @@ if [[ ${1:-} == --apps ]]; then
   from=${2:?usage: compile.sh --apps FROM OUT} out=${3:?usage: compile.sh --apps FROM OUT}
   rm -rf "$out"
   mkdir -p "$out"
-  files=(libruntime_dylib.so tilo-runtime-account-capability runtime-engines
+  files=(libruntime_dylib.so runtime-engines
          tilo-runtime-bundle tilo-app-package tilo-install tilo-cli-shim)
   [[ ! -f $from/runtime-engines ]] || mapfile -t -O "${#files[@]}" files < "$from/runtime-engines"
   files+=(apps language-packs)
@@ -540,8 +540,6 @@ case "$TILO_RUST_LTO" in \
          && RUNTIME_DYLIB="$(find "$out/prebuilt-runtime/tilo-runtime" -name libruntime_dylib.so -print -quit)" \
          && [ -n "$RUNTIME_DYLIB" ] \
          && cp "$RUNTIME_DYLIB" "$out"/libruntime_dylib.so \
-         && test -x "$(dirname "$RUNTIME_DYLIB")/../bin/tilo-runtime-account-capability" \
-         && cp "$(dirname "$RUNTIME_DYLIB")/../bin/tilo-runtime-account-capability" "$out"/ \
          && find "$(dirname "$RUNTIME_DYLIB")" -maxdepth 1 -name 'libtilo_*_engine.so' -printf '%f\n' \
               | sort > "$out"/runtime-engines \
          && while IFS= read -r engine; do cp "$(dirname "$RUNTIME_DYLIB")/$engine" "$out"/; done < "$out"/runtime-engines; \
@@ -561,7 +559,6 @@ case "$TILO_RUST_LTO" in \
               [ -z "$b" ] || cp "$target/thin-app/$b" "$out"/thin-apps/; \
             done \
          && cp $target/thin-app/libruntime_dylib.so "$out"/ \
-         && cp $target/thin-app/tilo-runtime-account-capability "$out"/ \
          && cp $target/thin-app/runtime-engines "$out"/runtime-engines \
          && while IFS= read -r engine; do cp "$target/thin-app/$engine" "$out"/; done < "$out"/runtime-engines \
          && if [ -n "$THIN_RUNTIMES" ]; then cp "$target/thin-app/tilolang-process" "$out"/thin-apps/; fi \
@@ -630,7 +627,7 @@ build_phase elf-hardening
 os/scripts/verify-elf-hardening.sh "$out" \
     && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
          || os/scripts/verify-elf-hardening.sh "$out"/thin-apps; } \
-    && os/scripts/verify-elf-hardening.sh "$out"/libruntime_dylib.so "$out"/tilo-runtime-account-capability \
+    && os/scripts/verify-elf-hardening.sh "$out"/libruntime_dylib.so \
          $(sed "s|^|$out/|" "$out/runtime-engines") \
     || exit
 

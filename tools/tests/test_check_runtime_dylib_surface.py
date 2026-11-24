@@ -131,10 +131,10 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("only the Store links", found[0])
 
     def test_account_credentials_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
-        # Mail and Settings load account credentials from
-        # libtilo_accounts_engine.so, and only a program reading a named zone
-        # carries the zone database; the runtime depending on either maps it
-        # into every app process, even though apps reach it.
+        # The workspace service signs in with account credentials on its own,
+        # and only a program reading a named zone carries the zone database;
+        # the runtime depending on either maps it into every app process, even
+        # though nothing of it reaches an app.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/integrations/account-credentials)\n"
@@ -148,7 +148,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches account-credentials", found[0])
-        self.assertIn("libtilo_accounts_engine.so", found[0])
+        self.assertIn("the workspace service signs in with on its own", found[0])
         self.assertIn("reaches jiff-tzdb", found[1])
         self.assertIn("reads a named zone", found[1])
 

@@ -61,9 +61,9 @@ out.
 
 An engine a few apps use moves out of the runtime into an engine library
 of its own: a crate under `crates/engines/loadable/<name>/` that is a Rust
-`dylib` chained on the runtime (account credentials with its OAuth client and cloud-storage
-providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches ownership: `libtilo_accounts_engine.so` for Settings; the contact directory:
+`dylib` chained on the runtime (account credentials with its OAuth client and the
+cloud-storage providers, the IMAP client and the WebDAV/CalDAV client left the runtime
+and Settings for the workspace service, which signs in on its own; the contact directory:
 `libtilo_contact_directory_engine.so` for Messages; Settings itself, its library with
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
@@ -135,10 +135,9 @@ in the budget, by library name, with the runtime's headroom, rounding and
 raise files: a raise adds `"lib<name>.so" = <bytes>` under
 `[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
 does not use (`[engine_users]` in the budget names the ones those apps use), renders Typst Editor through its engine, and runs the other engines
-from each app that loads them (`mail --probe-accounts-engine`, `contacts`, `mail` and
+from each app that loads them (`contacts` and
 `messages --probe-contact-directory-engine`), checking each app loads its
-engine itself. Settings has no probe: the trace of its start shows it loads
-its engine library, which runs the app and brings the accounts engine.
+engine itself.
 
 ### Engines the toolkit opens on first use
 

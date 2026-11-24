@@ -228,10 +228,6 @@ for pair in ${app_feature_pairs[@]+"${app_feature_pairs[@]}"}; do
         *" -p ${pair%%/*} "*) feature_csv="$feature_csv,$pair" ;;
     esac
 done
-# The protected-grant probe must resolve the very SDK shipped for every app
-# selection; building it separately would permit a different unified graph.
-binary_crates+=(tilo_runtime_account_capability)
-build_targets+=(--bin tilo-runtime-account-capability)
 # The binaries that link an engine by name (see entry_graph), apart.
 named_engine_targets=()
 for index in "${!binaries[@]}"; do

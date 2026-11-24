@@ -373,7 +373,6 @@ members = [
     "crates/sdk/runtime-dylib",
     # Engines a few apps load, shipped beside it in the runtime bundle.
     "crates/core/engine-loader",
-    "crates/engines/loadable/accounts",
     "crates/engines/loadable/adblock",
     "crates/engines/loadable/browser",
     "crates/engines/loadable/camera",

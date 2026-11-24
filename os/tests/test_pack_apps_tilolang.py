@@ -244,7 +244,7 @@ class PayloadTreeTests(unittest.TestCase):
 
     def compile_tree(self, root, tilolang_packages, with_tilolang=True):
         source = root / 'compiled'
-        for name in ('libruntime_dylib.so', 'tilo-runtime-account-capability', 'runtime-engines',
+        for name in ('libruntime_dylib.so', 'runtime-engines',
                      'tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim',
                      'thin-apps/tilolang-process'):
             (source / name).parent.mkdir(parents=True, exist_ok=True)

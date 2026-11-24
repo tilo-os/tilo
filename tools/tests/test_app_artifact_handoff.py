@@ -121,7 +121,6 @@ header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes
 pathlib.Path('target/thin-app/totp').write_bytes(header)
 ELF
 chmod +x target/thin-app/totp
-cp target/thin-app/totp target/thin-app/tilo-runtime-account-capability
 printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 printf '\\177ELF fixture typst engine' > target/thin-app/libtilo_typst_engine.so
 printf 'libtilo_typst_engine.so\\n' > target/thin-app/runtime-engines
