@@ -1,14 +1,15 @@
-//! What an owner does to their server from another of their devices.
+//! What a server's person, and the administrators of the workspaces it
+//! serves, do to the machine from their own devices.
 //!
-//! A server is headless: its person reaches it through its entry in their
-//! Servers workspace, where they also rename and retire it, never over ssh.
-//! Each thing they may do is
-//! one [`ServerOperation`], and each answers with a typed
-//! [`ServerOperationResult`]: read-only ones with the live answer (the
-//! server's health, what it holds and how its copies stand, a service's
-//! journal), and the rest with what it asked a root helper to do.
+//! A server is headless: its controls are the `server` device actions its
+//! daemon answers ([`Controls`]), never ssh. Each control is one
+//! [`ServerOperation`] ([`requested`] reads an action's name and arguments as
+//! one), and each answers with a typed [`ServerOperationResult`]: read-only
+//! ones with the live answer (the server's health, what it holds and how its
+//! copies stand, a service's journal), and the rest with what it asked a root
+//! helper to do.
 //!
-//! The server daemon is unprivileged, so anything that changes the machine
+//! The daemon is unprivileged, so anything that changes the machine
 //! itself — restarting a unit, rebooting, staging an update, pausing updates,
 //! going back to the previous system or making Tilo the default start — is
 //! written at one fixed path
@@ -16,17 +17,14 @@
 //! (`os/usr/libexec/tilo-server-control`), the way the update policy is
 //! ([`super::policy`]). The helper answers at [`CONTROL_RESULT`]. Nothing the
 //! daemon writes is passed to a shell, and the helper checks it again.
-//!
-//! The server's entry in its person's Servers workspace keeps what was
-//! asked of it and what it answered ([`super::Asked`]), so the answer to a
-//! later `Status` says what was asked of this server and what it answered.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde_json::Value;
 use tilo_server_protocol::transport::{
-    HeldCopy, HeldWorkspace, OperationEntry, ServerAnswer, ServerHardware, ServerOperation,
-    ServerOperationResult, ServerStatus,
+    HeldCopy, HeldWorkspace, ServerAnswer, ServerHardware, ServerOperation, ServerOperationResult,
+    ServerStatus,
 };
 use tilo_unlock_protocol::opened::{OPENED_PATH, Opening};
 use tilo_user_identity::DeviceCert;
@@ -44,6 +42,122 @@ pub const CONTROL_WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(100);
 /// The most journal lines one `Logs` answers with.
 pub const MAX_LOG_LINES: u32 = 500;
+/// How many journal lines a `journal` reads when it names no number.
+const LOG_LINES: u32 = 200;
+
+/// The actions of a server's `server` resource, as its daemon publishes them:
+/// each is one [`ServerOperation`] ([`requested`]).
+pub const ACTIONS: [&str; 10] = [
+    "status",
+    "journal",
+    "restart",
+    "reboot",
+    "stage-update",
+    "pause-updates",
+    "resume-updates",
+    "rollback",
+    "drain",
+    "set-default-start",
+];
+
+/// The operation the `server` action `action` asks for with `args`: a
+/// `restart` and a `journal` name their systemd unit as `service`, and a
+/// `journal` how many lines it reads as `lines`.
+///
+/// # Errors
+/// `action` is no control of a server's, or names no unit where it needs one.
+pub fn requested(action: &str, args: &Value) -> Result<ServerOperation, String> {
+    let service = || {
+        args.get("service")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|service| !service.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("Name the service to {action}, such as tilo-runtime.service."))
+    };
+    Ok(match action {
+        "status" => ServerOperation::Status,
+        "journal" => ServerOperation::Logs {
+            service: service()?,
+            lines: args
+                .get("lines")
+                .and_then(Value::as_u64)
+                .map_or(LOG_LINES, |lines| {
+                    u32::try_from(lines).unwrap_or(MAX_LOG_LINES)
+                }),
+        },
+        "restart" => ServerOperation::Restart {
+            service: service()?,
+        },
+        "reboot" => ServerOperation::Reboot,
+        "stage-update" => ServerOperation::Update,
+        "pause-updates" => ServerOperation::PauseUpdates,
+        "resume-updates" => ServerOperation::ResumeUpdates,
+        "rollback" => ServerOperation::Rollback,
+        "drain" => ServerOperation::Drain,
+        "set-default-start" => ServerOperation::SetDefaultStart,
+        other => return Err(format!("A server has no control called {other}.")),
+    })
+}
+
+/// The controls of this machine, as its daemon answers its `server` actions:
+/// the workspaces it governs, where its state is kept (and its root helper
+/// reads and answers), and how long that helper is waited for.
+#[derive(Clone)]
+pub struct Controls {
+    workspaces: Workspaces,
+    state_root: PathBuf,
+    wait: Duration,
+}
+
+impl Controls {
+    /// The controls of the server that governs `workspaces` and keeps its
+    /// state at `state_root`.
+    #[must_use]
+    pub const fn new(workspaces: Workspaces, state_root: PathBuf) -> Self {
+        Self {
+            workspaces,
+            state_root,
+            wait: CONTROL_WAIT,
+        }
+    }
+
+    /// These controls, waiting at most `wait` for the root helper: what a
+    /// test gives a stand-in helper.
+    #[must_use]
+    pub const fn waiting(mut self, wait: Duration) -> Self {
+        self.wait = wait;
+        self
+    }
+
+    /// Carry out the `server` action `action` with `args`.
+    ///
+    /// # Errors
+    /// As [`requested`] and [`operate`].
+    pub async fn act(&self, action: &str, args: &Value) -> Result<ServerOperationResult, String> {
+        let operation = requested(action, args)?;
+        carry_out(
+            &self.state_root,
+            Some(&self.workspaces),
+            self.workspaces.serving_certificate(),
+            operation,
+            self.wait,
+        )
+        .await
+    }
+
+    /// Whether `person` administers `workspace`, one this server governs: an
+    /// administrator there who was neither removed nor banned. Nobody
+    /// administers a workspace this server does not govern.
+    pub async fn administers(&self, workspace: &str, person: &[u8; 32]) -> bool {
+        let Ok((_, people)) = self.workspaces.kept_membership(workspace).await else {
+            return false;
+        };
+        people
+            .get(&hex::encode(person))
+            .is_some_and(|mark| mark.role == "owner" && !mark.removed && !mark.banned)
+    }
+}
 
 /// What the daemon writes for the root helper: one `key=value` line per
 /// field, which a shell reads without a JSON parser on the machine.
@@ -409,7 +523,7 @@ async fn status(
     workspaces: Option<&Workspaces>,
     own: &DeviceCert,
 ) -> ServerStatus {
-    let (updates, unlock, history) = entry_settings(workspaces, own).await;
+    let (updates, unlock) = entry_settings(workspaces, own).await;
     let unlock = unlock_with_pending(unlock, state_root);
     ServerStatus {
         hostname: hostname(),
@@ -425,7 +539,6 @@ async fn status(
         unlocked: opening(),
         holding: holding(workspaces).await,
         hardware: hardware(state_root),
-        history,
     }
 }
 
@@ -454,13 +567,10 @@ fn opening_at(path: &Path) -> Option<Opening> {
     Opening::decode(&std::fs::read(path).ok()?)
 }
 
-/// The updates the server's entry says it follows, how it unlocks, and what
-/// was asked of it recently; all empty when it has no entry here.
-async fn entry_settings(
-    workspaces: Option<&Workspaces>,
-    own: &DeviceCert,
-) -> (String, String, Vec<OperationEntry>) {
-    let none = (String::new(), String::new(), Vec::new());
+/// The updates the server's entry says it follows and how it unlocks; both
+/// empty when it has no entry here.
+async fn entry_settings(workspaces: Option<&Workspaces>, own: &DeviceCert) -> (String, String) {
+    let none = (String::new(), String::new());
     let Some(workspaces) = workspaces else {
         return none;
     };
@@ -470,11 +580,7 @@ async fn entry_settings(
     servers
         .active(&own.device_public_key)
         .map_or(none, |server| {
-            (
-                server.updates.clone(),
-                server.unlock.clone(),
-                server.history(),
-            )
+            (server.updates.clone(), server.unlock.clone())
         })
 }
 

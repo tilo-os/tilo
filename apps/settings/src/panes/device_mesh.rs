@@ -646,7 +646,7 @@ pub struct DeviceMeshModel {
 /// step that signs what retires it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Managing {
-    /// Its health (`server.status`).
+    /// Its health (the machine's own `server#status`).
     Status(String),
     /// A new name for it (`server.rename`).
     Rename(String, String),
@@ -1406,7 +1406,7 @@ impl DeviceMeshModel {
         arguments: [(&str, &str); N],
         managing: Managing,
     ) {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget};
+        use ui::tilo_actions::remote::RemoteActionTarget;
         let Some(person) = self.person() else {
             self.home_peer_health
                 .insert(peer.device.clone(), HomePeerHealth::Unreachable);
@@ -1417,16 +1417,52 @@ impl DeviceMeshModel {
         for (name, value) in arguments {
             argument.insert(name.into(), value.into());
         }
+        let target = RemoteActionTarget::workspace_governance(
+            &tilo_server_protocol::servers::person_workspace_id(&person),
+            verb,
+        );
+        self.send_management(peer, target, argument, managing);
+    }
+
+    /// Ask how `peer` is: the machine's own `server#status`, which this computer's daemon hands
+    /// to the server's.
+    fn ask_server_status(&mut self, peer: &tilo_server_protocol::servers::PersonServer) {
+        use ui::tilo_actions::remote::{RemoteActionTarget, device_tickets};
+        let mut argument = serde_json::Map::new();
+        argument.insert("device".into(), peer.device.clone().into());
+        if let Some(at) = peer
+            .endpoint
+            .as_ref()
+            .and_then(|endpoint| serde_json::to_string(endpoint).ok())
+        {
+            argument.insert("at".into(), at.into());
+        }
+        let target = RemoteActionTarget {
+            provider: device_tickets::PROVIDER.to_owned(),
+            address: ui::tilo_actions::ActionAddress::new("server", "status"),
+        };
+        self.send_management(
+            peer,
+            target,
+            argument,
+            Managing::Status(peer.device.clone()),
+        );
+    }
+
+    /// Send `argument` to `target` about `peer`, followed as `managing`.
+    fn send_management(
+        &mut self,
+        peer: &tilo_server_protocol::servers::PersonServer,
+        target: ui::tilo_actions::remote::RemoteActionTarget,
+        argument: serde_json::Map<String, serde_json::Value>,
+        managing: Managing,
+    ) {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
         let confirmed =
             (!matches!(managing, Managing::Status(_))).then_some(Confirmation::Confirmed);
-        let call = self.remote.invoke(
-            RemoteActionTarget::workspace_governance(
-                &tilo_server_protocol::servers::person_workspace_id(&person),
-                verb,
-            ),
-            InvokeArgument::Json(argument),
-            confirmed,
-        );
+        let call = self
+            .remote
+            .invoke(target, InvokeArgument::Json(argument), confirmed);
         self.management_call = Some((call, managing));
         self.home_peer_health
             .insert(peer.device.clone(), HomePeerHealth::Connecting);
@@ -1810,8 +1846,7 @@ impl DeviceMeshModel {
         self.next_peer_health = self.next_peer_health.wrapping_add(1);
         let peer = self.servers.get(index).cloned();
         if let Some(peer) = peer {
-            let managing = Managing::Status(peer.device.clone());
-            self.ask_server(&peer, "server.status", [], managing);
+            self.ask_server_status(&peer);
         }
     }
 

@@ -5,7 +5,9 @@
 //!
 //! They are ordinary actions (`tilo.device`'s `devices#issue` and `devices#logIn`), answered by
 //! the daemon's action provider, beside the person's devices themselves ([`manage`]): listing,
-//! renaming, revoking and updating them. A ticket's certify action is answered by the device action
+//! renaming, revoking and updating them. On a server the same provider answers the machine's own
+//! controls (`server#status`, `server#restart` and the rest, [`SERVER`]) and its turn among its
+//! person's servers in an update ([`UPDATES`]). A ticket's certify action is answered by the device action
 //! service the daemon's one iroh router already serves (`tilo-actions/1`), as the one call it
 //! admits from a computer with no certificate yet, so no second endpoint or service is made.
 
@@ -62,6 +64,12 @@ pub(crate) const PREPARE: &str = "prepare";
 pub(crate) const BOOTED: &str = "booted";
 /// Ask the person's devices for this server's rollback floor to move.
 pub(crate) const FLOOR: &str = "floor";
+/// The resource the machine controls are on: what a server's person, and the administrators of
+/// the workspaces it serves, ask the machine itself to do ([`tilo_server::operations::ACTIONS`]).
+pub(crate) const SERVER: &str = "server";
+/// What a caller who may not control this machine reads.
+const NOT_YOURS: &str = "Only the person this server belongs to, and the administrators of the \
+                         workspaces it serves, control it.";
 /// The site a computer's login names when the device that adds it has none of its own: the
 /// same one an invitation over iroh names.
 const FOUNDED_SITE: &str = "https://tilo.sh/";
@@ -372,9 +380,10 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             ],
         ))),
     ];
-    // A device before its person's services run takes no update turn.
+    // A device before its person's services run takes no update turn, and is asked nothing of
+    // its machine.
     let update_rows = if keep(PREPARE) {
-        update_rows
+        update_rows.into_iter().chain(server_rows()).collect()
     } else {
         Vec::new()
     };
@@ -388,6 +397,124 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         })
         .collect();
     CataloguePage::from_rows(REVISION.to_owned(), rows, query)
+}
+
+/// The machine controls' rows: the [`SERVER`] resource and each of its actions.
+fn server_rows() -> Vec<CatalogueRow> {
+    let resource = CatalogueResource {
+        id: SERVER.to_owned(),
+        kind: "server".to_owned(),
+        label: "Server".to_owned(),
+        presentation: None,
+    };
+    let row = |action| CatalogueRow {
+        provider: PROVIDER.to_owned(),
+        app_id: SERVER.to_owned(),
+        parent_resource: String::new(),
+        resource: resource.clone(),
+        action,
+        ..CatalogueRow::default()
+    };
+    let device = || {
+        ActionParam::optional(
+            "device",
+            ParamType::Text,
+            "The server's device key: another of the person's servers carries it out itself; \
+             this machine when left out.",
+        )
+    };
+    let service = |what: &str| ActionParam::required("service", ParamType::Text, what);
+    let mut rows = vec![row(None)];
+    for action in tilo_server::operations::ACTIONS {
+        let (label, description, mut params) = match action {
+            "status" => (
+                "Ask a server how it is",
+                "Its health, what it holds and how its copies stand, how it unlocks, its \
+                 updates and its hardware.",
+                Vec::new(),
+            ),
+            "journal" => (
+                "Read a server's journal",
+                "A service's recent journal lines.",
+                vec![
+                    service("The systemd unit, e.g. tilo-runtime.service."),
+                    ActionParam::optional(
+                        "lines",
+                        ParamType::Integer,
+                        "How many lines back to read, at most 500; 200 when left out.",
+                    ),
+                ],
+            ),
+            "restart" => (
+                "Restart a service on a server",
+                "Restart one of the machine's systemd units.",
+                vec![service("The systemd unit, e.g. tilo-runtime.service.")],
+            ),
+            "reboot" => ("Reboot a server", "Reboot the machine.", Vec::new()),
+            "stage-update" => (
+                "Stage an update on a server",
+                "Fetch and stage the newest OS update now, instead of waiting for its timer.",
+                Vec::new(),
+            ),
+            "pause-updates" => (
+                "Stop a server taking updates",
+                "Stop taking OS updates until they are resumed.",
+                Vec::new(),
+            ),
+            "resume-updates" => (
+                "Have a server take updates again",
+                "Follow OS updates again.",
+                Vec::new(),
+            ),
+            "rollback" => (
+                "Have a server start the previous system",
+                "Boot the previous system from now on.",
+                Vec::new(),
+            ),
+            "drain" => (
+                "Drain a server",
+                "Suspend its workspaces' Linux machines and hand their work off, before taking \
+                 it out of service.",
+                Vec::new(),
+            ),
+            _ => (
+                "Have Tilo start by default on a server",
+                "Make Tilo the machine's default start, after any network-boot entries; asked \
+                 again, it restores the order it wrote.",
+                Vec::new(),
+            ),
+        };
+        params.insert(0, device());
+        let mut described = descriptor(action, label, description, &params);
+        described.address = tilo_actions::ActionAddress::new(SERVER, action);
+        described.resource_kind = "server".to_owned();
+        described.resource_label = "Server".to_owned();
+        if matches!(action, "status" | "journal") {
+            described.contract.kind = ActionKind::Read;
+        }
+        rows.push(row(Some(described)));
+    }
+    rows
+}
+
+/// Whether `caller`, asking from another device, may control this machine: the person it belongs
+/// to on any of their devices, or an administrator of `caller`'s workspace where this machine is
+/// that workspace's server. Nobody else, whatever their grants.
+async fn may_control(
+    controls: Option<&tilo_server::operations::Controls>,
+    own: &DeviceCert,
+    caller: &tilo_actions::remote::Caller,
+) -> bool {
+    let Some(person) = caller.user_public_key() else {
+        return false;
+    };
+    if *person == own.user_public_key {
+        return true;
+    }
+    match (controls, caller.workspace()) {
+        (Some(controls), Some(workspace)) => controls.administers(workspace, person).await,
+        _ => false,
+    }
 }
 
 /// Ask the person's devices, from this machine, for its rollback floor to move,
@@ -683,6 +810,9 @@ struct Inner {
     /// This machine's part in its person's update rollout, when this computer is
     /// one of their servers: what the update actions take its turn through.
     rollout: std::sync::Mutex<Option<tilo_server::rollout::ServerMachine>>,
+    /// The machine's controls, when this computer is a server: what the [`SERVER`] actions are
+    /// carried out through.
+    controls: std::sync::Mutex<Option<tilo_server::operations::Controls>>,
     /// Where the person's devices are reached that no lookup finds.
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
     /// Told whenever a device action that waited ended.
@@ -741,6 +871,7 @@ impl Tickets {
             calls: std::sync::Mutex::new(HashMap::new()),
             update: std::sync::OnceLock::new(),
             rollout: std::sync::Mutex::new(None),
+            controls: std::sync::Mutex::new(None),
             reach: std::sync::Mutex::default(),
             ended: tokio::sync::Notify::new(),
             runtime: tokio::runtime::Handle::current(),
@@ -762,6 +893,13 @@ impl Tickets {
     /// one of their servers: the update actions take its turn through it.
     pub(crate) fn with_rollout(self, rollout: Option<tilo_server::rollout::ServerMachine>) -> Self {
         *self.0.rollout.lock_recover() = rollout;
+        self
+    }
+
+    /// The machine's controls, when this computer is a server: the [`SERVER`] actions are carried
+    /// out through them.
+    pub(crate) fn with_controls(self, controls: Option<tilo_server::operations::Controls>) -> Self {
+        *self.0.controls.lock_recover() = controls;
         self
     }
 
@@ -795,7 +933,10 @@ impl Tickets {
                     && matches!(
                         request.target.address.action.as_str(),
                         PREPARE | BOOTED | FLOOR
-                    )))
+                    ))
+                || (request.target.address.resource == SERVER
+                    && tilo_server::operations::ACTIONS
+                        .contains(&request.target.address.action.as_str())))
     }
 
     /// Whether `request` only reads what the device is ([`INFO`]), and lets nobody in.
@@ -814,6 +955,9 @@ impl Tickets {
         }
         if request.target.address.resource == UPDATES {
             return self.take_the_update_turn(request);
+        }
+        if request.target.address.resource == SERVER {
+            return self.control(request, None);
         }
         let InvokeArgument::Json(argument) = &request.argument else {
             return Pending::ready(Err(refused("a device action asks with its arguments")));
@@ -970,6 +1114,82 @@ impl Tickets {
         pending
     }
 
+    /// Take `request`, one of the machine's controls ([`SERVER`]): carried out here, or, when it
+    /// names another of the person's servers, asked of that one. `asker` is the caller from
+    /// another device, held to [`may_control`]; `None` for one this device's dispatch admitted
+    /// already.
+    pub(crate) fn control(
+        &self,
+        request: &InvokeRequest,
+        asker: Option<tilo_actions::remote::Caller>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
+            return Pending::ready(Ok(state.receipt()));
+        }
+        let InvokeArgument::Json(argument) = &request.argument else {
+            return Pending::ready(Err(refused("a server's control asks with its arguments")));
+        };
+        let args = Value::Object(argument.clone());
+        let action = request.target.address.action.clone();
+        let (completer, pending) = tilo_actions::remote::pending();
+        let served = self.clone();
+        self.0.runtime.spawn(async move {
+            let controls = served.0.controls.lock_recover().clone();
+            if let Some(caller) = &asker
+                && !may_control(controls.as_ref(), &served.0.cert, caller).await
+            {
+                completer.complete(Err(refused(NOT_YOURS)));
+                return;
+            }
+            let answer = served
+                .carry_control(controls, asker.is_some(), &action, &args)
+                .await;
+            let update = match answer {
+                Ok(value) => succeeded(invocation, value),
+                Err(why) => failed(invocation, &why),
+            };
+            let state = InvocationState::new(invocation, update);
+            served
+                .0
+                .calls
+                .lock_recover()
+                .insert(invocation, state.clone());
+            served.0.ended.notify_waiters();
+            completer.complete(Ok(state.receipt()));
+        });
+        pending
+    }
+
+    /// Carry the control `action` out with `args`: here, or at the server `args` names when it is
+    /// another of the person's and this call is not itself one another device asked.
+    async fn carry_control(
+        &self,
+        controls: Option<tilo_server::operations::Controls>,
+        handed: bool,
+        action: &str,
+        args: &Value,
+    ) -> Result<Value, String> {
+        match manage::device_in(args) {
+            Ok(Some(device)) if device != self.this() => {
+                if handed {
+                    return Err("This server carries out only what is asked of itself.".to_owned());
+                }
+                return self
+                    .ask_device(device, (SERVER, action), args)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+            }
+            Err(error) => return Err(format!("{error:#}")),
+            Ok(_) => {}
+        }
+        let controls = controls.ok_or_else(|| {
+            "This computer is not a server: it has no machine controls to ask.".to_owned()
+        })?;
+        let result = controls.act(action, args).await?;
+        serde_json::to_value(result).map_err(|error| error.to_string())
+    }
+
     /// Where the device action `id` is, once it was taken.
     pub(crate) fn observe(&self, id: &InvocationId) -> Option<InvocationState> {
         self.0.calls.lock_recover().get(id).cloned()
@@ -996,7 +1216,7 @@ impl Tickets {
             .rows
             .into_iter()
             .filter_map(|row| row.action)
-            .find(|action| action.address.action == request.target.address.action)
+            .find(|action| action.address == request.target.address)
     }
 
     /// Serve a ticket for a new computer, approved by the person's root on this computer: the

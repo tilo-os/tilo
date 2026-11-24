@@ -431,8 +431,8 @@ Any mismatch leaves the partitions untouched and logs why.
 
 An alongside install leaves `BootOrder` as the retained OS had it and starts
 Tilo once through `BootNext`, so the next restart would boot the retained OS.
-The `server.set-default-start` action (also `tilo server set-default-start
-<server>`) moves the running Tilo's `Boot####` (`BootCurrent`) into the retained
+The machine's `server#set-default-start` device action (also `tilo server
+set-default-start <server>`) moves the running Tilo's `Boot####` (`BootCurrent`) into the retained
 OS's place in `BootOrder`: every network-boot entry before that place stays
 where it was, so a network rescue still starts, and the retained OS's entry
 leaves the order. The action writes down the order it found and the order it wrote

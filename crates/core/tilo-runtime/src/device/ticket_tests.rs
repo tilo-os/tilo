@@ -132,6 +132,15 @@ pub(super) async fn ask_device(
     action: &str,
     args: Value,
 ) -> Result<Value, String> {
+    ask_on(tickets, (RESOURCE, action), args).await
+}
+
+/// [`ask_device`], of `action` on `resource`.
+pub(super) async fn ask_on(
+    tickets: &Tickets,
+    (resource, action): (&str, &str),
+    args: Value,
+) -> Result<Value, String> {
     let Value::Object(argument) = args else {
         panic!("the arguments are an object");
     };
@@ -141,7 +150,7 @@ pub(super) async fn ask_device(
         invocation,
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+            address: tilo_actions::ActionAddress::new(resource, action),
         },
         argument: InvokeArgument::Json(argument),
         context: None,

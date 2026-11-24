@@ -1,16 +1,12 @@
-//! A person reaches their servers from any of their devices: each operation is
-//! an action on their Servers workspace, which their devices hold like any
-//! other workspace of theirs. The server the entry names carries the request
-//! out as its own and keeps what it found or did, and the action answers
-//! with that. An agent of the person asks the same actions; another person is
-//! refused.
+//! A person changes their servers' entries from any of their devices: naming
+//! a server and retiring it are actions on their Servers workspace, which
+//! their devices hold like any other workspace of theirs.
 
 #![allow(
     clippy::significant_drop_tightening,
     reason = "the devices and routers a test starts stay alive until each test ends"
 )]
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -22,44 +18,11 @@ use tilo_server::WorkspaceId;
 use tilo_server::servers::{self, applied, person_workspace_id};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;
-use tilo_server_protocol::transport::{ServerAnswer, ServerOperationResult};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{
     Hosted, Linked, TestDevice, TestUser, join_person_workspace, serve_in, serve_on,
 };
-
-/// Stand in for the root helper that carries out what changes the
-/// machine: answer every request written under `state_root` at the same files
-/// the real helper uses, until the guard is dropped.
-fn operations_helper(state_root: &Path) -> Guard {
-    let request = state_root.join(tilo_server::operations::CONTROL_REQUEST);
-    let result = state_root.join(tilo_server::operations::CONTROL_RESULT);
-    Guard(tokio::spawn(async move {
-        let mut seen = String::new();
-        loop {
-            if let Ok(text) = std::fs::read_to_string(&request)
-                && text != seen
-            {
-                seen.clone_from(&text);
-                let id = text
-                    .lines()
-                    .find_map(|line| line.strip_prefix("id="))
-                    .unwrap_or_default();
-                std::fs::write(&result, format!("{id} 1\nNov 18 tilo-server: serving\n")).unwrap();
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }))
-}
-
-struct Guard(tokio::task::JoinHandle<()>);
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 /// Ask the device `linked` reaches to do `action` in `workspace` with
 /// `argument`, and the device's answer.
@@ -108,13 +71,6 @@ fn completed(answer: RemoteActionMessage) -> Result<Value, String> {
     }
 }
 
-/// What an operation's invocation came to: the operation's result, or why it
-/// was refused.
-fn outcome(answer: RemoteActionMessage) -> Result<ServerOperationResult, String> {
-    completed(answer)
-        .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
-}
-
 /// A person with one server and a laptop, the server holding their Servers
 /// workspace and the laptop handed it, both applying what it says.
 struct Fixture {
@@ -129,33 +85,10 @@ struct Fixture {
     server: Hosted,
     state: tempfile::TempDir,
     _policy: tempfile::TempDir,
-    _helper: Guard,
     _following: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Fixture {
-    /// Ask the server `action` with `argument` on `linked`, the phone's link
-    /// to the person's host in their Servers workspace: one of their own
-    /// devices asking the host what their servers are to do, on the one link it
-    /// holds.
-    async fn ask(
-        &self,
-        linked: &Linked,
-        action: &str,
-        mut argument: Value,
-    ) -> Result<ServerOperationResult, String> {
-        argument["server"] = Value::String(hex::encode(self.nas.device_pubkey()));
-        let started = std::time::Instant::now();
-        // A refusal names the operation and how long its answer took: every
-        // operation here answers in a few hundred milliseconds (measured, alone
-        // and on a loaded builder), so one that waited seconds longer is read
-        // where it happened rather than as the whole test's wall clock.
-        try_ask(linked, &self.admin, action, argument)
-            .await
-            .and_then(outcome)
-            .map_err(|error| format!("{action} took {:?}: {error}", started.elapsed()))
-    }
-
     /// The phone's link to the person's host in the Servers workspace it holds.
     async fn linked(&self) -> Linked {
         let workspace = WorkspaceId::parse(&self.admin).unwrap();
@@ -202,7 +135,6 @@ async fn person_with_a_server() -> Fixture {
         None,
         state.path().join("laptop-state"),
     ));
-    let helper = operations_helper(state.path());
     Fixture {
         admin,
         root: alice.user_sk.clone(),
@@ -213,136 +145,8 @@ async fn person_with_a_server() -> Fixture {
         server,
         state,
         _policy: policy,
-        _helper: helper,
         _following: following,
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
-    let fixture = person_with_a_server().await;
-    let linked = fixture.linked().await;
-    let status = fixture
-        .ask(&linked, "server.status", serde_json::json!({}))
-        .await
-        .unwrap();
-    assert_eq!(status.operation, "status");
-    assert!(status.done);
-    let ServerAnswer::Status(read) = &status.answer else {
-        panic!("status answers with the server: {status:?}");
-    };
-    assert!(
-        read.holding
-            .iter()
-            .any(|held| held.workspace == fixture.admin),
-        "it holds the Servers workspace: {read:?}"
-    );
-
-    let logs = fixture
-        .ask(
-            &linked,
-            "server.logs",
-            serde_json::json!({"service": "tilo-server.service", "lines": 10}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        logs.answer,
-        ServerAnswer::Text("Nov 18 tilo-server: serving\n".into())
-    );
-
-    for (action, expected, done) in [
-        ("server.logs", "logs", true),
-        ("server.restart", "restart", true),
-        ("server.update", "update", true),
-        ("server.pause-updates", "pause-updates", true),
-        ("server.resume-updates", "resume-updates", true),
-        ("server.reboot", "reboot", false),
-        ("server.rollback", "rollback", false),
-        ("server.drain", "drain", true),
-        ("server.set-default-start", "set-default-start", true),
-    ] {
-        let argument = if action == "server.restart" || action == "server.logs" {
-            serde_json::json!({"service": "tilo-server.service", "lines": 5})
-        } else {
-            serde_json::json!({})
-        };
-        let result = fixture.ask(&linked, action, argument).await.unwrap();
-        assert_eq!(result.operation, expected, "{action}");
-        assert_eq!(result.done, done, "{action}: {result:?}");
-        assert!(!result.summary.is_empty(), "{action}");
-    }
-
-    // What was asked is in the entry the person reads, and what a later
-    // status says of it.
-    let servers = servers::read(fixture.workspaces()).await.unwrap();
-    let asked: Vec<String> = servers
-        .servers
-        .iter()
-        .flat_map(|(_, server)| {
-            server
-                .asked
-                .iter()
-                .map(|(_, asked)| asked.operation.clone())
-        })
-        .collect();
-    for operation in [
-        "status",
-        "logs",
-        "restart",
-        "update",
-        "pause-updates",
-        "resume-updates",
-        "reboot",
-        "rollback",
-        "drain",
-        "set-default-start",
-    ] {
-        assert!(asked.iter().any(|asked| asked == operation), "{asked:?}");
-    }
-    let status = fixture
-        .ask(&linked, "server.status", serde_json::json!({}))
-        .await
-        .unwrap();
-    let ServerAnswer::Status(read) = status.answer else {
-        panic!("status answers with the server");
-    };
-    assert!(
-        read.history.iter().any(|entry| entry.operation == "drain"),
-        "the history is the entry's: {:?}",
-        read.history
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn another_person_reaches_no_server_of_this_persons() {
-    let fixture = person_with_a_server().await;
-    let mallory = TestUser::fresh("Mallory");
-    let theirs = mallory.enrol("their laptop", DeviceCapabilities::primary());
-    // The serving device admits its own person's devices only, so another
-    // person's link never opens; one opened elsewhere would still be refused
-    // the action.
-    let workspace = WorkspaceId::parse(&fixture.admin).unwrap();
-    let refused = match Linked::open_hosted(&fixture.desktop, &theirs, workspace).await {
-        Err(_) => true,
-        Ok(linked) => {
-            let asked = try_ask(
-                &linked,
-                &fixture.admin,
-                "server.status",
-                serde_json::json!({"server": hex::encode(fixture.nas.device_pubkey())}),
-            )
-            .await;
-            match asked {
-                Ok(answer) => outcome(answer).is_err(),
-                Err(_) => true,
-            }
-        }
-    };
-    assert!(
-        refused,
-        "another person's device reaches no server of Alice's"
-    );
 }
 
 /// The revocation of `device`'s key `root` signs, as the identity step answers

@@ -1,13 +1,7 @@
-//! What a person asks of their servers, served on their Servers workspace.
-//!
-//! Each operation a server is asked for is one action here (`server.status`,
-//! `server.logs`, `server.restart`, `server.reboot`, `server.update`,
-//! `server.pause-updates`, `server.resume-updates`, `server.rollback`,
-//! `server.drain`, `server.set-default-start`). An action keeps the request in
-//! that server's entry in the workspace's document; the server the entry names
-//! carries it out and keeps what it found or did; and the action answers with
-//! that, read live for the operations that read (its health and a service's
-//! journal).
+//! What a person changes of their servers' entries, served on their Servers
+//! workspace. What the machine itself is asked to do (its health, a service's
+//! journal, a restart, a reboot, an update) is its own daemon's `server` device
+//! actions instead, answered by the machine.
 //!
 //! Naming a server (`server.rename`), choosing which workspaces of the
 //! person's list it keeps (`server.keep`) and taking it out of service
@@ -33,8 +27,7 @@ use tilo_user_identity::DeviceCert;
 pub(super) struct ServerVerb {
     /// The action, as the workspace's governance verbs are declared.
     pub(super) verb: Verb,
-    /// The operation it asks of the server, or [`RENAME`] or [`RETIRE`], which
-    /// change its entry.
+    /// The change to its entry: [`RENAME`], [`KEEP`] or [`RETIRE`].
     pub(super) operation: &'static str,
 }
 
@@ -56,79 +49,9 @@ const SERVER_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(9
 /// reach this device's copy without its write watch hearing it.
 const ANSWER_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// What a person asks of a server, in catalogue order: each is one operation
-/// on that server's entry in the workspace.
-pub(super) const SERVER_VERBS: [ServerVerb; 13] = [
-    asking(
-        "server.status",
-        "status",
-        "Ask a server how it is",
-        ActionKind::Read,
-        status_params,
-    ),
-    asking(
-        "server.logs",
-        "logs",
-        "Read a server's journal",
-        ActionKind::Read,
-        logs_params,
-    ),
-    asking(
-        "server.restart",
-        "restart",
-        "Restart a service on a server",
-        roles::GOVERNANCE_KIND,
-        service_params,
-    ),
-    asking(
-        "server.reboot",
-        "reboot",
-        "Reboot a server",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.update",
-        "update",
-        "Fetch and stage an update on a server",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.pause-updates",
-        "pause-updates",
-        "Stop a server taking updates",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.resume-updates",
-        "resume-updates",
-        "Have a server take updates again",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.rollback",
-        "rollback",
-        "Have a server start the previous system",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.drain",
-        "drain",
-        "Drain a server before taking it out of service",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
-    asking(
-        "server.set-default-start",
-        "set-default-start",
-        "Have Tilo start by default on a server",
-        roles::GOVERNANCE_KIND,
-        status_params,
-    ),
+/// What a person changes of a server, in catalogue order: each is one change
+/// to that server's entry in the workspace.
+pub(super) const SERVER_VERBS: [ServerVerb; 3] = [
     asking(
         "server.rename",
         RENAME,
@@ -206,21 +129,6 @@ fn server_param() -> ActionParam {
     )
 }
 
-fn status_params() -> Vec<ActionParam> {
-    vec![server_param()]
-}
-
-fn service_params() -> Vec<ActionParam> {
-    vec![
-        server_param(),
-        ActionParam::required(
-            "service",
-            ParamType::Text,
-            "The systemd unit, e.g. tilo-server.service.",
-        ),
-    ]
-}
-
 fn rename_params() -> Vec<ActionParam> {
     vec![
         server_param(),
@@ -259,22 +167,6 @@ fn retire_params() -> Vec<ActionParam> {
     ]
 }
 
-fn logs_params() -> Vec<ActionParam> {
-    vec![
-        server_param(),
-        ActionParam::required(
-            "service",
-            ParamType::Text,
-            "The systemd unit, e.g. tilo-server.service.",
-        ),
-        ActionParam::optional(
-            "lines",
-            ParamType::Integer,
-            "How many lines back to read, at most 500; 200 when omitted.",
-        ),
-    ]
-}
-
 impl Workspaces {
     /// The Servers workspace `workspace_id` carries and the certificate of
     /// `caller`'s device, when `caller` may ask what its person's servers are
@@ -306,10 +198,8 @@ impl Workspaces {
         Some((self.held(workspace_id).await?, certificate.clone()))
     }
 
-    /// Ask the server `verb` names an operation of in the person's Servers
-    /// workspace, and answer what it did: the operation, its result and
-    /// whether it is done, as the server recorded them, read live for the ones
-    /// that read (its health and a service's journal).
+    /// Change the entry of the server `verb` names in the person's Servers
+    /// workspace, and answer what it became.
     pub(super) async fn server_operation_invoke(
         &self,
         workspace_id: tilo_server_protocol::WorkspaceId,
@@ -335,7 +225,7 @@ impl Workspaces {
                 )
                 .await
                 .map_err(ActionCallError::refused)?;
-                return Ok(serde_json::json!({ "name": name.trim() }));
+                Ok(serde_json::json!({ "name": name.trim() }))
             }
             KEEP => {
                 let kept = args.required_text("workspace")?.trim().to_owned();
@@ -347,46 +237,21 @@ impl Workspaces {
                 )
                 .await
                 .map_err(ActionCallError::refused)?;
-                return Ok(serde_json::json!({ "workspace": kept, "keeps": keeps }));
+                Ok(serde_json::json!({ "workspace": kept, "keeps": keeps }))
             }
             RETIRE => {
-                return self
-                    .retire(
-                        &workspace,
-                        &device,
-                        server,
-                        args.required_text("revocation")?,
-                    )
-                    .await;
+                self.retire(
+                    &workspace,
+                    &device,
+                    server,
+                    args.required_text("revocation")?,
+                )
+                .await
             }
-            _ => {}
+            other => Err(ActionCallError::refused(format!(
+                "{other} is no change to a server's entry"
+            ))),
         }
-        let service = args.text("service")?.unwrap_or_default().to_owned();
-        let lines = u32::try_from(args.integer("lines")?.unwrap_or(200)).unwrap_or(200);
-        let request_id = uuid::Uuid::new_v4().simple().to_string();
-        // Its answer comes as another write to the same document: listening
-        // before the ask is what keeps it from being missed.
-        let mut writes = self.document_writes();
-        servers::apply_on(
-            self,
-            &workspace,
-            servers::Servers::ASK_OPERATION.with((
-                Id::from_raw(server.clone()),
-                request_id.clone(),
-                verb.operation.to_owned(),
-                service,
-                lines,
-            )),
-        )
-        .await
-        .map_err(ActionCallError::refused)?;
-        let asked = self
-            .wait_for_answer(&workspace, &server, &request_id, &mut writes)
-            .await?;
-        let result = asked
-            .result()
-            .ok_or_else(|| ActionCallError::refused("the server's answer does not read"))?;
-        serde_json::to_value(result).map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
     /// Retire the server `server` of the person `device` belongs to in their
@@ -451,53 +316,6 @@ impl Workspaces {
             .await
             .map_err(ActionCallError::refused)?;
         Ok(serde_json::json!({ "server": server, "retired": true, "answered": itself }))
-    }
-
-    /// The answer the server `server` recorded to the request `request` in
-    /// the Servers workspace `workspace`, once it did, or why none came.
-    async fn wait_for_answer(
-        &self,
-        workspace: &str,
-        server: &str,
-        request: &str,
-        writes: &mut tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>,
-    ) -> Result<servers::Asked, ActionCallError> {
-        let waiting = async {
-            loop {
-                let answered = servers::read_on(self, workspace)
-                    .await
-                    .ok()
-                    .and_then(|servers| {
-                        servers
-                            .servers
-                            .get(&Id::from_raw(server.to_owned()))
-                            .and_then(|entry| entry.asked.get(&Id::from_raw(request.to_owned())))
-                            .filter(|asked| !asked.answer.is_empty())
-                            .cloned()
-                    });
-                if let Some(asked) = answered {
-                    return Ok(asked);
-                }
-                tokio::select! {
-                    heard = writes.recv() => match heard {
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            return Err(ActionCallError::refused("the server did not answer"));
-                        }
-                    },
-                    // An answer reaches this copy through a holder's, which
-                    // the local write watch does not always hear.
-                    () = tokio::time::sleep(ANSWER_TICK) => {}
-                }
-            }
-        };
-        tokio::time::timeout(SERVER_ANSWER_WAIT, waiting)
-            .await
-            .unwrap_or_else(|_| {
-                Err(ActionCallError::refused(
-                    "the server did not answer; it may be away, and does it when it is back",
-                ))
-            })
     }
 }
 

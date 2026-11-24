@@ -280,3 +280,252 @@ async fn flow_every_device_manages_every_other() {
     }
     server.shutdown().await;
 }
+
+/// Stand in for the machine's root helper (`tilo-server-control`): answer every request written
+/// under `state_root` at the files the real helper uses, with a journal line, and note each one
+/// as `verb service`.
+fn root_helper(
+    state_root: &std::path::Path,
+    asked: Arc<Mutex<Vec<String>>>,
+) -> tokio::task::JoinHandle<()> {
+    let request = state_root.join(tilo_server::operations::CONTROL_REQUEST);
+    let result = state_root.join(tilo_server::operations::CONTROL_RESULT);
+    tokio::spawn(async move {
+        let mut seen = String::new();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&request)
+                && text != seen
+            {
+                seen.clone_from(&text);
+                let field = |key: &str| {
+                    text.lines()
+                        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                asked
+                    .lock()
+                    .unwrap()
+                    .push(format!("{} {}", field("verb"), field("service")));
+                std::fs::write(
+                    &result,
+                    format!("{} 1\nNov 18 tilo-runtime: serving\n", field("id")),
+                )
+                .unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+}
+
+/// A fresh idempotency key for a governance request.
+fn fresh_id() -> [u8; 32] {
+    SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng))
+        .verifying_key()
+        .to_bytes()
+}
+
+/// A server's controls are its daemon's `server` actions: the person's other device restarts a
+/// unit on it and reads its journal through the daemons' dispatch, an administrator of a
+/// workspace it serves controls it too, and a member who is no administrator there, or someone
+/// asking from a workspace they do not administer, is refused with a sentence they can read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else() {
+    use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, InvokeArgument};
+    use tilo_server_protocol::transport::{ServerAnswer, ServerOperationResult};
+    use tilo_server_protocol::workspaces::Role;
+    use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (bob, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+    let (carol, _) = tilo_user_identity::UserIdentity::generate("Carol", 1);
+    let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
+    let (_, bob_cert) = enrol(&bob, "Bob", DeviceCapabilities::primary());
+    let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let person =
+        tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
+    if hosted.summary(&person).await.is_err() {
+        hosted
+            .create_workspace("Servers", Some(&person))
+            .await
+            .unwrap();
+    }
+    for cert in [&laptop_cert, &phone_cert] {
+        hosted
+            .enter(&person, cert)
+            .await
+            .expect("a device of the person enters their own workspace");
+    }
+    // A workspace of the person's that the machine serves, where Bob edits and Carol
+    // administers.
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    for (cert, place) in [
+        (&bob_cert, MemberPlace::Role(Role::Editor)),
+        (&carol_cert, MemberPlace::Administrator),
+    ] {
+        hosted
+            .add_member(
+                &studio,
+                &server_cert,
+                AddMemberRequest {
+                    request_id: fresh_id(),
+                    user_public_key: cert.user_public_key,
+                    place,
+                    name: Some(cert.device_label.clone()),
+                },
+            )
+            .await
+            .expect("the owner places the member");
+    }
+    let laptop = daemon(
+        &state.path().join("laptop"),
+        (&laptop_key, &laptop_cert),
+        (&server, &server_cert),
+        &person,
+    )
+    .await;
+    let phone = daemon(
+        &state.path().join("phone"),
+        (&phone_key, &phone_cert),
+        (&server, &server_cert),
+        &person,
+    )
+    .await;
+    // The laptop is the machine here: its controls govern the server's workspaces, and its
+    // root helper answers where its state is kept.
+    let machine = tempfile::tempdir().unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let helper = root_helper(machine.path(), Arc::clone(&asked));
+    let controlled = laptop.tickets.clone().with_controls(Some(
+        tilo_server::operations::Controls::new(hosted.clone(), machine.path().to_path_buf())
+            .waiting(std::time::Duration::from_secs(10)),
+    ));
+    phone
+        .tickets
+        .reach_at(laptop_cert.device_public_key, laptop.own.endpoint().addr());
+    let machine_key = hex::encode(laptop_cert.device_public_key);
+
+    // From the phone: its daemon hands the call to the machine's, which carries it out.
+    let restarted: ServerOperationResult = serde_json::from_value(
+        super::ticket_tests::ask_on(
+            &phone.tickets,
+            (super::ticket::SERVER, "restart"),
+            json!({"device": machine_key, "service": "tilo-runtime"}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the phone restarts a unit on its server: {error}")),
+    )
+    .unwrap();
+    assert!(
+        restarted.done && restarted.summary == "restarted tilo-runtime.service",
+        "the machine says what it did: {restarted:?}"
+    );
+    let journal: ServerOperationResult = serde_json::from_value(
+        super::ticket_tests::ask_on(
+            &phone.tickets,
+            (super::ticket::SERVER, "journal"),
+            json!({"device": machine_key, "service": "tilo-runtime.service", "lines": 20}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the phone reads its server's journal: {error}")),
+    )
+    .unwrap();
+    assert_eq!(
+        journal.answer,
+        ServerAnswer::Text("Nov 18 tilo-runtime: serving\n".into()),
+        "the journal is what the machine read"
+    );
+    assert_eq!(
+        *asked.lock().unwrap(),
+        ["restart tilo-runtime.service", "logs tilo-runtime.service"],
+        "the root helper was asked each, once"
+    );
+
+    // Other people, as the machine's action service hands their calls on to it.
+    let on_the_machine = OnThisDevice(controlled);
+    let ask_as = |cert: &DeviceCert, workspace: &str| {
+        let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace);
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_device_identity::login::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(super::ticket::SERVER, "restart"),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+                "service".to_owned(),
+                "tilo-runtime".into(),
+            )])),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        on_the_machine.invoke(&caller, request)
+    };
+    let refused = ActionCallError::Refused {
+        reason: "Only the person this server belongs to, and the administrators of the \
+                 workspaces it serves, control it."
+            .into(),
+    };
+    for (who, cert, workspace) in [
+        ("Bob, who edits the studio", &bob_cert, &studio),
+        (
+            "Carol, asking where she administers nothing",
+            &carol_cert,
+            &person,
+        ),
+    ] {
+        let answer = ask_as(cert, workspace).await.expect("the machine answers");
+        assert_eq!(
+            answer.err(),
+            Some(refused.clone()),
+            "{who} is refused, in words"
+        );
+    }
+    let carols = ask_as(&carol_cert, &studio)
+        .await
+        .expect("the machine answers")
+        .expect("Carol administers a workspace this machine serves");
+    assert!(
+        matches!(
+            carols.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the machine restarted the unit for Carol: {carols:?}"
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        3,
+        "only the administrator's call reached the root helper"
+    );
+
+    helper.abort();
+    for daemon in [laptop, phone] {
+        let _ = daemon.router.shutdown().await;
+        daemon.entered.close();
+    }
+    server.shutdown().await;
+}

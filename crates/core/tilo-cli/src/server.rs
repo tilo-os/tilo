@@ -1,32 +1,27 @@
 //! `tilo server`: what this person's servers are, and what they can be asked
 //! to do from here.
 //!
-//! A server of the person's is headless. Its operations are actions on their
-//! Servers workspace, which every device of theirs holds, and this command is
-//! the device asking: it reads the person's servers from that workspace's
-//! document, through this computer's session ([`machines::SERVERS`]), and asks
-//! one of them, over the workspace's
-//! own session, for its health, a service's journal, a restart, a reboot, an
-//! update, a rollback, a drain or making Tilo its default start
-//! ([`ServerOperation`]). Every answer is the server's own
-//! ([`ServerOperationResult`]), recorded in its entry in that workspace.
+//! A server of the person's is headless. This command reads the person's
+//! servers from their Servers workspace's document, through this computer's
+//! session ([`machines::SERVERS`]), and asks one of them for its health, a
+//! service's journal, a restart, a reboot, an update, a rollback, a drain or
+//! making Tilo its default start: the machine's own `server` device actions,
+//! which this computer's daemon hands to that server's, as it hands every
+//! device action naming another of the person's devices. Every answer is the
+//! server's own ([`ServerOperationResult`]).
 
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
+use serde_json::{Map, Value};
 use tilo_actions::remote::machines;
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
-};
-use tilo_actions::{ActionAddress, InvocationId};
 use tilo_control::front::{self, Spelling};
-use tilo_device_identity::persist;
-use tilo_server_protocol::servers::{PersonServer, RecoveryKey, person_workspace_id};
+use tilo_server_protocol::servers::{PersonServer, RecoveryKey};
 use tilo_server_protocol::transport::{
-    Opening, ServerAnswer, ServerOperation, ServerOperationResult, ServerStatus, UnlockMethod,
+    Opening, ServerAnswer, ServerOperationResult, ServerStatus, UnlockMethod,
 };
 
-use crate::identity;
+use crate::api::{Calls, Reach};
+use crate::login::{self, Device};
 
 #[derive(Subcommand)]
 pub enum ServerCmd {
@@ -124,41 +119,33 @@ pub enum ServerCmd {
 }
 
 pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
-    match cmd {
-        ServerCmd::List => list(),
-        other => {
-            let (server, operation, json) = match other {
-                ServerCmd::Status { server, json } => (server, ServerOperation::Status, json),
-                ServerCmd::Logs {
-                    server,
-                    service,
-                    lines,
-                } => (server, ServerOperation::Logs { service, lines }, false),
-                ServerCmd::Restart { server, service } => {
-                    (server, ServerOperation::Restart { service }, false)
-                }
-                ServerCmd::Reboot { server } => (server, ServerOperation::Reboot, false),
-                ServerCmd::Update { server } => (server, ServerOperation::Update, false),
-                ServerCmd::PauseUpdates { server } => {
-                    (server, ServerOperation::PauseUpdates, false)
-                }
-                ServerCmd::ResumeUpdates { server } => {
-                    (server, ServerOperation::ResumeUpdates, false)
-                }
-                ServerCmd::Rollback { server } => (server, ServerOperation::Rollback, false),
-                ServerCmd::Drain { server } => (server, ServerOperation::Drain, false),
-                ServerCmd::SetDefaultStart { server } => {
-                    (server, ServerOperation::SetDefaultStart, false)
-                }
-                ServerCmd::List => return list(),
-                ServerCmd::RecoveryKey { server, json } => return recovery_key(&server, json),
-                ServerCmd::KeepRecoveryKey { file } => return keep_recovery_key(&file),
-            };
-            let result = ask(&server, &operation)?;
-            print(&result, json)?;
-            Ok(std::process::ExitCode::SUCCESS)
+    let unit = |service: String| Map::from_iter([("service".to_owned(), Value::String(service))]);
+    let (server, action, args, json) = match cmd {
+        ServerCmd::List => return list(),
+        ServerCmd::RecoveryKey { server, json } => return recovery_key(&server, json),
+        ServerCmd::KeepRecoveryKey { file } => return keep_recovery_key(&file),
+        ServerCmd::Status { server, json } => (server, "status", Map::new(), json),
+        ServerCmd::Logs {
+            server,
+            service,
+            lines,
+        } => {
+            let mut args = unit(service);
+            args.insert("lines".to_owned(), lines.into());
+            (server, "journal", args, false)
         }
-    }
+        ServerCmd::Restart { server, service } => (server, "restart", unit(service), false),
+        ServerCmd::Reboot { server } => (server, "reboot", Map::new(), false),
+        ServerCmd::Update { server } => (server, "stage-update", Map::new(), false),
+        ServerCmd::PauseUpdates { server } => (server, "pause-updates", Map::new(), false),
+        ServerCmd::ResumeUpdates { server } => (server, "resume-updates", Map::new(), false),
+        ServerCmd::Rollback { server } => (server, "rollback", Map::new(), false),
+        ServerCmd::Drain { server } => (server, "drain", Map::new(), false),
+        ServerCmd::SetDefaultStart { server } => (server, "set-default-start", Map::new(), false),
+    };
+    let result = ask(&server, action, args)?;
+    print(&result, json)?;
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 fn list() -> Result<std::process::ExitCode> {
@@ -363,7 +350,7 @@ fn opened_line(opened: Option<&Opening>) -> String {
     )
 }
 
-/// What the server holds, and what was asked of it.
+/// What the server holds.
 fn print_holds(status: &ServerStatus) {
     println!("  holds:");
     for held in &status.holding {
@@ -389,16 +376,6 @@ fn print_holds(status: &ServerStatus) {
             println!("      ! {short}");
         }
     }
-    if !status.history.is_empty() {
-        println!("  recently asked:");
-        for entry in status.history.iter().take(10) {
-            println!(
-                "    {}{}",
-                entry.operation,
-                if entry.done { "" } else { " (asked)" }
-            );
-        }
-    }
 }
 
 /// `at` in nanoseconds since the Unix epoch, as a person reads it.
@@ -410,105 +387,40 @@ fn opened_at(at_ns: u64) -> String {
         .unwrap_or_default()
 }
 
-/// Ask `server` to do `operation`, as this computer's device, through the
-/// action on the person's Servers workspace that asks it.
-fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResult> {
-    let paths = identity::paths();
-    let user = persist::read_public_key(&paths.user_pubkey)
-        .context("this computer holds no identity; start `tilo login` first")?;
-    let signing_key = persist::load_device_key(&paths)?;
+/// Ask `server` the control `action` with `args`, through this computer's
+/// daemon, which hands it to that server's: the server's own answer.
+fn ask(server: &str, action: &str, mut args: Map<String, Value>) -> Result<ServerOperationResult> {
     let found = find(&servers()?, server)?;
-    let expected = key_of(&found.device)
-        .with_context(|| format!("{} is not a server device key", found.device))?;
-    let addr = found.endpoint.with_context(|| {
-        format!(
-            "{} has not said where it is reached yet; ask again once it has started",
-            found.label
-        )
-    })?;
-    let admin = person_workspace_id(&user);
-    let mut argument = serde_json::Map::new();
-    argument.insert("server".into(), hex::encode(expected).into());
-    if !operation.service().is_empty() {
-        argument.insert("service".into(), operation.service().into());
+    args.insert("device".to_owned(), found.device.clone().into());
+    // Where the server is reached, as its entry says: a server is no device a lookup by its
+    // key alone always finds.
+    if let Some(endpoint) = &found.endpoint {
+        args.insert("at".to_owned(), serde_json::to_string(endpoint)?.into());
     }
-    if operation.lines() > 0 {
-        argument.insert("lines".into(), operation.lines().into());
-    }
-    let request = InvokeRequest {
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
-            address: ActionAddress::new(
-                workspace_governance_resource(&admin),
-                format!("server.{}", operation.name()),
-            ),
-        },
-        argument: InvokeArgument::Json(argument),
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(async {
-        // The device asks as itself, at an endpoint keyed by its own key: the server admits a
-        // request by the signature of the device the transport proves, and the two are one.
-        let endpoint = tilo_server_client::host::ServerAddress::at(addr.clone())
-            .bind(Some(signing_key.to_bytes()))
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let actions = tilo_peer_state::actions::ActionService::new(
-            signing_key.clone(),
-            std::sync::Arc::new(tilo_peer_state::actions::NoActions),
-        );
-        // A server's action service signs as its own workspace service, which its
-        // endpoint is keyed apart from.
-        actions.keyed_apart(expected, *addr.id.as_bytes());
-        let remote = actions.remote(&endpoint, &addr, &admin);
-        let caller = tilo_actions::remote::Caller::authenticated(
-            user,
-            signing_key.verifying_key().to_bytes(),
-        );
-        let answer = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            tilo_actions::remote::ActionProvider::invoke(&remote, &caller, request),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("the server did not answer"))?;
-        let result = match answer {
-            None => Err(anyhow::anyhow!("the server closed before it answered")),
-            Some(Ok(receipt)) => answer_of(RemoteActionMessage::Receipt(receipt)),
-            Some(Err(error)) => Err(anyhow::anyhow!("{error}")),
+    let here = login::home().filter(Device::reaches_a_server);
+    let daemon = login::ensure_daemon()?;
+    let runtime = login::runtime()?;
+    let answer = runtime.block_on(async {
+        let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
+        let workspace = match &here {
+            Some(device) => device.workspace.clone(),
+            None => client.founded_workspace().await?,
         };
-        endpoint.close().await;
-        result
+        client
+            .act(
+                Some(&workspace),
+                "server",
+                action,
+                &Value::Object(args),
+                &format!("Server: {action}"),
+            )
+            .await
     })?;
-    Ok(result)
-}
-
-/// What an invocation came to: the operation's result, or why the server
-/// refused.
-fn answer_of(message: RemoteActionMessage) -> Result<ServerOperationResult> {
-    use tilo_actions::remote::ReceiptStatus;
-    let RemoteActionMessage::Receipt(receipt) = message else {
-        bail!("the server answered no receipt");
-    };
-    match receipt.status {
-        ReceiptStatus::Completed { output } => serde_json::from_value(
-            output
-                .value
-                .ok_or_else(|| anyhow::anyhow!("the server answered nothing"))?,
-        )
-        .context("the server's answer does not read"),
-        ReceiptStatus::Rejected { error } => Err(anyhow::anyhow!("{error}")),
-        other => bail!("the server answered {other:?}"),
-    }
+    let result = answer
+        .get("result")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{} answered nothing: {answer}", found.label))?;
+    serde_json::from_value(result).context("the server's answer does not read")
 }
 
 /// The person's server named `name`: by its name or its device key, else by
@@ -556,9 +468,4 @@ fn servers() -> Result<Vec<PersonServer>> {
             .unwrap_or_else(|| serde_json::json!([])),
     )
     .context("the session's list of your servers does not read")
-}
-
-fn key_of(hex_key: &str) -> Option<[u8; 32]> {
-    let bytes = hex::decode(hex_key).ok()?;
-    bytes.try_into().ok()
 }

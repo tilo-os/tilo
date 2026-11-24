@@ -407,6 +407,17 @@ impl Kept {
             self.state_root.clone(),
         ))
     }
+
+    /// This machine's controls ([`tilo_server::operations::Controls`]): the workspaces it
+    /// governs, whose administrators may control it, and where its root helper reads what it is
+    /// asked and answers.
+    pub(crate) fn controls(&self) -> Option<tilo_server::operations::Controls> {
+        let server = self.server.as_ref()?;
+        Some(tilo_server::operations::Controls::new(
+            server.workspaces()?.clone(),
+            self.state_root.clone(),
+        ))
+    }
 }
 
 impl Drop for Kept {

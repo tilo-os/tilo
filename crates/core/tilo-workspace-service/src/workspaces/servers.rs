@@ -14,14 +14,9 @@
 //! same way. A server applies what its entry says; nothing about it lives in a
 //! file of its own.
 //!
-//! Each entry also carries what the person asked that server to do
-//! ([`Asked`]): its health, a service's journal, a restart, a reboot, an
-//! update, a pause or resumption of updates, a rollback, a drain or making
-//! Tilo its default start. Asking is
-//! an action on the document, and so is answering; the server its entry names
-//! carries the request out and keeps what it found or did, and every device
-//! reads both. The action that asks (`server.status` and the others, served by
-//! [`super::actions`]) waits for that answer and returns it.
+//! What the machine itself is asked to do (its health, a service's journal, a
+//! restart, a reboot, an update) is no part of the document: those are the
+//! `server` device actions its own daemon answers.
 //!
 //! The workspace's id follows from the person's root
 //! ([`person_workspace_id`]), so each of their devices finds the same one
@@ -59,7 +54,6 @@ pub use install_profile_model::plan::WaitingPlan;
 use serde::Deserialize;
 use tilo_resource::{Collection, Id, Invoke, Model, Refusal, resource};
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_protocol::transport::{OperationEntry, ServerOperation};
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::Workspaces;
@@ -83,10 +77,7 @@ pub const UPDATES: [&str; 2] = ["stable", "dev"];
 /// The states a server's web UI setting has: `on` as its image comes, and `off`
 /// until its person says otherwise. Empty stands for `on`.
 pub const WEB_SERVED: [&str; 2] = ["on", "off"];
-/// How many answers to operations one server keeps.
-pub const HISTORY_KEPT: usize = 20;
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
-const MAX_REQUEST: usize = 64;
 
 /// The person's servers, by device key (lowercase hex): each server's name,
 /// what it holds and offers, the updates it follows, its maintenance window
@@ -96,7 +87,7 @@ pub struct Servers {
     pub servers: Collection<Server>,
 }
 
-/// One server's desired configuration, and what was asked of it.
+/// One server's desired configuration.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Server {
     /// The name people see for it.
@@ -143,50 +134,9 @@ pub struct Server {
     /// What an installation plans this machine to be, before it exists, and
     /// from what it was installed afterwards ([`plan::Pending`]).
     pub plan: plan::Pending,
-    /// What the person asked of it, newest last: the operation and, once it
-    /// ran, what it answered.
-    pub asked: Collection<Asked>,
     /// The workspaces of the person's list it does not keep, by id: it keeps
     /// every other one ([`keeping`]).
     pub keeps_not: Vec<String>,
-}
-
-/// One operation the person asked of a server, and what it answered.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Asked {
-    /// The operation, one word ([`ServerOperation::NAMES`]).
-    pub operation: String,
-    /// The systemd unit a `restart` or `logs` names; empty for the rest.
-    pub service: String,
-    /// How many journal lines a `logs` reads; 0 for the rest.
-    pub lines: u32,
-    /// When it was asked, nanoseconds since the epoch.
-    pub at_ns: u64,
-    /// What the server answered, its [`ServerOperationResult`] as JSON: empty
-    /// until it answered.
-    ///
-    /// [`ServerOperationResult`]: tilo_server_protocol::transport::ServerOperationResult
-    pub answer: String,
-}
-
-impl Asked {
-    /// The operation that was asked, unless its name is no operation this
-    /// build knows.
-    #[must_use]
-    pub fn operation(&self) -> Option<ServerOperation> {
-        ServerOperation::named(&self.operation, &self.service, self.lines)
-    }
-
-    /// What the server answered, once it did.
-    ///
-    /// # Errors
-    /// It answered nothing yet, or what it answered does not read.
-    pub fn result(&self) -> Option<tilo_server_protocol::transport::ServerOperationResult> {
-        tilo_failure::ignored!(
-            "an answer this build cannot read reads as none",
-            serde_json::from_str(&self.answer).ok()
-        )
-    }
 }
 
 impl Servers {
@@ -299,14 +249,6 @@ impl Server {
         !self.keeps_not.iter().any(|not| not == workspace)
     }
 
-    /// The operations still to do here, oldest first: what the person asked
-    /// and this server did not answer yet.
-    pub fn pending(&self) -> impl Iterator<Item = (&Id, &Asked)> {
-        self.asked
-            .iter()
-            .filter(|(_, asked)| asked.answer.is_empty())
-    }
-
     /// The plan this entry keeps, as the document the machine installs from:
     /// its name, everything it was planned with, what its person's devices
     /// answered since, and what it still asks. The entry is the plan's only
@@ -319,26 +261,6 @@ impl Server {
     /// The entry does not read back as a plan.
     pub fn install_plan(&self) -> Result<install_profile_model::plan::Plan, String> {
         self.plan.document(&self.label)
-    }
-
-    /// What was asked of it and answered, newest first.
-    #[must_use]
-    pub fn history(&self) -> Vec<OperationEntry> {
-        let mut entries: Vec<OperationEntry> = self
-            .asked
-            .iter()
-            .filter(|(_, asked)| !asked.answer.is_empty())
-            .map(|(_, asked)| OperationEntry {
-                at_ns: asked.at_ns,
-                operation: asked.operation.clone(),
-                summary: asked
-                    .result()
-                    .map_or_else(String::new, |result| result.summary),
-                done: asked.result().is_some_and(|result| result.done),
-            })
-            .collect();
-        entries.reverse();
-        entries
     }
 }
 
@@ -743,73 +665,6 @@ impl Servers {
     #[action(external)]
     pub fn set_floor_key(&mut self, device: Id, key: String) -> Result<(), Refusal> {
         self.server(&device)?.floor_key = key;
-        Ok(())
-    }
-
-    /// Ask a server to do an operation, under the id `request` names it by.
-    /// `operation` is one of [`ServerOperation::NAMES`]; a `restart` or `logs`
-    /// names the systemd unit in `service`, and a `logs` reads `lines` lines
-    /// of it.
-    #[action(external)]
-    pub fn ask_operation(
-        &mut self,
-        device: Id,
-        request: String,
-        operation: String,
-        service: String,
-        lines: u32,
-    ) -> Result<(), Refusal> {
-        if !ServerOperation::NAMES.contains(&operation.as_str()) {
-            return Err(Refusal::new("no such operation"));
-        }
-        if request.is_empty() || request.len() > MAX_REQUEST || hex::decode(&request).is_err() {
-            return Err(Refusal::new("a request is named by its id"));
-        }
-        let server = self.server(&device)?;
-        server.asked.push(
-            Id::from_raw(request),
-            Asked {
-                operation,
-                service,
-                lines,
-                at_ns: tilo_clock::unix_now_ns(),
-                answer: String::new(),
-            },
-        );
-        Ok(())
-    }
-
-    /// Keep what a server answered the request `request` asked it: one
-    /// [`ServerOperationResult`](tilo_server_protocol::transport::ServerOperationResult)
-    /// as JSON. A request answered already keeps the answer it had.
-    #[action(external)]
-    pub fn answer_operation(
-        &mut self,
-        device: Id,
-        request: String,
-        answer: String,
-    ) -> Result<(), Refusal> {
-        serde_json::from_str::<tilo_server_protocol::transport::ServerOperationResult>(&answer)
-            .map_err(|_| Refusal::new("an answer is an operation's result"))?;
-        let server = self.server(&device)?;
-        let request = Id::from_raw(request);
-        match server.asked.get_mut(&request) {
-            Some(asked) if asked.answer.is_empty() => asked.answer = answer,
-            Some(_) => return Ok(()),
-            None => return Err(Refusal::new("no such request")),
-        }
-        // What was asked long ago reads from the newest answers alone; the
-        // requests still to do stay.
-        let oldest: Vec<Id> = server
-            .asked
-            .iter()
-            .filter(|(_, asked)| !asked.answer.is_empty())
-            .map(|(id, _)| id.clone())
-            .take(server.asked.len().saturating_sub(HISTORY_KEPT))
-            .collect();
-        for id in oldest {
-            server.asked.remove(&id);
-        }
         Ok(())
     }
 

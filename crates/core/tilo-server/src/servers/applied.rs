@@ -16,23 +16,16 @@
 //!   retired, lets go of every workspace it holds.
 //! - Every holder refuses the key of each retired server: the revocation its
 //!   person's root signed is in its entry ([`super::refuse_retired`]).
-//! - Each server carries out what the person asked of it: every operation its
-//!   own entry carries out without an answer ([`super::Asked`]) goes through
-//!   [`crate::operations`], and its result is written back to that entry, where
-//!   every device reads it.
 //!
 //! [`follow`] applies the document as it stands, and again after each change to
 //! it. Nothing here remembers a setting of its own: what a server is is what
 //! its entry says.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
 use super::{SERVERS, device, device_id, person_workspace_id, policy, read};
-use tilo_lock::MutexRecover as _;
 
 /// The file in a server's state root that says it was retired, which its
 /// machine reads to start its daemon no more.
@@ -224,9 +217,8 @@ async fn apply_settings(
 
 /// Apply the document now, and again after each change to it, to the admin
 /// workspace's holders or to what this device refuses, for as long as
-/// `workspaces` lives, writing the requests to what `requests` names, and
-/// running this server's own
-/// operations with its state at `state_root`. A change another holder wrote
+/// `workspaces` lives, writing the requests to what `requests` names, with
+/// its state at `state_root`. A change another holder wrote
 /// reaches this one as its copy takes it in; one this device wrote, as it is
 /// committed. A server handed the workspace after it started applies it as
 /// the hand-over lands.
@@ -250,12 +242,8 @@ pub fn follow(
     // list every admission reads, which announces the change itself.
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
-    // The requests one task here is running at a time: a write while it runs
-    // applies the document again, and must not run the same one twice.
-    let running = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
         apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
-        answer_now(&workspaces, &state_root, &running).await;
         loop {
             let ours = tokio::select! {
                 write = writes.recv() => match write {
@@ -281,81 +269,8 @@ pub fn follow(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-            // What is asked of this server is carried out as it is found.
-            answer_now(&workspaces, &state_root, &running).await;
         }
     })
-}
-
-/// Carry out the operations this device's own entry holds without an
-/// answer, each in a task of its own so a slow one holds up no change to the
-/// document.
-async fn answer_now(
-    workspaces: &Workspaces,
-    state_root: &Path,
-    running: &Arc<Mutex<HashSet<String>>>,
-) {
-    let cert = workspaces.serving_certificate().clone();
-    let Ok(servers) = read(workspaces).await else {
-        return;
-    };
-    let Some(entry) = servers.servers.get(&device_id(&cert.device_public_key)) else {
-        return;
-    };
-    if entry.retired {
-        return;
-    }
-    let pending: Vec<(String, super::Asked)> = entry
-        .pending()
-        .map(|(id, asked)| (id.as_str().to_owned(), asked.clone()))
-        .collect();
-    for (request, asked) in pending {
-        if !running.lock_recover().insert(request.clone()) {
-            continue;
-        }
-        let workspaces = workspaces.clone();
-        let cert = cert.clone();
-        let state_root = state_root.to_path_buf();
-        let running = Arc::clone(running);
-        tokio::spawn(async move {
-            let result = match asked.operation() {
-                Some(operation) => {
-                    crate::operations::operate(&state_root, Some(&workspaces), &cert, operation)
-                        .await
-                }
-                None => Err("no such operation".to_owned()),
-            };
-            let answer = match result {
-                Ok(result) => serde_json::to_string(&result),
-                // What it could not do is its answer too: the person reads
-                // why in the entry, as they read what it did.
-                Err(error) => {
-                    serde_json::to_string(&tilo_server_protocol::transport::ServerOperationResult {
-                        operation: asked.operation.clone(),
-                        done: false,
-                        summary: error,
-                        answer: tilo_server_protocol::transport::ServerAnswer::Nothing,
-                    })
-                }
-            };
-            let action = match answer {
-                Ok(answer) => super::Servers::ANSWER_OPERATION.with((
-                    device_id(&cert.device_public_key),
-                    request.clone(),
-                    answer,
-                )),
-                Err(error) => {
-                    tracing::warn!(%error, "an operation's answer does not write");
-                    running.lock_recover().remove(&request);
-                    return;
-                }
-            };
-            if let Err(error) = super::apply(&workspaces, action).await {
-                tracing::warn!(%error, %request, "an operation's answer was not recorded");
-            }
-            running.lock_recover().remove(&request);
-        });
-    }
 }
 
 /// [`reconcile_into`], with what it did in the log rather than in an answer,

@@ -28,9 +28,9 @@ pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/4";
 /// an action, on a link of the device's own.
 pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";
 
-/// One thing the person who owns a server asks it to do from another of their
-/// devices. Each is an action on their Servers workspace, which the server the
-/// entry names carries out and answers in that entry.
+/// One thing a server's person, or an administrator of a workspace it serves,
+/// asks the machine to do: each is one of the `server` device actions its
+/// daemon answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerOperation {
     /// What it serves and how its copies stand, how it unlocks, whether it
@@ -84,45 +84,6 @@ impl ServerOperation {
             Self::Drain => "drain",
             Self::SetDefaultStart => "set-default-start",
         }
-    }
-
-    /// The operations a person asks of a server, in the order their actions
-    /// are listed.
-    pub const NAMES: [&'static str; 10] = [
-        "status",
-        "logs",
-        "restart",
-        "reboot",
-        "update",
-        "pause-updates",
-        "resume-updates",
-        "rollback",
-        "drain",
-        "set-default-start",
-    ];
-
-    /// The operation `name` is, with the unit a `restart` or `logs` names and
-    /// the lines a `logs` reads: `None` for a name no operation goes by.
-    #[must_use]
-    pub fn named(name: &str, service: &str, lines: u32) -> Option<Self> {
-        Some(match name {
-            "status" => Self::Status,
-            "logs" => Self::Logs {
-                service: service.to_owned(),
-                lines,
-            },
-            "restart" => Self::Restart {
-                service: service.to_owned(),
-            },
-            "reboot" => Self::Reboot,
-            "update" => Self::Update,
-            "pause-updates" => Self::PauseUpdates,
-            "resume-updates" => Self::ResumeUpdates,
-            "rollback" => Self::Rollback,
-            "drain" => Self::Drain,
-            "set-default-start" => Self::SetDefaultStart,
-            _ => return None,
-        })
     }
 
     /// The unit a `restart` or `logs` names, or `""` for an operation that
@@ -215,8 +176,6 @@ pub struct ServerStatus {
     pub holding: Vec<HeldWorkspace>,
     /// The machine it is.
     pub hardware: ServerHardware,
-    /// What was asked of it recently, newest first.
-    pub history: Vec<OperationEntry>,
 }
 
 /// One workspace a server holds, and how its copies stand.
@@ -258,19 +217,6 @@ pub struct ServerHardware {
     pub storage_free_gb: u64,
     /// Total storage under its state root, in gigabytes.
     pub storage_total_gb: u64,
-}
-
-/// One operation a server was asked to do, as it keeps them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OperationEntry {
-    /// When it was asked, in nanoseconds since the epoch.
-    pub at_ns: u64,
-    /// What was asked, in one word.
-    pub operation: String,
-    /// What the server answered, in one sentence.
-    pub summary: String,
-    /// Whether it was carried out.
-    pub done: bool,
 }
 
 /// Bound, in characters, of the agent name a session declares its run of.

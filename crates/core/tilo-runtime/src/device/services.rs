@@ -821,6 +821,9 @@ impl Daemon {
         // A server's update turn, as the update actions take it: the workspaces
         // this computer governs, and where it keeps the image it restarted into.
         let rollout = kept.as_ref().and_then(super::keep::Kept::machine);
+        // The machine's controls, as the `server` actions carry them out: the same workspaces,
+        // and the state root its root helper reads and answers at.
+        let controls = kept.as_ref().and_then(super::keep::Kept::controls);
         // This computer keeps the workspaces its person makes on it as their own, labelled for
         // their programs and listed by the account's keys. A computer that logged in reaches
         // those through the server that keeps them; one that founded its person here keeps them
@@ -936,6 +939,7 @@ impl Daemon {
                 actions.clone(),
             )
             .with_rollout(rollout)
+            .with_controls(controls)
         });
         // A planned machine's ticket this daemon issued before it last stopped is served again.
         let restoring = Arc::clone(&tickets);

@@ -97,7 +97,7 @@ impl Tickets {
     }
 
     /// This device's key.
-    fn this(&self) -> [u8; 32] {
+    pub(super) fn this(&self) -> [u8; 32] {
         self.0.key.verifying_key().to_bytes()
     }
 
@@ -114,7 +114,9 @@ impl Tickets {
     /// Update the device `args` names: this one here, another by asking it.
     async fn update(&self, args: &Value) -> Result<Value> {
         match device_in(args)? {
-            Some(device) if device != self.this() => self.ask_device(device, UPDATE, args).await,
+            Some(device) if device != self.this() => {
+                self.ask_device(device, (RESOURCE, UPDATE), args).await
+            }
             _ => self.update_here(),
         }
     }
@@ -129,32 +131,40 @@ impl Tickets {
         Ok(json!({ "device": hex::encode(self.this()), "updating": true }))
     }
 
-    /// Ask the person's device `device` `action` with `args`, in this daemon's workspace, as this
-    /// device: its answer, or why it gave none.
-    async fn ask_device(&self, device: [u8; 32], action: &str, args: &Value) -> Result<Value> {
+    /// Ask the person's device `device` `action` of `resource` with `args`, in this daemon's
+    /// workspace, as this device: its answer, or why it gave none. `args` may name where it is
+    /// reached (`at`, its endpoint as JSON), as a server's entry does.
+    pub(super) async fn ask_device(
+        &self,
+        device: [u8; 32],
+        (resource, action): (&str, &str),
+        args: &Value,
+    ) -> Result<Value> {
         let workspace = self
             .workspace()
             .context("this device is in no workspace to reach its other devices from")?;
         let id = EndpointId::from_bytes(&device)
             .map_err(|_| anyhow!("{} is not a device key", hex::encode(device)))?;
-        let addr = self
-            .0
-            .reach
-            .lock_recover()
-            .get(&device)
-            .cloned()
+        let named = args
+            .get("at")
+            .and_then(Value::as_str)
+            .and_then(|at| serde_json::from_str::<EndpointAddr>(at).ok());
+        let addr = named
+            .or_else(|| self.0.reach.lock_recover().get(&device).cloned())
             .unwrap_or_else(|| EndpointAddr::new(id));
         let Value::Object(argument) = args.clone() else {
             bail!("a device action asks with its arguments");
         };
         let service = ActionService::new(self.0.key.clone(), std::sync::Arc::new(NoActions));
+        // A server whose endpoint is keyed apart from its device answers as the device there.
+        service.keyed_apart(device, *addr.id.as_bytes());
         let remote = std::sync::Arc::new(service.remote(&self.0.endpoint, &addr, &workspace));
         let request = InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, action),
+                address: tilo_actions::ActionAddress::new(resource, action),
             },
             argument: InvokeArgument::Json(argument),
             context: None,
@@ -210,7 +220,7 @@ fn start_update() -> Result<(), String> {
 }
 
 /// The device `args` names by its key, when it names one.
-fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
+pub(super) fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
     let Some(text) = args
         .get("device")
         .and_then(Value::as_str)
@@ -252,6 +262,7 @@ impl ActionProvider for OnThisDevice {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(catalogue_of(&query, |action| {
             matches!(action, UPDATE | PENDING | APPROVE | REPORTED)
+                || tilo_server::operations::ACTIONS.contains(&action)
         })))
     }
 
@@ -279,6 +290,11 @@ impl ActionProvider for OnThisDevice {
             InvokeArgument::Json(argument) => Value::Object(argument.clone()),
             _ => Value::Object(Map::new()),
         };
+        // The machine's controls, to the person it belongs to and the administrators of the
+        // workspaces it serves alone.
+        if address.resource == super::SERVER {
+            return self.0.control(&request, Some(caller.clone()));
+        }
         if address.resource != RESOURCE || address.action != UPDATE {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
