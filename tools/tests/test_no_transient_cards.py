@@ -43,7 +43,7 @@ class NoTransientCardsTests(unittest.TestCase):
             ],
         )
 
-    def test_the_bar_notice_comments_and_the_desktop_pass(self):
+    def test_the_bar_notice_comments_and_the_cards_own_module(self):
         root = self.fixture({
             "apps/settings/src/app.rs": (
                 "/// Not a ToastCard: the bar says it.\n"
@@ -51,8 +51,6 @@ class NoTransientCardsTests(unittest.TestCase):
                 "const NAME: &str = \"ToastCard\";\n"
             ),
             "crates/ui/ui-core/src/widget/toast.rs": "pub struct ToastCard;\n",
-            "crates/session/desktop-surface/src/notifications.rs": "let c = ToastCard::new(t, k);\n",
-            "crates/session/desktop-surface/src/lock.rs": "toast::paint_card(s, &c);\n",
             "apps/settings/target/debug/build/out.rs": "ToastCard::new(t, k);\n",
         })
         self.assertEqual(check.audit(root), [])
