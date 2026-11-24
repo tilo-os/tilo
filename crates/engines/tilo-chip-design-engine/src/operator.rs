@@ -1,15 +1,16 @@
-//! Structural operator design.
+//! Structural operator design: the operators a person places, the typed ports each one
+//! offers, and the connections between them that hold and the ones that do not.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::graph_editor::{ConnectError, Edge, Graph, GraphNode, GraphPoint, Port};
-use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Refusal};
+
+use crate::graph::{ConnectError, Edge, Graph, GraphNode, GraphPoint, Port};
 
 pub const RESOURCE_ID: &str = "chip_design.project/derived/operator-graph";
 pub const MAX_NODES: usize = 64;
 pub const MAX_EDGES: usize = 256;
 
-#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorKind {
     #[default]
@@ -41,23 +42,28 @@ impl OperatorKind {
         Self::LinearProjection,
     ];
 
-    pub fn key(self) -> &'static str {
+    /// What the operator is called in the engine's own words.
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Input => "chip-op-input",
-            Self::GateInput => "chip-op-gate",
-            Self::NormWeightInput => "chip-op-weight",
-            Self::RmsNorm => "chip-op-rms",
-            Self::ApplyNormWeight => "chip-op-apply-weight",
-            Self::Silu => "chip-op-silu",
-            Self::Multiply => "chip-op-multiply",
-            Self::Add => "chip-op-add",
-            Self::ProjectionInput => "chip-op-projection",
-            Self::MatrixWeightInput => "chip-op-matrix-weights",
-            Self::LinearProjection => "chip-op-linear-projection",
+            Self::Input => "input",
+            Self::GateInput => "gate_input",
+            Self::NormWeightInput => "norm_weight_input",
+            Self::RmsNorm => "rms_norm",
+            Self::ApplyNormWeight => "apply_norm_weight",
+            Self::Silu => "silu",
+            Self::Multiply => "multiply",
+            Self::Add => "add",
+            Self::ProjectionInput => "projection_input",
+            Self::MatrixWeightInput => "matrix_weight_input",
+            Self::LinearProjection => "linear_projection",
         }
     }
 
-    fn ports(
+    /// The typed ports a `kind` with this shape offers: the outputs it writes and the
+    /// inputs it reads, each carrying the tensor type it moves.
+    #[must_use]
+    pub fn ports(
         self,
         shape: &[u16],
         normalization_width: u16,
@@ -108,21 +114,16 @@ fn port(id: &str, data_type: &str) -> Port {
     }
 }
 
-#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[model(check = OperatorNode::valid)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperatorNode {
     /// Stable node identity.
-    #[model(readonly)]
     pub id: String,
     /// Operator
-    #[model(readonly)]
     pub kind: OperatorKind,
     /// F32 tensor shape, up to four positive dimensions; its last axis is the normalization
     /// width.
-    #[model(readonly)]
     pub shape: Vec<u16>,
     /// Last-axis normalization width.
-    #[model(readonly)]
     pub normalization_width: u16,
     /// Structural matrix output width; no matrix payload is held in the document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,15 +134,7 @@ pub struct OperatorNode {
     pub y: u16,
 }
 
-impl Identified for OperatorNode {
-    fn id(&self) -> Id {
-        Id::from_raw(self.id.clone())
-    }
-}
-
-#[derive(
-    Model, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Connection {
     pub from_node: String,
     pub from_port: String,
@@ -186,7 +179,7 @@ impl OperatorNode {
                 .ports(&self.shape, self.normalization_width, self.output_width);
         GraphNode {
             id: self.id.clone(),
-            title: self.kind.key().into(),
+            title: self.kind.name().into(),
             position: GraphPoint {
                 x: f64::from(self.x),
                 y: f64::from(self.y),
@@ -279,7 +272,7 @@ fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-fn valid_node(node: &OperatorNode) -> bool {
+pub fn valid_node(node: &OperatorNode) -> bool {
     valid_id(&node.id)
         && node.x <= 8192
         && node.y <= 8192
@@ -320,13 +313,15 @@ fn valid_matrix(node: &OperatorNode) -> bool {
 impl OperatorNode {
     /// A node keeps a stable identity, a position on the canvas and a shape its operator
     /// can take.
-    fn valid(&self) -> Result<(), Refusal> {
+    ///
+    /// # Errors
+    ///
+    /// The identity, position, shape or matrix width is one no operator takes.
+    pub fn valid(&self) -> Result<(), String> {
         if valid_node(self) {
             Ok(())
         } else {
-            Err(Refusal::new(
-                "invalid operator node identity, position, shape or matrix width",
-            ))
+            Err("invalid operator node identity, position, shape or matrix width".to_owned())
         }
     }
 

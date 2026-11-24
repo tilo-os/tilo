@@ -1,0 +1,111 @@
+{
+  "app": "chip-design",
+  "said": "Chip Design",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.chip-design",
+    "package": "chip-design"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Chip Design on an empty workspace",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "empty",
+      "said": "A new project says nothing is in it, and opens the operator graph",
+      "ops": {
+        "tl": [
+          {
+            "wait_for": "Nothing in this project yet"
+          },
+          {
+            "press_any": [
+              "Open the operator graph"
+            ]
+          },
+          {
+            "wait_for": "No operators yet"
+          }
+        ]
+      }
+    },
+    {
+      "id": "add",
+      "said": "Add an operator from the menu",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Add operator",
+              "Operator"
+            ]
+          },
+          {
+            "press_any": [
+              "Input"
+            ]
+          },
+          {
+            "wait_for": "Input"
+          }
+        ]
+      }
+    },
+    {
+      "id": "zoom",
+      "said": "Zoom the graph in, then fit it again",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Zoom in"
+            ]
+          },
+          {
+            "wait_for": "125%"
+          },
+          {
+            "press_any": [
+              "Fit to window"
+            ]
+          },
+          {
+            "wait_for": "Fit to window"
+          }
+        ]
+      }
+    },
+    {
+      "id": "evidence",
+      "said": "Everything the project holds, back from the graph",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "All reports"
+            ]
+          },
+          {
+            "wait_for": "Operators"
+          }
+        ]
+      }
+    }
+  ]
+}

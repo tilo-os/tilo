@@ -1,0 +1,48 @@
+# Chip Design (tilolang): the port's own scenarios, the states its shots show
+# (tools/screenshots/run.py). The app stages them from its records, so no
+# capture needs an imported file.
+
+[[situation]]
+name = "nothing-in-this-project-yet"
+title = "A new project: nothing imported, no operators sketched"
+scenario = "nothing in this project yet"
+
+[[situation]]
+name = "the-operator-graph"
+title = "An RMS-norm block wired through a gate into a multiply"
+scenario = "the operator graph"
+
+[[situation]]
+name = "connecting-two-operators"
+title = "Connecting from the RMS output, with the inputs it can feed marked"
+scenario = "connecting two operators"
+
+[[situation]]
+name = "a-storage-report"
+title = "An imported analytical storage report"
+scenario = "a storage report"
+
+[[situation]]
+name = "a-checkpoint-verification"
+title = "An imported checkpoint verification receipt"
+scenario = "a checkpoint verification"
+
+[[situation]]
+name = "a-research-mapping"
+title = "A reported research-library mapping and its declared scope"
+scenario = "a research mapping"
+
+[[situation]]
+name = "a-q4k-superblock"
+title = "A reported Q4_K superblock receipt with its generic cells"
+scenario = "a q4k superblock"
+
+[[situation]]
+name = "an-evidence-flow"
+title = "A reported evidence flow with a placed physical stage"
+scenario = "an evidence flow"
+
+[[situation]]
+name = "an-architecture-study"
+title = "A reported architecture comparison across two variants"
+scenario = "an architecture study"

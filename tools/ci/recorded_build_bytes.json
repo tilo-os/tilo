@@ -89,10 +89,6 @@
       "libraries": 33488533,
       "tests": 28962736
     },
-    "chip-design": {
-      "libraries": 33739866,
-      "tests": 304564024
-    },
     "cli-shim": {
       "libraries": 158655,
       "tests": 7217272

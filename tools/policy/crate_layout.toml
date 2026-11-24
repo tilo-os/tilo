@@ -48,7 +48,6 @@ core = [
     "tilo-agent-session -> agent-provider-config",
     "tilo-agent-session -> assistant",
     "tilo-agent-session -> camera",
-    "tilo-agent-session -> chip-design",
     "tilo-agent-session -> clocks",
     "tilo-agent-session -> diffmerge",
     "tilo-agent-session -> discord",

@@ -29,6 +29,7 @@ app-launch = [
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
     "dep:tilo-backups-engine",
+    "dep:tilo-chip-design-engine",
     "dep:tilolang-calendar",
     "dep:tilo-feeds",
     "dep:tilo-weather",
@@ -222,6 +223,9 @@ workspace-hack = { version = "0.1" }
 # still, a waveform, a colour and a render, through `video_engine`.
 # The Backups app's engine: the snapshots this device keeps of a folder, verified and restored.
 tilo-backups-engine = { version = "0.1.0", path = "../../engines/tilo-backups-engine", optional = true }
+# The Chip Design app's engine: the engineering evidence it imports, checked, and the
+# structural operator design it builds, resolved.
+tilo-chip-design-engine = { version = "0.1.0", path = "../../engines/tilo-chip-design-engine", optional = true }
 # The Feeds app's engine: its feeds read away from the frame, and OPML read and written.
 tilo-feeds = { path = "../../engines/feeds", optional = true }
 # The Weather app's engine: its forecasts, air quality and place search read away from the frame.

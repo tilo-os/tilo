@@ -144,7 +144,6 @@ doc = false
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
-"chip-design" = { path = "../../apps/chip-design", default-features = false, features = [] }
 "chrono-0_4_45" = { package = "chrono", version = "^0.4.45", default-features = false, features = ["alloc", "clock", "default", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
 "chrono-tz-0_10_4" = { package = "chrono-tz", version = "^0.10.4", default-features = false, features = ["default", "std"] }
 "ciborium-0_2_2" = { package = "ciborium", version = "^0.2.2", default-features = false, features = ["default", "std"] }
@@ -2661,7 +2660,6 @@ doc = false
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
-"chip-design" = { path = "../../apps/chip-design", default-features = false, features = [] }
 "chrono-0_4_45" = { package = "chrono", version = "^0.4.45", default-features = false, features = ["alloc", "clock", "default", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
 "chrono-tz-0_10_4" = { package = "chrono-tz", version = "^0.10.4", default-features = false, features = ["default", "std"] }
 "ciborium-0_2_2" = { package = "ciborium", version = "^0.2.2", default-features = false, features = ["default", "std"] }

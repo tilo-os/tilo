@@ -1836,3 +1836,101 @@ fn picker_size(bytes: Int) -> Text {
         "{(bytes + 500000) / 1000000} MB"
     } else { "{(bytes + 500000000) / 1000000000} GB" }
 }
+
+/// Reads a JSON document's own shape.
+
+/// The value at `key` of a JSON object, and nothing for anything else.
+fn json_field(value: json.Value, key: Text) -> Option<json.Value> {
+    match value {
+        .object(fields) => fields.get(key),
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The items of the JSON list at `key`, and nothing for anything else.
+fn json_list(value: json.Value, key: Text) -> List<json.Value> {
+    match json_field(value, key) {
+        .none => [],
+        .some(held) => match held {
+            .array(items) => items,
+            .object(fields) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+    }
+}
+
+/// The text at `key`, and empty when it holds none.
+fn json_text(value: json.Value, key: Text) -> Text {
+    match json_field(value, key) {
+        .none => "",
+        .some(held) => json_text_plain(held),
+    }
+}
+
+/// The text of a JSON value itself, and empty when it is no text.
+fn json_text_plain(value: json.Value) -> Text {
+    match value {
+        .string(text) => text,
+        .object(fields) => "",
+        .array(items) => "",
+        .number(number) => "",
+        .bool(flag) => "",
+        .null => "",
+    }
+}
+
+/// The texts of the JSON list at `key`, and nothing for anything else.
+fn json_texts(value: json.Value, key: Text) -> List<Text> {
+    json_list(value, key).map(item -> json_text_plain(item)).filter(text -> text != "")
+}
+
+/// The number at `key` as a whole count, and zero when it holds none.
+fn json_number(value: json.Value, key: Text) -> Int {
+    match json_field(value, key) {
+        .none => 0,
+        .some(held) => match held {
+            .number(number) => number.to_int(),
+            .object(fields) => 0,
+            .array(items) => 0,
+            .string(text) => 0,
+            .bool(flag) => 0,
+            .null => 0,
+        },
+    }
+}
+
+/// The numbers of the JSON list at `key`, in order.
+fn json_numbers(value: json.Value, key: Text) -> List<Int> {
+    json_list(value, key).map(
+        item -> match item {
+            .number(number) => number.to_int(),
+            .object(fields) => 0,
+            .array(items) => 0,
+            .string(text) => 0,
+            .bool(flag) => 0,
+            .null => 0,
+        },
+    )
+}
+
+/// The flag at `key`, and false when it holds none.
+fn json_flag(value: json.Value, key: Text) -> Bool {
+    match json_field(value, key) {
+        .none => false,
+        .some(held) => match held {
+            .bool(flag) => flag,
+            .object(fields) => false,
+            .array(items) => false,
+            .string(text) => false,
+            .number(number) => false,
+            .null => false,
+        },
+    }
+}

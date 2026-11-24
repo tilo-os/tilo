@@ -47,10 +47,6 @@ const APPS: &[App] = &[
         kind: "assistant.window",
     },
     App {
-        package: "chip-design",
-        bin: "chip-design",
-        id: "so.tilo.chip-design",
-        kind: "chip_design.project",
     },
     App {
         package: "console",

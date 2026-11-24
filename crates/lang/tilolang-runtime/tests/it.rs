@@ -40,6 +40,8 @@ mod e2e_calculator;
 mod e2e_call_fn;
 #[path = "e2e_canvas.rs"]
 mod e2e_canvas;
+#[path = "e2e_chip_design.rs"]
+mod e2e_chip_design;
 #[path = "e2e_cleanup.rs"]
 mod e2e_cleanup;
 #[path = "e2e_clocks.rs"]

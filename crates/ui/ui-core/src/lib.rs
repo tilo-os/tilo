@@ -198,7 +198,6 @@ pub mod gpu;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
 /// to RGB in a shader.
 pub mod gpu_video;
-pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;

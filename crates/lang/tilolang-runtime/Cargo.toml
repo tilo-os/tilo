@@ -115,6 +115,8 @@ wat = "1"
 # The hex editor's device work, answered by the crate a session registers.
 hex-engine = { path = "../../engines/hex-engine" }
 diffmerge-engine = { path = "../../engines/diffmerge-engine" }
+# The chip design app's device work, answered by the crate a session registers.
+tilo-chip-design-engine = { path = "../../engines/tilo-chip-design-engine" }
 tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 

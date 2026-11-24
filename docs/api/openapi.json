@@ -7502,61 +7502,1737 @@
         ],
         "description": ""
       },
-      "chip_design.project.import-report.Arguments": {
+      "tilolang.personal.view-state.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep a view's state"
+      },
+      "tilolang.personal.seen.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep what is seen"
+      },
+      "tilolang.personal.seen-runs.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep reviewed runs"
+      },
+      "tl.so.tilo.chip-design.Port.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Port.edit-text.Arguments": {
         "type": "object",
         "properties": {
-          "json": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "data_type"
+            ],
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           }
         },
         "required": [
-          "json"
+          "field"
         ],
-        "description": ""
+        "description": "A bound control changes the field it shows."
       },
-      "chip_design.project.remove-report.Arguments": {
+      "tl.so.tilo.chip-design.Port.edit-flag.Arguments": {
         "type": "object",
         "properties": {
-          "report": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Port.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Operator.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Operator.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "node",
+              "shape_text",
+              "width_text"
+            ],
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           }
         },
         "required": [
-          "report"
+          "field"
         ],
-        "description": ""
+        "description": "A bound control changes the field it shows."
       },
-      "chip_design.project.import-verification.Arguments": {
+      "tl.so.tilo.chip-design.Operator.edit-flag.Arguments": {
         "type": "object",
         "properties": {
-          "json": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "has_output_width"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Operator.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Connection.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Connection.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "from_node",
+              "from_port",
+              "to_node",
+              "to_port",
+              "digest",
+              "reason"
+            ],
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           }
         },
         "required": [
-          "json"
+          "field"
         ],
-        "description": ""
+        "description": "A bound control changes the field it shows."
       },
-      "chip_design.project.remove-verification.Arguments": {
+      "tl.so.tilo.chip-design.Connection.edit-flag.Arguments": {
         "type": "object",
         "properties": {
-          "report": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "active"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Connection.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Assumptions.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Assumptions.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           }
         },
         "required": [
-          "report"
+          "field"
         ],
-        "description": ""
+        "description": "A bound control changes the field it shows."
       },
-      "chip_design.project.add-node.Arguments": {
+      "tl.so.tilo.chip-design.Assumptions.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Assumptions.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Report.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Report.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "digest",
+              "source",
+              "model",
+              "revision",
+              "config_sha256",
+              "evidence",
+              "cache_reason"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Report.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Report.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Check.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Check.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Check.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Check.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Tool.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Tool.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "version",
+              "executable_sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Tool.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Tool.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Artifact.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Artifact.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Artifact.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Artifact.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Digest.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Digest.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Digest.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Digest.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.CellCount.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.CellCount.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.CellCount.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.CellCount.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Observation.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Observation.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "label",
+              "output_sha256",
+              "library",
+              "clock_constraint_ns",
+              "setup_slack_ns",
+              "hold_slack_ns",
+              "library_area_um2",
+              "profile",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Observation.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Observation.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Memory.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Memory.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Memory.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "fully_initialized"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Memory.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Variant.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Variant.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "identity",
+              "output_sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Variant.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "numerical",
+              "synthesis"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Variant.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.StageLink.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.StageLink.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "receipt_sha256",
+              "producer_sha256",
+              "input_identity_sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.StageLink.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.StageLink.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Stage.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Stage.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "original_receipt_artifact",
+              "producer_sha256",
+              "input_identity_sha256",
+              "observation",
+              "database_artifact",
+              "observation_artifact"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Stage.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "placed"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Stage.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Macro.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Macro.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "slot",
+              "name",
+              "master",
+              "placement"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Macro.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Macro.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Dependency.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Dependency.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "from",
+              "to",
+              "artifact"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Dependency.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Dependency.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Subflow.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Subflow.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "summary_artifact"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Subflow.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Subflow.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Receipt.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Receipt.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "digest",
+              "source",
+              "evidence",
+              "imported_bytes_sha256",
+              "failure",
+              "failure_stage",
+              "declared_toolchain_image",
+              "sample_manifest_sha256",
+              "verifier_sha256",
+              "artifact_validator_sha256",
+              "mapper_sha256",
+              "library_revision",
+              "reported_library_area",
+              "sample_sha256",
+              "sample_receipt_sha256",
+              "rtl_source_sha256",
+              "real_protocol",
+              "c_instrumentation",
+              "op_original_receipt_sha256",
+              "op_primary_revision",
+              "op_compiler_version",
+              "op_compiler_executable_sha256",
+              "study_original_receipt_sha256",
+              "study_producer_sha256",
+              "study_input_identity_sha256",
+              "flow_title",
+              "flow_input_identity_sha256"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Receipt.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "has_input_validation",
+              "has_lanes",
+              "has_group_size",
+              "has_mapped_cell_count",
+              "has_abc_target",
+              "manufacturable",
+              "has_manufacturable",
+              "synthetic_coefficients",
+              "has_synthetic_coefficients",
+              "synthetic_activations",
+              "has_synthetic_activations",
+              "has_external_scalar_comparisons",
+              "has_generic_cell_count",
+              "has_excluded_metadata_cells",
+              "operator",
+              "study",
+              "flow"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Receipt.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Project.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.Project.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "selected",
+              "subject",
+              "node",
+              "output_node",
+              "output_port",
+              "stage",
+              "macro",
+              "failure",
+              "notice"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Project.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.Project.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.Project.import_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Imports the engineering evidence a JSON file holds: an analytical storage report or a\nhardware verification receipt. This is what a person's files and the file chooser hand the\napp, and importing the same bytes twice keeps one record."
+      },
+      "tl.so.tilo.chip-design.Project.import_report.Arguments": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "description": "Imports an analytical storage report from its JSON."
+      },
+      "tl.so.tilo.chip-design.Project.import_verification.Arguments": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "description": "Imports a hardware verification receipt from its JSON."
+      },
+      "tl.so.tilo.chip-design.Project.take_in.Arguments": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "description": "Takes in one imported document, whichever it is: the device checks it first, and what it\nholds reaches the project only once its own contract accepts it."
+      },
+      "tl.so.tilo.chip-design.Project.keep_report.Arguments": {
+        "type": "object",
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "facts": {}
+        },
+        "required": [
+          "digest",
+          "source",
+          "facts"
+        ],
+        "description": "Keeps one analytical storage report and the assumptions and scope it states."
+      },
+      "tl.so.tilo.chip-design.Project.keep_receipt.Arguments": {
+        "type": "object",
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "facts": {}
+        },
+        "required": [
+          "digest",
+          "source",
+          "facts"
+        ],
+        "description": "Keeps one hardware verification receipt: its scope, its checks, the identities it reports,\nand whichever of the three reported protocols it speaks."
+      },
+      "tl.so.tilo.chip-design.Project.remove_report.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Report",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "description": "Removes a report and everything it stated."
+      },
+      "tl.so.tilo.chip-design.Project.remove_verification.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "description": "Removes a verification receipt and everything it stated."
+      },
+      "tl.so.tilo.chip-design.Project.show_graph.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens the operator graph."
+      },
+      "tl.so.tilo.chip-design.Project.show_all.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lists every report and receipt the project holds."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_report.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Report",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "description": "Shows one report."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_receipt.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "description": "Shows one verification receipt."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_stage.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          },
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Stage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r",
+          "s"
+        ],
+        "description": "Shows one stage of the receipt the window holds open."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_macro.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          },
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Macro",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r",
+          "m"
+        ],
+        "description": "Shows one macro of the placement the window holds open."
+      },
+      "tl.so.tilo.chip-design.Project.open_subflow.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          },
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Subflow",
+            "type": "object"
+          }
+        },
+        "required": [
+          "r",
+          "s"
+        ],
+        "description": "Opens the receipt an evidence flow's subflow reference names, when its summary is imported."
+      },
+      "tl.so.tilo.chip-design.Project.dismiss.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shrugs off the line about the last refusal or success."
+      },
+      "tl.so.tilo.chip-design.Project.zoom_graph.Arguments": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step"
+        ],
+        "description": "Zooms the operator graph in, out, or back to its whole extent."
+      },
+      "tl.so.tilo.chip-design.Project.select_output.Arguments": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          },
+          "port": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "port"
+        ],
+        "description": "Chooses the output a person connects from, naming the inputs it can feed."
+      },
+      "tl.so.tilo.chip-design.Project.clear_output.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Leaves the graph without a chosen output."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_operator.Arguments": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "description": "Shows one operator's own facts, or closes them."
+      },
+      "tl.so.tilo.chip-design.Project.close_operator.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Close operator"
+      },
+      "tl.so.tilo.chip-design.Project.add_operator.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Adds an operator of `kind` after the ones already in the graph, on a four-wide grid."
+      },
+      "tl.so.tilo.chip-design.Project.add_operator_at.Arguments": {
         "type": "object",
         "properties": {
           "node": {
             "type": "string"
           },
           "kind": {
+            "choice_labels": {
+              "add": "Add",
+              "apply_norm_weight": "Apply norm weight",
+              "gate_input": "Gate input",
+              "input": "Input",
+              "linear_projection": "Linear projection",
+              "matrix_weight_input": "Matrix weight input",
+              "multiply": "Multiply",
+              "norm_weight_input": "Norm weight input",
+              "projection_input": "Projection input",
+              "rms_norm": "Rms norm",
+              "silu": "Silu"
+            },
             "enum": [
               "input",
               "gate_input",
@@ -7574,28 +9250,17 @@
           },
           "shape": {
             "items": {
-              "maximum": 65535,
-              "minimum": 0,
               "type": "integer"
             },
             "type": "array"
           },
           "output_width": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer"
           },
           "x": {
-            "maximum": 65535,
-            "minimum": 0,
             "type": "integer"
           },
           "y": {
-            "maximum": 65535,
-            "minimum": 0,
             "type": "integer"
           }
         },
@@ -7603,83 +9268,833 @@
           "node",
           "kind",
           "shape",
+          "output_width",
           "x",
           "y"
         ],
-        "description": ""
+        "description": "Adds one operator with exactly the shape, matrix width and place a caller gives it. The\ndevice checks the whole design before any of it is kept."
       },
-      "chip_design.project.set-shape.Arguments": {
+      "tl.so.tilo.chip-design.Project.set_shape.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
           },
           "shape": {
             "items": {
-              "maximum": 65535,
-              "minimum": 0,
               "type": "integer"
             },
             "type": "array"
           }
         },
         "required": [
-          "node",
+          "op",
           "shape"
         ],
-        "description": ""
+        "description": "Reshapes one operator. Its last axis sets the normalization width, and every connection the\nnew shape cannot hold stops holding."
       },
-      "chip_design.project.remove-node.Arguments": {
+      "tl.so.tilo.chip-design.Project.apply_shape.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
           }
         },
         "required": [
-          "node"
+          "op"
         ],
-        "description": ""
+        "description": "Applies the shape a person typed for one operator, when it names one."
       },
-      "chip_design.project.connect.Arguments": {
+      "tl.so.tilo.chip-design.Project.apply_width.Arguments": {
         "type": "object",
         "properties": {
-          "from_node": {
-            "type": "string"
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "description": "Applies the matrix output width a person typed for one operator."
+      },
+      "tl.so.tilo.chip-design.Project.tap_macro.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Stage",
+            "type": "object"
+          },
+          "index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "s",
+          "index"
+        ],
+        "description": "Shows one placement macro of the stage the window holds open."
+      },
+      "tl.so.tilo.chip-design.Project.set_output_width.Arguments": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "op",
+          "width"
+        ],
+        "description": "Sets the matrix output width of one operator."
+      },
+      "tl.so.tilo.chip-design.Project.move_operator.Arguments": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "op",
+          "x",
+          "y"
+        ],
+        "description": "Moves one operator to a place on the canvas."
+      },
+      "tl.so.tilo.chip-design.Project.remove_operator.Arguments": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "description": "Removes one operator, and every connection it held. Every other connection holds as it did:\nremoving an operator takes only its own edges, and no other operator's ports change."
+      },
+      "tl.so.tilo.chip-design.Project.connect.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
           },
           "from_port": {
             "type": "string"
           },
-          "to_node": {
-            "type": "string"
+          "to": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
           },
           "to_port": {
             "type": "string"
           }
         },
         "required": [
-          "from_node",
+          "from",
           "from_port",
-          "to_node",
+          "to",
           "to_port"
         ],
-        "description": ""
+        "description": "Connects one output to one input. The device refuses a connection whose types differ, whose\ninput another connection holds, or that would close a cycle."
       },
-      "chip_design.project.disconnect.Arguments": {
+      "tl.so.tilo.chip-design.Project.disconnect.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
+          "op": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Operator",
+            "type": "object"
           },
           "port": {
             "type": "string"
           }
         },
         "required": [
-          "node",
+          "op",
           "port"
         ],
-        "description": ""
+        "description": "Disconnects every connection into one input."
+      },
+      "tl.so.tilo.chip-design.Project.resolve_graph.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Resolves the whole design again, so what the window shows is what the stored design makes."
+      },
+      "tl.so.tilo.chip-design.Project.apply_graph.Arguments": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "description": "Keeps the ports and connection outcomes the device answered, so the window draws and\nrefuses by the design's own resolution."
+      },
+      "tl.so.tilo.chip-design.Project.inspect_seen_macro.Arguments": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Receipt",
+            "type": "object"
+          },
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Stage",
+            "type": "object"
+          },
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chip-design.Macro",
+            "type": "object"
+          }
+        },
+        "required": [
+          "s",
+          "m"
+        ],
+        "description": "Shows one macro the person picked from the placement's own list."
+      },
+      "tl.so.tilo.chip-design.Project.tap_graph.Arguments": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "description": "A press on the canvas: an operator's title opens its facts, an output is what the next input\nconnects from, and an input connects or opens its operator."
+      },
+      "tl.so.tilo.chip-design.ImportAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.ImportAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "json"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.ImportAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.ImportAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.NodeAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.NodeAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "id"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.NodeAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.NodeAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.EdgeAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.EdgeAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "from_node",
+              "from_port",
+              "to_node",
+              "to_port"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.EdgeAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.EdgeAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.GraphAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.GraphAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.GraphAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.GraphAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chip-design.OutcomeOf.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chip-design.OutcomeOf.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "digest",
+              "reason"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.OutcomeOf.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "active"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chip-design.OutcomeOf.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
       },
       "clocks.collection.add-world-clock.Arguments": {
         "type": "object",
@@ -37990,57 +40405,837 @@
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "import-report",
-      "arguments": "#/components/schemas/chip_design.project.import-report.Arguments"
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "remove-report",
-      "arguments": "#/components/schemas/chip_design.project.remove-report.Arguments"
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "import-verification",
-      "arguments": "#/components/schemas/chip_design.project.import-verification.Arguments"
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "remove-verification",
-      "arguments": "#/components/schemas/chip_design.project.remove-verification.Arguments"
+      "resource": "tl.so.tilo.chip-design.Port",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Port.$create.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "add-node",
-      "arguments": "#/components/schemas/chip_design.project.add-node.Arguments"
+      "resource": "tl.so.tilo.chip-design.Port",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Port.edit-text.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "set-shape",
-      "arguments": "#/components/schemas/chip_design.project.set-shape.Arguments"
+      "resource": "tl.so.tilo.chip-design.Port",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Port.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
-      "action": "remove-node",
-      "arguments": "#/components/schemas/chip_design.project.remove-node.Arguments"
+      "resource": "tl.so.tilo.chip-design.Port",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Port.$scenario.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
+      "resource": "tl.so.tilo.chip-design.Operator",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Operator.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Operator",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Operator.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Operator",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Operator.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Operator",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Operator.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Connection",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Connection.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Connection",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Connection.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Connection",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Connection.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Connection",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Connection.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Assumptions",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Assumptions.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Assumptions",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Assumptions.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Assumptions",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Assumptions.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Assumptions",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Assumptions.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Report",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Report.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Report",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Report.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Report",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Report.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Report",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Report.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Check",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Check.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Check",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Check.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Check",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Check.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Check",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Check.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Tool",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Tool.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Tool",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Tool.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Tool",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Tool.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Tool",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Tool.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Artifact",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Artifact.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Artifact",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Artifact.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Artifact",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Artifact.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Artifact",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Artifact.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Digest",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Digest.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Digest",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Digest.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Digest",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Digest.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Digest",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Digest.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.CellCount",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.CellCount.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.CellCount",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.CellCount.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.CellCount",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.CellCount.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.CellCount",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.CellCount.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Observation",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Observation.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Observation",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Observation.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Observation",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Observation.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Observation",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Observation.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Memory",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Memory.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Memory",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Memory.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Memory",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Memory.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Memory",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Memory.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Variant",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Variant.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Variant",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Variant.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Variant",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Variant.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Variant",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Variant.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.StageLink",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.StageLink.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.StageLink",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.StageLink.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.StageLink",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.StageLink.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.StageLink",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.StageLink.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Stage",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Stage.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Stage",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Stage.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Stage",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Stage.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Stage",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Stage.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Macro",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Macro.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Macro",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Macro.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Macro",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Macro.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Macro",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Macro.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Dependency",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Dependency.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Dependency",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Dependency.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Dependency",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Dependency.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Dependency",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Dependency.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Subflow",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Subflow.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Subflow",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Subflow.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Subflow",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Subflow.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Subflow",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Subflow.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Receipt",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Receipt.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Receipt",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Receipt.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Receipt",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Receipt.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Receipt",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Receipt.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "import_file",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.import_file.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "import_report",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.import_report.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "import_verification",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.import_verification.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "take_in",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.take_in.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "keep_report",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.keep_report.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "keep_receipt",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.keep_receipt.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "remove_report",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.remove_report.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "remove_verification",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.remove_verification.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "show_graph",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.show_graph.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "show_all",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.show_all.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_report",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_report.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_receipt",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_receipt.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_stage",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_stage.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_macro",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_macro.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "open_subflow",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.open_subflow.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "dismiss",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.dismiss.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "zoom_graph",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.zoom_graph.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "select_output",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.select_output.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "clear_output",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.clear_output.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_operator",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_operator.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "close_operator",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.close_operator.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "add_operator",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.add_operator.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "add_operator_at",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.add_operator_at.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "set_shape",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.set_shape.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "apply_shape",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.apply_shape.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "apply_width",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.apply_width.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "tap_macro",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.tap_macro.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "set_output_width",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.set_output_width.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "move_operator",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.move_operator.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "remove_operator",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.remove_operator.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
       "action": "connect",
-      "arguments": "#/components/schemas/chip_design.project.connect.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.connect.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "chip_design.project",
+      "resource": "tl.so.tilo.chip-design.Project",
       "action": "disconnect",
-      "arguments": "#/components/schemas/chip_design.project.disconnect.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.disconnect.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "resolve_graph",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.resolve_graph.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "apply_graph",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.apply_graph.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "inspect_seen_macro",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.inspect_seen_macro.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.Project",
+      "action": "tap_graph",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.Project.tap_graph.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.ImportAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.ImportAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.ImportAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.ImportAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.ImportAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.ImportAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.ImportAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.ImportAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.NodeAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.NodeAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.NodeAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.NodeAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.NodeAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.NodeAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.NodeAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.NodeAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.EdgeAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.EdgeAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.EdgeAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.EdgeAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.EdgeAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.EdgeAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.EdgeAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.EdgeAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.GraphAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.GraphAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.GraphAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.GraphAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.GraphAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.GraphAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.GraphAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.GraphAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.OutcomeOf",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.OutcomeOf.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.OutcomeOf",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.OutcomeOf.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.OutcomeOf",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.OutcomeOf.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chip-design",
+      "resource": "tl.so.tilo.chip-design.OutcomeOf",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chip-design.OutcomeOf.$scenario.Arguments"
     },
     {
       "app": "so.tilo.clocks",

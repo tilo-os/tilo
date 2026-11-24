@@ -36,6 +36,8 @@ pub mod call;
 #[cfg(feature = "app-launch")]
 pub mod camera_engine;
 pub mod canvas;
+#[cfg(feature = "app-launch")]
+pub mod chip_design_engine;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
