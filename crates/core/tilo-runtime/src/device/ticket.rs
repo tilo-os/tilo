@@ -1445,15 +1445,16 @@ impl Tickets {
         let workspaces = self.0.workspaces.as_ref().ok_or_else(|| {
             anyhow!("This computer's workspaces are not open yet: try again in a moment.")
         })?;
-        let device =
-            tilo_api::daemon::enter::log_in_at(&self.0.key, &self.0.cert, host, None).await?;
-        let address = device
-            .server_address
+        let endpoint = host
+            .address
             .as_ref()
-            .ok_or_else(|| anyhow!("that server names no address to reach it at"))?;
-        // Where this device keeps the person's own workspace, it names the server among its
-        // hosts; where it does not yet, it takes it in through the server, which names itself
-        // there, and the copy names it all the same.
+            .ok_or_else(|| anyhow!("that server names no address to reach it at"))?
+            .endpoint_addr
+            .clone();
+        // Where this device keeps the person's own workspace, the server takes it in before the
+        // login reads the person's list of workspaces, which lives there: named among its hosts,
+        // the server answers that list. Where this device does not keep it yet, it takes it in
+        // through the server, which names itself there, and the copy names it all the same.
         let copies = workspaces.copies();
         if tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(copies)
             .await
@@ -1463,13 +1464,15 @@ impl Tickets {
             copies
                 .attach_server(
                     &person,
-                    device.server_cert.device_public_key,
-                    address.endpoint_addr.clone(),
+                    host.server_cert.device_public_key,
+                    endpoint,
                     tilo_peer_state::CopyRole::KeyHolder,
                 )
                 .await
                 .map_err(|error| anyhow!("the server did not take your own workspace: {error}"))?;
         }
+        let device =
+            tilo_api::daemon::enter::log_in_at(&self.0.key, &self.0.cert, host, None).await?;
         let said = logged_in(&device);
         self.0.logged_in.send_replace(Some(Box::new(device)));
         Ok(said)

@@ -1426,7 +1426,10 @@ impl Workspaces {
             .certificate()
             .await
             .map_err(|error| format!("the host did not say who it is: {error}"))?;
-        let (signer, signing) = host.endpoint_identity();
+        // Each operation is signed as this host, the holder its hand-overs and catch-ups name,
+        // whatever key the endpoint the link runs on is keyed by.
+        let (signer, signing): (Arc<dyn collab_types::signer::DeviceSigner>, _) =
+            (Arc::new(host.key.clone()), host.cert.clone());
         Ok(OtherHost {
             certificate,
             actions,
@@ -1442,7 +1445,7 @@ struct OtherHost {
     certificate: DeviceCert,
     /// Its actions, asked over the link this host holds to it.
     actions: Arc<RemoteDevice>,
-    /// What this device signs each operation it asks with, as its endpoint's key.
+    /// What this host signs each operation it asks with: its own key.
     signer: Arc<dyn collab_types::signer::DeviceSigner>,
     /// The certificate of that key, which each signed operation carries.
     signing: DeviceCert,
