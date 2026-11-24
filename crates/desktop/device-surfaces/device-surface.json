@@ -249,7 +249,7 @@
         {
           "id": "test-output",
           "label": "Play a test tone",
-          "description": "Play a short, quiet tone through an output and nowhere else, so a person can tell which device it is: both ears, or one of them.",
+          "description": "Play a short, quiet tone through an output and nowhere else, so a person can tell which device it is: both ears, or one of them. It stops by itself and changes nothing else about the sound.",
           "kind": "outside",
           "params": [
             {
