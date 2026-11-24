@@ -789,8 +789,7 @@ impl Shared {
             // chord to Chat, which a send with nothing to be about has always opened.
             // The shell draws the picker: it is the shell's view, and its
             // card takes the keys, so the chord opens and closes it there.
-            ShortcutAction::EmojiPicker =>
-            {
+            ShortcutAction::EmojiPicker => {
                 #[cfg(target_os = "linux")]
                 self.surfaces.toggle(crate::device_lists::EMOJI);
             }

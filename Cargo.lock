@@ -17048,6 +17048,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-device-surfaces"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-audio-service",
+ "tilo-color-pipeline",
+ "tilo-connectivity-service",
+ "tilo-fs",
+ "tilo-resource",
+ "tilo-runtime",
+ "tilo-session-power",
+ "tilo-speaker-service",
+ "tilo-system-service",
+ "tilo-workspace-service",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
@@ -20336,6 +20355,7 @@ dependencies = [
  "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-device-identity",
+ "tilo-device-surfaces",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",

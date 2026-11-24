@@ -1,0 +1,28 @@
+[package]
+name = "tilo-device-surfaces"
+description = "The device's resources as it publishes them: each one's reading, its verbs and its surface, which a view of another language compiles against."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fs = { package = "tilo-fs", path = "../../core/fs", default-features = false, features = ["filesystem"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-audio-service = { path = "../../os/audio-service" }
+tilo-color-pipeline = { path = "../../desktop/color-pipeline" }
+tilo-connectivity-service = { path = "../../os/connectivity-service" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-runtime = { path = "../../core/tilo-runtime" }
+tilo-session-power = { path = "../../os/power-service" }
+tilo-speaker-service = { path = "../../session/speaker-service" }
+tilo-system-service = { path = "../../os/system-service" }
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "files"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -343,6 +343,18 @@
           "readonly": true
         },
         {
+          "path": "mono-output",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "echo-cancellation",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
           "path": "pending",
           "stored": "value",
           "type": {
@@ -6635,6 +6647,276 @@
       ]
     },
     {
+      "kind": "firewall",
+      "label": "Firewall",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read this computer's firewalld again",
+          "description": "Read this computer's firewalld again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "apply",
+          "label": "Apply the configuration to this computer's firewalld",
+          "description": "Apply a configuration to this computer's firewalld, as canonical JSON.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "config",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "read-blocked",
+          "label": "Show what the kernel dropped",
+          "description": "Read what the kernel dropped over the last `window_minutes`.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "window_minutes",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "enabled",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "panic_mode",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "default_zone",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "zones",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "FirewallZone"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "blocked",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "BlockedGroup"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "blocked_total",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "blocked_window_minutes",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "blocked_read_at_ms",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "blocked_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "blocked_note",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "BlockedGroup",
+          "doc": "One group of dropped packets: the rule that dropped them, how many, and how they spread over the window.",
+          "fields": [
+            {
+              "name": "verdict",
+              "type": "text"
+            },
+            {
+              "name": "protocol",
+              "type": "text"
+            },
+            {
+              "name": "port",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "interface",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "packets",
+              "type": "int"
+            },
+            {
+              "name": "sources",
+              "type": "int"
+            },
+            {
+              "name": "last_seen_ms",
+              "type": "int"
+            },
+            {
+              "name": "buckets",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "window_minutes",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "FirewallRule",
+          "doc": "One rule of a zone, as firewalld and the app both name it: a service or a port, what it does with matching traffic, and where that traffic comes from.",
+          "fields": [
+            {
+              "name": "service",
+              "type": "text"
+            },
+            {
+              "name": "port",
+              "type": "text"
+            },
+            {
+              "name": "proto",
+              "type": "text"
+            },
+            {
+              "name": "verdict",
+              "type": "text"
+            },
+            {
+              "name": "source",
+              "type": "text"
+            },
+            {
+              "name": "enabled",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "FirewallZone",
+          "doc": "One zone of firewalld.",
+          "fields": [
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "target",
+              "type": "text"
+            },
+            {
+              "name": "interfaces",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "services",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "rules",
+              "type": {
+                "list": {
+                  "named": "FirewallRule"
+                }
+              }
+            },
+            {
+              "name": "masquerade",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "system-update",
       "label": "System update",
       "version": 1,
@@ -8069,6 +8351,7 @@
       "kind": "windows",
       "label": "Windows",
       "version": 1,
+      "verbs": [],
       "fields": [
         {
           "path": "all",
@@ -8092,6 +8375,268 @@
         }
       ],
       "types": [
+        {
+          "name": "Author",
+          "doc": "Who opened a window: the member whose hands opened it, person or agent, and the agent's run when one did.",
+          "fields": [
+            {
+              "name": "identity",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "colour",
+              "type": "text"
+            },
+            {
+              "name": "agent",
+              "type": "text"
+            },
+            {
+              "name": "run",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Bar",
+          "doc": "The parts an app declares for its window's bar, as the shell's views draw them.",
+          "fields": [
+            {
+              "name": "leading",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            },
+            {
+              "name": "back",
+              "type": "bool"
+            },
+            {
+              "name": "forward",
+              "type": "bool"
+            },
+            {
+              "name": "sidebar",
+              "type": "bool"
+            },
+            {
+              "name": "sidebar_on",
+              "type": "bool"
+            },
+            {
+              "name": "views",
+              "type": {
+                "option": {
+                  "named": "BarViews"
+                }
+              }
+            },
+            {
+              "name": "notice",
+              "type": {
+                "option": {
+                  "named": "BarNotice"
+                }
+              }
+            },
+            {
+              "name": "reactions",
+              "type": {
+                "option": {
+                  "named": "BarReactions"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarAction",
+          "doc": "One control of a window's bar.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "enabled",
+              "type": "bool"
+            },
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "toggles",
+              "type": "bool"
+            },
+            {
+              "name": "menu",
+              "type": "bool"
+            },
+            {
+              "name": "items",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarNotice",
+          "doc": "What a window says in its bar: a line, its tone, and up to two actions beside it.",
+          "fields": [
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "tone",
+              "type": "text"
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarReaction",
+          "doc": "One emoji's reactions.",
+          "fields": [
+            {
+              "name": "emoji",
+              "type": "text"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "mine",
+              "type": "bool"
+            },
+            {
+              "name": "names",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "action",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "BarReactions",
+          "doc": "The reactions to what a window shows, as its bar draws them.",
+          "fields": [
+            {
+              "name": "pills",
+              "type": {
+                "list": {
+                  "named": "BarReaction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarView",
+          "doc": "One view a window's bar offers.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "BarViews",
+          "doc": "The views a window's bar switches between.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "choices",
+              "type": {
+                "list": {
+                  "named": "BarView"
+                }
+              }
+            },
+            {
+              "name": "chosen",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Ended",
+          "doc": "What a window says in the place its app left, when the app could not open or stopped: the outcome with the way to ask for it again.",
+          "fields": [
+            {
+              "name": "what",
+              "type": "text"
+            },
+            {
+              "name": "why",
+              "type": "text"
+            },
+            {
+              "name": "retry",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "details",
+              "type": "text"
+            }
+          ]
+        },
         {
           "name": "Window",
           "doc": "A window of the layout: a tab of a strip of one of its workspaces.",
@@ -8251,268 +8796,6 @@
               "type": "int"
             }
           ]
-        },
-        {
-          "name": "Bar",
-          "doc": "The parts an app declares for its window's bar, as the shell's views draw them.",
-          "fields": [
-            {
-              "name": "leading",
-              "type": {
-                "list": {
-                  "named": "BarAction"
-                }
-              }
-            },
-            {
-              "name": "actions",
-              "type": {
-                "list": {
-                  "named": "BarAction"
-                }
-              }
-            },
-            {
-              "name": "back",
-              "type": "bool"
-            },
-            {
-              "name": "forward",
-              "type": "bool"
-            },
-            {
-              "name": "sidebar",
-              "type": "bool"
-            },
-            {
-              "name": "sidebar_on",
-              "type": "bool"
-            },
-            {
-              "name": "views",
-              "type": {
-                "option": {
-                  "named": "BarViews"
-                }
-              }
-            },
-            {
-              "name": "notice",
-              "type": {
-                "option": {
-                  "named": "BarNotice"
-                }
-              }
-            },
-            {
-              "name": "reactions",
-              "type": {
-                "option": {
-                  "named": "BarReactions"
-                }
-              }
-            }
-          ]
-        },
-        {
-          "name": "BarAction",
-          "doc": "One control of a window's bar.",
-          "fields": [
-            {
-              "name": "id",
-              "type": "text"
-            },
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "icon",
-              "type": "text"
-            },
-            {
-              "name": "enabled",
-              "type": "bool"
-            },
-            {
-              "name": "on",
-              "type": "bool"
-            },
-            {
-              "name": "toggles",
-              "type": "bool"
-            },
-            {
-              "name": "menu",
-              "type": "bool"
-            },
-            {
-              "name": "items",
-              "type": {
-                "list": {
-                  "named": "BarAction"
-                }
-              }
-            }
-          ]
-        },
-        {
-          "name": "BarViews",
-          "doc": "The views a window's bar switches between.",
-          "fields": [
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "choices",
-              "type": {
-                "list": {
-                  "named": "BarView"
-                }
-              }
-            },
-            {
-              "name": "chosen",
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "name": "BarView",
-          "doc": "One view a window's bar offers.",
-          "fields": [
-            {
-              "name": "id",
-              "type": "text"
-            },
-            {
-              "name": "label",
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "name": "BarNotice",
-          "doc": "What a window says in its bar: a line, its tone, and up to two actions beside it.",
-          "fields": [
-            {
-              "name": "text",
-              "type": "text"
-            },
-            {
-              "name": "tone",
-              "type": "text"
-            },
-            {
-              "name": "actions",
-              "type": {
-                "list": {
-                  "named": "BarAction"
-                }
-              }
-            }
-          ]
-        },
-        {
-          "name": "BarReactions",
-          "doc": "The reactions to what a window shows, as its bar draws them.",
-          "fields": [
-            {
-              "name": "pills",
-              "type": {
-                "list": {
-                  "named": "BarReaction"
-                }
-              }
-            }
-          ]
-        },
-        {
-          "name": "BarReaction",
-          "doc": "One emoji's reactions.",
-          "fields": [
-            {
-              "name": "emoji",
-              "type": "text"
-            },
-            {
-              "name": "count",
-              "type": "int"
-            },
-            {
-              "name": "mine",
-              "type": "bool"
-            },
-            {
-              "name": "names",
-              "type": {
-                "list": "text"
-              }
-            },
-            {
-              "name": "action",
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "name": "Author",
-          "doc": "Who opened a window: the member whose hands opened it, person or agent, and the agent's run when one did.",
-          "fields": [
-            {
-              "name": "identity",
-              "type": "text"
-            },
-            {
-              "name": "kind",
-              "type": "text"
-            },
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "colour",
-              "type": "text"
-            },
-            {
-              "name": "agent",
-              "type": "text"
-            },
-            {
-              "name": "run",
-              "type": "text"
-            },
-            {
-              "name": "title",
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "name": "Ended",
-          "doc": "What a window says in the place its app left, when the app could not open or stopped: the outcome with the way to ask for it again.",
-          "fields": [
-            {
-              "name": "what",
-              "type": "text"
-            },
-            {
-              "name": "why",
-              "type": "text"
-            },
-            {
-              "name": "retry",
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "details",
-              "type": "text"
-            }
-          ]
         }
       ]
     },
@@ -8597,45 +8880,6 @@
                 "type": "string"
               },
               "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "other-device-agents",
-          "label": "Whether agents from my other devices work here",
-          "description": "Whether this computer accepts the person's agents from their other devices, and whether their steps go unasked here: the grant this device keeps in its workspaces.",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "set-accept-other-device-agents",
-          "label": "Accept agents from my other devices",
-          "description": "Accept agents from the person's other devices on this computer, or stop accepting them: the grant this device keeps in its workspaces.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "on",
-              "required": true,
-              "schema": {
-                "type": "boolean"
-              },
-              "type": "bool"
-            }
-          ]
-        },
-        {
-          "id": "set-other-device-agents-unasked",
-          "label": "Let them act without asking",
-          "description": "Let the steps of agents from the person's other devices go unasked on this computer, or put them to the person again.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "on",
-              "required": true,
-              "schema": {
-                "type": "boolean"
-              },
-              "type": "bool"
             }
           ]
         }
@@ -8742,80 +8986,6 @@
             {
               "name": "files",
               "type": "int"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "kind": "said",
-      "label": "Notice",
-      "version": 1,
-      "verbs": [
-        {
-          "id": "press-notice",
-          "label": "Press the notice's button",
-          "description": "Press the notice's button",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "action",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "hide",
-          "label": "Dismiss the notice",
-          "description": "Take the notice away without pressing anything",
-          "kind": "outside",
-          "params": []
-        }
-      ],
-      "fields": [
-        {
-          "path": "text",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "kind",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "actions",
-          "stored": "value",
-          "type": {
-            "list": {
-              "named": "SaidAction"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "SaidAction",
-          "doc": "One button a passing notice offers.",
-          "fields": [
-            {
-              "name": "id",
-              "type": "text"
-            },
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "icon",
-              "type": "text"
             }
           ]
         }
@@ -8964,14 +9134,88 @@
       ]
     },
     {
+      "kind": "said",
+      "label": "Notice",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "press-notice",
+          "label": "Press the notice's button",
+          "description": "Press the notice's button",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "action",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "hide",
+          "label": "Dismiss the notice",
+          "description": "Take the notice away without pressing anything",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "text",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "kind",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "actions",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SaidAction"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "SaidAction",
+          "doc": "One button a passing notice offers.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "live",
-      "label": "Live now",
+      "label": "Live",
       "version": 1,
       "verbs": [
         {
           "id": "press-live",
           "label": "Press",
-          "description": "Press a control of something live here that no resource holds: a player's play or pause,",
+          "description": "Press a control of something live here that no resource holds: a player's play or pause, a Rust app's timer's stop",
           "kind": "outside",
           "params": [
             {
@@ -8995,7 +9239,7 @@
         {
           "id": "end-live",
           "label": "End",
-          "description": "End something live here that no resource holds: an app that offers a close is asked to",
+          "description": "End something live here that no resource holds: an app that offers a close is asked to end it, and one that cannot be stopped from outside is put away until it shows something else. A live resource ends by its type's own action.",
           "kind": "outside",
           "params": [
             {
@@ -9011,7 +9255,7 @@
         {
           "id": "keep-off-bar",
           "label": "Keep off the bar",
-          "description": "Keep a row off this device's bar, or bring it back: quick settings shows it either way",
+          "description": "Keep a row off this device's bar, or bring it back: quick settings shows it either way.",
           "kind": "outside",
           "params": [
             {
@@ -9040,7 +9284,7 @@
         {
           "id": "expand-live",
           "label": "Show as a card",
-          "description": "Pull a row out of the bar's pill as a card over the windows; on a phone-width display it",
+          "description": "Pull a row out of the bar's pill as a card over the windows; on a phone-width display it drops from under the bar.",
           "kind": "outside",
           "params": [
             {
@@ -9056,7 +9300,7 @@
         {
           "id": "fold-live",
           "label": "Back to the bar",
-          "description": "Fold a row's card back into the bar's pill",
+          "description": "Fold a row's card back into the bar's pill.",
           "kind": "outside",
           "params": [
             {
@@ -9072,7 +9316,7 @@
         {
           "id": "seek-live",
           "label": "Go to",
-          "description": "Take something live here that no resource holds to a point along it: the song the player",
+          "description": "Take something live here that no resource holds to a point along it: the song the player here plays, an app's activity that has a length.",
           "kind": "outside",
           "params": [
             {
@@ -9087,8 +9331,7 @@
               "name": "fraction",
               "required": true,
               "schema": {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               "type": "float"
             }
@@ -9097,7 +9340,7 @@
         {
           "id": "move-live",
           "label": "Move the card",
-          "description": "Leave a row's card at a place of its own on its display, or dock it in the corner column",
+          "description": "Leave a row's card at a place of its own on its display, or dock it in the corner column again when no place is said.",
           "kind": "outside",
           "params": [
             {
@@ -9117,8 +9360,7 @@
                   "null"
                 ],
                 "items": {
-                  "type": "integer",
-                  "format": "int64"
+                  "type": "integer"
                 }
               },
               "type": {
@@ -9143,6 +9385,28 @@
         }
       ],
       "types": [
+        {
+          "name": "LiveControl",
+          "doc": "A control of a row the shell draws itself.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "ends",
+              "type": "bool"
+            }
+          ]
+        },
         {
           "name": "LiveItem",
           "doc": "One live thing.",
@@ -9268,28 +9532,6 @@
             {
               "name": "drawn_height",
               "type": "float"
-            }
-          ]
-        },
-        {
-          "name": "LiveControl",
-          "doc": "A control of a row the shell draws itself.",
-          "fields": [
-            {
-              "name": "id",
-              "type": "text"
-            },
-            {
-              "name": "label",
-              "type": "text"
-            },
-            {
-              "name": "icon",
-              "type": "text"
-            },
-            {
-              "name": "ends",
-              "type": "bool"
             }
           ]
         }

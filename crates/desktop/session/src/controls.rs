@@ -184,43 +184,7 @@ pub enum ScreenEffect {
     PowerMenu,
 }
 
-/// The night light as a view of another language reads and changes it: whether the screen is warm,
-/// and the verb that switches it.
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub(crate) struct NightLightReading {
-    /// Whether the screen is warm.
-    pub on: bool,
-}
-
-/// The night light as a view of another language reads it (`device.night_light`).
-#[must_use]
-pub(crate) fn night_light_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<NightLightReading, NightLightEffect>(
-        "night-light",
-        "Night light",
-    )
-}
-
-/// The screen's night light.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "so.tilo.session.night-light")]
-pub enum NightLightEffect {
-    /// Turn the night light on or off
-    #[effect(kind = "undoable", label = "session-night-light-toggle")]
-    Toggle {
-        /// Whether the screen is warm
-        #[param("Whether the screen is warm")]
-        on: Option<bool>,
-    },
-}
+pub(crate) use tilo_device_surfaces::controls::{App, Apps, NightLightEffect, NightLightReading};
 
 /// The screen magnifier.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -269,11 +233,10 @@ impl ScreenEffect {
     }
 }
 
-impl NightLightEffect {
-    fn command(&self) -> SessionCommand {
-        match self {
-            Self::Toggle { on } => SessionCommand::NightLight { on: *on },
-        }
+/// What changing the night light asks of the session.
+fn night_light_command(effect: &NightLightEffect) -> SessionCommand {
+    match effect {
+        NightLightEffect::Toggle { on } => SessionCommand::NightLight { on: *on },
     }
 }
 
@@ -363,7 +326,7 @@ pub(crate) fn command_of(
             .map(|effect| effect.command()),
         NIGHT_LIGHT_RESOURCE => NightLightEffect::from_payload(&encoded.payload)
             .ok()
-            .map(|effect| effect.command()),
+            .map(|effect| night_light_command(&effect)),
         MAGNIFIER_RESOURCE => MagnifierEffect::from_payload(&encoded.payload)
             .ok()
             .map(|effect| effect.command()),
@@ -401,55 +364,25 @@ pub(crate) struct SessionControls {
     apps: u64,
 }
 
-/// The applications installed on this device, as `session:apps` publishes them: what the
-/// launcher lists and opens.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-pub(crate) struct Apps {
-    pub installed: Vec<App>,
-}
-
-/// An application installed on this device: its package id, which `open-app` names, its name in
-/// the person's language, its glyph, and its category when it named one.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-pub(crate) struct App {
-    pub key: String,
-    pub name: String,
-    /// The glyph it shows, by the platform icon's kebab-case name.
-    pub icon: String,
-    /// `work`, `media`, `play` or `system`; empty when it named none.
-    pub category: String,
-}
-
-impl Apps {
-    fn installed() -> Self {
-        let installed = crate::app_icons::app_lists_snapshot()
-            .map(|(_, lists)| {
-                lists
-                    .applications
-                    .iter()
-                    .map(|app| App {
-                        key: app.id.clone(),
-                        name: app.title.clone(),
-                        icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
-                            .name()
-                            .to_owned(),
-                        category: app.category.clone().unwrap_or_default(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self { installed }
-    }
-}
-
-/// The apps as a view of another language reads them (`device.apps`).
-#[must_use]
-pub(crate) fn apps_surface() -> tilo_actions::surface::Surface {
-    tilo_resource::surface::reading_surface::<Apps, tilo_resource::NoEffect>("apps", "Apps")
+/// The applications installed on this device, as `session:apps` publishes them.
+fn installed_apps() -> Apps {
+    let installed = crate::app_icons::app_lists_snapshot()
+        .map(|(_, lists)| {
+            lists
+                .applications
+                .iter()
+                .map(|app| App {
+                    key: app.id.clone(),
+                    name: app.title.clone(),
+                    icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                        .name()
+                        .to_owned(),
+                    category: app.category.clone().unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Apps { installed }
 }
 
 impl SessionControls {
@@ -476,7 +409,7 @@ impl SessionControls {
                 "on": reading.zoom > settings_store::magnifier::OFF,
                 "zoom": reading.zoom,
             })),
-            APPS_RESOURCE => Some(tilo_service::reading(&Apps::installed())),
+            APPS_RESOURCE => Some(tilo_service::reading(&installed_apps())),
             _ => None,
         }
     }

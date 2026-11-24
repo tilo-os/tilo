@@ -859,7 +859,7 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
-  "crates/desktop/session/device-surface.json",
+  "crates/desktop/device-surfaces/device-surface.json",
   "crates/desktop/settings-sections/published.toml",
   "apps/contacts/surface.toml",
   "crates/services/vision/surface.json",

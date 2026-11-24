@@ -30,61 +30,37 @@ pub(crate) const HOLD: Duration = Duration::from_millis(1_500);
 #[row(kind = "session", label = "Readout")]
 pub(crate) struct OsdRoot;
 
-/// One readout: what it reads, whether it has a level or is said in words, and the display it
-/// answers on.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
-pub(crate) struct Readout {
-    /// Whether the pill stands now; false once its hold ran out, so the shell draws nothing.
-    pub visible: bool,
-    /// What changed: `volume`, `brightness`, `keyboard-backlight`, `microphone`, `airplane-mode`,
-    /// `touchpad`, `play`, `pause`, `next-track`, `previous-track`, `stop`, `no-backlight`,
-    /// `night-light`, `do-not-disturb`, `magnifier`, `captured-keys`, `pointer-released` or
-    /// `input-source`.
-    pub kind: String,
-    /// The level a level readout shows, from 0 to 1; none for a readout said in words.
-    pub level: Option<f64>,
-    /// Whether what it reads is on: false when the sound is muted or the level is off.
-    pub on: bool,
-    /// The device a level is about, the song a transport readout names, or the input source that
-    /// now types. None when the kind alone says it.
-    pub name: Option<String>,
-    /// The glyph the level is about (`speaker`, `headphones`, `display`, `keyboard`).
-    pub glyph: Option<String>,
-    /// The display whose key changed it, by connector.
-    pub display: Option<String>,
-}
+pub(crate) use tilo_device_surfaces::osd::Readout;
 
-impl Readout {
-    /// The readout `osd` says, on the display `display` whose key changed it.
-    pub(crate) fn of(osd: &Osd, display: Option<&str>) -> Self {
-        let kind = serde_json::to_value(osd.kind())
-            .ok()
-            .and_then(|kind| kind.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        let mut readout = Self {
-            visible: true,
-            kind,
-            display: display.map(str::to_owned),
-            ..Self::default()
-        };
-        match osd {
-            Osd::Level(level) => {
-                readout.level = Some(f64::from(level.level.clamp(0.0, 1.0)));
-                readout.on = level.on;
-                if let Some(device) = &level.device {
-                    readout.name = Some(device.name.clone());
-                    readout.glyph = serde_json::to_value(device.glyph)
-                        .ok()
-                        .and_then(|glyph| glyph.as_str().map(str::to_owned));
-                }
-            }
-            Osd::Hint(hint) => {
-                readout.on = hint.on;
-                readout.name.clone_from(&hint.name);
+/// The readout `osd` says, on the display `display` whose key changed it.
+pub(crate) fn readout_of(osd: &Osd, display: Option<&str>) -> Readout {
+    let kind = serde_json::to_value(osd.kind())
+        .ok()
+        .and_then(|kind| kind.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let mut readout = Readout {
+        visible: true,
+        kind,
+        display: display.map(str::to_owned),
+        ..Readout::default()
+    };
+    match osd {
+        Osd::Level(level) => {
+            readout.level = Some(f64::from(level.level.clamp(0.0, 1.0)));
+            readout.on = level.on;
+            if let Some(device) = &level.device {
+                readout.name = Some(device.name.clone());
+                readout.glyph = serde_json::to_value(device.glyph)
+                    .ok()
+                    .and_then(|glyph| glyph.as_str().map(str::to_owned));
             }
         }
-        readout
+        Osd::Hint(hint) => {
+            readout.on = hint.on;
+            readout.name.clone_from(&hint.name);
+        }
     }
+    readout
 }
 
 /// What the last press said, and when it goes.
@@ -121,12 +97,6 @@ impl Shown {
     fn deadline(&self) -> Option<Instant> {
         self.readout.as_ref().and(self.hide_at)
     }
-}
-
-/// The readout as a view of another language reads it (`device.osd`).
-#[must_use]
-pub(crate) fn surface() -> tilo_actions::surface::Surface {
-    tilo_resource::surface::reading_surface::<Readout, NoEffect>("osd", "Osd")
 }
 
 /// The readout as the session publishes it.

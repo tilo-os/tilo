@@ -16,8 +16,8 @@ use tilo_compositor::Compositor;
 use tilo_session_core::desktop::overlays::{Overlays, Part, Target};
 
 use tilo_service::Services;
-use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::shell::{Ask, LayoutReading};
+use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::surfaces::Surfaces;
 
 use crate::device_lists::DeviceLists;
@@ -64,74 +64,6 @@ pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool)
             Ok((crate::platform::surfaces::compile_shell()?, false))
         }
     }
-}
-
-/// The device's resources the session publishes, as their surfaces: the sound, the network,
-/// Bluetooth, the modem, VPN, tethering, the battery and the displays, each its reading and
-/// the actions it offers, and the rows of a reading that are resources of their own (a Wi-Fi
-/// network, a Bluetooth accessory, a VPN profile), each the actions offered on the address its
-/// row carries. The
-/// shell's views read them as `so.tilo.device` (`device-surface.json` beside this crate, which
-/// the shell compiles against and a test holds to this).
-#[must_use]
-pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
-    vec![
-        tilo_audio_service::sound::surface(),
-        tilo_connectivity_service::network_surface(),
-        tilo_connectivity_service::wifi_network_surface(),
-        tilo_connectivity_service::saved_network_surface(),
-        tilo_connectivity_service::bluetooth_surface(),
-        tilo_connectivity_service::bluetooth_accessory_surface(),
-        tilo_connectivity_service::bluetooth_nearby_surface(),
-        tilo_connectivity_service::modem_surface(),
-        tilo_connectivity_service::vpn_surface(),
-        tilo_connectivity_service::vpn_profile_surface(),
-        tilo_connectivity_service::tethering_surface(),
-        tilo_session_power::battery_surface(),
-        tilo_system_service::power_surface(),
-        tilo_system_service::printers_surface(),
-        tilo_system_service::users_surface(),
-        tilo_system_service::drives_surface(),
-        tilo_system_service::scanners_surface(),
-        tilo_system_service::storage_surface(),
-        tilo_system_service::disk_unlock_surface(),
-        tilo_system_service::host_info_surface(),
-        tilo_system_service::codec_pack_surface(),
-        tilo_system_service::windows_compat_surface(),
-        tilo_system_service::firmware_surface(),
-        tilo_system_service::containers_surface(),
-        tilo_system_service::processes_surface(),
-        tilo_system_service::disks_surface(),
-        tilo_system_service::firewall_surface(),
-        tilo_system_service::update_surface(),
-        tilo_system_service::time_zone_surface(),
-        crate::displays::surface(),
-        crate::displays::screen_surface(),
-        crate::notifications::surface(),
-        crate::shell::osd::surface(),
-        crate::controls::night_light_surface(),
-        crate::notifications::banners_surface(),
-        crate::time::surface(),
-        crate::controls::apps_surface(),
-        crate::device_lists::windows_surface(),
-        crate::device_lists::tray_surface(),
-        crate::device_lists::agents_surface(),
-        crate::device_lists::folders_surface(),
-        crate::device_lists::search_surface(),
-        crate::device_lists::launchpad_surface(),
-        crate::device_lists::wallpaper_surface(),
-        crate::device_lists::notice_surface(),
-        crate::live_list::surface(),
-        crate::shell::state::overlays_surface(),
-        crate::shell::state::power_menu_surface(),
-        tilo_workspace_service::apps::nearby_send::surface(),
-        crate::devices::surface(),
-        crate::clipboard::surface(),
-        crate::speakers::surface(),
-        crate::quick_settings::controls_surface(),
-        // This device's server settings, which its daemon changes (`device:server`).
-        tilo_runtime::device::server_settings::surface(),
-    ]
 }
 
 /// The height of the bar's band, logical pixels: what a bar or a dock that shows only at an edge
@@ -2323,35 +2255,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// The device's surface the shell compiles against is the one the session publishes. Its own
-    /// test, so `UPDATE_SNAPSHOTS=1` can write the file without first compiling the shell package
-    /// that reads it.
-    #[test]
-    fn the_device_surface_file_is_what_the_session_publishes() {
-        let published = super::device_surfaces();
-        let committed = tilolang_tilo::platform_apps::device_surfaces()
-            .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-        if committed == published {
-            return;
-        }
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-            .expect("a surface writes as JSON");
-        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's own
-        // snapshot test does: a resource whose verbs changed is regenerated in place rather than
-        // pasted from a failing run.
-        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
-            std::fs::write(&path, &text).expect("device-surface.json is written");
-            return;
-        }
-        panic!(
-            "crates/desktop/session/device-surface.json is not what the session publishes; \
-             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
-             the_device_surface_file_is_what_the_session_publishes, or write what it \
-             publishes:\n{text}"
-        );
     }
 
     /// The device's surfaces a shell shows over, as the session starts them.

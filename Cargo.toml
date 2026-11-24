@@ -65,6 +65,7 @@ default-members = [
 ]
 members = [
     "crates/core/session-client",
+    "crates/desktop/device-surfaces",
     "crates/core/session-actions",
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",

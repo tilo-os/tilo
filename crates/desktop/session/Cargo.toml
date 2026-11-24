@@ -54,6 +54,8 @@ dev-overrides = ["tilo-identity/throwaway-test-identity"]
 test-support = ["tilo-runtime/test-support"]
 
 [dependencies]
+# The device's published resources: their readings, verbs and surfaces.
+tilo-device-surfaces = { path = "../device-surfaces" }
 anyhow.workspace = true
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in; a record read again takes

@@ -760,6 +760,6 @@ impl Shared {
         // The shell draws the readout from its own resource.
         self.osd
             .borrow_mut()
-            .show(crate::shell::osd::Readout::of(osd, display.as_deref()));
+            .show(crate::shell::osd::readout_of(osd, display.as_deref()));
     }
 }

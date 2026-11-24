@@ -9,30 +9,7 @@ use ui::icons::Icon;
 
 pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
 
-/// What was pressed on a row of the Devices section.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum RowPart {
-    /// The row itself.
-    Row,
-    /// The one action the row names (stop, cancel, try again).
-    Action,
-    /// Allow, on a request.
-    Allow,
-    /// Decline, on a request.
-    Decline,
-    /// Drive the device with this machine's pointer.
-    Control,
-}
+pub use tilo_device_surfaces::devices::ClipboardCopy;
 
 /// One of the person's devices a Bluetooth accessory can move to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,65 +149,6 @@ pub const ROUTE_KEY: &str = "audio:route:";
 /// The row key prefix of one device asking for this device's sound.
 pub const ASK_KEY: &str = "audio:ask:";
 
-/// One sound of this device's that can be sent to another.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub struct SendableSound {
-    /// Names the sound in the panel's effects, and follows it while the
-    /// person can still pick it.
-    pub token: u64,
-    pub label: String,
-    /// One application's sound, or everything this device plays.
-    pub application: bool,
-}
-
-/// One route of a sound, on its way or playing.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub struct SoundRoute {
-    /// Names the route in the panel's effects.
-    pub id: String,
-    /// The sound that travels, as the route names it.
-    pub label: String,
-    /// What the route is doing now, in words that name the other device.
-    pub detail: String,
-    /// The route stopped and is only shown until it is dismissed.
-    pub stopped: bool,
-}
-
-/// Another of the person's devices asking to play a sound of this one's.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub struct SoundAsk {
-    /// Names the ask in the panel's effects.
-    pub id: String,
-    /// The sound it would play here.
-    pub media: String,
-    /// The device asking, as the person knows it.
-    pub source: String,
-}
-
 /// The sounds this device can send, the routes of the sounds it sends or
 /// receives, and the devices asking for its sound, as the remote audio
 /// service reads them: the rows the Devices section lists above the
@@ -338,23 +256,6 @@ pub struct DevicesReading {
     pub refused: String,
 }
 
-/// A workspace this device's shell lists, as a view of the devices reads it:
-/// the same `key` and `name` the layout's workspaces go by.
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub struct DeviceWorkspace {
-    pub key: String,
-    pub name: String,
-}
-
 impl DevicesReading {
     /// The Devices section's rows: what waits for an answer, what travels,
     /// what can travel, then the person's other devices.
@@ -394,32 +295,6 @@ pub struct HostedRow {
     pub selected: bool,
     pub enabled: bool,
     pub actions: HostedActions,
-}
-
-/// One copy the desktop keeps, as the Clipboard section lists it: the row's
-/// face without its bytes.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub struct ClipboardCopy {
-    /// Names the copy in the panel's effects.
-    pub key: String,
-    /// The format its bytes are in.
-    pub mime: String,
-    /// Its first line, when it is text.
-    pub text: Option<String>,
-    /// When it was copied, in Unix milliseconds.
-    pub created_ms: u64,
-    /// Whether the person keeps it when the history is cleared.
-    pub pinned: bool,
-    /// The device another of the person's devices shared it from.
-    pub from: Option<String>,
 }
 
 /// The notification centre, as the session publishes it.
