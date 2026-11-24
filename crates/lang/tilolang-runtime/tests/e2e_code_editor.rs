@@ -835,6 +835,57 @@ mod cases {
     }
 
     #[test]
+    fn the_window_search_finds_in_the_open_file_and_across_the_project() {
+        let editor = Editor::new();
+        let main = editor.file("main.rs", None);
+        editor.call(
+            "replace_text",
+            vec![
+                Value::resource(&main),
+                Value::text("fn other() {}\nlet held = main();\nlet both = main();\n"),
+            ],
+        );
+        let _notes = editor.file("notes.md", None);
+        let mut window = editor.window();
+        let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
+        window
+            .fire_with(&shell, "search", Some(&Value::text("main")))
+            .unwrap();
+        window.poll_patches().unwrap();
+
+        let found = editor.list(&editor.root, "found");
+        assert_eq!(found.len(), 2, "both lines of the file hold the words: {found:?}");
+        let code = of_kind(window.tree(), "ui.CodeEditor")
+            .into_iter()
+            .next()
+            .expect("the open file is drawn");
+        assert_eq!(
+            code.props.get("reveal"),
+            Some(&Value::text("2:12:1")),
+            "the first place the words stand is shown: {code:?}"
+        );
+        assert!(
+            editor
+                .engine
+                .asks("search")
+                .iter()
+                .any(|ask| ask.contains("\"needle\":\"main\"")),
+            "the project is searched for the same words: {:?}",
+            editor.engine.asks("search")
+        );
+
+        // The words the project search was asked find the file's own places replaced.
+        window
+            .fire_with(&shell, "search", Some(&Value::text("")))
+            .unwrap();
+        window.poll_patches().unwrap();
+        assert!(
+            editor.list(&editor.root, "found").is_empty(),
+            "clearing the search takes the places away"
+        );
+    }
+
+    #[test]
     fn a_language_server_answers_with_its_problems() {
         let editor = Editor::new();
         editor.call(

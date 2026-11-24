@@ -285,6 +285,17 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
     } else { "gone" }
 }
 
+/// The window's search narrows the notebook's tree to the notes it finds, and opens the first
+/// of them: the note a person searched for is the one they read.
+action search_notebook(nb: Notebook, text: Text) {
+    if text != "" {
+        if let first = nb.notes.matching(text).first() {
+            let shown: Option<Note> = .some(first)
+            window_state("open_note", shown)
+        }
+    }
+}
+
 /// Pins or unpins a note.
 action pin(n: Note, pinned: Bool = not n.pinned) (
     label: if pinned { "Pin" } else { "Unpin" },
@@ -1488,6 +1499,7 @@ view notebook(nb: Notebook) {
         row: note_node,
         head: notebook_head,
         drop_files: files -> import_dropped(nb, files),
+        finds: words -> search_notebook(nb, words),
     ) {
         // A file dropped anywhere on the notebook comes in as a note or as the pages of an
         // archive it holds.

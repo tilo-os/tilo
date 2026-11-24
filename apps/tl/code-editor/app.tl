@@ -818,13 +818,30 @@ fn count_leading(one: Text, at: Int) -> Int {
     } else { at }
 }
 
-/// Finds the words `text` in a file and keeps what it found, for the page's find row.
 // ---------------------------------------------------------------- find and replace
-action find_in_file(p: Project, entry: Entry, text: Text, case: Bool = false, word: Bool = false) (
+
+/// The window's search finds the words in the open file and across the project's files: the
+/// first place in the file is shown, so a hit is in sight as the words are typed.
+action find_in_window(p: Project, entry: Option<Entry>, text: Text) uses time (
     icon: .search,
-    label: "Find in file",
+    label: "Find",
 ) {
-    p.found = find_text(entry, text, case, word)
+    let words = text.trim()
+    p.search_text = words
+    p.found = []
+    if words == "" {
+        stop_search(p)
+    } else {
+        if let e = entry {
+            p.found = find_text(e, words)
+            if let first = p.found.at(0) {
+                reveal_line(e, first.line, first.column)
+            }
+        }
+        if words.len() >= 2 {
+            search_project(p, words)
+        }
+    }
 }
 
 /// Finds the words `text` in a file, the case of their letters aside unless `case` says
@@ -2138,12 +2155,8 @@ view project(p: Project) {
     // What stands under the code: the problems of the open file, the terminal, or the search's
     // places.
     state panel: Text = "problems"
-    // The words the page's find row holds.
-    state finding: Text = ""
     // The line the page's go-to row holds, counted from 1 as the status line shows it.
     state goto: Text = ""
-    // What the find row last found.
-    state found: List<Found> = []
     std.tree(
         p,
         p.files,
@@ -2158,6 +2171,7 @@ view project(p: Project) {
         path: e -> path_of(e),
         row: file_row,
         head: project_head,
+        finds: words -> find_in_window(p, opened, words),
         drop_files: files -> import_dropped(p, files),
         empty: "No files yet: a project starts with its first file",
     ) {
@@ -2166,7 +2180,7 @@ view project(p: Project) {
         }
         doc: {
             if let e = opened {
-                file_page(p, e, panel, finding, found, goto)
+                file_page(p, e, panel, goto)
             } else {
                 ui.EmptyState("Choose a file to read it", icon: .file_text)
             }
@@ -2193,15 +2207,13 @@ template view file_page(
     p: Project,
     e: Entry,
     panel: State<Text>,
-    finding: State<Text>,
-    found: State<List<Found>>,
     goto: State<Text>,
 ) {
     stack(gap: .related) {
-        file_head(p, e, panel, finding, found, goto)
+        file_head(p, e, panel, goto)
         file_code(e)
-        if finding != "" {
-            found_list(p, e, finding)
+        if not p.found.is_empty() {
+            found_list(p, e)
         }
         if panel != "" {
             file_panel(p, e, panel)
@@ -2258,8 +2270,6 @@ template view file_head(
     p: Project,
     e: Entry,
     panel: State<Text>,
-    finding: State<Text>,
-    found: State<List<Found>>,
     goto: State<Text>,
 ) {
     let dirty = e.text != e.saved
@@ -2314,12 +2324,9 @@ template view file_head(
         }
     }
     row(gap: .related, align: .center) {
-        ui.TextInput(bind: finding, placeholder: "Find in the file")
-        ui.Button("Find", icon: .search) {
-            on press: find_in_file(p, e, finding)
-        }
+        // The window's search is the file's find: what it finds is replaced from here.
         ui.Button("Replace all", icon: .pencil) {
-            on press: replace_in_file(e, finding, "")
+            on press: replace_in_file(e, p.search_text, "")
         }
         ui.TextInput(bind: goto, placeholder: "Line", min: 6rem)
         ui.Button("Go to line", icon: .arrow_right) {
@@ -2344,14 +2351,12 @@ template view file_head(
     }
 }
 
-/// What the file's find row found: each place, choosing it asking the page for it.
-view found_list(p: Project, e: Entry, finding: State<Text>) {
-    ui.Section("Found") {
-        if p.found.is_empty() {
-            text("Nothing in this file holds “{finding}”", role: .caption, secondary: true)
-        } else {
-            for place in p.found {
-                ui.ListRow(title: place.words, meta: "line {place.line + 1}", icon: .search)
+/// What the window's search found in the open file: each place, with the line it stands on.
+view found_list(p: Project, e: Entry) {
+    ui.Section("Found in this file") {
+        for place in p.found {
+            ui.ListRow(title: place.words, meta: "line {place.line + 1}", icon: .search) {
+                on activate: reveal_line(e, place.line, place.column)
             }
         }
     }
@@ -2464,17 +2469,15 @@ fn command_said(c: Command) -> Text {
     } else if c.exit == 0 { "done" } else { "exit {c.exit}" }
 }
 
-/// The project search: its words, what it found, and how far it got.
+/// The project search: what the window's search found across the project's files, and how far
+/// it got.
 view search_panel(p: Project) {
-    state typed: Text = ""
     stack(gap: .related) {
         row(gap: .related, align: .center) {
-            ui.TextInput(bind: typed, placeholder: "Find in every file")
-            ui.Button("Search", icon: .search) {
-                on press: search_project(p, typed)
-            }
-            ui.Button("Stop", icon: .square) {
-                on press: stop_search(p)
+            if p.search_text != "" {
+                ui.Button("Stop", icon: .square) {
+                    on press: stop_search(p)
+                }
             }
         }
         text(search_said(p), role: .caption, secondary: true)

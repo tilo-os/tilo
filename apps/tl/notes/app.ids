@@ -167,6 +167,7 @@ scenario "a page from another service" = 5ryheuqf
 scenario "a week of notes" = q4qei7fb
 scenario "an empty notebook" = f7g6zety
 scenario "the notebook and a note's outline" = ketenqbu
+search_notebook@Notebook = srjjaw3t
 sort_children@Notebook = jo2tztsx
 stem_of = n32q5ogf
 table_cell = 2oi6i4dk

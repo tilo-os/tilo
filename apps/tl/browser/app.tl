@@ -151,6 +151,9 @@ type Page (title: title) {
     zoom_level: Float = 1.0
     find_at: Int = 0
     find_count: Int = 0
+    /// The words the window's search found last: what the way on to the next and back to the
+    /// previous match asks the page for.
+    find_text: Text = ""
 
     search {
         sort title a_z
@@ -977,17 +980,27 @@ action zoom(p: Page, level: Float) -> Answer uses page (icon: .zoom_in, label: "
     ask_page(p, request)
 }
 
-/// Find words in the page, as the find bar does.
+/// Find words in the page: the window's search is the page's find, and the words are kept so
+/// the way on to the next match and back to the previous ask for the same ones. No words takes
+/// the find away: the marks go, and the page is left as it was before they were typed.
 action find_in_page(
     p: Page,
     text: Text,
     forward: Bool = true,
     next: Bool = false,
 ) -> Answer uses page {
-    let request = json.encode(
-        Ask(op: "find_in_page", text: .some(text), forward: forward, next: next),
-    )
-    ask_page(p, request)
+    if text.trim() == "" {
+        p.find_text = ""
+        p.find_at = 0
+        p.find_count = 0
+        stop_finding(p)
+    } else {
+        p.find_text = text
+        let request = json.encode(
+            Ask(op: "find_in_page", text: .some(text), forward: forward, next: next),
+        )
+        ask_page(p, request)
+    }
 }
 
 /// Close the find bar's search.
@@ -2659,14 +2672,15 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
 view page_view(p: Page) {
     state address: Text = ""
     state failed: Text = ""
-    state finding: Bool = false
-    state find_text: Text = ""
     state zoom: Float = p.zoom_level
     state reading: Bool = false
     state answer_text: Text = ""
     state install_path: Text = ""
     let b = root Browser
     ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
+        // The window's search is the page's find: the words are found in the page as they are
+        // typed, and cleared, the marks go with them.
+        on search(typed: Text): find_in_page(p, typed)
         actions: {
             std.header {
                 ui.Button("Back", icon: .arrow_left, role: .plain) {
@@ -2677,9 +2691,6 @@ view page_view(p: Page) {
                 }
                 ui.Button("Reload", icon: .refresh, role: .plain) {
                     on press: reload(p).then(refresh_page(p))
-                }
-                ui.Button("Find in page", icon: .search, role: .plain) {
-                    on press: set(finding, not finding)
                 }
                 ui.Button("Pause history", icon: .clock, toggled: p.paused) {
                     on press: toggle_pause(p)
@@ -2755,22 +2766,17 @@ view page_view(p: Page) {
                         }
                     }
                 }
-                if finding {
-                    stack(padding: .related) {
-                        ui.TextInput(bind: find_text, placeholder: "Find in page", key: "f") {
-                            on submit(typed: Text): find_in_page(p, typed)
+                if p.find_count > 0 {
+                    row(gap: .related, align: .center, padding: .related) {
+                        text("{p.find_at} of {p.find_count}", role: .caption, secondary: true)
+                        ui.Button("Previous match", icon: .arrow_up, role: .plain, icon_only: true) {
+                            on press: find_in_page(p, p.find_text, forward: false, next: true)
                         }
-                        if p.find_count > 0 {
-                            ui.Text("{p.find_at} of {p.find_count}")
+                        ui.Button("Next match", icon: .arrow_down, role: .plain, icon_only: true) {
+                            on press: find_in_page(p, p.find_text, next: true)
                         }
-                        ui.Button("Previous", icon: .arrow_up, role: .plain) {
-                            on press: find_in_page(p, find_text, forward: false, next: true)
-                        }
-                        ui.Button("Next", icon: .arrow_down, role: .plain) {
-                            on press: find_in_page(p, find_text, next: true)
-                        }
-                        ui.Button("Close", icon: .x, role: .plain) {
-                            on press: stop_finding(p).then(set(finding, false))
+                        ui.Button("Clear the find", icon: .x, role: .plain, icon_only: true) {
+                            on press: find_in_page(p, "")
                         }
                     }
                 }

@@ -820,17 +820,6 @@ d-cbzbgevx = Ausrücken
 
 d-cbzbgevx-line = Zeile
 
-d-rgh5qh4q = Suchen in file
-    .doc = Suchens the words `text` in a file and keeps what it found, for the page's find row.
-
-d-rgh5qh4q-entry = Entry
-
-d-rgh5qh4q-text = Text
-
-d-rgh5qh4q-case = Case
-
-d-rgh5qh4q-word = Word
-
 d-pyrg5gaw = Suchen in file
     .doc = Suchens the words `text` in a file, the case of their letters aside unless `case` says otherwise; `word` matches only where they stand alone as a word.
     .w-type-something-to-find = Type something to find
@@ -1141,16 +1130,12 @@ d-744hb56m = Projekt
     .w-suggest = Vorschlagen
     .w-what-stands-here = Was hier steht
     .w-go-to-definition = Zur Definition
-    .w-find-in-the-file = Suchen in the file
-    .w-find = Suchen
     .w-replace-all = Ersetzen all
     .w-panel = Bereich
     .w-problems = Probleme
     .w-terminal = Terminal
     .w-search-results = Suchen results
     .w-write-the-file = Write the file
-    .w-found = Found
-    .w-nothing-in-this-file-holds = Nothing in this file holds “{ $finding }”
     .w-line = line { $value }
     .w-unsaved-changes = Ungespeichert changes
     .w-1-problem = 1 problem
@@ -1185,9 +1170,10 @@ d-zl3bj7gd = Terminal panel
     .w-clear-the-terminal = Terminal leeren
 
 d-2lxnmz5v = Suchen panel
-    .w-find-in-every-file = Suchen in every file
-    .w-search = Suchen
     .w-stop = Stopp
+
+d-d3ucmsac = Gefunden
+    .w-found-in-this-file = In dieser Datei gefunden
 
 d-bbheeez5 = Datei view
     .w-write-the-file = Write the file

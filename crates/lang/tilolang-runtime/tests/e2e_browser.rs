@@ -205,6 +205,35 @@ mod cases {
     }
 
     #[test]
+    fn the_window_search_finds_in_the_open_page_and_clearing_it_takes_the_find_away() {
+        let b = Browser::new();
+        let mut view = b.page_view();
+        let shell = of_kind(view.tree(), "ui.NavShell")[0].key.clone();
+        view.fire_with(&shell, "search", Some(&Value::text("harbour")))
+            .unwrap();
+        assert!(
+            b.page.ops().iter().any(|op| op == "find_in_page"),
+            "the words are found in the page: {:?}",
+            b.page.ops()
+        );
+        assert_eq!(b.page.last()["text"], Json::from("harbour"));
+        assert_eq!(
+            b.text(&b.opened, "find_text"),
+            "harbour",
+            "the words are kept for the next and previous match"
+        );
+
+        view.fire_with(&shell, "search", Some(&Value::text("")))
+            .unwrap();
+        assert!(
+            b.page.ops().iter().any(|op| op == "stop_finding"),
+            "clearing the search leaves the page as it was: {:?}",
+            b.page.ops()
+        );
+        assert_eq!(b.text(&b.opened, "find_text"), "");
+    }
+
+    #[test]
     fn a_download_the_page_starts_is_read_back_and_what_the_person_does_reaches_the_page() {
         let b = Browser::new();
         b.page(

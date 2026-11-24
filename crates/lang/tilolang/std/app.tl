@@ -568,6 +568,7 @@ template view tree<R, T>(
     row: (T) -> View,
     doc: View,
     drop_files: (List<File>) -> Action,
+    finds: (Text) -> Action,
 ) {
     // The item the window opens: the first of the tree until a person chooses another, kept for
     // them alone, as every window keeps what it shows.
@@ -581,7 +582,10 @@ template view tree<R, T>(
         sidebar_title: meta(of).title,
         title: if let x = opened { path(x) },
     ) {
+        // The window's search narrows the tree to what it finds, and where the app answers the
+        // search itself (finds the words in the open document, say), does that too.
         on search(t: Text): set(found, t)
+.then(finds(t))
         // A file dropped anywhere on the window is the app's to take: the tree stands for the
         // whole window, so the app decides what a dropped file becomes.
         on drop(files: List<File>): drop_files(files)
