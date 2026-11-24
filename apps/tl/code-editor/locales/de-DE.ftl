@@ -1057,6 +1057,15 @@ d-m5tkeabl-format = Formatieren
 d-m3cwqb2r = Erneut versuchen
     .doc = Stopps the language server, as a person pressing "Erneut versuchen" after a failure does.
 
+d-jcckfmbt = Die Probleme zeigen
+    .doc = Shows the file's problems under the code, as the window's own key does anywhere in it.
+
+d-3yzatgwt = Das Terminal zeigen
+    .doc = Shows the project's terminal under the code, as Ctrl+J does anywhere in the window.
+
+d-qn4iboa3 = Die Suchergebnisse zeigen
+    .doc = Shows what the project search found under the code, as Ctrl+Shift+F does anywhere in the window.
+
 d-l7lwb6q5 = Add child
     .doc = Starts a file inside the folder `e`: a row's "+", pressed.
 
@@ -1115,6 +1124,7 @@ d-zw7y7jba = Add inside
 d-qe5s5jlf = Projekt head
     .w-project = Projekt
     .w-open-a-folder = Einen Ordner öffnen…
+    .w-open-a-file = Eine Datei öffnen…
     .w-new-file = Neue Datei
     .w-new-folder = Neuer Ordner
     .w-save-all = Speichern all
@@ -1131,6 +1141,8 @@ d-744hb56m = Projekt
     .w-reload-from-disk = Von der Platte neu laden
     .w-format = Formatieren
     .w-duplicate-line = Zeile duplizieren
+    .w-move-line-up = Zeile nach oben
+    .w-move-line-down = Zeile nach unten
     .w-delete-line = Löschen line
     .w-toggle-comment = Kommentar umschalten
     .w-check-the-file = Die Datei prüfen
@@ -1143,6 +1155,14 @@ d-744hb56m = Projekt
     .w-terminal = Terminal
     .w-search-results = Suchen results
     .w-write-the-file = Write the file
+    .w-run-a-command-in-the-project = Ausführen a command in the project
+    .w-run = Ausführen
+    .w-stop = Stopp
+    .w-clear = Clear
+    .w-no-command-has-run-in-the = No command has run in the project
+    .w-run-again = Ausführen again
+    .w-open-a-terminal = Ein Terminal öffnen
+    .w-clear-the-terminal = Terminal leeren
     .w-line = line { $value }
     .w-unsaved-changes = Ungespeichert changes
     .w-1-problem = 1 problem
@@ -1164,17 +1184,6 @@ d-7yzd7qdh = Probleme panel
     .w-check-the-file = Die Datei prüfen
     .w-by = { $problems_said }, by { $source }
     .w-line-column = line { $value }, column { $value2 }
-
-d-zl3bj7gd = Terminal panel
-    .w-run-a-command-in-the-project = Ausführen a command in the project
-    .w-run = Ausführen
-    .w-stop = Stopp
-    .w-clear = Clear
-    .w-no-command-has-run-in-the = No command has run in the project
-    .w-run-again = Ausführen again
-    .w-terminal = Terminal
-    .w-open-a-terminal = Ein Terminal öffnen
-    .w-clear-the-terminal = Terminal leeren
 
 d-2lxnmz5v = Suchen panel
     .w-stop = Stopp

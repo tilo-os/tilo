@@ -600,7 +600,7 @@ primary action new_file(
     name: Text = "",
     folder: Option<Entry> = .none,
     text: Text = "",
-) -> Entry (icon: .file_plus) {
+) -> Entry (icon: .file_plus, key: "Ctrl+N") {
     require named(untitled_name(name)) "A file's name cannot hold a slash and cannot be empty"
     require free_in(p, folder, untitled_name(name), .none) "An entry of that name is in the folder already"
     let named = untitled_name(name)
@@ -1344,7 +1344,7 @@ action reload(p: Project, entry: Entry) uses files (icon: .rotate_ccw, label: "R
 }
 
 /// Writes every file that changed here to the device.
-action save_all(p: Project) uses files (icon: .hard_drive, label: "Save all") {
+action save_all(p: Project) uses files (icon: .hard_drive, label: "Save all", key: "Ctrl+Alt+S") {
     for e in p.files {
         if e.kind == .file and e.disk != "" and e.text != e.saved and not e.stale {
             write(p, e, false)
@@ -2076,6 +2076,30 @@ action restart_server(p: Project) (icon: .rotate_cw, label: "Try again") {
     p.server_trouble = ""
 }
 
+/// Shows the file's problems under the code, as the window's own key does anywhere in it.
+action show_problems(p: Project) (
+    icon: .triangle_alert,
+    label: "Show the problems",
+    key: "Ctrl+Shift+M",
+) {
+    window_state("panel", "problems")
+}
+
+/// Shows the project's terminal under the code, as Ctrl+J does anywhere in the window.
+action show_terminal(p: Project) (icon: .terminal, label: "Show the terminal", key: "Ctrl+J") {
+    window_state("panel", "terminal")
+}
+
+/// Shows what the project search found under the code, as Ctrl+Shift+F does anywhere in the
+/// window.
+action show_search_results(p: Project) (
+    icon: .search,
+    label: "Show the search results",
+    key: "Ctrl+Shift+F",
+) {
+    window_state("panel", "search")
+}
+
 /// One file or folder in the tree: its icon says what it is.
 // ---------------------------------------------------------------- views
 view file_row(e: Entry) {
@@ -2120,8 +2144,11 @@ action add_child(e: Entry) {
 view project_head(open: Option<Entry>) {
     let p = project
     ui.MenuButton("Project", icon: .ellipsis, icon_only: true) {
-        ui.MenuItem("Open a folder…", icon: .folder_open) {
+        ui.MenuItem("Open a folder…", icon: .folder_open, key: "Ctrl+Shift+O") {
             on choose: file.choose_folder(open_folder(p), accept: ["text/plain"])
+        }
+        ui.MenuItem("Open a file…", icon: .file_plus, key: "Ctrl+O") {
+            on choose: file.choose(open_file(p))
         }
         ui.MenuItem("New file", icon: .file_plus) {
             on choose: new_file(p)
@@ -2271,34 +2298,40 @@ template view file_head(p: Project, e: Entry, panel: State<Text>, goto: State<Te
             ui.MenuItem("Save", icon: .hard_drive, key: "Ctrl+S") {
                 on choose: save(p, e)
             }
-            ui.MenuItem("Save as…", icon: .hard_drive) {
+            ui.MenuItem("Save as…", icon: .hard_drive, key: "Ctrl+Shift+S") {
                 on choose: file.choose_folder(save_into(p, e), accept: ["text/plain"])
             }
-            ui.MenuItem("Reload from disk", icon: .rotate_ccw) {
+            ui.MenuItem("Reload from disk", icon: .rotate_ccw, key: "Ctrl+Shift+R") {
                 on choose: reload(p, e)
             }
-            ui.MenuItem("Format", icon: .wand_sparkles) {
+            ui.MenuItem("Format", icon: .wand_sparkles, key: "Ctrl+Shift+I") {
                 on choose: format_file(p, e)
             }
-            ui.MenuItem("Duplicate line", icon: .copy) {
+            ui.MenuItem("Duplicate line", icon: .copy, key: "Shift+Alt+Down") {
                 on choose: duplicate_line(e, p.answer_line)
             }
-            ui.MenuItem("Delete line", icon: .delete) {
+            ui.MenuItem("Move line up", icon: .arrow_up, key: "Alt+Up") {
+                on choose: move_line(e, p.answer_line, true)
+            }
+            ui.MenuItem("Move line down", icon: .arrow_down, key: "Alt+Down") {
+                on choose: move_line(e, p.answer_line, false)
+            }
+            ui.MenuItem("Delete line", icon: .delete, key: "Ctrl+Shift+K") {
                 on choose: delete_line(e, p.answer_line)
             }
-            ui.MenuItem("Toggle comment", icon: .slash) {
+            ui.MenuItem("Toggle comment", icon: .slash, key: "Ctrl+/") {
                 on choose: toggle_comment(e, p.answer_line)
             }
             ui.MenuItem("Check the file", icon: .check) {
                 on choose: check(p, e)
             }
-            ui.MenuItem("Suggest", icon: .code) {
+            ui.MenuItem("Suggest", icon: .code, key: "Ctrl+Space") {
                 on choose: complete(p, e, p.answer_line, p.answer_column)
             }
             ui.MenuItem("What stands here", icon: .info) {
                 on choose: hover(p, e, p.answer_line, p.answer_column)
             }
-            ui.MenuItem("Go to definition", icon: .locate_fixed) {
+            ui.MenuItem("Go to definition", icon: .locate_fixed, key: "F12") {
                 on choose: definition(p, e, p.answer_line, p.answer_column)
             }
             for place in symbols_in(e) {
@@ -2313,7 +2346,7 @@ template view file_head(p: Project, e: Entry, panel: State<Text>, goto: State<Te
         ui.Button("Replace all", icon: .pencil) {
             on press: replace_in_file(e, p.search_text, "")
         }
-        ui.TextInput(bind: goto, placeholder: "Line", min: 6rem)
+        ui.TextInput(bind: goto, placeholder: "Line", min: 6rem, key: "Ctrl+G")
         ui.Button("Go to line", icon: .arrow_right) {
             on press: reveal_line(e, (goto.to_int() ?? 1) - 1, 0)
         }
@@ -2357,7 +2390,7 @@ template view file_panel(p: Project, e: Entry, panel: State<Text>) {
         if panel == "problems" {
             problems_panel(p, e)
         } else if panel == "terminal" {
-            terminal_panel(p)
+            terminal_panel(p, panel)
         } else {
             search_panel(p)
         }
@@ -2395,12 +2428,15 @@ view problems_panel(p: Project, e: Entry) {
 }
 
 /// The terminal: a command line, the commands run and their output, and what a command can be
-/// done with again.
-view terminal_panel(p: Project) {
+/// done with again. Escape leaves the command line and puts the keyboard back on the code.
+view terminal_panel(p: Project, panel: State<Text>) {
     state typed: Text = ""
     stack(gap: .related) {
         row(gap: .related, align: .center) {
-            ui.TextInput(bind: typed, placeholder: "Run a command in the project")
+            ui.TextInput(bind: typed, placeholder: "Run a command in the project") {
+                on submit(typed): run(p, typed)
+                on cancel: set(panel, "")
+            }
             ui.Button("Run", icon: .play) {
                 on press: run(p, typed)
             }
