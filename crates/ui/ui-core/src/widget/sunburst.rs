@@ -603,4 +603,35 @@ mod tests {
         ]);
         assert_eq!(root.effective_value(), 5.0);
     }
+
+    /// The centre total fits a phone's chart as it does a laptop's: the hole shrinks with the
+    /// width, and the words take a smaller role rather than vanishing.
+    #[test]
+    fn the_centre_total_fits_a_phone_width_chart() {
+        let root = SunburstNode::new("root", "Week", 0.0).with_children(vec![
+            SunburstNode::new("a", "A", 2.0),
+            SunburstNode::new("b", "B", 3.0),
+        ]);
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let mut chart = SunburstChart::new(root.clone()).with_center("73 hours", "");
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 440.0);
+                chart.marks.place(&mut tr, &theme);
+                let (center, inner, _, _) = chart.marks.geometry();
+                let label = crate::widget::chart_labels::centre_label_layout(
+                    &mut tr,
+                    &theme,
+                    center,
+                    (inner - 2.0).max(0.0),
+                    "73 hours",
+                    "",
+                );
+                assert!(
+                    label.is_some(),
+                    "{width}: the hole is wide enough to say the total"
+                );
+            }
+        }
+    }
 }

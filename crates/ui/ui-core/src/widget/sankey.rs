@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
@@ -414,6 +414,61 @@ impl SankeyMarks {
             .with_weight(TextWeight::Medium)
     }
 
+    /// The colour a link is painted in over the chart's ground: its palette colour, faded by
+    /// the link's alpha and brought forward while it is inspected.
+    fn link_ground(&self, link: &LinkBand, theme: &Theme) -> Option<Color> {
+        let spec = self.links.get(link.index)?;
+        let source = self
+            .nodes
+            .iter()
+            .position(|node| node.id == spec.source)
+            .unwrap_or_default();
+        let base = spec.color.unwrap_or_else(|| Self::palette(theme, source));
+        let alpha = if self.frame.inspection.hovered == Some(Hit::Link(link.index)) {
+            self.style.link_alpha.saturating_add(70)
+        } else {
+            self.style.link_alpha
+        };
+        let wash = Color::from_rgb8(base.r(), base.g(), base.b());
+        Some(crate::tokens::colors::over(
+            theme.tokens.colors.surfaces.base,
+            wash,
+            f32::from(alpha) / 255.0,
+        ))
+    }
+
+    /// The colours under `rects`: the chart's ground and every ribbon passing beneath them.
+    fn label_grounds(&self, links: &[LinkBand], rects: &[Rect], theme: &Theme) -> Vec<Color> {
+        let base = theme.tokens.colors.surfaces.base;
+        let mut grounds = vec![base];
+        for link in links {
+            let under = rects.iter().any(|rect| {
+                [
+                    rect.center(),
+                    Point::new(rect.x0, rect.y0),
+                    Point::new(rect.x1, rect.y0),
+                    Point::new(rect.x0, rect.y1),
+                    Point::new(rect.x1, rect.y1),
+                ]
+                .into_iter()
+                .any(|point| rect.contains(point) && link.path.contains(point))
+            });
+            if under && let Some(colour) = self.link_ground(link, theme) {
+                grounds.push(colour);
+            }
+        }
+        grounds
+    }
+
+    /// The ink `tone` takes to read at 4.5:1 on everything under `rects`.
+    fn label_ink(&self, links: &[LinkBand], rects: &[Rect], tone: Color, theme: &Theme) -> Color {
+        let grounds = self.label_grounds(links, rects, theme);
+        theme
+            .tokens
+            .colors
+            .ink_on_any(&grounds, tone, crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+    }
+
     fn draw_node_labels(
         &self,
         scene: &mut Scene,
@@ -421,30 +476,55 @@ impl SankeyMarks {
         tr: &mut TextRenderer,
         theme: &Theme,
         nodes: &[NodeBox],
+        links: &[LinkBand],
     ) {
         let style = Self::label_style(theme);
+        let value_style = theme.text(TextRole::Caption);
         let line = f64::from(style.line_height_px());
+        let value_line = f64::from(value_style.line_height_px());
         for (index, label, origin, show_value) in self.label_layout(nodes, tr, theme) {
+            let (w, h) = tr.measure_style(&label, None, &style);
+            let label_rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(w),
+                origin.y + f64::from(h),
+            );
+            let value = nodes
+                .iter()
+                .find(|node| node.index == index)
+                .map_or(0.0, |node| node.value);
+            let value_text = format_compact(value);
+            let value_rect = show_value.then(|| {
+                let (vw, _) = tr.measure_style(&value_text, None, &value_style);
+                Rect::new(
+                    origin.x,
+                    origin.y + line,
+                    origin.x + f64::from(vw),
+                    origin.y + line + value_line,
+                )
+            });
             tr.draw_style(
                 scene,
                 &label,
-                theme.tokens.colors.text_primary,
+                self.label_ink(
+                    links,
+                    &[label_rect],
+                    theme.tokens.colors.text_primary,
+                    theme,
+                ),
                 transform * Affine::translate((origin.x, origin.y)),
                 None,
                 &style,
             );
-            if show_value {
-                let value = nodes
-                    .iter()
-                    .find(|node| node.index == index)
-                    .map_or(0.0, |node| node.value);
+            if let Some(rect) = value_rect {
                 tr.draw_style(
                     scene,
-                    &format_compact(value),
-                    theme.tokens.colors.text_dim,
-                    transform * Affine::translate((origin.x, origin.y + line)),
+                    &value_text,
+                    self.label_ink(links, &[rect], theme.tokens.colors.text_dim, theme),
+                    transform * Affine::translate((rect.x0, rect.y0)),
                     None,
-                    &theme.text(TextRole::Caption),
+                    &value_style,
                 );
             }
         }
@@ -589,7 +669,7 @@ impl PlotMarks for SankeyMarks {
                 );
             }
         }
-        self.draw_node_labels(scene, transform, tr, theme, &nodes);
+        self.draw_node_labels(scene, transform, tr, theme, &nodes, &links);
     }
 
     fn readout(&self, _theme: &Theme) -> Option<Readout> {
@@ -727,6 +807,65 @@ mod tests {
                 ],
             );
             assert!(chart.marks.resolved_links().is_empty());
+        }
+
+        phase node_labels_read_on_the_ribbons_they_stand_on;
+        // A label crosses the translucent ribbons leaving the node before it: its ink is
+        // resolved against the composite it actually stands on, so names and values clear
+        // 4.5:1 in both themes, not only against the page.
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let mut tr = TextRenderer::new();
+                let mut chart = product_flow();
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, 900.0, 220.0);
+                chart.marks.measure_margins(&mut tr, &theme);
+                let (nodes, links) = chart.marks.geometry();
+                let name_style = SankeyMarks::label_style(&theme);
+                let value_style = theme.text(TextRole::Caption);
+                let mut ribbons_under_labels = 0;
+                for (index, label, origin, show_value) in
+                    chart.marks.label_layout(&nodes, &mut tr, &theme)
+                {
+                    let (w, h) = tr.measure_style(&label, None, &name_style);
+                    let name_rect =
+                        Rect::from_origin_size(origin, (f64::from(w), f64::from(h)));
+                    let value = nodes
+                        .iter()
+                        .find(|node| node.index == index)
+                        .map_or(0.0, |node| node.value);
+                    let value_text = format_compact(value);
+                    let (vw, vh) = tr.measure_style(&value_text, None, &value_style);
+                    let value_rect = show_value.then(|| {
+                        Rect::from_origin_size(
+                            Point::new(origin.x, origin.y + f64::from(name_style.line_height_px())),
+                            (f64::from(vw), f64::from(vh)),
+                        )
+                    });
+                    for (rect, tone) in std::iter::once((
+                        name_rect,
+                        theme.tokens.colors.text_primary,
+                    ))
+                    .chain(value_rect.map(|rect| (rect, theme.tokens.colors.text_dim)))
+                    {
+                        let grounds = chart.marks.label_grounds(&links, &[rect], &theme);
+                        if grounds.len() > 1 {
+                            ribbons_under_labels += 1;
+                        }
+                        let ink = chart.marks.label_ink(&links, &[rect], tone, &theme);
+                        for ground in grounds {
+                            assert!(
+                                crate::a11y::contrast_ratio(ink, ground)
+                                    >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                                "{label:?} ink {ink:?} on {ground:?} is under 4.5:1"
+                            );
+                        }
+                    }
+                }
+                assert!(
+                    ribbons_under_labels > 0,
+                    "no ribbon crossed a label, so the ink rule is untested"
+                );
+            }
         }
     }
 }
