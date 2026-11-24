@@ -13,16 +13,23 @@ use so.tilo.vision as vision
 type Photo (untitled: "Photo") {
     name: Text
     /// Where the picture's bytes are: an address `tilo-blob://<reference>` the window's pictures
-    /// read from the content store. Empty where the bytes are not here.
+    /// read from the content store. Empty where the record names no picture at all.
     picture: Text = ""
     /// The small preview the grid draws, so a library of thousands opens cheaply. Empty where no
     /// preview was made and the grid draws the picture itself.
     thumb: Text = ""
-    /// The picture after the person's turns, where they made any: what the window shows and a save
-    /// writes. Empty where the photograph stands as it came.
+    /// The picture the device drew from the person's edits: the part they kept, then the turns
+    /// they made. Empty where they changed nothing; the photograph itself is never written.
     edited: Text = ""
     /// The quarter turns clockwise the person made.
     rotation: Int = 0
+    /// The part of the photograph they kept, as fractions of the upright picture: its left, top,
+    /// width and height. Empty where they kept the whole of it.
+    crop: List<Float>
+    /// How this device stands on the picture's bytes: empty before anything looked, `here` when
+    /// it holds them, `waiting` while they are still arriving from another device, and
+    /// `unreadable` when what it holds is no picture this device opens.
+    picture_state: Text = ""
     favorite: Bool = false
     /// When the photo was taken, as the camera wrote it: kept as words until something needs
     /// to read a time from them.
@@ -116,6 +123,16 @@ type Library {
     /// Each person's face scan: their own alone, so one person's switch and progress are never
     /// another's.
     face_scans: Collection<FaceScan>
+    /// What the last thing the library did has to say to the person: an album saved, a change
+    /// another member made first. Empty where there is nothing to say.
+    notice: Text = ""
+    /// Whether an album draft is open, and if so its name and the photos chosen for it: the
+    /// album itself changes only when the person saves the draft.
+    album_draft_open: Bool = false
+    /// The album the draft is of, and empty for one it will start.
+    album_draft_id: Text = ""
+    album_draft_name: Text = ""
+    album_draft_photos: List<Text>
 }
 
 /// A picture an import could not read: what it is called, where its bytes are, where it stood in
@@ -240,6 +257,8 @@ action absorb_picture(lib: Library, file: File) -> Photo uses image {
     if let small = file.thumbnail(512) {
         photo.thumb = small.url
     }
+    // The person chose this file, so its bytes are on this device now.
+    photo.picture_state = "here"
     photo
 }
 
@@ -343,6 +362,8 @@ action imported(lib: Library, outcome: Text) (did: "added photos") {
                 if read.thumb != "" {
                     photo.thumb = read.thumb
                 }
+                // The device read these bytes from its own store: here they are.
+                photo.picture_state = "here"
                 if photo.captured_at == "" {
                     photo.captured_at = read.captured_at
                 }
@@ -407,40 +428,83 @@ action dismiss_import(lib: Library) (icon: .x, label: "Dismiss the import report
     lib.import_stopped = false
 }
 
+/// Looks at where this device stands on a photo's picture: whether it holds the bytes yet, and
+/// whether what it holds is a picture it opens. A record reaches this device from another one
+/// before its picture's bytes do, so a photo says the picture is still arriving instead of
+/// drawing nothing; the window looks again while it waits.
+action check_picture(p: Photo) uses image {
+    let state = if p.picture == "" {
+        "unreadable"
+    } else if not File.at(p.name, p.picture).here() {
+        "waiting"
+    } else {
+        match File.at(p.name, p.picture).image_info() {
+            .some(_) => "here",
+            .none => "unreadable",
+        }
+    }
+    if p.picture_state != state {
+        p.picture_state = state
+    }
+}
+
 /// Marks a photo as a favorite, or takes that back.
 action toggle_favorite(p: Photo, favorite: Bool = not p.favorite) (icon: .star, group: "Favorite") {
     p.favorite = favorite
 }
 
-/// Turns the photograph a quarter clockwise, as its person sees it: the window draws the original
-/// turned, and a save writes what it draws.
+/// Turns the photograph a quarter clockwise, as its person sees it.
 action rotate_right(p: Photo) uses image (icon: .rotate_cw, label: "Rotate right", group: "Edits") {
-    let quarters = if p.rotation >= 3 { 0 } else { p.rotation + 1 }
-    match File.at(p.name, p.picture).turned(quarters) {
-        .ok(turned) => {
-            p.rotation = quarters
-            p.edited = turned.url
-        }
-        .err(_) => {}
-    }
+    develop(p, if p.rotation >= 3 { 0 } else { p.rotation + 1 }, p.crop)
 }
 
 /// Turns the photograph a quarter anticlockwise.
 action rotate_left(p: Photo) uses image (icon: .rotate_ccw, label: "Rotate left", group: "Edits") {
-    let quarters = if p.rotation == 0 { 3 } else { p.rotation - 1 }
-    match File.at(p.name, p.picture).turned(quarters) {
-        .ok(turned) => {
-            p.rotation = quarters
-            p.edited = turned.url
-        }
-        .err(_) => {}
-    }
+    develop(p, if p.rotation == 0 { 3 } else { p.rotation - 1 }, p.crop)
 }
 
-/// Puts the photograph back as it came, taking the person's own turns off it.
-action reset_edits(p: Photo) (label: "Reset edits", group: "Edits") {
-    p.rotation = 0
-    p.edited = ""
+/// Puts the photograph back as it came, taking every edit off it.
+action reset_edits(p: Photo) uses image (icon: .undo_2, label: "Reset edits", group: "Edits") {
+    develop(p, 0, [])
+}
+
+/// Records an edit on the photograph and draws it: the device keeps the part the person chose,
+/// then turns it, and keeps the result in the content store. Nothing is written over the
+/// photograph, so every edit can be taken back and the person can see the picture as it came
+/// beside the one they made.
+action develop(p: Photo, rotation: Int, crop: List<Float>) uses image {
+    p.rotation = rotation
+    p.crop = crop
+    if crop.is_empty() and rotation == 0 {
+        p.edited = ""
+        return
+    }
+    let file = File.at(p.name, p.picture)
+    // The part they kept, in the upright picture's own fractions, drawn first: a turn after it
+    // leaves the crop meaning the same part of the photograph.
+    let kept = if crop.is_empty() {
+        file
+    } else {
+        match file.cropped(
+            crop.at(0) ?? 0.0,
+            crop.at(1) ?? 0.0,
+            crop.at(2) ?? 1.0,
+            crop.at(3) ?? 1.0,
+        ) {
+            .ok(part) => part,
+            .err(_) => file,
+        }
+    }
+    if rotation == 0 {
+        p.edited = kept.url
+    } else {
+        match kept.turned(rotation) {
+            .ok(turned) => {
+                p.edited = turned.url
+            }
+            .err(_) => {}
+        }
+    }
 }
 
 /// What a picture shows, in a sentence, as the device's image model reads it: the sentence the
@@ -473,13 +537,38 @@ action copy_photo(p: Photo) uses clipboard (icon: .copy, label: "Copy") {
     }
 }
 
-/// The objects and pets the device's image model finds in a picture, added to what the photo
-/// already lists.
+/// What the device's image model finds in a picture, added to what the photo already lists: the
+/// objects, and the pets apart from them.
 action tag_photo(p: Photo) (icon: .tag, label: "Tags", group: "Details") {
-    match try vision.tags(vision.image_model, image: shown_picture(p)) {
-        .ok(words) => {
-            for word in words {
+    match try vision.shows(vision.image_model, image: shown_picture(p)) {
+        .ok(found) => {
+            if p.description == "" {
+                p.description = found.description
+            }
+            for word in found.objects {
                 p.objects.add(word)
+            }
+            for pet in found.pets {
+                p.pets.add(pet)
+            }
+        }
+        .err(_) => {}
+    }
+}
+
+/// What the photograph shows, as the device's model reads it in one go: the sentence search finds
+/// it by, the words in it, and the objects and pets it holds. It replaces what the photo said
+/// before, so analyzing again after the picture changed says what it shows now.
+action analyze_photo(p: Photo) (icon: .sparkles, label: "Analyze", group: "Details") {
+    match try vision.shows(vision.image_model, image: shown_picture(p)) {
+        .ok(found) => {
+            p.description = found.description
+            p.recognized = found.text
+            for word in found.objects {
+                p.objects.add(word)
+            }
+            for pet in found.pets {
+                p.pets.add(pet)
             }
         }
         .err(_) => {}
@@ -493,15 +582,44 @@ action crop_photo(p: Photo, x: Float, y: Float, width: Float, height: Float) use
     label: "Crop",
     group: "Edits",
 ) {
-    if width <= 0.0 or height <= 0.0 {
+    // Keeping the whole picture changes nothing, and a person aiming for it needs no round trip
+    // to the device to be told so.
+    if width <= 0.0 or height <= 0.0 or width >= 1.0 and height >= 1.0 {
         return
     }
-    match File.at(p.name, shown_picture(p)).cropped(x, y, width, height) {
-        .ok(cropped) => {
-            p.edited = cropped.url
-        }
-        .err(_) => {}
-    }
+    let chosen = turned_back([x, y, width, height], p.rotation)
+    let kept = if p.crop.is_empty() { chosen } else { placed_in(p.crop, chosen) }
+    develop(p, p.rotation, kept)
+}
+
+/// The part of the upright picture a person chose in the window: the picture there is turned
+/// clockwise, so its place is turned back the same number of quarter turns before it is kept.
+fn turned_back(rect: List<Float>, quarters: Int) -> List<Float> {
+    let x = rect.at(0) ?? 0.0
+    let y = rect.at(1) ?? 0.0
+    let w = rect.at(2) ?? 1.0
+    let h = rect.at(3) ?? 1.0
+    let q = if quarters >= 3 { 3 } else if quarters <= 0 { 0 } else { quarters }
+    if q == 0 {
+        [x, y, w, h]
+    } else if q == 1 {
+        [y, 1.0 - (x + w), h, w]
+    } else if q == 2 { [1.0 - (x + w), 1.0 - (y + h), w, h] } else { [1.0 - (y + h), x, h, w] }
+}
+
+/// The part `chosen` of the part `kept` the person already kept: a second crop narrows the first
+/// rather than throwing it away, so cropping a turned photograph never loses what they chose.
+fn placed_in(kept: List<Float>, chosen: List<Float>) -> List<Float> {
+    let left = kept.at(0) ?? 0.0
+    let top = kept.at(1) ?? 0.0
+    let across = kept.at(2) ?? 1.0
+    let down = kept.at(3) ?? 1.0
+    [
+        left + (chosen.at(0) ?? 0.0) * across,
+        top + (chosen.at(1) ?? 0.0) * down,
+        (chosen.at(2) ?? 1.0) * across,
+        (chosen.at(3) ?? 1.0) * down,
+    ]
 }
 
 /// The day a capture time names, as a person reads it: the camera's `2026:07:12 18:16:00` and
@@ -777,6 +895,99 @@ destructive action remove_album(lib: Library, a: Album) (icon: .trash, label: "D
 /// Puts a photo in an album, or takes it out of one when it is already in it.
 action album_contains_toggle(a: Album, p: Photo) (icon: .folder, label: "Album") {
     if a.photos.contains(p.id) { a.photos.remove(p.id) } else { a.photos.add(p.id) }
+}
+
+/// Opens an album draft: the album `id` names as it stands now, or an empty one to start. The
+/// person chooses its photos in the library and nothing about the album changes until they save
+/// the draft, so a change another member makes meanwhile is reviewed, not overwritten unseen.
+action start_album_draft(lib: Library, id: Text) (icon: .pencil, label: "Edit album") {
+    if let held = lib.albums.find(a -> a.id == id) {
+        lib.album_draft_id = held.id
+        lib.album_draft_name = held.name
+        lib.album_draft_photos = held.photos.map(photo -> photo)
+    } else {
+        lib.album_draft_id = ""
+        lib.album_draft_name = ""
+        lib.album_draft_photos = []
+    }
+    lib.album_draft_open = true
+    lib.notice = ""
+}
+
+/// Chooses a photo for the album draft, or takes it out of the draft when it is already in it.
+action album_draft_toggle(lib: Library, p: Photo) (icon: .folder, group: "Album draft") {
+    lib.album_draft_photos = toggled(lib.album_draft_photos, p.id)
+}
+
+/// Closes the album draft, saving nothing.
+action cancel_album_draft(lib: Library) (label: "Cancel") {
+    lib.album_draft_open = false
+    lib.album_draft_id = ""
+    lib.album_draft_name = ""
+    lib.album_draft_photos = []
+    lib.notice = "Album changes discarded"
+}
+
+/// Saves the album draft. A photo the draft names that the library no longer holds, or an album
+/// another member deleted while it was open, is a change made first by someone else: the draft
+/// stays as it is and says so, so they review it and save again. What the save does add and take
+/// away merges with a change another member made meanwhile.
+action save_album(lib: Library) (icon: .check, label: "Save album") {
+    let known = lib.photos.map(p -> p.id)
+    let chosen = lib.album_draft_photos.filter(id -> known.contains(id))
+    if chosen.len() != lib.album_draft_photos.len() {
+        lib.notice = "Someone else changed this album. Review it and save again."
+        return
+    }
+    let name = lib.album_draft_name.trim()
+    if name == "" {
+        lib.notice = "Name the album first."
+        return
+    }
+    if lib.album_draft_id == "" {
+        let made = lib.albums.insert(Album(name: name))
+        for id in chosen {
+            made.photos.add(id)
+        }
+        lib.album_draft_id = made.id
+        lib.album_draft_open = false
+        lib.notice = "Album saved"
+        return
+    }
+    if let album = lib.albums.find(a -> a.id == lib.album_draft_id) {
+        album.name = name
+        // Only the photos that differ are added and taken away, so two people's choices merge.
+        for p in lib.photos {
+            let listed = album.photos.contains(p.id)
+            let wanted = chosen.contains(p.id)
+            if wanted and not listed {
+                album.photos.add(p.id)
+            } else if listed and not wanted { album.photos.remove(p.id) }
+        }
+        lib.album_draft_open = false
+        lib.notice = "Album saved"
+    } else {
+        lib.notice = "Someone else changed this album. Review it and save again."
+    }
+}
+
+/// Deletes the album the draft is of. Its photos stay in the library.
+destructive action delete_album_draft(lib: Library) (icon: .trash, label: "Delete album") {
+    lib.album_draft_open = false
+    if let album = lib.albums.find(a -> a.id == lib.album_draft_id) {
+        lib.albums.remove(album)
+        lib.notice = "Album deleted"
+    } else {
+        lib.notice = "Someone else changed this album. Review it and save again."
+    }
+    lib.album_draft_id = ""
+    lib.album_draft_name = ""
+    lib.album_draft_photos = []
+}
+
+/// Takes down what the library last had to say.
+action dismiss_notice(lib: Library) (icon: .x, label: "Dismiss") {
+    lib.notice = ""
 }
 
 /// The link that reaches a photo's picture: the address of its bytes, which every device of the
@@ -1131,6 +1342,10 @@ view library(lib: Library) {
     // The month and the day the timeline is opened at, empty for every month and every day.
     state timeline_month: Text = ""
     state timeline_day: Text = ""
+    // Whether the person is about to delete the album their draft is of.
+    state album_delete_confirm: Bool = false
+    // Whether the viewer shows the photograph as it came rather than as the person edited it.
+    state comparing: Bool = false
     ui.NavShell(
         content_kind: .page,
         title: if let p = lib.photos.find(x -> x.id == viewing) {
@@ -1186,6 +1401,9 @@ view library(lib: Library) {
                         import_folder(lib),
                         accept: ["image/png", "image/jpeg", "image/webp"],
                     )
+                }
+                ui.Button("New album", icon: .folder_plus) {
+                    on press: start_album_draft(lib, "")
                 }
                 ui.Button("Select", icon: .check) {
                     on press: set(selecting, true)
@@ -1247,6 +1465,9 @@ view library(lib: Library) {
                     ui.NavItem("places", "Places", icon: .map_pin) {
                         on select: set(place, "places").then(set(viewing, ""))
                     }
+                    ui.NavItem("analysis", "Analysis", icon: .sparkles) {
+                        on select: set(place, "analysis").then(set(viewing, ""))
+                    }
                 }
                 if not lib.albums.is_empty() {
                     ui.NavSection("Albums") {
@@ -1295,6 +1516,11 @@ view library(lib: Library) {
                         }
                     }
                 }
+                if lib.notice != "" {
+                    ui.Banner(lib.notice, kind: .info, action: "Dismiss") {
+                        on act: dismiss_notice(lib)
+                    }
+                }
                 if presenting {
                     present(lib, slide, presenting)
                 } else if editing_details {
@@ -1315,12 +1541,39 @@ view library(lib: Library) {
                         details_latitude,
                         details_longitude,
                     )
+                } else if lib.album_draft_open
+                    and (place == "library" or place == lib.album_draft_id) {
+                    album_editor(lib, album_delete_confirm)
+                } else if let album = lib.albums.find(a -> a.id == place) {
+                    album_place(
+                        lib,
+                        album,
+                        viewing,
+                        selecting,
+                        selection,
+                        confirming,
+                        shared,
+                        comparing,
+                        big,
+                    )
                 } else if let p = lib.photos.find(x -> x.id == viewing) {
                     ui.PageSlide(level: 1) {
-                        viewer(lib, p, viewing, zoom, confirming, shared, cropping, crop_edges)
+                        viewer(
+                            lib,
+                            p,
+                            viewing,
+                            zoom,
+                            confirming,
+                            shared,
+                            cropping,
+                            crop_edges,
+                            comparing,
+                        )
                     }
                 } else if place == "people" {
                     people_list(lib, place, viewing)
+                } else if place == "analysis" {
+                    analysis_page(lib)
                 } else if lib.photos.filter(p -> shown(lib, place, p)).is_empty() {
                     empty_place(lib, place)
                 } else if place == "timeline" {
@@ -1328,7 +1581,17 @@ view library(lib: Library) {
                 } else if place == "places" {
                     places_page(lib, viewing)
                 } else {
-                    library_grid(lib, place, viewing, selecting, selection, confirming, shared, big)
+                    library_grid(
+                        lib,
+                        place,
+                        viewing,
+                        selecting,
+                        selection,
+                        confirming,
+                        shared,
+                        comparing,
+                        big,
+                    )
                 }
             }
         }
@@ -1735,6 +1998,7 @@ view library_grid(
     selection: State<List<Text>>,
     confirming: State<Bool>,
     shared: State<Text>,
+    comparing: State<Bool>,
     big: Bool,
 ) {
     let photos = lib.photos.filter(p -> shown(lib, place, p))
@@ -1758,9 +2022,11 @@ view library_grid(
         ui.MediaGrid(size: if big { .regular } else { .small }, fill) {
             for p in photos {
                 ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
-                    on activate: set(viewing, p.id)
+                    on activate: check_picture(p)
+                        .then(set(viewing, p.id))
                         .then(set(confirming, false))
                         .then(set(shared, ""))
+                        .then(set(comparing, false))
                 }
             }
         }
@@ -1965,6 +2231,7 @@ view viewer(
     shared: State<Text>,
     cropping: State<Bool>,
     crop_edges: State<List<Float>>,
+    comparing: State<Bool>,
 ) {
     stack(padding: .group, gap: .related, max: 72rem) {
         row(gap: .related, align: .center, wrap: true) {
@@ -1998,6 +2265,11 @@ view viewer(
             }
             ui.Button("Crop", icon: .crop) {
                 on press: set(cropping, true)
+            }
+            if p.edited != "" {
+                ui.Button("Before", icon: .columns_2, toggled: comparing) {
+                    on press: set(comparing, not comparing)
+                }
             }
             ui.Button("Describe", icon: .sparkles) {
                 on press: describe_photo(p)
@@ -2034,7 +2306,25 @@ view viewer(
                 }
             }
         }
-        if cropping {
+        if p.picture_state == "waiting" {
+            ui.EmptyState(
+                "Waiting for the photo",
+                message: "It is still arriving from another device.",
+                icon: .cloud_download,
+            )
+            // The bytes arrive from the other device while the person waits: look again.
+            every 2s: check_picture(p)
+        } else if p.picture_state == "unreadable" {
+            ui.EmptyState(
+                "Could not open this photo",
+                message: "The file is not an image Photos can read.",
+                icon: .circle_alert,
+                error: true,
+            )
+            ui.Button("Try again", icon: .refresh) {
+                on press: check_picture(p)
+            }
+        } else if cropping {
             ui.ImageCropEditor(
                 shown_picture(p),
                 left: crop_edges.at(0) ?? 0.0,
@@ -2064,7 +2354,17 @@ view viewer(
                 }
             }
         } else {
-            ui.ImageViewer(shown_picture(p), alt: p.name, aspect: 1.5, zoom: zoom)
+            if comparing {
+                ui.Text("Before the edits", role: .caption, secondary: true)
+            } else if p.edited != "" {
+                ui.Text("After the edits", role: .caption, secondary: true)
+            }
+            ui.ImageViewer(
+                if comparing { p.picture } else { shown_picture(p) },
+                alt: p.name,
+                aspect: 1.5,
+                zoom: zoom,
+            )
         }
         ui.Text(p.name, role: .title)
         if p.captured_at != "" {
@@ -2082,6 +2382,180 @@ view viewer(
         }
         details(lib, p)
     }
+}
+
+/// An album's photographs, and what the person does to the album itself: rename it, choose its
+/// photos, or delete it.
+view album_place(
+    lib: Library,
+    album: Album,
+    viewing: State<Text>,
+    selecting: State<Bool>,
+    selection: State<List<Text>>,
+    confirming: State<Bool>,
+    shared: State<Text>,
+    comparing: State<Bool>,
+    big: Bool,
+) {
+    stack(gap: .related, fill) {
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Text(album.name, role: .title)
+            ui.Text("{album.photos.len()} photos", role: .caption, secondary: true)
+            ui.Button("Edit album", icon: .pencil) {
+                on press: start_album_draft(lib, album.id)
+            }
+        }
+        if album.photos.is_empty() {
+            ui.EmptyState(
+                "This album is empty",
+                message: "Edit the album to choose its photos.",
+                icon: .folder,
+            )
+        } else {
+            library_grid(
+                lib,
+                album.id,
+                viewing,
+                selecting,
+                selection,
+                confirming,
+                shared,
+                comparing,
+                big,
+            )
+        }
+    }
+}
+
+/// The album the person is choosing photos for: its name, the photos they picked, and the
+/// library under them to pick from. The album changes when they save the draft, and not before.
+view album_editor(lib: Library, deleting: State<Bool>) {
+    stack(gap: .related, fill) {
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(bind: lib.album_draft_name, title: true, placeholder: "Album name")
+            ui.Text("{lib.album_draft_photos.len()} chosen", role: .caption, secondary: true)
+            ui.Button("Save album", icon: .check, role: .primary) {
+                on press: save_album(lib)
+            }
+            ui.Button("Cancel") {
+                on press: cancel_album_draft(lib)
+            }
+            if lib.album_draft_id != "" {
+                ui.Button("Delete album", icon: .trash) {
+                    on press: set(deleting, true)
+                }
+            }
+        }
+        if deleting {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Delete this album? Its photos stay in the library.", role: .caption)
+                ui.Button("Delete", icon: .trash, role: .destructive) {
+                    on press: delete_album_draft(lib).then(set(deleting, false))
+                }
+                ui.Button("Keep") {
+                    on press: set(deleting, false)
+                }
+            }
+        }
+        ui.Text("Choose the photos for this album.", role: .caption, secondary: true)
+        if lib.photos.is_empty() {
+            ui.EmptyState(
+                "Your library is empty",
+                message: "Open a photo, or drop pictures on the window, to start your library.",
+                icon: .image,
+            )
+        } else {
+            ui.MediaGrid(size: .small, fill) {
+                for p in lib.photos {
+                    ui.MediaCard(
+                        p,
+                        title: p.name,
+                        picture: card_picture(p),
+                        selected: lib.album_draft_photos.contains(p.id),
+                    ) {
+                        on activate: album_draft_toggle(lib, p)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The library's analysis on this device: how far it has got, the model that read the pictures,
+/// the photos it could not read, and the way to try them again. The work is the device's, so this
+/// says what its run says and asks it to go on.
+view analysis_page(lib: Library) {
+    let run = vision.analysis
+    stack(gap: .section, max: 72rem) {
+        ui.Text(analysis_word(run.phase), role: .title)
+        if run.total > 0 {
+            ui.Text(
+                "{run.completed} of {run.total} finished, {run.failed} failed",
+                role: .body,
+                secondary: true,
+            )
+            ui.ProgressBar(run.progress)
+        } else if run.phase != "running" and run.phase != "paused" {
+            ui.Text(
+                if vision.image_model.available {
+                    "Find photos by the text, scenes, objects and pets in them. The pictures stay on this device."
+                } else { vision.image_model.detail },
+                role: .body,
+                secondary: true,
+            )
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            if run.phase == "running" {
+                ui.Button("Pause after this photo", icon: .pause) {
+                    on press: vision.pause(vision.analysis)
+                }
+            } else if run.phase == "paused" {
+                ui.Button("Resume", icon: .play) {
+                    on press: vision.resume(vision.analysis)
+                }
+            } else if vision.image_model.available {
+                ui.Button("Analyze photos", icon: .sparkles, role: .primary) {
+                    on press: vision.start(vision.analysis)
+                }
+            }
+            if run.failed > 0 and run.phase != "running" {
+                ui.Button("Retry failed photos", icon: .refresh) {
+                    on press: vision.retry(vision.analysis)
+                }
+            }
+        }
+        if run.model != "" {
+            ui.Property("Model", run.model)
+            ui.Property("Revision", run.revision.slice(0, 10), copyable: true)
+        }
+        if not run.failures.is_empty() {
+            ui.Text("Needs attention", role: .subheading)
+            for failure in run.failures {
+                ui.ListRow(
+                    title: failure_name(lib, failure.resource),
+                    secondary: failure.reason,
+                    icon: .circle_alert,
+                )
+            }
+        }
+    }
+}
+
+/// Where the library's analysis stands, as a heading a person reads.
+fn analysis_word(phase: Text) -> Text {
+    if phase == "running" {
+        "Analyzing on this device"
+    } else if phase == "paused" {
+        "Paused"
+    } else if phase == "complete" {
+        "Finished"
+    } else if phase == "cancelled" { "Stopped" } else { "Ready to analyze" }
+}
+
+/// The photo a failed analysis names: the kind and id its search entry carries end with the id
+/// the library gave it, so the failure reads as the photo it is about.
+fn failure_name(lib: Library, resource: Text) -> Text {
+    if let p = lib.photos.find(x -> resource.ends_with(x.id)) { p.name } else { resource }
 }
 
 /// What the library knows of a photo, and what its fields are: its name, when it was taken,
@@ -2112,6 +2586,27 @@ view details_fields(lib: Library, p: Photo) {
                 for name in p.people {
                     ui.Chip(name, icon: .user) {
                         on remove: remove_person(lib, p, name)
+                    }
+                }
+            }
+        }
+        if p.description != "" or not p.objects.is_empty() or not p.pets.is_empty() {
+            ui.Section("What it shows") {
+                if p.description != "" {
+                    text(p.description, role: .body)
+                }
+                if not p.objects.is_empty() {
+                    row(gap: .related, wrap: true) {
+                        for word in p.objects {
+                            ui.Chip(word, icon: .tag)
+                        }
+                    }
+                }
+                if not p.pets.is_empty() {
+                    row(gap: .related, wrap: true) {
+                        for pet in p.pets {
+                            ui.Chip(pet, icon: .paw_print)
+                        }
                     }
                 }
             }
@@ -2153,6 +2648,9 @@ view details_fields(lib: Library, p: Photo) {
         row(gap: .related, wrap: true) {
             ui.Button("Save photograph", icon: .download) {
                 on press: file.save(export_photo(p), name: p.name)
+            }
+            ui.Button("Analyze", icon: .sparkles) {
+                on press: analyze_photo(p)
             }
             ui.Button("Read the text", icon: .scan_line) {
                 on press: recognize_text(p)
@@ -2201,7 +2699,22 @@ view photo(p: Photo) {
                         on press: set(zoom, 1.0)
                     }
                 }
-                ui.ImageViewer(shown_picture(p), alt: p.name, aspect: 1.5, zoom: zoom)
+                if p.picture_state == "waiting" {
+                    ui.EmptyState(
+                        "Waiting for the photo",
+                        message: "It is still arriving from another device.",
+                        icon: .cloud_download,
+                    )
+                } else if p.picture_state == "unreadable" {
+                    ui.EmptyState(
+                        "Could not open this photo",
+                        message: "The file is not an image Photos can read.",
+                        icon: .circle_alert,
+                        error: true,
+                    )
+                } else {
+                    ui.ImageViewer(shown_picture(p), alt: p.name, aspect: 1.5, zoom: zoom)
+                }
                 ui.Text(p.name, role: .title)
                 if p.captured_at != "" {
                     ui.Text(p.captured_at, role: .caption, secondary: true)

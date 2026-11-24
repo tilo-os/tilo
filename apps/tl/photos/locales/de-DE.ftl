@@ -410,6 +410,29 @@ d-hfgcskel = Bibliothek
     .w-every-day = Jeden Tag
     .w-import-stopped-of-imported = Import angehalten: { $import_done } von { $import_found } importiert
     .w-try-again = Erneut versuchen
+    .w-after-the-edits = Nach den Bearbeitungen
+    .w-album-name = Albumname
+    .w-analysis = Analyse
+    .w-before = Vorher
+    .w-before-the-edits = Vor den Bearbeitungen
+    .w-choose-the-photos-for-this-album = Wähle die Fotos für dieses Album.
+    .w-chosen = { $len } gewählt
+    .w-could-not-open-this-photo = Dieses Foto konnte nicht geöffnet werden
+    .w-delete = Löschen
+    .w-delete-album = Album löschen
+    .w-delete-this-album-its-photos-stay = Dieses Album löschen? Seine Fotos bleiben in der Bibliothek.
+    .w-edit-album = Album bearbeiten
+    .w-edit-the-album-to-choose-its = Bearbeite das Album, um seine Fotos zu wählen.
+    .w-it-is-still-arriving-from-another = Es kommt noch von einem anderen Gerät an.
+    .w-keep = Behalten
+    .w-new-album = Neues Album
+    .w-open-a-photo-or-drop-pictures = Öffne ein Foto oder ziehe Bilder auf das Fenster, um deine Bibliothek zu beginnen.
+    .w-save-album = Album speichern
+    .w-the-file-is-not-an-image = Die Datei ist kein Bild, das Fotos lesen kann.
+    .w-this-album-is-empty = Dieses Album ist leer
+    .w-waiting-for-the-photo = Warten auf das Foto
+    .w-your-library-is-empty = Deine Bibliothek ist leer
+    .w-photos-2 = { $len } Fotos
 
 d-i4ssir2r = Personenzeile
     .w-photos = { $len } Fotos
@@ -446,6 +469,8 @@ d-dy2z5spw = Detailfelder
     .w-copy = Kopieren
     .w-latitude = Breite
     .w-longitude = Länge
+    .w-analyze = Analysieren
+    .w-what-it-shows = Was es zeigt
 
 d-dho5ecc7 = Details
     .w-albums = Alben
@@ -456,6 +481,10 @@ d-coxhshbn = Foto
     .w-actual-size = Originalgröße
     .w-remove-from-favorites = Aus Favoriten entfernen
     .w-favorite = Favorit
+    .w-waiting-for-the-photo = Warten auf das Foto
+    .w-it-is-still-arriving-from-another = Es kommt noch von einem anderen Gerät an.
+    .w-could-not-open-this-photo = Dieses Foto konnte nicht geöffnet werden
+    .w-the-file-is-not-an-image = Die Datei ist kein Bild, das Fotos lesen kann.
 
 d-vy4hppbk = Fotozeile
 
@@ -768,3 +797,78 @@ d-ztmmdu2j = Gesichtserkennung
     .w-delete-local-face-data = Lokale Gesichtsdaten löschen
 
 d-j45kskqf-filter-import_stopped = Import angehalten
+
+d-dpfjny5e = Zuschneiden
+    .doc = Der Teil des Fotos, den die Person behalten hat, als Anteile des aufrechten Bildes: links, oben, Breite und Höhe.
+
+d-nyatlpd5 = Bildzustand
+    .doc = Wie dieses Gerät zu den Bytes des Bildes steht: leer, bevor etwas nachgesehen hat, `here`, wenn es sie hält, `waiting`, während sie noch von einem anderen Gerät ankommen, und `unreadable`, wenn das Gehaltene kein Bild ist, das dieses Gerät öffnet.
+
+d-jcilt5zf = Hinweis
+    .doc = Was das Letzte, das die Bibliothek tat, der Person zu sagen hat: ein gespeichertes Album, eine Änderung, die ein anderes Mitglied zuerst gemacht hat.
+
+d-kg3gc2rb = Album-Entwurf offen
+    .doc = Ob ein Album-Entwurf offen ist und, wenn ja, sein Name und die dafür gewählten Fotos: das Album selbst ändert sich erst, wenn die Person den Entwurf speichert.
+
+d-xjkjqqf5 = Album-Entwurf-Kennung
+    .doc = Das Album, von dem der Entwurf ist, und leer für eines, das er beginnen wird.
+
+d-2ql3qzqp = Name des Album-Entwurfs
+
+d-myrcknu3 = Fotos des Album-Entwurfs
+
+d-lost5zj5 = Bild prüfen
+    .doc = Sieht nach, wie dieses Gerät zum Bild eines Fotos steht: ob es die Bytes schon hält und ob das Gehaltene ein Bild ist, das es öffnet.
+
+d-7el4bbgt = Entwickeln
+    .doc = Hält eine Bearbeitung am Foto fest und zeichnet sie: das Gerät behält den gewählten Teil, dreht ihn dann und legt das Ergebnis im Inhaltsspeicher ab.
+
+d-7el4bbgt-rotation = Drehung
+
+d-7el4bbgt-crop = Zuschneiden
+
+d-vi46amt6 = Analysieren
+    .doc = Was das Foto zeigt, wie das Modell des Geräts es in einem Zug liest: der Satz, den die Suche findet, die Wörter darin und die Objekte und Tiere, die es enthält.
+
+d-3dldjjls = Album bearbeiten
+    .doc = Öffnet einen Album-Entwurf: das Album, das `id` nennt, wie es jetzt steht, oder ein leeres zum Beginnen.
+
+d-3dldjjls-id = Kennung
+
+d-ba4exnlc = Foto im Album-Entwurf umschalten
+    .doc = Wählt ein Foto für den Album-Entwurf oder nimmt es aus dem Entwurf, wenn es schon darin ist.
+
+d-ba4exnlc-p = F
+
+d-j7oogwh5 = Abbrechen
+    .doc = Schließt den Album-Entwurf, ohne etwas zu speichern.
+
+d-pu43sd3e = Album speichern
+    .doc = Speichert den Album-Entwurf.
+
+d-nmvp4thp = Album löschen
+    .doc = Löscht das Album, von dem der Entwurf ist.
+
+d-rvy6ymay = Schließen
+    .doc = Nimmt herunter, was die Bibliothek zuletzt zu sagen hatte.
+
+d-ctuncw6s = Analysestand
+    .w-analyzing-on-this-device = Wird auf diesem Gerät analysiert
+    .w-finished = Fertig
+    .w-paused = Angehalten
+    .w-ready-to-analyze = Bereit zur Analyse
+    .w-stopped = Gestoppt
+
+d-pzcabmuh = Analyseseite
+    .w-analyze-photos = Fotos analysieren
+    .w-find-photos-by-the-text-scenes = Finde Fotos über den Text, die Szenen, die Objekte und die Tiere darin. Die Bilder bleiben auf diesem Gerät.
+    .w-model = Modell
+    .w-needs-attention = Braucht Aufmerksamkeit
+    .w-of-finished-failed = { $completed } von { $total } fertig, { $failed } fehlgeschlagen
+    .w-pause-after-this-photo = Nach diesem Foto anhalten
+    .w-resume = Fortsetzen
+    .w-retry-failed-photos = Fehlgeschlagene Fotos erneut versuchen
+    .w-revision = Revision
+
+
+d-j45kskqf-filter-album_draft_open = Album-Entwurf offen

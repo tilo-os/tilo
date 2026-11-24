@@ -71,7 +71,8 @@ pub use tilo_actions::remote::settings_resources::SURFACE_APP as SECTIONS_APP;
 /// The app a workspace's own actions are published under: `use tilo.workspace`.
 pub const WORKSPACE_APP: &str = tilo_action_policy::agent_answers::WORKSPACE_APP;
 /// The device's image model app: the picture bounded and sent to the model, as
-/// actions, and the library analysis run (`tilo_vision_service`). It is a platform package,
+/// actions, everything one picture was found to show as a single record
+/// (`shows`), and the library analysis run (`tilo_vision_service`). It is a platform package,
 /// not an installed app, so it has no first-party app id.
 pub const VISION_APP: &str = "so.tilo.vision";
 

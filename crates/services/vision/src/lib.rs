@@ -142,6 +142,22 @@ pub struct AnalysisResource;
 /// The objects and pets a picture holds, as the API carries a list.
 pub type FoundWords = Vec<String>;
 
+/// What a picture shows, as the device's model reads it: a sentence saying it, the words in it,
+/// and the objects and pets it holds, each named. One answer for one picture, so an app that
+/// records what a photo shows writes all of it from a single call to the device.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub struct Shown {
+    /// What the picture shows, in a sentence.
+    pub description: String,
+    /// The words in the picture.
+    pub text: String,
+    /// What it holds, by name.
+    pub objects: Vec<String>,
+    /// The pets in it, by name.
+    pub pets: Vec<String>,
+}
+
 /// The groups of pictures a face model found the same face in, each a list of the pictures'
 /// addresses, as the API carries a list of lists.
 pub type FaceGroups = Vec<Vec<String>>;
@@ -179,6 +195,17 @@ pub enum ImageModelEffect {
     #[effect(kind = "outside")]
     #[effect(returns = FoundWords)]
     Tags {
+        #[param("The picture's address in the content store")]
+        image: String,
+    },
+    /// Say what a picture shows
+    ///
+    /// A sentence saying it, the words in it, and the objects and pets it
+    /// holds, from the same model `describe` asks: one answer an app records a
+    /// photo's description, its words and what it holds from.
+    #[effect(kind = "outside")]
+    #[effect(returns = Shown)]
+    Shows {
         #[param("The picture's address in the content store")]
         image: String,
     },
@@ -346,7 +373,6 @@ impl VisionService {
             ImageModelEffect::Tags { image } => {
                 let picture = self.picture(&image)?;
                 let analysis = self.model.analyze(&picture).map_err(Self::refusal)?;
-                // The value the API carries as a `List<Text>`: the list is a tagged object.
                 let words: Vec<Value> = analysis
                     .objects
                     .into_iter()
@@ -354,6 +380,17 @@ impl VisionService {
                     .map(Value::String)
                     .collect();
                 serde_json::json!({ "list": words })
+            }
+            ImageModelEffect::Shows { image } => {
+                let picture = self.picture(&image)?;
+                let analysis = self.model.analyze(&picture).map_err(Self::refusal)?;
+                serde_json::to_value(Shown {
+                    description: analysis.description,
+                    text: analysis.ocr_text,
+                    objects: analysis.objects,
+                    pets: analysis.pets,
+                })
+                .map_err(|why| ApiError::Failed(why.to_string()))?
             }
             ImageModelEffect::Faces { images } => {
                 if images.is_empty() || images.len() > crate::engine::MAX_FACE_BATCH {

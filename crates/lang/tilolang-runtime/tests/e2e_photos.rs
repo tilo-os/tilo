@@ -16,20 +16,20 @@ mod cases {
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
     use tilolang_runtime::host_work::{EngineHost, Push};
-    use tilolang_runtime::{EnumValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
+    use tilolang_runtime::{
+        EnumValue, InvokeOutcome, RecordInit, ResourceRef, Runtime, Value, ViewInstance,
+    };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/photos/app.tl");
 
     /// The picture the tests import: a 64 × 64 PNG, real bytes the device's codec decodes.
     fn picture() -> Vec<u8> {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .decode(concat!(
-                "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAPElEQVR42u3OMQEAAAgDoC251a3g",
-                "LwSgOXLVkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJ0iN1AAG5eZ4hAAAAAElFTkSu",
-                "QmCC"
-            ))
-            .expect("the fixture is base64")
+        use tilo_image_codec::{DecodedImage, Encoding};
+        tilo_image_codec::encode_now(
+            &DecodedImage::filled(64, 64, [200, 120, 60, 255]),
+            Encoding::Png,
+        )
+        .expect("the fixture encodes")
     }
 
     /// The device's content store: what a chosen file holds, and what a save asked for.
@@ -95,6 +95,9 @@ mod cases {
     #[derive(Clone, Default)]
     struct Vision {
         asked: Rc<RefCell<Vec<String>>>,
+        /// The type of the record `tags` answers with, and its fields' ids, as the vision package
+        /// declares them.
+        shown: Rc<RefCell<(String, std::collections::BTreeMap<String, String>)>>,
         /// The call the workspace asked the person about and they have not answered yet: what
         /// the session delivers, admitted, once they say yes.
         question: Rc<RefCell<Asked>>,
@@ -130,6 +133,32 @@ mod cases {
             self.asked.borrow_mut().push(name.clone());
             match name.as_str() {
                 "ocr" => Invoked::Done(Value::text("HARBOUR CAFE, OPEN 7 TO 4")),
+                // What the model says one picture shows, as the record the surface declares.
+                "shows" => {
+                    let shown = self.shown.borrow();
+                    let (ty, ids) = (&shown.0, &shown.1);
+                    let field = |name: &str| {
+                        ids.get(name)
+                            .unwrap_or_else(|| panic!("Shown declares {name}"))
+                            .clone()
+                    };
+                    Invoked::Done(Value::Rec(RecordInit {
+                        ty: ty.clone(),
+                        fields: [
+                            (field("description"), Value::text("A dog beside a bicycle")),
+                            (field("text"), Value::text("42 North Street")),
+                            (
+                                field("objects"),
+                                Value::List(vec![Value::text("dog"), Value::text("bicycle")]),
+                            ),
+                            (field("pets"), Value::List(vec![Value::text("dog")])),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    }))
+                }
+                // The analysis run's own verbs: the app asks the device, which does the work.
+                "start" | "pause" | "resume" | "retry" | "cancel" => Invoked::Done(Value::Unit),
                 // Every picture given is one face's: the model answers with the groups it found.
                 "faces" => {
                     let Invocation::Action { args, .. } = invocation else {
@@ -238,6 +267,25 @@ mod cases {
         }
     }
 
+    /// The words a field holds.
+    fn text_of(value: &Value) -> String {
+        value
+            .as_text()
+            .unwrap_or_else(|| panic!("the value reads as text: {value:?}"))
+            .to_owned()
+    }
+
+    /// The picture the window's viewer draws, by the address of its bytes.
+    fn image_of(view: &ViewInstance) -> String {
+        of_kind(view.tree(), "ui.ImageViewer")
+            .into_iter()
+            .find_map(|node| match node.props.get("image") {
+                Some(Value::Picture(src)) => Some(src.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the window draws no picture:\n{}", dump(view.tree())))
+    }
+
     fn model() -> ResourceRef {
         ResourceRef::parse_id("vision:vision.image-model", "so.tilo.vision#ImageModel")
             .expect("a resource id")
@@ -280,7 +328,22 @@ mod cases {
             rt.set_blobs(device.clone());
             let clipboard = Clipboard::default();
             rt.set_clipboard(clipboard.clone());
-            let vision = Vision::default();
+            let shown = package
+                .types
+                .iter()
+                .find(|ty| ty.name == "Shown")
+                .expect("the vision package declares what a picture shows");
+            let vision = Vision {
+                shown: Rc::new(RefCell::new((
+                    shown.id.clone(),
+                    shown
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.id.clone()))
+                        .collect(),
+                ))),
+                ..Vision::default()
+            };
             rt.set_foreign_invoker(vision.clone());
             let engine = Engine::default();
             rt.set_engine(engine.clone());
@@ -353,6 +416,20 @@ mod cases {
             self.rt
                 .invoke_action(&me(), (id.as_str(), args))
                 .unwrap_or_else(|why| panic!("{action}: {why}"))
+        }
+
+        /// Runs `action` as the person's yes delivers it, where the window asked them first
+        /// because the action leaves the device. Answers what the action came to.
+        fn approve(&self, action: &str, args: Vec<Value>) -> Value {
+            let id = self.app.action(action);
+            match self
+                .rt
+                .invoke_admitted(&me(), (id.as_str(), args), None)
+                .unwrap_or_else(|why| panic!("{action}: {why}"))
+            {
+                InvokeOutcome::Done(value) => value,
+                other => panic!("{action}, the person said yes, came to {other:?}"),
+            }
         }
 
         /// Runs `action` as the person does where the workspace asks them first: the window shows
@@ -1151,6 +1228,335 @@ mod cases {
                 Gallery::cards(&page),
                 ["Dunes.png"],
                 "only that day's photo is shown"
+            );
+        }
+
+        phase a_photographs_edits_are_recorded_and_drawn_without_writing_it;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let original = text_of(&g.rt.read(&photo, "picture").unwrap());
+            g.call("rotate_right", vec![Value::resource(&photo)]);
+            assert_eq!(g.rt.read(&photo, "rotation").unwrap(), Value::Int(1));
+            let turned = text_of(&g.rt.read(&photo, "edited").unwrap());
+            assert_ne!(turned, original, "the device drew the photograph turned");
+            assert_eq!(
+                g.rt.read(&photo, "picture").unwrap(),
+                Value::text(original.clone()),
+                "the photograph itself is never written"
+            );
+            // A crop narrows what the person kept, and a turn after it keeps the crop: the turn
+            // is of the photograph, not of the picture the window draws.
+            g.call(
+                "crop_photo",
+                vec![
+                    Value::resource(&photo),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Float(0.5),
+                    Value::Float(0.5),
+                ],
+            );
+            assert_eq!(g.rt.read(&photo, "rotation").unwrap(), Value::Int(1));
+            let cropped = text_of(&g.rt.read(&photo, "edited").unwrap());
+            assert_ne!(cropped, turned);
+            let drawn_pixels = g
+                .device
+                .0
+                .borrow()
+                .get(cropped.strip_prefix("tilo-blob://").expect("an address"))
+                .cloned()
+                .expect("the device kept what it drew");
+            let drawn_image = tilo_image_codec::decode_upright_now(&drawn_pixels, None)
+                .expect("what the device drew is a picture");
+            assert_eq!(
+                (drawn_image.width, drawn_image.height),
+                (32, 32),
+                "the window's half of the photograph is what the device drew"
+            );
+            let drawn = g.rt.read(&photo, "crop").unwrap();
+            assert!(
+                matches!(drawn, Value::List(ref parts) if parts.len() == 4),
+                "the part they kept is recorded: {drawn:?}"
+            );
+            g.call("rotate_left", vec![Value::resource(&photo)]);
+            assert_eq!(g.rt.read(&photo, "rotation").unwrap(), Value::Int(0));
+            assert_eq!(
+                g.rt.read(&photo, "crop").unwrap(),
+                drawn,
+                "turning keeps the part they kept"
+            );
+            // The window shows the edit, and the photograph as it came beside it.
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let card = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .next()
+                .expect("the library shows the photograph")
+                .key
+                .clone();
+            page.fire(&card, "activate").unwrap();
+            page.poll_patches().unwrap();
+            let shown = image_of(&page);
+            assert_eq!(
+                shown,
+                text_of(&g.rt.read(&photo, "edited").unwrap()),
+                "the viewer draws the edit"
+            );
+            let before = g.control(&page, "ui.Button", "label", "Before");
+            page.press(&before).unwrap();
+            page.poll_patches().unwrap();
+            assert_eq!(
+                image_of(&page),
+                original,
+                "before shows the photograph as it came"
+            );
+            assert!(
+                g.texts(&page).iter().any(|text| text == "Before the edits"),
+                "the window says which it shows"
+            );
+            // Putting it back leaves the photograph as it came, and nothing edited.
+            g.call("reset_edits", vec![Value::resource(&photo)]);
+            assert_eq!(g.rt.read(&photo, "edited").unwrap(), Value::text(""));
+            assert_eq!(g.rt.read(&photo, "rotation").unwrap(), Value::Int(0));
+            assert_eq!(g.rt.read(&photo, "crop").unwrap(), Value::List(Vec::new()));
+        }
+
+        phase an_album_draft_saves_or_says_another_member_changed_it;
+        {
+            let g = Gallery::new();
+            let harbour = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            // The person starts an album, names it, and chooses the photo in the library.
+            let new_album = g.control(&page, "ui.Button", "label", "New album");
+            page.press(&new_album).unwrap();
+            page.poll_patches().unwrap();
+            let name = g.control(&page, "ui.TextInput", "placeholder", "Album name");
+            page.edit(&name, &Value::text("Harbour days")).unwrap();
+            let card = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .next()
+                .expect("the draft shows the library")
+                .key
+                .clone();
+            page.fire(&card, "activate").unwrap();
+            page.poll_patches().unwrap();
+            let save = g.control(&page, "ui.Button", "label", "Save album");
+            page.press(&save).unwrap();
+            page.poll_patches().unwrap();
+            let albums = g.records("albums");
+            assert_eq!(albums.len(), 1, "saving the draft starts the album");
+            assert_eq!(g.rt.read(&albums[0], "name").unwrap(), Value::text("Harbour days"));
+            assert_eq!(g.ids_of(&albums[0], "photos"), vec![harbour.id_string()]);
+            assert!(
+                !g.texts(&page).iter().any(|t| t == "Choose the photos for this album."),
+                "saving closes the draft:\n{}",
+                dump(page.tree())
+            );
+
+            // A draft of that album, while someone else deletes it: saving says so, and the
+            // album stays deleted rather than coming back from the draft.
+            g.call("start_album_draft", vec![Value::resource(&g.lib), Value::text(albums[0].id_string())]);
+            g.call("remove_album", vec![Value::resource(&g.lib), Value::resource(&albums[0])]);
+            g.call("save_album", vec![Value::resource(&g.lib)]);
+            assert!(g.records("albums").is_empty(), "a change made first is not overwritten");
+            assert_eq!(
+                g.text("notice"),
+                "Someone else changed this album. Review it and save again."
+            );
+
+            // A photo taken out of the library while the draft names it is the same news.
+            g.call("start_album_draft", vec![Value::resource(&g.lib), Value::text("")]);
+            g.call("album_draft_toggle", vec![Value::resource(&g.lib), Value::resource(&harbour)]);
+            g.call("remove", vec![Value::resource(&g.lib), Value::resource(&harbour)]);
+            g.call("save_album", vec![Value::resource(&g.lib)]);
+            assert!(g.records("albums").is_empty());
+            assert_eq!(
+                g.text("notice"),
+                "Someone else changed this album. Review it and save again."
+            );
+        }
+
+        phase the_analysis_page_names_the_model_and_the_photos_it_failed;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            g.rt.set_reading(
+                &analysis(),
+                &serde_json::json!({
+                    "phase": "complete", "total": 3, "completed": 3, "succeeded": 1,
+                    "failed": 1, "remaining": 0, "current": "",
+                    "model": "florence-2", "revision": "0123456789abcdef",
+                    "progress": 1.0,
+                    "failures": [{
+                        "resource": format!("tl:so.tilo.photos:{}", photo.id_string()),
+                        "reason": "The picture changed before analysis finished",
+                    }],
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let page = g.open("analysis_page", vec![Value::resource(&g.lib)]);
+            let texts = g.texts(&page);
+            assert!(texts.iter().any(|t| t == "Finished"), "{texts:?}");
+            assert!(texts.iter().any(|t| t == "3 of 3 finished, 1 failed"), "{texts:?}");
+            let properties: Vec<(String, String)> = of_kind(page.tree(), "ui.Property")
+                .into_iter()
+                .map(|node| (text_prop(node, "label"), text_prop(node, "value")))
+                .collect();
+            assert!(
+                properties.contains(&("Model".to_owned(), "florence-2".to_owned())),
+                "the model that read the pictures is named: {properties:?}"
+            );
+            assert!(
+                properties.contains(&("Revision".to_owned(), "0123456789".to_owned())),
+                "and the revision it read them at: {properties:?}"
+            );
+            let rows: Vec<(String, String)> = of_kind(page.tree(), "ui.ListRow")
+                .into_iter()
+                .map(|node| (text_prop(node, "title"), text_prop(node, "secondary")))
+                .collect();
+            assert!(
+                rows.contains(&(
+                    "Harbour.png".to_owned(),
+                    "The picture changed before analysis finished".to_owned()
+                )),
+                "the photo it could not read is listed, with why: {rows:?}"
+            );
+            // Retrying asks the device to read only the pictures that failed.
+            let mut page = page;
+            let retry = g.control(&page, "ui.Button", "label", "Retry failed photos");
+            page.press(&retry).unwrap();
+            assert_eq!(g.vision.asked.borrow().as_slice(), ["retry"]);
+        }
+
+        phase what_a_photo_shows_is_read_in_one_call_and_shown;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            g.approve("analyze_photo", vec![Value::resource(&photo)]);
+            assert_eq!(g.vision.asked.borrow().as_slice(), ["shows"]);
+            assert_eq!(
+                g.rt.read(&photo, "description").unwrap(),
+                Value::text("A dog beside a bicycle")
+            );
+            assert_eq!(
+                g.rt.read(&photo, "recognized").unwrap(),
+                Value::text("42 North Street")
+            );
+            let mut objects = g.ids_of(&photo, "objects");
+            objects.sort();
+            assert_eq!(objects, ["bicycle", "dog"]);
+            assert_eq!(g.ids_of(&photo, "pets"), ["dog"]);
+            // The photo's page says what it shows, the objects and the pets apart.
+            let details = g.open(
+                "details_fields",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
+            assert!(
+                g.texts(&details).iter().any(|t| t == "A dog beside a bicycle"),
+                "the details say what it shows: {:?}",
+                g.texts(&details)
+            );
+            let chips: Vec<String> = of_kind(details.tree(), "ui.Chip")
+                .into_iter()
+                .map(|chip| text_prop(chip, "label"))
+                .collect();
+            assert!(chips.iter().any(|c| c == "dog"), "{chips:?}");
+            assert!(chips.iter().any(|c| c == "bicycle"), "{chips:?}");
+            // The library's search button is the system's search, scoped to the app.
+            let page = g.open("library", vec![Value::resource(&g.lib)]);
+            assert!(
+                !of_kind(page.tree(), "ui.SearchButton").is_empty(),
+                "the window searches through the system's search"
+            );
+        }
+
+        phase a_photo_whose_bytes_are_elsewhere_says_it_is_arriving;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Away.png")],
+            ));
+            assert_eq!(g.rt.read(&photo, "picture_state").unwrap(), Value::text("here"));
+            // Another device holds the bytes for now: only the photo's record reached this one.
+            let url = text_of(&g.rt.read(&photo, "picture").unwrap());
+            let hash = url
+                .strip_prefix("tilo-blob://")
+                .expect("the picture's address")
+                .to_owned();
+            let bytes = g.device.0.borrow_mut().remove(&hash).expect("the bytes were here");
+            g.call("check_picture", vec![Value::resource(&photo)]);
+            assert_eq!(
+                g.rt.read(&photo, "picture_state").unwrap(),
+                Value::text("waiting")
+            );
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let card = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .next()
+                .expect("the library shows the photo")
+                .key
+                .clone();
+            page.fire(&card, "activate").unwrap();
+            page.poll_patches().unwrap();
+            let waiting = of_kind(page.tree(), "ui.EmptyState")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the window shows no waiting state:\n{}", dump(page.tree())));
+            assert_eq!(text_prop(waiting, "title"), "Waiting for the photo");
+            assert_eq!(
+                text_prop(waiting, "message"),
+                "It is still arriving from another device."
+            );
+            // The bytes arrive, and the same window draws the picture.
+            g.device.0.borrow_mut().insert(hash, bytes);
+            g.call("check_picture", vec![Value::resource(&photo)]);
+            page.poll_patches().unwrap();
+            assert_eq!(g.rt.read(&photo, "picture_state").unwrap(), Value::text("here"));
+            assert!(
+                of_kind(page.tree(), "ui.ImageViewer").len() == 1,
+                "the picture is drawn:\n{}",
+                dump(page.tree())
+            );
+
+            // A picture that is here but is no picture the app opens says so.
+            let notes = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.not_a_picture("Notes.txt")],
+            ));
+            g.call("check_picture", vec![Value::resource(&notes)]);
+            assert_eq!(
+                g.rt.read(&notes, "picture_state").unwrap(),
+                Value::text("unreadable")
+            );
+            let note_page = g.open(
+                "photo",
+                vec![Value::resource(&notes)],
+            );
+            let failed = of_kind(note_page.tree(), "ui.EmptyState")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| {
+                    panic!("the page draws no error state:\n{}", dump(note_page.tree()))
+                });
+            assert_eq!(text_prop(failed, "title"), "Could not open this photo");
+            assert_eq!(
+                failed.props.get("error"),
+                Some(&Value::Int(1)),
+                "and shows it as the failure it is"
             );
         }
     }
