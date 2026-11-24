@@ -535,6 +535,12 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         self.rect()
     }
 
+    /// Its rows are placed by the floating list it carries, at an anchor its host gives it, and its
+    /// node takes no room: no layout pass can move it.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn appears_from(&self) -> Option<vello::kurbo::Point> {
         Some(self.list.anchor().center())
     }

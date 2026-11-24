@@ -1145,6 +1145,12 @@ impl Widget for PageSidebar {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    /// Its host hands it the box it stands in each frame and it places its own rows, so no layout
+    /// pass can move it.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

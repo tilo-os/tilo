@@ -890,6 +890,12 @@ impl Widget for Terminal {
         }
     }
 
+    /// It fills the box it is given and fits its cells to it as it paints them, so it asks layout
+    /// only until it is placed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         self.report();
         self.refresh();

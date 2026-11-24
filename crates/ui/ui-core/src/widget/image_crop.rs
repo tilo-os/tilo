@@ -370,6 +370,12 @@ impl Widget for ImageCropEditor {
         self.image.apply_layout(taffy, node, origin);
     }
 
+    /// It fills the box it is given and measures nothing, so it asks layout only until it is
+    /// placed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

@@ -950,7 +950,11 @@ impl TextInput {
     /// unless a document says otherwise. A paragraph set double-spaced is twice as tall and
     /// its rows stand twice as far apart, so the document's pages break where they print.
     pub fn set_line_height_ratio(&mut self, ratio: f32) {
-        let ratio = if ratio.is_finite() { ratio } else { LINE_HEIGHT_RATIO };
+        let ratio = if ratio.is_finite() {
+            ratio
+        } else {
+            LINE_HEIGHT_RATIO
+        };
         let ratio = ratio.clamp(1.0, 4.0);
         if (ratio - self.line_height_ratio).abs() > 1e-4 {
             self.line_height_ratio = ratio;
@@ -5519,9 +5523,13 @@ impl Widget for TextInput {
     }
 
     /// The solve read the size it asked for: a field the solver sizes from its style is never
-    /// measured, and its request is met all the same.
+    /// measured, and its request is met all the same. A caret field whose node the solver sized
+    /// that way has nowhere for its words to grow into, so they are what its box already holds.
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
+        if self.caret {
+            self.caret_measured = Some(self.caret_shown().to_owned());
+        }
     }
 
     /// Where the field's text stands in it, so an audit of a window holds it to the band a

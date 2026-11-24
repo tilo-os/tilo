@@ -1714,6 +1714,12 @@ impl Widget for ContextMenu {
         false
     }
 
+    /// It measures nothing and places itself against what opened it, so it
+    /// asks layout only until its box has been given.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // Where it stands against what opened it wins over the node's own
         // place; a menu that never opened keeps the position layout gave it.

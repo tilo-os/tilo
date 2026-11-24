@@ -1337,6 +1337,12 @@ impl Widget for CardGrid {
             .collect()
     }
 
+    /// Its box is the rows its cards make: it asks layout when a card does, and a grid holding
+    /// none has no row to size.
+    fn is_layout_dirty(&self) -> bool {
+        self.cards.iter().any(|card| card.is_layout_dirty())
+    }
+
     fn mark_drawn(&mut self) {
         for card in &mut self.cards {
             card.mark_drawn();

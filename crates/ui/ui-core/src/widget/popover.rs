@@ -940,6 +940,9 @@ pub struct PopoverPrompt {
     rect: Rect,
     theme: Theme,
     dirty: bool,
+    /// Its size reads its caption and its hint, so a hint given after it was laid out asks the
+    /// solver for its box again.
+    layout_dirty: bool,
 }
 
 impl PopoverPrompt {
@@ -955,6 +958,7 @@ impl PopoverPrompt {
             chars: 24,
             rect: Rect::ZERO,
             theme: Theme::dark(),
+            layout_dirty: true,
         }
     }
 
@@ -967,7 +971,10 @@ impl PopoverPrompt {
     }
 
     pub fn set_hint(&mut self, hint: &str) {
-        hint.clone_into(&mut self.hint);
+        if self.hint != hint {
+            hint.clone_into(&mut self.hint);
+            self.layout_dirty = true;
+        }
         self.dirty = true;
     }
 
@@ -1046,6 +1053,16 @@ impl Widget for PopoverPrompt {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let field = self.field_rect();
         self.input.apply_layout_external(field);
+    }
+
+    /// Its size is its caption's line and its hint's, which a hint given after the fact changes:
+    /// it asks layout until placed, and again when either changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {

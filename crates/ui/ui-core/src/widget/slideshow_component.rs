@@ -139,6 +139,15 @@ impl Widget for Slideshow {
         self.image.for_each_child(visitor);
     }
 
+    /// The picture is the box: it asks layout exactly when the picture does.
+    fn is_layout_dirty(&self) -> bool {
+        self.image.is_layout_dirty()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.image.layout_needs_measure()
+    }
+
     fn get_rect(&self) -> crate::kurbo::Rect {
         self.image.get_rect()
     }

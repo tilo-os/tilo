@@ -2481,6 +2481,12 @@ impl Widget for FilePicker {
         self.apply_layout_helper();
     }
 
+    /// It fills the box it is given and measures its own rows as it paints them, so it asks layout
+    /// only until it is placed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

@@ -189,6 +189,15 @@ impl Widget for DeclaredModal {
         self.dialog.children_mut()
     }
 
+    /// It is the dialog it hands on, shown or not: it asks layout exactly when the dialog does.
+    fn is_layout_dirty(&self) -> bool {
+        Widget::is_layout_dirty(&self.dialog)
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        Widget::layout_needs_measure(&self.dialog)
+    }
+
     fn get_rect(&self) -> Rect {
         self.dialog.get_rect()
     }

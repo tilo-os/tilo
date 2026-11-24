@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
     }
 }
 
-struct Given {
+pub(super) struct Given {
     key: String,
     props: BTreeMap<String, Value>,
     queue: crate::Intents<Fired>,
@@ -271,7 +271,7 @@ impl Source for Given {
     }
 }
 
-fn given(key: &str, props: &[(&str, Value)]) -> Given {
+pub(super) fn given(key: &str, props: &[(&str, Value)]) -> Given {
     Given {
         key: key.to_owned(),
         props: props
@@ -284,14 +284,14 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
     }
 }
 
-fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
+pub(super) fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
     Given {
         views,
         ..given(key, props)
     }
 }
 
-fn sample(ty: &Type) -> Value {
+pub(super) fn sample(ty: &Type) -> Value {
     match ty {
         Type::Text | Type::Enum => Value::Text("x".into()),
         Type::Int => Value::Int(1),

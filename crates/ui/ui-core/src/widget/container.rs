@@ -660,6 +660,14 @@ impl Widget for Container {
             .collect()
     }
 
+    /// What it places is the child it holds: it asks layout when that child does, and a container
+    /// holding nothing has no box to size.
+    fn is_layout_dirty(&self) -> bool {
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.is_layout_dirty())
+    }
+
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(child) = &self.child {
             visitor(child.as_ref());

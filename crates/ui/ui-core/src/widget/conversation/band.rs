@@ -338,6 +338,12 @@ impl crate::widget::Widget for SectionDivider {
 
     crate::rect_geometry!();
 
+    /// Its band is a height and a full width the theme gives it, so it asks layout only until it
+    /// is placed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

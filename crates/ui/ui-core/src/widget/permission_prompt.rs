@@ -401,6 +401,12 @@ impl Widget for PermissionPrompt {
         self.apply_layout_helper();
     }
 
+    /// Its strip is a fixed height and the width it is given, and it measures its own words as it
+    /// paints them, so it asks layout only until it is placed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

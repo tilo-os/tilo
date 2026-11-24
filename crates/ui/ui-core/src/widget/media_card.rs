@@ -2264,6 +2264,15 @@ impl Widget for MediaGrid {
             .collect()
     }
 
+    /// Its box is the rows of cards it holds: it asks layout when a card does, and a grid with
+    /// none has no row to size.
+    fn is_layout_dirty(&self) -> bool {
+        if let Some(inner) = &self.inner {
+            return inner.is_layout_dirty();
+        }
+        self.cards.iter().any(|card| card.is_layout_dirty())
+    }
+
     fn mark_drawn(&mut self) {
         if let Some(inner) = self.inner.as_mut() {
             inner.mark_drawn();

@@ -176,6 +176,9 @@ pub struct QuickTile {
     /// is drawn.
     share: f32,
     dirty: bool,
+    /// Its height is measured from its state line and its chevron half, so a change to either (or
+    /// to the metrics they are measured in) asks the solver for its box again.
+    layout_dirty: bool,
 }
 
 impl QuickTile {
@@ -201,6 +204,7 @@ impl QuickTile {
             metrics: None,
             share: 1.0,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -273,6 +277,7 @@ impl QuickTile {
             label.clone_into(&mut self.label);
             detail.clone_into(&mut self.detail);
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -291,6 +296,7 @@ impl QuickTile {
         if self.details != name {
             self.details = name;
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -688,6 +694,16 @@ impl Widget for QuickTile {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
+    /// It measures its state line and its chevron half for its height, so it asks layout until it
+    /// is placed and again when what it measures changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
@@ -698,6 +714,7 @@ impl Widget for QuickTile {
         let metrics = TileMetrics::of(theme);
         if self.metrics.as_ref() != Some(&metrics) {
             self.metrics = Some(metrics.clone());
+            self.layout_dirty = true;
         }
         if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             self.paint_content(scene, transform, text_renderer, theme, &metrics);

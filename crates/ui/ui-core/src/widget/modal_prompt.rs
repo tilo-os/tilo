@@ -267,6 +267,12 @@ impl Widget for PromptBody {
         self.place_field();
     }
 
+    /// What it measures — its caption, its label and its field — is given when it is made, so it
+    /// asks layout only until its box is given.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

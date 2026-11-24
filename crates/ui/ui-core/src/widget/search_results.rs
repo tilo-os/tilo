@@ -409,6 +409,10 @@ pub struct SearchResultsView {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+
+    /// Its card stands as tall as its rows and its headings, so a change to either asks the
+    /// solver for its box again.
+    layout_dirty: bool,
 }
 
 impl SearchResultsView {
@@ -436,6 +440,7 @@ impl SearchResultsView {
             held: None,
             focused: false,
             empty_hint: None,
+            layout_dirty: true,
         }
     }
 
@@ -517,6 +522,7 @@ impl SearchResultsView {
     pub fn set_empty_footer(&mut self, height: f64) {
         self.dirty = true;
         self.empty_footer = height.max(0.0);
+        self.layout_dirty = true;
     }
 
     /// Show that more results are still coming: a loading row after the
@@ -662,6 +668,7 @@ impl SearchResultsView {
     /// Lay the rows out again from the groups: the gaps, headings, results
     /// and the line that more are coming, with the flat index to each row.
     fn rebuild(&mut self) {
+        self.layout_dirty = true;
         let offset = self.list.scroll_offset();
         let mut rows: Vec<Row> = Vec::new();
         let mut slots = vec![None; self.flat.len()];
@@ -835,6 +842,7 @@ impl SearchResultsView {
     /// past it the rows scroll and the preview band stays at the bottom.
     pub fn set_max_height(&mut self, max: Option<f64>) {
         self.dirty = true;
+        self.layout_dirty |= self.max_height != max;
         self.max_height = max;
     }
 
@@ -1616,6 +1624,16 @@ impl Widget for SearchResultsView {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.set_rect(crate::widget::layout_rect(taffy, node, origin));
+    }
+
+    /// Its card stands as tall as the rows and headings it holds, so it asks layout until it is
+    /// placed and again when they changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn get_rect(&self) -> Rect {
