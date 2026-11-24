@@ -220,6 +220,9 @@ type WatchEntry {
     watched: Time
     /// How far in they were, as a share of its length; zero when they watched it to the end.
     progress: Float = 0.0
+    /// Where the app before this one left an unfinished video, in milliseconds: the share above
+    /// needs the video's length, which nothing knows until the service answers about it.
+    left_ms: Int = 0
 
     search {
         sort watched newest
@@ -353,6 +356,16 @@ fn my_history(yt: YouTube, who: Actor) -> List<WatchEntry> {
 /// The entry of `who`'s own history that says when they watched the video, if they did.
 fn watched_before(yt: YouTube, who: Actor, v: Video) -> Option<WatchEntry> {
     yt.history.find(h -> h.key == v.key and (h.member == .some(who) or h.member == .none))
+}
+
+/// How far into `v` the person was, as a share of its length: what this app recorded, or where
+/// the app before it left the video in milliseconds, once the service knows the length.
+fn left_at(h: WatchEntry, v: Video) -> Float {
+    if h.progress > 0.0 {
+        h.progress
+    } else if h.left_ms > 0 and v.duration > 0 {
+        (h.left_ms.to_float() / 1000.0 / v.duration.to_float()).clamp(0.0, 1.0)
+    } else { 0.0 }
 }
 
 /// Whether the video is on the workspace's watch queue.
@@ -532,7 +545,8 @@ primary action play(v: Video) uses time (icon: .play) {
 /// Plays the video from where the person left off, when they did not finish it.
 action resume(v: Video) uses time (icon: .play, label: "Resume") {
     let yt = root YouTube
-    progress(v, watched_before(yt, invoker, v)?.progress ?? 0.0)
+    let left = if let h = watched_before(yt, invoker, v) { left_at(h, v) } else { 0.0 }
+    progress(v, left)
     play_items(yt, [v], v.key)
 }
 
@@ -617,6 +631,7 @@ action progress(v: Video, at: Float) uses time {
         // An entry the native app's history carried becomes theirs when they watch it again.
         entry.member = .some(mine)
         entry.progress = kept
+        entry.left_ms = 0
         entry.watched = watched
         entry.title = v.title
         entry.channel_name = v.channel_name
@@ -1112,6 +1127,15 @@ migration action carry_native_tube(yt: YouTube) uses time {
                 )
             }
         }
+        // Where each video was left, in milliseconds, as the native app kept it: an unfinished
+        // video resumes there once the service answers with its length.
+        let left = kept.entries.get("history_positions") ?? Map<Text>()
+        for key in left.keys() {
+            let ms = (left.get(key) ?? "").to_int() ?? 0
+            if let h = yt.history.find(x -> x.key == key) {
+                h.left_ms = ms
+            }
+        }
     }
     // The replies the native app kept, which it wrote to comments: the workspace's, with no
     // member named, so any member may take one back. What a reply said and the comment it answered
@@ -1468,10 +1492,11 @@ view history_list(yt: YouTube, in_column: Bool) {
 /// Plays the video a history entry names, from where the person left off.
 action play_again(yt: YouTube, h: WatchEntry) uses time {
     if let v = yt.videos.find(x -> x.key == h.key) {
-        progress(v, h.progress)
+        let left = left_at(h, v)
+        progress(v, left)
         play_items(yt, [v], v.key)
         let p = session(yt)
-        playback.remember_position(p, h.progress * p.length, now)
+        playback.remember_position(p, left * p.length, now)
     }
 }
 
@@ -1548,7 +1573,7 @@ view video_page(v: Video) {
     let p = yt.playing
     let held = if let playing = p { playing.track == v.key } else { false }
     let channel = yt.channels.find(c -> c.key == v.channel_key)
-    let left = watched_before(yt, mine, v)?.progress ?? 0.0
+    let left = if let h = watched_before(yt, mine, v) { left_at(h, v) } else { 0.0 }
     let speed = if rate > 0.0 { rate } else { prefs_for(yt, mine)?.speed ?? 1.0 }
     let shows_comments = prefs_for(yt, mine)?.comments ?? true
     std.page(v, canvas: true) {

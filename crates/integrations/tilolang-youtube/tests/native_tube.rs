@@ -52,12 +52,46 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
         .collect()
 }
 
+/// The documents the native Tube kept, with where it had left an unfinished video: the field its
+/// model kept beside the history, so a person's place in a video is the history's too.
+fn native_documents_with_a_position(
+    key: &str,
+    milliseconds: i64,
+) -> Vec<(String, automerge::AutoCommit)> {
+    let mut documents = native_documents();
+    for (_id, doc) in &mut documents {
+        // The watch-history document is the one that holds the watched map, and the places
+        // beside it: where the model kept where each unfinished video was left.
+        let holds_watched = matches!(
+            automerge::ReadDoc::get(doc, &automerge::ROOT, "watched"),
+            Ok(Some((automerge::Value::Object(automerge::ObjType::Map), _)))
+        );
+        if holds_watched {
+            let positions = automerge::transaction::Transactable::put_object(
+                doc,
+                automerge::ROOT,
+                "history_positions",
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+            automerge::transaction::Transactable::put(doc, &positions, key, milliseconds).unwrap();
+        }
+    }
+    documents
+}
+
 /// Ada's workspace with the tilolang Tube, the native app's `documents` beside it, migrated as
 /// the workspace's origin migrates it when the app starts.
 fn opened(documents: &[(String, automerge::AutoCommit)]) -> Host {
     let host = Host::new(
         tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
         || None,
+    )
+    .unwrap();
+    // The session the app plays through, which its `use` names.
+    host.load_builtin(
+        include_str!("../../../../apps/tl/playback/app.tl"),
+        include_str!("../../../../apps/tl/playback/app.ids"),
     )
     .unwrap();
     host.load_builtin(package().0, package().1).unwrap();
@@ -196,5 +230,29 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
     assert_eq!(
         before, after,
         "the native app's documents are left as they were"
+    );
+}
+
+#[test]
+fn the_place_a_native_video_was_left_at_is_carried() {
+    let host = opened(&native_documents_with_a_position("jfKfPfyJRdk", 92_000));
+    let history = items(&host, "history", "WatchEntry", &["key", "left_ms"]);
+    let entry = history
+        .iter()
+        .find(|item| text(&item[0]) == "jfKfPfyJRdk")
+        .unwrap_or_else(|| panic!("the video is in the history: {history:?}"));
+    assert_eq!(
+        entry[1],
+        Value::Int(92_000),
+        "where the native app left the video, in milliseconds"
+    );
+    let untouched = history
+        .iter()
+        .find(|item| text(&item[0]) == "aircAruvnKk")
+        .expect("the other watched video");
+    assert_eq!(
+        untouched[1],
+        Value::Int(0),
+        "a video it left nowhere keeps none"
     );
 }
