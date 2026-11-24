@@ -109,12 +109,18 @@ impl Service for Served {
 mod tests {
     use super::*;
     use crate::platform::fabric::{
-        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
-        PersonalFabricAction,
+        DeviceAbout, DeviceId, DeviceKind, EndpointSelector, FabricCapabilities, FabricLink,
+        PersonDevice, PersonDevices, PersonalFabricAction, PersonalFabricSendError,
     };
-    use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
     use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
     use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
+
+    /// The 32 bytes in hex that name `device` in the record of the person's devices.
+    fn key(device: &str) -> String {
+        let mut raw = [0; 32];
+        raw[..device.len()].copy_from_slice(device.as_bytes());
+        hex::encode(raw)
+    }
 
     /// This laptop's devices, with the one output it publishes.
     struct Fabric {
@@ -125,7 +131,7 @@ mod tests {
 
     impl Fabric {
         fn laptop() -> Self {
-            let local = DeviceId::new("this-laptop").expect("a device id");
+            let local = DeviceId::new(key("this-laptop")).expect("a device id");
             let mut device = PersonDevice::new(
                 local.clone(),
                 DeviceAbout {
@@ -141,39 +147,28 @@ mod tests {
             device.online = true;
             device.last_seen_unix_ms = 1;
             let converged = PersonDevices::new([device]);
-            let record = record_of(&local);
+            let mut record = tilo_resource::Replica::<Devices>::new();
+            record
+                .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
+                .expect("the device is kept");
+            let endpoints = vec![SpeakerEndpoint {
+                selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo").to_hex(),
+                microphone: false,
+                label: "Speakers".into(),
+                is_default: true,
+            }];
+            record
+                .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
+                    local.as_str().to_owned(),
+                    hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
+                )))
+                .expect("the device offers its output");
             Self {
                 local,
                 converged,
-                record,
+                record: record.state().expect("the record reads"),
             }
         }
-    }
-
-    /// The person's devices record with this device's one output.
-    fn record_of(local: &DeviceId) -> Devices {
-        use tilo_resource::Replica;
-        let mut record = Replica::<Devices>::new();
-        record
-            .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
-            .expect("the device is kept");
-        let endpoints = vec![SpeakerEndpoint {
-            selector: crate::platform::fabric::EndpointSelector::mint(
-                local,
-                "alsa_output.analog-stereo",
-            )
-            .to_hex(),
-            microphone: false,
-            label: "Speakers".into(),
-            is_default: true,
-        }];
-        record
-            .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
-                local.as_str().to_owned(),
-                hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
-            )))
-            .expect("the device offers its output");
-        record.state().expect("the record reads")
     }
 
     impl FabricLink for Fabric {
@@ -224,7 +219,7 @@ mod tests {
         assert!(!served.poll(), "a pass that changed nothing is no revision");
 
         let mut identify = Map::new();
-        identify.insert("device".into(), Value::from("this-laptop"));
+        identify.insert("device".into(), Value::from(key("this-laptop")));
         identify.insert("output".into(), Value::from("not an output"));
         let refused = served.invoke(RESOURCE, "identify", &identify).err();
         assert!(
@@ -233,7 +228,9 @@ mod tests {
         );
         assert!(
             matches!(
-                served.invoke("session:elsewhere", "identify", &identify).err(),
+                served
+                    .invoke("session:elsewhere", "identify", &identify)
+                    .err(),
                 Some(ApiError::Unknown(_))
             ),
             "the verbs are the speakers' own"
