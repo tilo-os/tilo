@@ -684,11 +684,6 @@ impl Daemon {
         })
     }
 
-    /// The workspace this daemon serves its device in.
-    pub(crate) fn workspace_id(&self) -> &str {
-        &self.workspace
-    }
-
     /// The device's directory.
     pub(crate) fn dir(&self) -> PathBuf {
         self.dir.clone()

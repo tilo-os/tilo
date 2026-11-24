@@ -454,7 +454,7 @@ fn serve_device(
             (locked.0, entered.take()),
         )?);
         // Migrations run on the device that holds the data they read.
-        crate::device::migrate::serve(&session);
+        session.serve_migrations();
         // A computer that just logged in takes its workspace in while the device is held (below):
         // nothing is admitted to the workspace before then. The endpoint admits each connection as
         // it comes, and host search starts once the workspace is here, rather than the daemon

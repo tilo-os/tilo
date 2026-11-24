@@ -149,7 +149,7 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    crate::device::migrate::serve(&daemon);
+    daemon.serve_migrations();
     let socket = native_endpoint(&daemon, &root);
     let person = line_client(&socket, OWN);
     // Whom a client names does not count: the daemon decides by the account connecting.

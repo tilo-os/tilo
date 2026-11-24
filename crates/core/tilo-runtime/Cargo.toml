@@ -230,6 +230,8 @@ tempfile.workspace = true
 # The secret store a desktop kept its key groups' master key in, kept in memory by a test.
 tilo-secrets.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# The Thunderbird profile a migration test's home holds.
+tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 runtime-bundle = { path = "../runtime-bundle" }

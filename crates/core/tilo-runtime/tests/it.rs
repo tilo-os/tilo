@@ -114,22 +114,24 @@ mod keeping_pages;
 mod machine_secrets;
 #[path = "migrate_engine.rs"]
 mod migrate_engine;
+#[path = "migrate_window.rs"]
+mod migrate_window;
 #[path = "provided.rs"]
 mod provided;
 #[path = "refresh_reads.rs"]
 mod refresh_reads;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
-#[path = "search.rs"]
-mod search;
-#[path = "shell_link.rs"]
-mod shell_link;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
+#[path = "search.rs"]
+mod search;
 #[path = "session_api_connect.rs"]
 mod session_api_connect;
 #[path = "shared_workspace.rs"]
 mod shared_workspace;
+#[path = "shell_link.rs"]
+mod shell_link;
 #[path = "terminal_streams.rs"]
 mod terminal_streams;
 #[path = "tracker.rs"]

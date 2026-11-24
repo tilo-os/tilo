@@ -21,24 +21,27 @@ use tilo_migrate::engine::writer::Workspace;
 use tilo_migrate::provider::{Host, Migrations, PROVIDER, resource};
 
 use super::services::Daemon;
+use crate::RuntimeServices as _;
 
 /// The name the migration's agent acts under in the workspace.
 const AGENT: &str = "migrate";
 
-/// Serve `daemon`'s migrations from now on.
-pub(crate) fn serve(daemon: &Arc<Daemon>) {
-    let host = DaemonHost {
-        daemon: Arc::downgrade(daemon),
-        workspace: daemon.workspace_id().to_owned(),
-        dir: daemon.dir(),
-    };
-    daemon.provide(
-        PROVIDER,
-        Arc::new(Migrations::new(
-            resource(&daemon.device_key()),
-            Arc::new(host),
-        )),
-    );
+impl Daemon {
+    /// Serve this device's migrations from now on.
+    pub fn serve_migrations(self: &Arc<Self>) {
+        let host = DaemonHost {
+            daemon: Arc::downgrade(self),
+            workspace: self.workspace().to_owned(),
+            dir: self.dir(),
+        };
+        self.provide(
+            PROVIDER,
+            Arc::new(Migrations::new(
+                resource(&self.device_key()),
+                Arc::new(host),
+            )),
+        );
+    }
 }
 
 /// What this daemon gives its migrations.
