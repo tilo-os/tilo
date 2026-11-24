@@ -59,7 +59,7 @@ use Imp::{
     RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart,
     RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Sha256,
     SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords,
-    SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading,
+    SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading,
     StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin,
     StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit,
     StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords,
@@ -643,6 +643,7 @@ impl Core {
             | CollCounted | CollEmpty | ListGetI | ListGetF | ListSortByKey | ListReverse
             | ListGetH | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI
             | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF
+            | SomeB
             | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             // An argument a call left out before one it gives: it is no value, and the
             // invocation has the default in its place before anything reads it.

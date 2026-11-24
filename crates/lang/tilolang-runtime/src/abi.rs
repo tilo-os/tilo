@@ -121,6 +121,7 @@ imports! {
     (SomeH, "some_h", "i", "i"),
     (SomeI, "some_i", "l", "i"),
     (SomeF, "some_f", "f", "i"),
+    (SomeB, "some_b", "i", "i"),
     (NoneV, "none", "", "i"),
     (IsSome, "is_some", "i", "i"),
     (UnwrapI, "unwrap_i", "i", "l"),

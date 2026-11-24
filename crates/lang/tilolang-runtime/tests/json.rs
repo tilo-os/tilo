@@ -89,6 +89,12 @@ action encode_items(f: Feed) uses web {
     }
 }
 
+action encode_scalars(f: Feed) {
+    f.summary = json.encode(7)
+    f.payload = json.encode(true)
+    f.status = json.encode(1.5)
+}
+
 action peek(f: Feed) uses web {
     let r = web.get("https://example.com/feed")
     match json.parse(r.text()) {
@@ -430,6 +436,15 @@ action explore(f: Feed) uses web {
             first_written,
             "a round trip keeps every field"
         );
+    }
+
+    #[test]
+    fn a_scalar_is_written_as_the_json_value_it_is() {
+        let w = world(FEED);
+        w.call("encode_scalars");
+        assert_eq!(w.text("summary"), "7", "an Int is a number");
+        assert_eq!(w.text("payload"), "true", "a Bool is true or false, not 1 or 0");
+        assert_eq!(w.text("status"), "1.5", "a Float keeps its fraction");
     }
 
     #[test]

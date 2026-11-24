@@ -138,6 +138,7 @@ imports! {
     SomeH = "some_h" ([H] -> [H]);
     SomeI = "some_i" ([I64] -> [H]);
     SomeF = "some_f" ([F64] -> [H]);
+    SomeB = "some_b" ([I32] -> [H]);
     NoneV = "none" ([] -> [H]);
     // An argument a call left out before one it gives: no value, completed at the invocation.
     MissingV = "missing" ([] -> [H]);

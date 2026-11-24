@@ -2722,6 +2722,14 @@ impl Checker<'_> {
                     );
                     return Ex::error();
                 }
+                // The import takes a handle, and a scalar has none: box it as `Option` is, the
+                // same way every other value reaching the host is handed over. A Bool keeps its
+                // own value, so what is written is `true`, not the 1 it is in wasm.
+                let value = if matches!(value.ty, Ty::Bool) {
+                    Ex::host(Imp::SomeB, vec![value], Ty::Option(Box::new(Ty::Bool)))
+                } else {
+                    Self::handle_of(value)
+                };
                 Ex::host(Imp::JsonEncode, vec![value], Ty::Text)
             }
             other => {

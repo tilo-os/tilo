@@ -40,7 +40,9 @@ impl Core {
                 self.result(decode(&registry, &text, &ty, &app))
             }
             Imp::JsonEncode => {
-                let value = self.val_whole(a.h(0)?)?;
+                // A scalar arrives boxed as an `Option` (`SomeI`, `SomeF`), as it does where any
+                // other value crosses into the host: what is written is the number itself.
+                let value = crate::host_res::unboxed(self.val_whole(a.h(0)?)?);
                 let registry = self.registry.borrow();
                 match encode(&registry, &value) {
                     Ok(json) => self.ret_h(Value::Text(json.to_string())),

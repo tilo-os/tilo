@@ -468,6 +468,7 @@ impl Core {
             Imp::SomeH
             | Imp::SomeI
             | Imp::SomeF
+            | Imp::SomeB
             | Imp::NoneV
             | Imp::IsSome
             | Imp::UnwrapI
@@ -529,6 +530,7 @@ impl Core {
             }
             Imp::SomeI => self.ret_h(Value::some(Value::Int(a.long(0)?))),
             Imp::SomeF => self.ret_h(Value::some(Value::Float(a.float(0)?))),
+            Imp::SomeB => self.ret_h(Value::some(Value::Bool(a.h(0)? != 0))),
             Imp::NoneV => self.ret_h(Value::none()),
             Imp::IsSome => self.with_val(a.h(0)?, |v| match v {
                 Value::Opt(o) => ret_i32(i32::from(o.is_some())),
