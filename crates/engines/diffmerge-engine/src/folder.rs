@@ -1,18 +1,20 @@
-//! Comparing two folder trees.
+//! Comparing two folder trees: what only one side holds, and what both hold but differ in.
 
 use std::collections::BTreeMap;
-#[cfg(unix)]
-use std::os::fd::AsRawFd as _;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
-use tilo_files::VPath;
-use ui::tilo_resource::AbsolutePath;
+use serde_json::{Value as Json, json};
 
+/// The most files one comparison lists: a person reads a list, not a disk.
 pub const MAX_ENTRIES: usize = 5_000;
-const MAX_VISITED: usize = 50_000;
-const MAX_DEPTH: usize = 24;
-const MAX_COMPARE_BYTES: u64 = 8 * 1024 * 1024;
+/// The most entries either tree is walked through: a folder that keeps growing under the walk
+/// stops being compared rather than never answering.
+pub const MAX_VISITED: usize = 50_000;
+/// How deep a tree is walked.
+pub const MAX_DEPTH: usize = 24;
+/// The most a pair of files is read and held to compare their bytes: past it their lengths
+/// decide.
+pub const MAX_COMPARE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FolderKind {
@@ -39,41 +41,19 @@ pub struct FolderEntry {
     pub kind: FolderKind,
     pub left_len: u64,
     pub right_len: u64,
-    /// The files were too large to compare by content, so only their
-    /// lengths were compared.
+    /// The files were too large to compare by content, so only their lengths were compared.
     pub by_length: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderComparison {
     pub left_label: String,
-    /// The folder's own name for entry paths: `/dev/fd/<descriptor>/…` for an opened folder, or
-    /// the path a host whose files have paths answered.
     pub left_root: String,
     pub right_label: String,
     pub right_root: String,
     pub entries: Vec<FolderEntry>,
     pub truncated: bool,
-    /// The folders themselves, kept open while the comparison is shown: what its entry paths
-    /// reach through, after the person's choice closed.
-    #[cfg(unix)]
-    pub left_dir: Option<Arc<std::fs::File>>,
-    #[cfg(unix)]
-    pub right_dir: Option<Arc<std::fs::File>>,
 }
-
-impl PartialEq for FolderComparison {
-    fn eq(&self, other: &Self) -> bool {
-        self.left_label == other.left_label
-            && self.left_root == other.left_root
-            && self.right_label == other.right_label
-            && self.right_root == other.right_root
-            && self.entries == other.entries
-            && self.truncated == other.truncated
-    }
-}
-
-impl Eq for FolderComparison {}
 
 impl FolderComparison {
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -85,21 +65,37 @@ impl FolderComparison {
         )
     }
 
-    pub fn paths(&self, entry: &FolderEntry) -> (Option<AbsolutePath>, Option<AbsolutePath>) {
-        let left = (entry.kind != FolderKind::Removed)
-            .then(|| join(&self.left_root, &entry.path))
-            .flatten();
-        let right = (entry.kind != FolderKind::Added)
-            .then(|| join(&self.right_root, &entry.path))
-            .flatten();
-        (left, right)
+    /// The comparison as the app reads it: one list per fact of a file, so a file is a place
+    /// among them.
+    pub fn to_json(&self) -> Json {
+        let mut paths = Vec::with_capacity(self.entries.len());
+        let mut kinds = Vec::with_capacity(self.entries.len());
+        let mut left_lens = Vec::with_capacity(self.entries.len());
+        let mut right_lens = Vec::with_capacity(self.entries.len());
+        let mut by_lengths = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            paths.push(entry.path.clone());
+            kinds.push(entry.kind.tag());
+            left_lens.push(entry.left_len);
+            right_lens.push(entry.right_len);
+            by_lengths.push(entry.by_length);
+        }
+        json!({
+            "left_label": self.left_label,
+            "left_root": self.left_root,
+            "right_label": self.right_label,
+            "right_root": self.right_root,
+            "entry_paths": paths,
+            "entry_kinds": kinds,
+            "entry_left_lens": left_lens,
+            "entry_right_lens": right_lens,
+            "entry_by_lengths": by_lengths,
+            "truncated": self.truncated,
+        })
     }
 }
 
-fn join(root: &str, relative: &str) -> Option<AbsolutePath> {
-    AbsolutePath::new(Path::new(root).join(relative)).ok()
-}
-
+/// The name a tree's root is shown by.
 pub fn root_label(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -107,33 +103,15 @@ pub fn root_label(path: &Path) -> String {
     )
 }
 
-pub fn compare(left: &AbsolutePath, right: &AbsolutePath) -> Result<FolderComparison, String> {
-    let left_dir =
-        std::fs::File::open(left).map_err(|error| format!("{}: {error}", left.display()))?;
-    let right_dir =
-        std::fs::File::open(right).map_err(|error| format!("{}: {error}", right.display()))?;
-    compare_handles(Arc::new(left_dir), left, Arc::new(right_dir), right)
-}
-
-/// Compare two folders the person chose, by the descriptors the host handed over: each is walked
-/// through its descriptor, so a sandboxed app reads folders its own kernel could not resolve by
-/// path. The comparison keeps both open for the entries it lists.
-pub fn compare_handles(
-    left: Arc<std::fs::File>,
-    left_reference: &Path,
-    right: Arc<std::fs::File>,
-    right_reference: &Path,
-) -> Result<FolderComparison, String> {
-    let left_root = root_path(&left);
-    let right_root = root_path(&right);
-    let (left_tree, left_truncated) = walk(&left_root)?;
-    let (right_tree, right_truncated) = walk(&right_root)?;
+pub fn compare(left: &Path, right: &Path) -> Result<FolderComparison, String> {
+    let (left_tree, left_truncated) = walk(left)?;
+    let (right_tree, right_truncated) = walk(right)?;
     let same_content = |relative: &str| -> bool {
         match (left_tree.get(relative), right_tree.get(relative)) {
             (Some(&left_len), Some(&right_len))
                 if left_len == right_len && left_len <= MAX_COMPARE_BYTES =>
             {
-                files_equal(&left_root.join(relative), &right_root.join(relative))
+                files_equal(&left.join(relative), &right.join(relative))
             }
             _ => false,
         }
@@ -141,37 +119,18 @@ pub fn compare_handles(
     let entries = differences(&left_tree, &right_tree, same_content);
     let truncated = left_truncated || right_truncated || entries.len() >= MAX_ENTRIES;
     Ok(FolderComparison {
-        left_label: root_label(left_reference),
-        left_root: left_root.to_string_lossy().into_owned(),
-        right_label: root_label(right_reference),
-        right_root: right_root.to_string_lossy().into_owned(),
+        left_label: root_label(left),
+        left_root: left.to_string_lossy().into_owned(),
+        right_label: root_label(right),
+        right_root: right.to_string_lossy().into_owned(),
         entries,
         truncated,
-        #[cfg(unix)]
-        left_dir: Some(left),
-        #[cfg(unix)]
-        right_dir: Some(right),
     })
 }
 
-/// The path a kept folder is reached by: its descriptor under `/dev/fd`, which a process resolves
-/// the same way whether it shares the host's filesystem view or not.
-fn root_path(directory: &std::fs::File) -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from(format!("/dev/fd/{}", directory.as_raw_fd()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = directory;
-        PathBuf::new()
-    }
-}
-
-/// The entries that differ between two listings of `relative path → bytes`,
-/// where `same_content` answers whether a file of equal length on both sides
-/// really holds the same bytes. Paths only one side has are added or
-/// removed; paths both sides have differ unless `same_content` says no.
+/// The entries that differ between two listings of `relative path → bytes`, where `same_content`
+/// answers whether a file of equal length on both sides really holds the same bytes. Paths only
+/// one side has are added or removed; paths both sides have differ unless `same_content` says no.
 pub fn differences(
     left: &BTreeMap<String, u64>,
     right: &BTreeMap<String, u64>,
@@ -217,46 +176,53 @@ pub fn differences(
     entries
 }
 
+/// Every file a tree holds, by the path under its root and its length, and whether the walk
+/// stopped before it saw all of it.
 fn walk(root: &Path) -> Result<(BTreeMap<String, u64>, bool), String> {
     let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", root.display());
+    let meta = std::fs::metadata(root).map_err(|error| failed(&error))?;
+    if !meta.is_dir() {
+        return Err(format!("{} is not a folder", root.display()));
+    }
     let mut files = BTreeMap::new();
-    let mut stack = vec![(PathBuf::new(), 0usize)];
+    let mut stack = vec![(root.to_path_buf(), String::new(), 0usize)];
     let mut visited = 0usize;
     let mut truncated = false;
-    while let Some((folder, depth)) = stack.pop() {
-        let entries = std::fs::read_dir(root.join(&folder)).map_err(|error| failed(&error))?;
-        for entry in entries {
-            let Ok(entry) = entry else {
-                continue;
-            };
+    while let Some((folder, relative, depth)) = stack.pop() {
+        let listing = std::fs::read_dir(&folder).map_err(|error| failed(&error))?;
+        for entry in listing {
             visited = visited.saturating_add(1);
             if visited > MAX_VISITED {
                 truncated = true;
                 break;
             }
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            let Ok(name) = VPath::new(&file_name) else {
-                // A name this tree's paths cannot spell (a newline, a
-                // backslash) is not comparable here; it is skipped rather
-                // than guessed at.
+            let Ok(entry) = entry else {
                 continue;
             };
-            let path = folder.join(name.as_str());
-            let Ok(kind) = entry.file_type() else {
+            let Ok(name) = entry.file_name().into_string() else {
+                // A name that is not text is not comparable here; it is skipped rather than
+                // guessed at.
                 continue;
             };
-            if kind.is_dir() {
+            let path = folder.join(&name);
+            let under = if relative.is_empty() {
+                name.clone()
+            } else {
+                format!("{relative}/{name}")
+            };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
                 if depth < MAX_DEPTH {
-                    stack.push((path, depth.saturating_add(1)));
+                    stack.push((path, under, depth.saturating_add(1)));
                 } else {
                     truncated = true;
                 }
-            } else if kind.is_file() {
-                let Ok(meta) = entry.metadata() else {
-                    continue;
-                };
-                files.insert(path.to_string_lossy().into_owned(), meta.len());
+            } else if meta.is_file() {
+                files.insert(under, meta.len());
             }
+            // A link, a socket or a device is not a file a person compares.
         }
         if visited > MAX_VISITED {
             break;
@@ -265,13 +231,9 @@ fn walk(root: &Path) -> Result<(BTreeMap<String, u64>, bool), String> {
     Ok((files, truncated))
 }
 
-fn read(path: &Path) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
-}
-
 fn files_equal(left: &Path, right: &Path) -> bool {
-    match (read(left), read(right)) {
-        (Some(left), Some(right)) => left == right,
+    match (std::fs::read(left), std::fs::read(right)) {
+        (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
 }
@@ -291,8 +253,6 @@ mod tests {
         fn two_folders_compare_by_what_each_holds_and_by_content;
 
         phase a_listing_names_what_each_side_holds_alone;
-        // A file only one side has is added or removed; a file both have is
-        // modified unless its bytes agree.
         {
             let left = tree(&[("a.txt", 3), ("b.txt", 4), ("same.txt", 2)]);
             let right = tree(&[("b.txt", 5), ("c.txt", 1), ("same.txt", 2)]);
@@ -314,8 +274,6 @@ mod tests {
         }
 
         phase equal_lengths_are_not_equal_files;
-        // Two files of equal length that differ only in content are still
-        // reported: equal lengths are not equal files.
         {
             let left = tree(&[("x", 3)]);
             let right = tree(&[("x", 3)]);
@@ -333,8 +291,8 @@ mod tests {
                 std::process::id(),
                 std::thread::current().id()
             ));
-            let left = AbsolutePath::new(base.join("left")).unwrap();
-            let right = AbsolutePath::new(base.join("right")).unwrap();
+            let left = base.join("left");
+            let right = base.join("right");
             for tree in [&left, &right] {
                 std::fs::create_dir_all(tree.join("src")).unwrap();
             }
@@ -364,21 +322,13 @@ mod tests {
             assert_eq!(comparison.left_label, "left");
             assert_eq!(comparison.right_label, "right");
             assert!(!comparison.truncated);
-            let (left_path, right_path) = comparison.paths(&comparison.entries[1]);
-            assert_eq!(
-                left_path.as_deref(),
-                Some(left.join("src/edited.rs").as_path()),
-                "the entry names the file in each tree"
-            );
-            assert!(right_path.is_some());
 
             std::fs::remove_dir_all(&base).unwrap();
         }
 
         phase a_missing_folder_fails;
         {
-            let missing =
-                AbsolutePath::new(std::env::temp_dir().join("tilo-diffmerge-no-such-folder")).unwrap();
+            let missing = std::env::temp_dir().join("tilo-diffmerge-no-such-folder");
             let error = compare(&missing, &missing).unwrap_err();
             assert!(error.contains("tilo-diffmerge-no-such-folder"), "{error}");
         }
