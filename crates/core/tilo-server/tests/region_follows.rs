@@ -9,9 +9,7 @@
 
 use serde_json::json;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::{
-    ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, formats,
-};
+use tilo_actions::remote::{ActionProvider, InvokeArgument, InvokeRequest, ReceiptStatus, formats};
 use tilo_server::WorkspaceId;
 use tilo_server::servers;
 use tilo_server_protocol::WorkSetting;

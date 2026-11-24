@@ -272,11 +272,10 @@ impl Fleet {
         server: EndpointAddr,
         server_device: [u8; 32],
     ) -> anyhow::Result<Member> {
-        let (workspace_id, cert, sk, seed) = {
+        let (cert, sk, seed) = {
             let workspace = self.workspaces.get(workspace_index).context("workspace")?;
             let device = workspace.members.get(member).context("member")?;
             (
-                workspace.id,
                 device.cert.clone(),
                 device.sk.clone(),
                 workspace.seed.clone(),
@@ -310,7 +309,7 @@ impl Fleet {
             .map_err(|refusal| anyhow!("{refusal}"))?;
         let reader = sync.reader();
         let running = sync.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let _ = dialed.run(&running).await;
         });
         let mut caught_up = sync.caught_up();
@@ -321,7 +320,7 @@ impl Fleet {
         tokio::spawn(receive(self.clone(), reader));
         let workspace = self.workspaces.get(workspace_index).context("workspace")?;
         let device = workspace.members.get(member).context("member")?;
-        Member::new(self.clone(), workspace, device, sync, link, dialer, running)
+        Member::new(self.clone(), workspace, device, sync, link, dialer, task)
     }
 
     /// Note an edit about to be published to `recipients` other members.

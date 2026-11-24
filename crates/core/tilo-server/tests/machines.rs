@@ -111,6 +111,7 @@ async fn host_answer(
     )
     .await
     .expect("the host answers")
+    .expect("the host answers its own action")
 }
 
 /// The host action `action` on `linked`'s host, and the value it answered.

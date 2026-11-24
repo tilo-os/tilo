@@ -117,9 +117,16 @@ async fn servers_restart_one_at_a_time_and_drain_first() {
     assert_eq!(cellar.pending(), None, "the waiting server drained nothing");
 
     // The attic restarts; the cellar asks again while it is down and is
-    // still told to wait.
+    // still told to wait. The attic's pending update renews its lease when
+    // the update service asks again.
     assert!(waits(&prepare(&cellar, "v2").await.unwrap()));
-    renew(&attic).await.unwrap();
+    let renewed = answer_action(&attic, "prepare", &serde_json::json!({"target": "v2"}))
+        .await
+        .unwrap();
+    assert!(
+        waits(&renewed),
+        "the pending update keeps the lease: {renewed:?}"
+    );
     assert_eq!(booted(&attic, "v2").await.unwrap(), Answer::Released);
     assert_eq!(attic.pending(), None);
 

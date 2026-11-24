@@ -52,6 +52,7 @@ async fn try_ask(
         linked.actions.ask_message(message),
     )
     .await
+    .flatten()
     .ok_or_else(|| "the link closed".to_owned())
 }
 
@@ -278,7 +279,6 @@ async fn a_server_retired_while_away_retires_itself_once_back() {
         server,
         state,
         _policy: policy,
-        _helper,
         _following: mut following,
     } = person_with_a_server().await;
     following.remove(0).abort();

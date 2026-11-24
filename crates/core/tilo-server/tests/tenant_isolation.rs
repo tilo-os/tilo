@@ -163,7 +163,7 @@ fn marked(bytes: &[u8], marker: &str) -> bool {
         doc.get(ROOT, "marker")
             .ok()
             .flatten()
-            .is_some_and(|(value, _)| value.to_str() == Some(marker))
+            .is_some_and(|(value, _)| value.as_str() == Some(marker))
     })
 }
 
@@ -183,6 +183,7 @@ async fn action_answer(linked: &Linked, message: RemoteActionMessage) -> RemoteA
     )
     .await
     .expect("the server answers")
+    .expect("the server answers the action")
 }
 
 fn invite_action(workspace: &str) -> RemoteActionMessage {
@@ -204,7 +205,7 @@ fn invite_action(workspace: &str) -> RemoteActionMessage {
 
 /// The governance resources `linked`'s catalogue lists.
 async fn governance_resources(linked: &Linked, user: [u8; 32]) -> Vec<String> {
-    use tilo_actions::remote::ActionProvider as _;
+    use tilo_actions::remote::ActionProvider;
     let page = tilo_test_env::within(
         "the host answers the catalogue",
         ActionProvider::query(
@@ -513,11 +514,12 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         "the server answers Ann's foreign action",
         globex_actions.ask_message(invite_action(&t.globex.workspace)),
     )
-    .await;
+    .await
+    .flatten();
     assert!(
         !matches!(
             answer,
-            Some(RemoteActionMessage::Receipt(receipt))
+            Some(RemoteActionMessage::Receipt(ref receipt))
                 if matches!(receipt.status, ReceiptStatus::Completed { .. })
         ),
         "Ann invoked an action in Globex's workspace: {answer:?}"
@@ -540,11 +542,12 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         "the server answers Ann's direct action",
         to_bob.ask_message(invite_action(&t.globex.workspace)),
     )
-    .await;
+    .await
+    .flatten();
     assert!(
         !matches!(
             direct,
-            Some(RemoteActionMessage::Receipt(receipt))
+            Some(RemoteActionMessage::Receipt(ref receipt))
                 if matches!(receipt.status, ReceiptStatus::Completed { .. })
         ),
         "Ann reached Bob's device in Globex: {direct:?}"

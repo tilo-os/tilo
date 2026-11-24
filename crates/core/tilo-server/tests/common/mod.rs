@@ -1035,7 +1035,7 @@ pub async fn receives(
             if linked.read(&mut holds) {
                 return;
             }
-            let _ = changes.recv().await;
+            let _ = changes.changed().await;
         }
     })
     .await;

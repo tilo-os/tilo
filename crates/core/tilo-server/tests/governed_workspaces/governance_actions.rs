@@ -63,6 +63,7 @@ pub(super) async fn try_ask(
         actions.ask_message(message),
     )
     .await
+    .flatten()
     .ok_or_else(|| "the server did not answer".to_owned())
 }
 
@@ -156,6 +157,7 @@ pub(super) async fn host_action<T: serde::de::DeserializeOwned>(
         ActionProvider::invoke(actions, &caller, request),
     )
     .await
+    .expect("the host answers its own operation")
     .unwrap_or_else(|error| panic!("the host refused its own operation: {error}"));
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!(
