@@ -69,6 +69,19 @@ export function react({ tokenItem, origin = API }, op) {
   };
 }
 
+/// Starts a thread under a message: a public thread of the channel, named as the thread here is.
+/// Its answer is the thread, whose id joins the two sides.
+export function startThread({ tokenItem, origin = API }, op) {
+  return {
+    url: `${at(origin)}/channels/${op.channel}/messages/${op.message}/threads`,
+    key: tokenItem,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: op.name }),
+    reason: "a thread started in the workspace",
+  };
+}
+
 /// A bot token's shape: three non-empty dot-separated parts of base64url characters.
 export function looksLikeToken(token) {
   const parts = String(token ?? "").split(".");

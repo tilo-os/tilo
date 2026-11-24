@@ -12,6 +12,7 @@ import {
   editToDiscord,
   deleteToDiscord,
   reactToDiscord,
+  threadToDiscord,
   mapping,
   published,
   mappings,
@@ -28,6 +29,7 @@ import {
   webhookEdit,
   webhookDelete,
   react,
+  startThread,
   whyRefused,
 } from "./src/rest.js";
 
@@ -132,7 +134,7 @@ export async function run({
   const setup = serveSetup({ calls, fetch, wait, log }).catch((error) =>
     log(`the setup stopped: ${error?.message ?? error}`),
   );
-  const holding = held({ calls, makeClient, makeVoice, wait, log }).catch((error) =>
+  const holding = held({ calls, makeClient, makeVoice, fetch, wait, log }).catch((error) =>
     log(`the gateway stopped: ${error?.message ?? error}`),
   );
   await Promise.all([setup, holding]);
@@ -154,7 +156,7 @@ function connectionOf(account) {
 /// Holds the gateway of the account the record names, reopening it when what it is keyed by
 /// changes and closing it when no server is connected. The watch is the record's, so a person's
 /// Connect reaches this process with no window open.
-export async function held({ calls, makeClient, makeVoice, wait, log = () => {} }) {
+export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fetch, wait, log = () => {} }) {
   let connection = null;
   let key = null;
   const look = async () => {
@@ -169,7 +171,7 @@ export async function held({ calls, makeClient, makeVoice, wait, log = () => {} 
     }
     if (!next) return;
     try {
-      connection = await openGateway({ calls, account, makeClient, makeVoice, wait, log });
+      connection = await openGateway({ calls, account, makeClient, makeVoice, fetch, wait, log });
     } catch (error) {
       log(`the gateway did not open: ${error?.message ?? error}`);
     }
@@ -188,6 +190,7 @@ export async function openGateway({
   account,
   makeClient,
   makeVoice,
+  fetch = globalThis.fetch,
   wait,
   log = () => {},
 }) {
@@ -220,7 +223,7 @@ export async function openGateway({
       make: makeClient,
       token,
       url: account.gateway_url || undefined,
-      onEvent: (event) => carryFromDiscord({ calls, account, event, log }),
+      onEvent: (event) => carryFromDiscord({ calls, account, event, fetch, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
@@ -384,15 +387,65 @@ export async function sha256Hex(text) {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
-/// What one Discord event means, done on the workspace's side.
-export async function carryFromDiscord({ calls, account, event, log }) {
+/// The largest file the workspace keeps from Discord: larger ones stay there.
+export const MAX_FILE_BYTES = 32 * 1024 * 1024;
+
+/// What one Discord event means, done on the workspace's side. A message's files are fetched from
+/// where Discord serves them and kept in the workspace first, so the relayed message carries them.
+export async function carryFromDiscord({
+  calls,
+  account,
+  event,
+  fetch = globalThis.fetch,
+  log = () => {},
+}) {
   for (const call of fromDiscord(account, event)) {
     try {
+      const files = await keptFiles(calls, call.attachments, { fetch, log });
+      if (files.length > 0) call.args = { ...call.args, attachments: files };
+      delete call.attachments;
       await calls.do(call);
     } catch (error) {
       log(`a Discord event did not reach the workspace: ${error?.message ?? error}`);
     }
   }
+}
+
+/// The files of a Discord message, each fetched from `url` and kept in the workspace as the
+/// content a message here names. One that does not come over is left out, and said.
+export async function keptFiles(
+  calls,
+  attachments,
+  { fetch = globalThis.fetch, log = () => {} } = {},
+) {
+  const files = [];
+  for (const attachment of attachments ?? []) {
+    const url = String(attachment?.url ?? "");
+    if (url === "") continue;
+    const size = Number(attachment?.size ?? 0);
+    if (size > MAX_FILE_BYTES) {
+      log(`a Discord file is larger than the workspace keeps (${size} bytes): it stays there`);
+      continue;
+    }
+    try {
+      const answer = await fetch(url);
+      if (!answer?.ok) throw new Error(`Discord answered ${answer?.status ?? 0}`);
+      const bytes = new Uint8Array(await answer.arrayBuffer());
+      const content = await calls.content(bytes);
+      if (!content) throw new Error("the workspace kept no bytes");
+      files.push({
+        file: {
+          name: String(attachment?.name || "file"),
+          media: String(attachment?.media ?? ""),
+          size: bytes.length,
+          content,
+        },
+      });
+    } catch (error) {
+      log(`a Discord file did not come over: ${error?.message ?? error}`);
+    }
+  }
+  return files;
 }
 
 /// What the workspace says, carried to Discord: the changes the holder watches, never a call on
@@ -420,6 +473,7 @@ export async function carryFromWorkspace({ calls, account, log = () => {}, stop 
     try {
       if (kind === "created") {
         for (const op of toDiscord(account, conversation, message)) {
+          if (!(await carries(calls, "send_there", op, log))) continue;
           const answer = await calls.webCall(
             webhookSend(
               { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
@@ -438,6 +492,7 @@ export async function carryFromWorkspace({ calls, account, log = () => {}, stop 
         }
       } else if (kind === "updated" && there) {
         for (const op of editToDiscord(account, conversation, message, there)) {
+          if (!(await carries(calls, "edit_there", op, log))) continue;
           await calls.webCall(
             webhookEdit(
               { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
@@ -448,6 +503,7 @@ export async function carryFromWorkspace({ calls, account, log = () => {}, stop 
       } else if (kind === "deleted" && there) {
         const hook = mapping(account, "webhook", conversation)?.discord ?? "";
         for (const op of deleteToDiscord(account, conversation, there, hook)) {
+          if (!(await carries(calls, "delete_there", op, log))) continue;
           await calls.webCall(
             webhookDelete(
               { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
@@ -464,14 +520,53 @@ export async function carryFromWorkspace({ calls, account, log = () => {}, stop 
           kind === "reaction",
           there,
         )) {
+          const carrying = op.op === "react" ? "react_there" : "unreact_there";
+          if (!(await carries(calls, carrying, op, log))) continue;
           await calls.webCall(
             react({ tokenItem: account.token_item, origin: account.api_origin }, op),
           );
+        }
+      } else if (kind === "thread") {
+        // A thread started here under a message the bridge sent: Discord starts it there, and
+        // the two threads are joined by the id Discord answers.
+        const parent = known.get(published(event.message?.id ?? ""));
+        for (const op of threadToDiscord(
+          account,
+          conversation,
+          message,
+          parent,
+          event.name,
+          event.thread ?? message.id,
+        )) {
+          if (!(await carries(calls, "start_thread_there", op, log))) continue;
+          const answer = await calls.webCall(
+            startThread({ tokenItem: account.token_item, origin: account.api_origin }, op),
+          );
+          const made = messageIdOf(answer);
+          if (made) {
+            await calls.do({
+              app: SELF,
+              action: "map",
+              args: { kind: "thread", tilo: op.tilo, discord: made, origin: "tilo" },
+            });
+          }
         }
       }
     } catch (error) {
       log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
     }
+  }
+}
+
+/// Have the bridge's own action take `op` before Discord hears of it: its guards say what the
+/// bridge may do and where, so a call it refuses is never made. `true` when it was taken.
+async function carries(calls, action, op, log) {
+  try {
+    await calls.do({ app: SELF, action, args: { op } });
+    return true;
+  } catch (error) {
+    log(`Discord's bridge refused a call: ${error?.message ?? error}`);
+    return false;
   }
 }
 

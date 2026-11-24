@@ -69,9 +69,23 @@ export function discordMessage(source, message) {
             bot: Boolean(message.author?.bot),
           },
           reference: message.reference ?? null,
+          attachments: attachmentsOf(message.attachments),
         }
       : null,
   };
+}
+
+/// A message's files as the bridge reads them: where Discord serves each, what it is called, what
+/// it is and how many bytes.
+function attachmentsOf(value) {
+  if (!value) return [];
+  const entries = typeof value.values === "function" ? [...value.values()] : Object.values(value);
+  return entries.map((file) => ({
+    url: file?.url ?? "",
+    name: file?.name ?? file?.filename ?? "",
+    media: file?.contentType ?? file?.content_type ?? "",
+    size: Number(file?.size ?? 0),
+  }));
 }
 
 /// A reaction of the gateway as the planners read it.
@@ -535,6 +549,7 @@ function messageOf(data) {
       : data?.referenced_message?.id
         ? { message_id: data.referenced_message.id }
         : null,
+    attachments: data?.attachments ?? [],
   };
 }
 

@@ -7,6 +7,7 @@ import {
   bareBlob,
   avatarUrl,
   mapping,
+  threadToDiscord,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
 import { looksLikeToken, webhookSend } from "../src/rest.js";
@@ -79,6 +80,49 @@ test("a message written on Discord is relayed as its author, with their picture 
     { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
   ]);
   expect(call.map).toEqual({ kind: "message", discord: "777", origin: "discord", persona: "3001" });
+});
+
+test("a message's files come over for the program to keep, not as empty text", () => {
+  const [call] = fromDiscord(state(), {
+    source: "MESSAGE_CREATED",
+    payload: {
+      id: "777",
+      channel_id: "456",
+      content: "look",
+      author: { id: "3001", name: "ada" },
+      attachments: [
+        { url: "https://cdn.discordapp.com/attachments/456/1/shot.png", name: "shot.png", media: "image/png", size: 3 },
+      ],
+    },
+  });
+  expect(call.attachments).toEqual([
+    { url: "https://cdn.discordapp.com/attachments/456/1/shot.png", name: "shot.png", media: "image/png", size: 3 },
+  ]);
+  // Nothing in the relay's own arguments names a URL: the program keeps the bytes first.
+  expect(call.args.attachments).toBeUndefined();
+});
+
+test("a thread started here is started on Discord under the message it answers", () => {
+  const call = threadToDiscord(
+    state(),
+    "tl:so.tilo.chat:design",
+    { id: "m1", text: "hello" },
+    "777",
+    "topic",
+    "tl:so.tilo.chat:topic",
+  );
+  expect(call).toEqual([
+    {
+      op: "start-thread",
+      channel: "456",
+      message: "777",
+      name: "topic",
+      tilo: "tl:so.tilo.chat:topic",
+    },
+  ]);
+  expect(
+    threadToDiscord(state(), "tl:so.tilo.chat:random", { id: "m2" }, "778", "x", "t"),
+  ).toEqual([]);
 });
 
 test("an account nobody linked carries the name Discord shows alone", () => {

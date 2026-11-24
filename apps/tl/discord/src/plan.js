@@ -165,6 +165,9 @@ export function fromDiscord(state, event) {
         : null,
       member: linked?.person ? { person: linked.person } : null,
     });
+    // The files it carries come over as the bytes Discord serves: the program fetches each and
+    // keeps it in the workspace, then hands the message on with them.
+    call.attachments = payload.attachments ?? [];
     call.map = {
       kind: "message",
       discord: payload.id,
@@ -284,6 +287,22 @@ export function deleteToDiscord(state, conversation, there, webhook) {
       webhook: webhook || carriedTo.webhook,
       message: there,
       thread: carriedTo.thread,
+    },
+  ];
+}
+
+/// The call carrying a thread started here on a message the bridge sent: Discord starts it under
+/// the same message, so its replies stay in one place on both sides.
+export function threadToDiscord(state, conversation, message, there, name, tilo) {
+  const carriedTo = carried(state, conversation);
+  if (!carriedTo || !there) return [];
+  return [
+    {
+      op: "start-thread",
+      channel: carriedTo.channel,
+      message: there,
+      name: name || "topic",
+      tilo: published(tilo ?? message?.id ?? ""),
     },
   ];
 }

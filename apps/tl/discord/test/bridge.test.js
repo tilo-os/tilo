@@ -159,8 +159,11 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
     ),
   ).toBe(true);
 
-  // The workspace's message reaches the webhook, and what it made is joined to the message.
+  // The workspace's message reaches the webhook, and what it made is joined to the message. The
+  // bridge's own action takes it first, so Discord hears only what its guards allow.
   await until(() => workspace.requests.length >= 1, "the send");
+  let carried = workspace.done.find((call) => call.address === "so.tilo.discord.preview#send_there");
+  expect(carried?.args.op).toMatchObject({ op: "send", channel: "456", content: "hello" });
   const send = workspace.requests[0];
   expect(send.url).toBe("https://discord.com/api/v10/webhooks/555?wait=true");
   expect(send.method).toBe("POST");
@@ -181,6 +184,9 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
 
   // An edit follows the message it is about.
   await until(() => workspace.requests.length >= 2, "the edit");
+  expect(
+    workspace.done.some((call) => call.address === "so.tilo.discord.preview#edit_there"),
+  ).toBe(true);
   const edit = workspace.requests[1];
   expect(edit.url).toBe("https://discord.com/api/v10/webhooks/555/messages/9001");
   expect(edit.method).toBe("PATCH");
@@ -188,6 +194,9 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
 
   // A reaction follows it too.
   await until(() => workspace.requests.length >= 3, "the reaction");
+  expect(
+    workspace.done.some((call) => call.address === "so.tilo.discord.preview#react_there"),
+  ).toBe(true);
   const reacted = workspace.requests[2];
   expect(reacted.method).toBe("PUT");
   expect(reacted.url).toBe(
@@ -210,6 +219,211 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   }
 
   workspace.finish();
+  await running;
+});
+
+test("a file posted on Discord is kept here and the message carries it", async () => {
+  const done = [];
+  const kept = [];
+  const fetched = [];
+  let finish;
+  const finished = new Promise((resolve) => (finish = resolve));
+  const ws = {
+    async read() {
+      return { accounts: [account()] };
+    },
+    async do(address, args) {
+      done.push({ address, args });
+      return { id: "made1" };
+    },
+    async *watch() {
+      await finished;
+    },
+    files: {
+      async upload(bytes) {
+        kept.push(bytes);
+        return "tilo.content:abc123";
+      },
+    },
+    vault: {
+      async release() {
+        return "MTIz.GxYz.abcdefghij0123456789AB";
+      },
+      async webCall() {
+        return { status: 200, body: "{}" };
+      },
+    },
+  };
+  const fetch = async (url) => {
+    fetched.push(url);
+    return {
+      ok: true,
+      status: 200,
+      async arrayBuffer() {
+        return new Uint8Array([1, 2, 3]).buffer;
+      },
+    };
+  };
+  const gateway = fakeGateway();
+  const running = run({
+    tilo: { workspace: () => ws },
+    makeClient: () => gateway,
+    fetch,
+    log: () => {},
+  });
+  await until(() => done.length > 0 || fetched.length > 0, "the bridge");
+  gateway.emit("messageCreate", {
+    id: "779",
+    channelId: "456",
+    guildId: "123",
+    content: "look",
+    createdTimestamp: 1000,
+    webhookId: null,
+    author: { id: "3001", username: "ada", avatar: "abc", bot: false },
+    reference: null,
+    attachments: [
+      { url: "https://cdn.discordapp.com/attachments/456/1/shot.png", name: "shot.png", contentType: "image/png", size: 3 },
+    ],
+  });
+  await until(
+    () => done.some((call) => call.address === "so.tilo.chat#relay" && call.args.attachments?.length),
+    "the relay with its file",
+  );
+  const relay = done.find(
+    (call) => call.address === "so.tilo.chat#relay" && call.args.attachments?.length,
+  );
+  expect(fetched).toEqual(["https://cdn.discordapp.com/attachments/456/1/shot.png"]);
+  expect(kept).toHaveLength(1);
+  expect(relay.args.attachments).toEqual([
+    { file: { name: "shot.png", media: "image/png", size: 3, content: "tilo.content:abc123" } },
+  ]);
+  finish();
+  await running;
+});
+
+test("a thread started here is started on Discord under the message it answers", async () => {
+  const done = [];
+  const requests = [];
+  let finish;
+  const finished = new Promise((resolve) => (finish = resolve));
+  const ws = {
+    async read() {
+      return {
+        accounts: [
+          {
+            ...account(),
+            map: [
+              ...account().map,
+              { kind: "message", tilo: "tl:so.tilo.chat:m1", discord: "9001" },
+            ],
+          },
+        ],
+      };
+    },
+    async do(address, args) {
+      done.push({ address, args });
+      return { id: "made1" };
+    },
+    async *watch() {
+      yield {
+        kind: "thread",
+        conversation: "tl:so.tilo.chat:design",
+        name: "topic",
+        thread: "tl:so.tilo.chat:topic",
+        message: { id: "m1", text: "hello", author: "ada" },
+      };
+      await finished;
+    },
+    vault: {
+      async release() {
+        return "MTIz.GxYz.abcdefghij0123456789AB";
+      },
+      async webCall(request) {
+        requests.push(request);
+        return { status: 200, body: JSON.stringify({ id: "7001" }) };
+      },
+    },
+  };
+  const running = run({
+    tilo: { workspace: () => ws },
+    makeClient: () => fakeGateway(),
+    log: () => {},
+  });
+  await until(() => requests.length > 0, "the thread");
+  expect(
+    done.some(
+      (call) => call.address === "so.tilo.discord.preview#start_thread_there" &&
+        call.args.op.message === "9001" &&
+        call.args.op.name === "topic",
+    ),
+  ).toBe(true);
+  expect(requests[0].url).toBe(
+    "https://discord.com/api/v10/channels/456/messages/9001/threads",
+  );
+  expect(JSON.parse(requests[0].body).name).toBe("topic");
+  await until(
+    () => done.some(
+      (call) => call.address === "so.tilo.discord.preview#map" &&
+        call.args.kind === "thread" && call.args.discord === "7001",
+    ),
+    "the thread's mapping",
+  );
+  finish();
+  await running;
+});
+
+test("a test's fake Discord is reached from the account's own record, both ways", async () => {
+  let finish;
+  const finished = new Promise((resolve) => (finish = resolve));
+  const requests = [];
+  const logins = [];
+  const ws = {
+    async read() {
+      return {
+        accounts: [
+          {
+            ...account(),
+            api_origin: "http://discord.test/api/v10",
+            gateway_url: "ws://discord.test/gateway",
+          },
+        ],
+      };
+    },
+    async do() {
+      return { id: "made1" };
+    },
+    async *watch() {
+      yield {
+        kind: "created",
+        conversation: "tl:so.tilo.chat:design",
+        message: { id: "m1", text: "hello", author: "ada", attachments: [] },
+      };
+      await finished;
+    },
+    vault: {
+      async release() {
+        return "MTIz.GxYz.abcdefghij0123456789AB";
+      },
+      async webCall(request) {
+        requests.push(request);
+        return { status: 200, body: JSON.stringify({ id: "9001" }) };
+      },
+    },
+  };
+  const gateway = fakeGateway();
+  gateway.login = async (token, url) => {
+    logins.push(url);
+    return gateway;
+  };
+  const running = run({
+    tilo: { workspace: () => ws },
+    makeClient: () => gateway,
+    log: () => {},
+  });
+  await until(() => logins.length > 0 && requests.length > 0, "the fake Discord");
+  expect(logins).toEqual(["ws://discord.test/gateway"]);
+  expect(requests[0].url.startsWith("http://discord.test/api/v10/webhooks/555")).toBe(true);
+  finish();
   await running;
 });
 
