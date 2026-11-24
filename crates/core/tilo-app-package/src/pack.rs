@@ -19,6 +19,7 @@ use crate::signed::SignedRoot;
 use crate::validate::{ManifestError, validate_manifest_with_payload};
 
 /// A signing identity that can sign the package's signed-root bytes.
+#[derive(Clone)]
 pub enum SigningIdentity {
     Ed25519(ed25519_dalek::SigningKey),
 }

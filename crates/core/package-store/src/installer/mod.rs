@@ -527,11 +527,11 @@ pub fn check(candidate: &Candidate, trust: &Trust, report: &mut Report) -> Resul
     Ok(checked)
 }
 
-/// Install a development build: `bytes` is a `.tapp` a developer built and signed as
-/// `device`'s own dev build of an app.
+/// Install a development build: `bytes` is a `.tapp` marked as `identity`'s dev build of an app
+/// and signed by it, as the device's daemon packs one (`tilo-app-package::pack_dev`).
 ///
-/// The device installs only what it built itself, and only under the id its dev marking derives,
-/// so a dev build never takes an installed app's identity or grants.
+/// The device installs only what it signed itself, and only under the id its dev marking
+/// derives, so a dev build never takes an installed app's identity or grants.
 ///
 /// # Errors
 /// The package is not marked as a dev build, names another device, is unsigned, is signed by
@@ -541,9 +541,10 @@ pub fn install_dev(
     store: &PackageStore,
     catalog: &Catalog,
     bytes: &[u8],
-    device: [u8; 32],
+    identity: &tilo_app_package::SigningIdentity,
     source: &str,
 ) -> Result<Report, Error> {
+    let device = identity.public_key_bytes();
     let key = hex::encode(device);
     let refuse = |why: String| Error::Policy(format!("a development build: {why}"));
     let mut blobs = std::collections::BTreeMap::new();

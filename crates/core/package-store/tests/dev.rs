@@ -86,7 +86,7 @@ fn a_dev_build_installs_under_its_own_id() {
         &store,
         &catalog,
         &bytes,
-        identity.public_key_bytes(),
+        &identity,
         "dev.tapp",
     )
     .expect("the device installs the build it made");
@@ -113,7 +113,7 @@ fn a_dev_build_another_device_signed_is_refused() {
         &store,
         &catalog,
         &bytes,
-        this_device.public_key_bytes(),
+        &this_device,
         "dev.tapp",
     )
     .unwrap_err();
@@ -140,7 +140,7 @@ fn an_unsigned_dev_build_is_refused() {
         &store,
         &catalog,
         &bytes,
-        identity.public_key_bytes(),
+        &identity,
         "dev.tapp",
     )
     .unwrap_err();
@@ -188,7 +188,7 @@ type = "gui"
         &store,
         &catalog,
         &bytes,
-        identity.public_key_bytes(),
+        &identity,
         "dev.tapp",
     )
     .unwrap_err();

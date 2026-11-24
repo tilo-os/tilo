@@ -66,9 +66,10 @@ enum Cmd {
     Install {
         /// Path to the .tapp file.
         tapp: PathBuf,
-        /// Install it as this device's development build of the app it names
-        /// (`[package.dev]`), signed by this device: it runs under its own id and starts with no
-        /// grants. Refused for a package another device signed, or one with no signature.
+        /// Install the built app in DIR as this device's development build of it: the directory
+        /// holds `tilo-app.toml` and the package's payload. The device marks it, packs and signs
+        /// it with its own key, and it runs under its own id with no grants. Only the person on
+        /// this device's own daemon connection may ask for one.
         #[arg(long)]
         dev: bool,
         /// Mark the package pinned (exempt from future GC eviction).
@@ -508,6 +509,43 @@ fn uploaded(path: &Path) -> Uploaded {
     Uploaded {
         source: path.display().to_string(),
     }
+}
+
+/// The manifest a built app directory names itself by.
+const BUILD_MANIFEST: &str = "tilo-app.toml";
+
+/// Every file below `dir`, by its path in the package's payload: the build's own manifest is the
+/// package's, not one of its files.
+fn payload_files(dir: &Path) -> Result<Vec<package_actions::HostFile>, String> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(at) = pending.pop() {
+        let entries = fs::read_dir(&at).map_err(|error| format!("{}: {error}", at.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(dir)
+                    .map_err(|error| format!("{}: {error}", path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative == BUILD_MANIFEST {
+                    continue;
+                }
+                files.push(package_actions::HostFile {
+                    path: relative,
+                    file: uploaded(&path),
+                });
+            }
+        }
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
 }
 
 fn list_json(include_runtime_paths: bool) -> Result<(), Error> {
@@ -991,7 +1029,8 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
                     );
                 }
                 return make(Change::InstallDev {
-                    file: uploaded(&tapp),
+                    manifest: uploaded(&tapp.join(BUILD_MANIFEST)),
+                    payload: payload_files(&tapp)?,
                 });
             }
             make(Change::Install {

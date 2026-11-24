@@ -1957,7 +1957,7 @@ impl Daemon {
             );
         }
         // So is its package cache, the one it answered before the login too.
-        match super::packages::PackageCache::this_device(&identity.cert.device_public_key) {
+        match super::packages::PackageCache::this_device(&identity.key) {
             Ok(cache) => {
                 super::packages::follow(&cache, Arc::clone(&workspaces));
                 workspaces

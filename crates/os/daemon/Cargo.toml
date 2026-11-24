@@ -97,8 +97,10 @@ tilo-automation = { path = "../../core/automation" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-device-identity = { path = "../../core/tilo-device-identity" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core" }
-# The development build the process tests install: its manifest and its signature.
+# The development build the process tests install: its manifest, and the action they hand it to
+# the device with.
 tilo-app-package = { path = "../../core/tilo-app-package" }
+package-actions = { path = "../../core/package-actions" }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"] }
 tilo-peer-state = { path = "../../core/tilo-peer-state" }
 tilo-resource = { path = "../../core/tilo-resource" }

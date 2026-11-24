@@ -766,9 +766,9 @@ fn before_a_login_an_account_builds_a_runtime_from_files_it_puts() {
     let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
     let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
-    let device = key.verifying_key().to_bytes();
     let cache = crate::device::packages::PackageCache::new(
-        &device,
+        &key,
+        true,
         &dir.path().join("packages"),
         std::sync::Arc::new(crate::device::control::DeviceContent::at(
             &dir.path().join("content"),

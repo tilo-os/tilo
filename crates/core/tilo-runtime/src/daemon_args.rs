@@ -18,9 +18,6 @@ pub enum Mode {
         app_id: String,
         /// A workspace this profile joined; the profile's own workspace when `None`.
         workspace: Option<String>,
-        /// A `.tapp` built and signed by this device as a development build of `app_id`: it is
-        /// installed first, and the app id it runs as is this one.
-        dev_package: Option<PathBuf>,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -184,9 +181,8 @@ fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
         .ok_or_else(|| invalid("--workspace requires a workspace id"))
 }
 
-/// `--run-app APP_ID [--workspace WORKSPACE] [--dev-package FILE]`, after `--run-app`: the app
-/// this computer has installed, and no program of the caller's. A development build is the
-/// device's own package, installed first and launched the same way.
+/// `--run-app APP_ID [--workspace WORKSPACE]`, after `--run-app`: the app this computer has
+/// installed, and no program of the caller's.
 fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
     let app_id = arguments
         .next()
@@ -196,7 +192,6 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
         return Err(invalid("invalid application ID"));
     }
     let mut workspace = None;
-    let mut dev_package = None;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--workspace") if workspace.is_none() => {
@@ -208,27 +203,13 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
                         .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
                 );
             }
-            Some("--dev-package") if dev_package.is_none() => {
-                let path = arguments
-                    .next()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| invalid("--dev-package requires a .tapp file"))?;
-                if !path.is_absolute() {
-                    return Err(invalid("--dev-package requires an absolute path"));
-                }
-                dev_package = Some(path);
-            }
             _ => {
                 return Err(invalid(
-                    "--run-app APP_ID [--workspace WORKSPACE] [--dev-package FILE] starts an app \
-                     this computer has installed; it takes no program",
+                    "--run-app APP_ID [--workspace WORKSPACE] starts an app this computer has \
+                     installed; it takes no program",
                 ));
             }
         }
     }
-    Ok(Mode::RunApp {
-        app_id,
-        workspace,
-        dev_package,
-    })
+    Ok(Mode::RunApp { app_id, workspace })
 }

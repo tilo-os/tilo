@@ -274,7 +274,8 @@ fn device() -> (tempfile::TempDir, PackageCache, tilo_test_env::ScopedEnv) {
         .set("TILO_STORE_CACHE_DIR", dir.path().join("cache"));
     let root = dir.path().join("apps");
     let cache = PackageCache::new(
-        &[7; 32],
+        &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+        true,
         &root,
         Arc::new(DeviceContent::at(&dir.path().join("content"))),
     );

@@ -12,7 +12,7 @@ use package_store::installer::{self, Error, data_home_root, decode_hex_32, store
 use package_store::{Admission, Catalog, InstalledPackage, PackageStore, shim};
 use serde::{Deserialize, Serialize};
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustedAttestor};
-use tilo_app_package::{BlobFetcher, PackageId};
+use tilo_app_package::{BlobFetcher, PackageId, SigningIdentity};
 
 pub mod catalogue;
 #[cfg(unix)]
@@ -101,11 +101,15 @@ pub enum Change {
         #[serde(default)]
         payload_from: Option<String>,
     },
-    /// Install the development build in `file`: a package this device's developer built and
-    /// signed, which runs under the id its `[package.dev]` marking derives, apart from any
-    /// installed app and its grants.
+    /// Install the development build of `manifest`'s app: the app's authored manifest and its
+    /// payload, as a build leaves them. The device marks it, packs it, signs it with its own key,
+    /// and installs it under the id its dev marking derives, apart from any installed app and
+    /// its grants.
     InstallDev {
-        file: Uploaded,
+        /// The app's authored manifest (`tilo-app.toml`).
+        manifest: Uploaded,
+        /// The package's files, each by its path in the payload.
+        payload: Vec<HostFile>,
     },
     /// Swap in a newer version of `app` (of every installed package without one), from `file`
     /// or the configured registries.
@@ -280,9 +284,10 @@ pub struct Target<'a> {
     pub store: &'a PackageStore,
     pub catalog: &'a Catalog,
     pub max_store_bytes: u64,
-    /// The key of the device whose cache this is, when a device's daemon makes the change: the
-    /// only device whose development builds it installs.
-    pub device: Option<[u8; 32]>,
+    /// The signing identity of the device whose cache this is, when a device's daemon makes the
+    /// change: it marks, packs and signs the development builds it installs, and installs no
+    /// other device's. The key never leaves the daemon.
+    pub device: Option<&'a SigningIdentity>,
 }
 
 impl Target<'_> {
@@ -423,28 +428,13 @@ fn run(
             entry.registers_host_search(),
             said,
         ),
-        Change::InstallDev { file: named } => {
+        Change::InstallDev { manifest, payload } => {
             let Some(device) = target.device else {
                 return Err(Error::Policy(
                     "a development build is installed by the device that built it".into(),
                 ));
             };
-            let bytes = fs::read(entry.file(&named)?)?;
-            let report = installer::install_dev(
-                target.store,
-                target.catalog,
-                &bytes,
-                device,
-                &named.source,
-            )?;
-            said.line(format!(
-                "installed development build: {}",
-                report
-                    .selected
-                    .as_ref()
-                    .map_or_else(String::new, |selected| selected.id.clone())
-            ));
-            Ok(())
+            dev_build(target, &manifest, &manifest.source, &payload, entry, device, said)
         }
         Change::Update {
             app,
@@ -692,6 +682,107 @@ fn fetch_runtime(
         registers_host_search,
         said,
     )
+}
+
+/// Whether `caller` may ask a device to install a development build: the person on this
+/// device's own daemon connection, as its seats admitted them.
+///
+/// A key another person's account acts as on this device, a visitor, an agent and the operating
+/// system act for somebody else (or for nobody), and a confined device's person is not their own
+/// connection either: all are refused. `personal` is the cache's: this computer's own daemon for
+/// its account (not the system's), where that account reaches the daemon alone and the device
+/// answers for it before its person's services run.
+///
+/// # Errors
+/// The caller is not the person on this device's own connection: why.
+pub fn dev_build_admitted(
+    caller: &tilo_actions::remote::Caller,
+    personal: bool,
+) -> Result<(), String> {
+    if caller.is_own_connection() && !caller.is_system() {
+        return Ok(());
+    }
+    // The account running this computer's own daemon is the device, before its person's
+    // services run and after: the daemon's socket is that account's alone.
+    if personal && caller.is_system() {
+        return Ok(());
+    }
+    Err("a development build is installed by the person on this device's own daemon \
+         connection, never by a key, a visitor, an agent or the system"
+        .into())
+}
+
+/// Mark `manifest`'s app as this device's development build, pack and sign it with `device`, and
+/// install it: the device never writes its key anywhere a caller can read it.
+fn dev_build(
+    target: &Target<'_>,
+    manifest: &Uploaded,
+    source: &str,
+    payload: &[HostFile],
+    entry: &Entry<'_>,
+    device: &SigningIdentity,
+    said: &mut Said,
+) -> Result<(), Error> {
+    let text = fs::read_to_string(entry.file(manifest)?)?;
+    let authored = tilo_app_package::Manifest::from_toml_str(&text)
+        .map_err(|error| Error::Parse(format!("the app's manifest: {error}")))?;
+    if authored.package.id.trim().is_empty() {
+        return Err(Error::Policy("the app's manifest names no id".into()));
+    }
+    // The build's files, as `pack` walks them: a payload tree under the device's temporary
+    // directory, written from the bytes the caller put in the device's content.
+    let dir = target.store.layout().tmp().join(format!(
+        "dev-build-{}-{}",
+        std::process::id(),
+        tilo_clock::unix_now()
+    ));
+    let cleanup = || {
+        let _ = fs::remove_dir_all(&dir);
+    };
+    let written = (|| -> Result<(), Error> {
+        fs::create_dir_all(&dir)?;
+        for file in payload {
+            let relative = Path::new(&file.path);
+            if !tilo_app_package::is_safe_path(&file.path) || relative == Path::new("tilo-app.toml") {
+                return Err(Error::Policy(format!(
+                    "{} is not a payload path",
+                    file.path
+                )));
+            }
+            let at = dir.join(relative);
+            if let Some(parent) = at.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(entry.file(&file.file)?, &at)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = written {
+        cleanup();
+        return Err(error);
+    }
+    let packed = tilo_app_package::pack_dev(&dir, &authored, &authored.package.id, device)
+        .map_err(|error| Error::Parse(format!("packing the development build: {error}")));
+    let packed = match packed {
+        Ok(packed) => packed,
+        Err(error) => {
+            cleanup();
+            return Err(error);
+        }
+    };
+    let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))
+        .map_err(|error| Error::Parse(format!("writing the development build: {error}")));
+    let installed = bytes.and_then(|bytes| {
+        installer::install_dev(target.store, target.catalog, &bytes, device, source)
+    });
+    cleanup();
+    let report = installed?;
+    let id = report
+        .selected
+        .as_ref()
+        .map_or_else(String::new, |selected| selected.id.clone());
+    said.line(format!("installed development build: {id}"));
+    Ok(())
 }
 
 /// Install the package at `path` (`source` names where it came from), saying how to run it.
@@ -1403,4 +1494,45 @@ fn pin_runtime(version: &str, pinned: bool, said: &mut Said) -> Result<(), Error
         said.line(format!("unpinned runtime bundle: tilo-runtime/{version}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::remote::Caller;
+
+    /// A development build is signed with the device's own key: only the person on that device's
+    /// own daemon connection may ask for one.
+    #[test]
+    fn only_the_person_on_this_devices_connection_installs_development_builds() {
+        for personal in [true, false] {
+            assert!(
+                super::dev_build_admitted(&Caller::own_person(String::from("person")), personal)
+                    .is_ok(),
+                "the person on their own device's connection installs one"
+            );
+            for refused in [
+                Caller::authenticated([7; 32], [8; 32]),
+                Caller::visitor([9; 32]),
+                Caller::local_person(String::from("person")),
+                Caller::local_agent(String::from("an-agent")),
+            ] {
+                assert!(
+                    super::dev_build_admitted(&refused, personal).is_err(),
+                    "a key, a visitor, a confined device's person or an agent asks for no \
+                     development build: {refused:?}"
+                );
+            }
+        }
+        // The system daemon serves accounts it is no person for, and its system caller is not
+        // one: only a daemon this computer's own account runs answers its system caller for the
+        // device.
+        assert!(
+            super::dev_build_admitted(&Caller::local_system(), false).is_err(),
+            "the system daemon installs no development build for an account"
+        );
+        assert!(
+            super::dev_build_admitted(&Caller::local_system(), true).is_ok(),
+            "this computer's own daemon answers its account as the device"
+        );
+    }
 }
