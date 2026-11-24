@@ -890,12 +890,24 @@ action open_window(resource: host.Resource) {
                 ),
             );
             let found = books.found_online();
-            books.call(
+            let made = returned_ref(books.call(
                 "download_found",
                 books.args(
                     "download_found",
                     &[("lib", Value::resource(&books.lib)), ("f", Value::resource(&found))],
                 ),
+            ));
+            let declared = books
+                .app
+                .meta()
+                .actions
+                .iter()
+                .find(|action| action.name == "download_found")
+                .expect("the app downloads a book it found");
+            assert_eq!(
+                declared.role.as_deref(),
+                Some("primary"),
+                "a window opens what a primary action returns"
             );
             assert!(
                 books
@@ -914,6 +926,10 @@ action open_window(resource: host.Resource) {
             let shelf = books.rt.project(&books.rt.read(&books.lib, "books").unwrap());
             assert_eq!(shelf["count"], serde_json::json!(1), "the book is on the shelf");
             let book = books.opened_books()[0].clone();
+            assert_eq!(
+                book, made,
+                "the press lands on the book it downloaded, which the window opens"
+            );
             assert_eq!(books.said(&book, "title"), "The Tide Glass");
             assert_eq!(books.said(&book, "language"), "en");
         }

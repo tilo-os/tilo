@@ -749,19 +749,18 @@ action find_books(lib: Library, query: Text) uses web (
     }
 }
 
-/// Downloads the book an online search found and opens it.
-action download_found(lib: Library, f: Found) uses web (
+/// Downloads the book an online search found and opens it: the window opens the book the
+/// action returns, as it opens what any primary action makes.
+primary action download_found(lib: Library, f: Found) -> Book uses web (
     icon: .cloud_download,
     did: "downloaded a book",
 ) {
     let answer = web.get(f.url)
-    if not answer.ok {
-        return
-    }
+    require answer.ok "The book could not be downloaded"
     let file = File.of_bytes("{f.title}.epub", answer.body)
     let book = open_book(lib, file)
     lib.found.remove(f)
-    session.open(resource: book)
+    book
 }
 
 /// Takes an online search's answers away.
