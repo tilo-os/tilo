@@ -280,25 +280,21 @@ mod cases {
         );
         assert_eq!(
             labels.get(1..6).unwrap_or_default(),
-            ["Complete", "Pick date…", "Today", "Tomorrow", "Next week"],
+            ["Complete", "Pick date…", "Assign…", "Indent", "Delete"],
             "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
             dump(tree)
         );
-        // The view places Delete last: what follows it is what the view left over.
-        let placed = labels
-            .iter()
-            .position(|label| label == "Delete")
-            .unwrap_or_else(|| panic!("the view places Delete, whole menu {labels:?}"))
-            + 1;
         assert!(
-            menu[placed..]
+            menu[6..]
                 .iter()
                 .all(|item| item.props.get("group") == Some(&Value::text("More"))),
             "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
             dump(tree)
         );
         assert!(
-            labels.contains(&"Duplicate".to_owned()),
+            labels
+                .get(6..)
+                .is_some_and(|held| held.contains(&"Duplicate".to_owned())),
             "every other action a task takes stays in the row's menu, whole menu \
              {labels:?}:\n{}",
             dump(tree)
@@ -348,7 +344,7 @@ mod cases {
         let behind: Vec<String> = overflow.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             behind,
-            ["Delete finished tasks", "Add origin…"],
+            ["Delete finished tasks"],
             "the bar's overflow button holds the actions the view placed, in its order, and then the \
              rest of what Tasks offers that the window does not already offer: New project is \
              its Projects section's add, and stands there alone:\n{}",
@@ -428,7 +424,7 @@ mod cases {
             .iter()
             .map(|item| text_of(item, "label"))
             .collect();
-        for asks in ["Pick date…", "Project…", "Label…"] {
+        for asks in ["Pick date…", "Project…", "Assign…"] {
             assert!(
                 labels.iter().any(|label| label == asks),
                 "a form opens for {asks}, so it says so: {labels:?}\n{}",
@@ -487,6 +483,44 @@ mod cases {
                 .all(|button| button.props.get("role") != Some(&Value::text("primary"))),
             "no primary button of the task's actions:\n{}",
             dump(tree)
+        );
+    }
+
+    /// A project is deleted from its own page: "Delete project" stands behind the "…" beside its
+    /// name, and choosing it takes the project away and sends its tasks back to the inbox.
+    #[test]
+    fn a_project_is_deleted_from_behind_its_pages_dots() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        let project = w.project(&root, "Website launch");
+        let task = w.task(&root, "Write the launch post");
+        w.call(
+            "file",
+            vec![Value::resource(&task), Value::resource(&project)],
+        );
+        let window = w.window("project_page", &project);
+        let tree = window.tree();
+        let delete = of_kind(tree, "ui.MenuButton")
+            .into_iter()
+            .filter(|button| button.key.ends_with("~more"))
+            .flat_map(|more| more.children.iter())
+            .find(|item| {
+                item.kind == "ui.MenuItem"
+                    && item.props.get("label") == Some(&Value::text("Delete project"))
+            })
+            .unwrap_or_else(|| panic!("the page offers to delete the project:\n{}", dump(tree)))
+            .key
+            .clone();
+        window.fire(&delete, "choose").unwrap();
+        let projects = |at: &ResourceRef| match w.rt.read(at, "projects").unwrap() {
+            Value::List(items) => items.len(),
+            other => panic!("a list: {other:?}"),
+        };
+        assert_eq!(projects(&root), 0, "the project is gone");
+        assert_eq!(
+            w.rt.read(&task, "project").unwrap(),
+            Value::none(),
+            "its task waits in the inbox"
         );
     }
 
