@@ -172,6 +172,28 @@ fn read_block(
     tilo_reference::embed::read_text(&b.text, runs, read, unshared)
 }
 
+/// The source a block's picture names: an `image` block by its `src`, the address it is read
+/// from, or by the `blob` it was kept as where its bytes came with it; a paragraph that is
+/// `![alt](source)` alone by that source, which is how a Markdown picture reads.
+#[must_use]
+pub fn picture_source(block: &tilo_doc::snapshot::BlockView) -> Option<String> {
+    if block.kind == "image" {
+        let held = |key: &str| match block.attrs.get(key) {
+            Some(tilo_doc::AttrVal::Str(value)) => Some(value.clone()),
+            _ => None,
+        };
+        return held("src").or_else(|| held("blob"));
+    }
+    if block.kind != "paragraph" || !block.text.starts_with("![") || !block.text.ends_with(')') {
+        return None;
+    }
+    let open = block.text.rfind("](")?;
+    block
+        .text
+        .get(open.saturating_add(2)..block.text.len().saturating_sub(1))
+        .map(str::to_owned)
+}
+
 impl RichValue {
     /// The text a Markdown document says, as `RichText.from_markdown(text)` reads one, without a
     /// bundle of pages to resolve its links against.
@@ -205,6 +227,15 @@ impl RichValue {
         Self {
             blocks: text.split('\n').map(paragraph).collect(),
         }
+    }
+
+    /// The sources its pictures name, in the order they stand: a document's picture is a
+    /// paragraph that is `![alt](source)` alone. One a host kept is an address of the workspace's
+    /// content; one a sender wrote is the address it names, which nothing is read from until a
+    /// person asks.
+    #[must_use]
+    pub fn images(&self) -> Vec<String> {
+        self.blocks.iter().filter_map(picture_source).collect()
     }
 
     /// Whether it says nothing: no paragraph holds text, and none is something other than

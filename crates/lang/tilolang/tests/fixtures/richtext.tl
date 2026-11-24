@@ -52,6 +52,12 @@ action post(b: Board, body: RichText) {
     if not body.is_empty() { b.posts.insert(Post(body: body)) }
 }
 
+/// Posts what an HTML text says: its paragraphs, its marks and links, and the pictures it names.
+action post_html(b: Board, html: Text) -> Post {
+    let said = RichText.from_html(html)
+    b.posts.insert(Post(body: said))
+}
+
 /// How many posts the board holds.
 action post_count(b: Board) -> Int {
     b.posts.len()

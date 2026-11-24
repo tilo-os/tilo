@@ -587,4 +587,44 @@ mod cases {
             assert_eq!(a.body(&post).written_text(), "Big Hello world");
         }
     }
+
+    /// The document an HTML text says: its paragraphs and links read, and no script or style of
+    /// it part of the text. The pictures it names are the sources they name, kept where they were
+    /// named until someone brings them in.
+    #[test]
+    fn an_html_text_reads_as_the_document_it_says() {
+        let store = AmStore::new();
+        let w = Workspace::on(&store, None);
+        let made = w.call(
+            "post_html",
+            vec![
+                Value::resource(&w.board),
+                Value::text(
+                    "<p>Hello <strong>Ada</strong>,</p>\
+                     <p>The <a href=\"https://tilo.sh\">plan</a> is ready.</p>\
+                     <img src=\"https://pictures.example/lighthouse.png\" alt=\"the lighthouse\">\
+                     <script>alert('secret words')</script><style>p{color:red}</style>",
+                ),
+            ],
+        );
+        let InvokeOutcome::Done(Value::Ref(post)) = made else {
+            panic!("post_html answered {made:?}");
+        };
+        let post = (*post.target).clone();
+        let body = w.body(&post);
+        let text = body.written_text();
+        assert!(
+            text.contains("Hello Ada,") && text.contains("The plan is ready."),
+            "the document's words are its paragraphs: {text}"
+        );
+        assert!(
+            !text.contains("secret words") && !text.contains("color:red"),
+            "nothing a script or a style says is part of the text: {text}"
+        );
+        assert_eq!(
+            body.images(),
+            ["https://pictures.example/lighthouse.png"],
+            "the pictures it names are the sources it wrote"
+        );
+    }
 }
