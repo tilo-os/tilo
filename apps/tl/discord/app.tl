@@ -1,4 +1,4 @@
-app so.tilo.discord "Discord" (
+app so.tilo.discord.preview "Discord" (
     icon: .discord,
     category: .network,
     tagline: "Discord servers in the workspace's conversations",

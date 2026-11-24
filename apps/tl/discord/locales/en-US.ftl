@@ -1,9 +1,9 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-discord = Discord
+d-so-tilo-discord-preview = Discord
 
-d-so-tilo-discord-keywords = discord, chat, server, channels
+d-so-tilo-discord-preview-keywords = discord, chat, server, channels
 
 d-dxitdnte = Discord
     .doc = A connected Discord account: the server it bridges, what the bridge knows of both sides, and who here linked their Discord account.
