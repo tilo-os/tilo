@@ -15,11 +15,23 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, settled};
+use crate::workspaces::Workspaces;
 use crate::workspaces::tests::{governor, test_host};
 
 /// The agent that asks here, by its id in the workspace.
 const AGENT: &str = "scout";
+
+/// A workspace of `workspaces` and the dispatch that governs it here: a host keeps one store of
+/// the calls that wait for a person's yes and hands its approve back to its one dispatch, so a
+/// call that waits is followed through that one and never through a second made beside it.
+async fn governed(workspaces: &Workspaces) -> (String, WorkspaceId, ServiceWorkspaceActions) {
+    let summary = workspaces.create("Team").await.unwrap();
+    let service = workspaces
+        .governance()
+        .expect("the host's own dispatch governs its workspaces");
+    (summary.workspace, summary.workspace_id, service)
+}
 
 /// The call of `target` with `argument`, under a fresh invocation id.
 fn calling(target: RemoteActionTarget, argument: Value) -> InvokeRequest {

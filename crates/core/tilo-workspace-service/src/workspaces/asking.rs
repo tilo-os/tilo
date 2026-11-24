@@ -341,7 +341,10 @@ impl Workspaces {
     /// Keep `request`, which `caller` made and which waits for its person's yes showing them
     /// `facts`, as its asked record: in the workspace the call acts in, else in the person's
     /// own workspace here. The person asked is the request's own, as its caller names them,
-    /// never whoever admitted the connection it came on. `None` where no store here keeps
+    /// never whoever admitted the connection it came on. The record is kept under the
+    /// workspace's identity, which is the `workspace` every reading of its invocations is
+    /// addressed by, never the name it shows: a record kept under the name would wait for its
+    /// person where no reading of the workspace finds it. `None` where no store here keeps
     /// asked records.
     pub(crate) async fn keep_asked(
         &self,
@@ -352,7 +355,7 @@ impl Workspaces {
     ) -> Option<Result<RecordRef, String>> {
         let records = self.asked_records()?;
         let workspace = match workspace_id {
-            Some(id) => self.workspace_name(id).await,
+            Some(id) => self.workspace_identity(id).await,
             None => caller
                 .user_public_key()
                 .and_then(|person| self.own_workspace_of(person)),

@@ -101,7 +101,7 @@ impl DeviceWork {
     }
 
     /// The workspaces' governance, while it serves: held weakly, as it holds the workspaces.
-    fn governance(&self) -> Option<super::ServiceWorkspaceActions> {
+    pub(crate) fn governance(&self) -> Option<super::ServiceWorkspaceActions> {
         let shared = self.governance.get()?.upgrade()?;
         Some(super::ServiceWorkspaceActions { shared })
     }
