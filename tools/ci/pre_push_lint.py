@@ -197,15 +197,16 @@ LICENSE_POLICY = "tools/sdk/license-policy.toml"
 
 def builder_license_findings(root: Path, metadata: dict) -> list[str]:
     """Each Tilo crate a published builder crate's manifests reach whose license LICENSING.md does
-    not allow there: the half of t's builder-licenses check that reads only the manifests, so a
-    push that would put AGPL code under tilo-ui, tilo-app or tilolang is refused before it lands.
-    The third-party graph on every target stays t's check."""
+    not allow there, or that could not be published with it: t's builder-manifests check, so a
+    push that would put AGPL or unpublishable code under tilo-ui, tilo-app or tilolang is refused
+    before it lands. The third-party graph on every target stays t's builder-licenses check."""
     spec = importlib.util.spec_from_file_location("check_builder_licenses", root / BUILDER_LICENSES)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     policy = tomllib.loads((root / LICENSE_POLICY).read_text())
     reached = module.manifest_closure(metadata["packages"], policy["builder_roots"])
-    return module.manifest_findings(reached, frozenset(policy["allowed_expressions"]))
+    return (module.manifest_findings(reached, frozenset(policy["allowed_expressions"]))
+            + module.publishable_findings(reached))
 
 
 def builder_licenses_range(root: Path, push: "Push") -> int:
@@ -224,7 +225,8 @@ def builder_licenses_range(root: Path, push: "Push") -> int:
     if not findings:
         return 0
     say("pre-push: refusing the push: a published builder crate would reach code LICENSING.md "
-        "keeps AGPL (python3 tools/sdk/check_builder_licenses.py):")
+        "keeps AGPL, or a crate that cannot be published with it "
+        "(python3 tools/sdk/check_builder_licenses.py --manifests):")
     say_lines(findings)
     return 1
 

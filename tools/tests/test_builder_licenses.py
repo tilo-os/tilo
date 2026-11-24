@@ -50,6 +50,30 @@ class BuilderManifestGraph(unittest.TestCase):
         reached = builder_licenses.manifest_closure(packages, ["tilo-ui"])
         self.assertEqual(sorted(reached), ["codegen", "tilo-theme", "tilo-ui"])
 
+    def test_what_a_builder_crate_reaches_must_be_publishable_with_it(self):
+        packages = [
+            package("tilolang", "MIT", ("tilo-terminal", None, False, True)),
+            # A path dependency without a version; a dev-dependency by path alone is dropped
+            # from the published manifest and asks for nothing.
+            package("tilo-terminal", "MIT", ("environment", None, False),
+                    ("tilo-test-env", "dev", False)),
+            package("environment", "MIT"),
+            package("tilo-test-env", "AGPL-3.0-only"),
+        ]
+        packages[1]["publish"] = []
+        reached = builder_licenses.manifest_closure(packages, ["tilolang"])
+        findings = builder_licenses.publishable_findings(reached)
+        self.assertEqual(len(findings), 3, findings)
+        self.assertIn("environment: a builder crate reaches it, and its name has no", findings[0])
+        self.assertIn("tilo-terminal: a builder crate reaches it, and it has publish = false",
+                      findings[1])
+        self.assertIn("path dependency environment has no version", findings[2])
+        packages[1]["publish"] = None
+        packages[1]["dependencies"][0]["req"] = "^0.1.0"
+        packages[2]["name"] = packages[1]["dependencies"][0]["name"] = "tilo-environment"
+        reached = builder_licenses.manifest_closure(packages, ["tilolang"])
+        self.assertEqual(builder_licenses.publishable_findings(reached), [])
+
     def test_a_root_outside_the_workspace_is_refused(self):
         with self.assertRaises(ValueError):
             builder_licenses.manifest_closure([package("tilolang", "MIT")], ["tilo-ui-typo"])

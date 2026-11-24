@@ -11,6 +11,14 @@ depends on it. LICENSING.md licenses them MIT, so:
 - every third-party crate they reach on any supported target, with every
   feature a builder crate ships (all but `test-support`), is approved too.
 
+Every Tilo crate they reach is published with them, so it must be publishable too: `publish`
+not false, a `tilo-` or `tilolang` package name, and a version on every path dependency its
+published manifest keeps (crates.io takes no path).
+
+`--manifests` checks only what the manifests say (`cargo metadata` and a walk of the graph, in
+seconds): what every push to main runs, and the pre-push hook. The full check adds the
+third-party graph on every target.
+
 A crate's own license field is the decision: shell, session, host and server
 code stays AGPL, so a builder crate reaching one fails here, and the dependency
 is what gets fixed. Which crates a group may link is the crate layout's
@@ -70,6 +78,27 @@ def manifest_findings(reached, allowed):
     )
 
 
+# What a published crate's package name starts with: whose crate it is on crates.io.
+PUBLISHED_PREFIXES = ("tilo-", "tilolang")
+
+
+def publishable_findings(reached):
+    """Why each crate of `reached` (a builder crate or what one reaches) could not be published
+    with them."""
+    findings = []
+    for name, package in sorted(reached.items()):
+        if package.get("publish") == []:
+            findings.append(f"{name}: a builder crate reaches it, and it has publish = false")
+        if not name.startswith(PUBLISHED_PREFIXES):
+            findings.append(f"{name}: a builder crate reaches it, and its name has no tilo- or "
+                            "tilolang prefix")
+        for dependency in package["dependencies"]:
+            if published(dependency) and dependency.get("path") and dependency["req"] == "*":
+                findings.append(f"{name}: a builder crate reaches it, and its path dependency "
+                                f"{dependency['name']} has no version")
+    return findings
+
+
 def shipped_features(package):
     return sorted(name for name in package.get("features", {}) if name not in UNSHIPPED_FEATURES)
 
@@ -90,6 +119,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--target", action="append", help="repeat to select targets; default: every supported target")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--manifests", action="store_true",
+                        help="check only what the manifests say, in seconds; not the third-party graph")
     args = parser.parse_args()
     policy = tomllib.loads((ROOT / "tools/sdk/license-policy.toml").read_text())
     allowed = frozenset(policy["allowed_expressions"])
@@ -102,13 +133,13 @@ def main():
     try:
         metadata = json.loads(subprocess.check_output(command, cwd=ROOT, text=True))
         reached = manifest_closure(metadata["packages"], roots)
-        errors = manifest_findings(reached, allowed)
+        errors = manifest_findings(reached, allowed) + publishable_findings(reached)
         for error in errors:
             print(error, file=sys.stderr)
         failed |= bool(errors)
         if not errors:
-            print(f"builder manifests: {len(reached)} Tilo crates, all approved")
-        for target in args.target or TARGETS:
+            print(f"builder manifests: {len(reached)} Tilo crates, all approved and publishable")
+        for target in [] if args.manifests else args.target or TARGETS:
             target_errors = set()
             for root in roots:
                 output = tree(cargo, root, shipped_features(reached[root]), target, args.offline)

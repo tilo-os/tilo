@@ -729,6 +729,15 @@ requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I tools/sdk/check_client_licenses.py"
 
 [[check]]
+# What the published crates' manifests reach is MIT and publishable with them (publish not false,
+# a tilo-/tilolang name, a version on every kept path dependency): `cargo metadata` and a walk of
+# the graph, in seconds, on every push. The pre-push hook runs the same; a push made past the hook
+# goes red here, on the push that did it, rather than in a release's dry run.
+name = "builder-manifests"
+requires = ["arch=any"]
+run = "python3 -m unittest tools/tests/test_builder_licenses.py && python3 -I tools/sdk/check_builder_licenses.py --manifests"
+
+[[check]]
 # The published crates people build on stay MIT through their whole graph (LICENSING.md).
 name = "builder-licenses"
 requires = ["arch=any"]

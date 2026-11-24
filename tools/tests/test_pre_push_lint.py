@@ -937,15 +937,24 @@ class BuilderLicenseGateTests(unittest.TestCase):
                 {"name": dep, "kind": None, "req": "^0.1.0", "path": f"/x/{dep}"} for dep in deps]}
         roots = [package(name, "MIT") for name in policy["builder_roots"]]
         roots[0]["dependencies"].append(
-            {"name": "leaf", "kind": None, "req": "^0.1.0", "path": "/x/leaf", "optional": True})
-        return {"packages": [*roots, package("leaf", leaf_license)]}
+            {"name": "tilo-leaf", "kind": None, "req": "^0.1.0", "path": "/x/tilo-leaf", "optional": True})
+        return {"packages": [*roots, package("tilo-leaf", leaf_license)]}
 
     def test_an_agpl_crate_under_a_builder_crate_is_found_and_an_mit_one_is_not(self):
         module = pre_push_lint()
         found = module.builder_license_findings(ROOT, self.metadata("AGPL-3.0-only"))
         self.assertEqual(len(found), 1)
-        self.assertIn("leaf", found[0])
+        self.assertIn("tilo-leaf", found[0])
         self.assertEqual(module.builder_license_findings(ROOT, self.metadata("MIT")), [])
+
+    def test_an_unpublishable_crate_under_a_builder_crate_is_found(self):
+        module = pre_push_lint()
+        metadata = self.metadata("MIT")
+        metadata["packages"][-1]["publish"] = []
+        found = module.builder_license_findings(ROOT, metadata)
+        self.assertEqual(len(found), 1)
+        self.assertIn("tilo-leaf", found[0])
+        self.assertIn("publish = false", found[0])
 
     def test_a_push_that_changes_no_manifest_is_not_asked(self):
         module = pre_push_lint()
