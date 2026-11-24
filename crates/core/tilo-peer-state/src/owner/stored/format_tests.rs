@@ -11,9 +11,9 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_files::native::migration::{assert_golden_bytes, assert_step_reads_previous};
 
 /// An entry as this build writes it.
-const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v9.hex");
+const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v10.hex");
 /// An entry as the build before this one wrote it.
-const PREVIOUS: &str = include_str!("../../../golden/owner-workspace-document/v8.hex");
+const PREVIOUS: &str = include_str!("../../../golden/owner-workspace-document/v9.hex");
 /// An entry as the oldest build this one brings up wrote it, with the device's join log.
 const OLDEST: &str = include_str!("../../../golden/owner-workspace-document/v6.hex");
 const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";

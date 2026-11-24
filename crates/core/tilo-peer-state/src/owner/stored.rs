@@ -16,7 +16,7 @@ pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
 /// the workspace named once, by its id.
-pub(crate) const WORKSPACE_VERSION: u32 = 9;
+pub(crate) const WORKSPACE_VERSION: u32 = 10;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -117,8 +117,9 @@ pub(crate) struct StoredWorkspace {
 /// One frame of this device's own, kept until a link carried it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FrameToSend {
-    #[serde(with = "base64_bytes")]
-    pub bytes: Vec<u8>,
+    /// Shared: every change to the record copies it, and a device offline holds every write it made.
+    #[serde(with = "base64_shared")]
+    pub bytes: std::sync::Arc<[u8]>,
 }
 
 impl StoredWorkspace {
@@ -283,6 +284,25 @@ impl<'de> Deserialize<'de> for DurablePeer {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = base64_bytes::deserialize(deserializer)?;
         Ok(Self::read(&bytes))
+    }
+}
+
+/// [`base64_bytes`] for bytes a record shares between its copies.
+pub(crate) mod base64_shared {
+    use serde::{Deserializer, Serializer};
+    use std::sync::Arc;
+
+    pub(crate) fn serialize<S: Serializer>(
+        bytes: &Arc<[u8]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        super::base64_bytes::serialize(bytes, serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<[u8]>, D::Error> {
+        super::base64_bytes::deserialize(deserializer).map(Arc::from)
     }
 }
 

@@ -8,7 +8,8 @@
 //! An entry holds what its publication changed and nothing else: the
 //! workspace's own fields (as JSON), the server's answers that changed, the
 //! writes its server took or was given to take, ownership's lists of writes as
-//! stretches of the writes they held before, and of its replica's durable encoding
+//! stretches of the writes they held before, the frames this device keeps until a link takes
+//! them as stretches of the frames it kept before, and of its replica's durable encoding
 //! the stretches before and after the documents and each document it changed,
 //! each as a delta of what the entry before left. The answers, the writes not
 //! taken and the documents are maps whose copies share what neither changed,
@@ -23,7 +24,7 @@
 use crate::ordered::Ordered;
 use crate::owner::answers::AnswerSignature;
 use crate::owner::publication::{Answer, Journaled, StoredOutgoing};
-use crate::owner::stored::{DurablePeer, StoredWorkspace, WORKSPACE_VERSION};
+use crate::owner::stored::{DurablePeer, FrameToSend, StoredWorkspace, WORKSPACE_VERSION};
 use crate::state::{DocumentParts, DurableParts, Route};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -47,6 +48,9 @@ struct Entry {
     unanswered: Vec<(AnswerSignature, bool)>,
     /// Ownership's governance, head and tail, each as stretches of the writes the three held before.
     writes: [Vec<Stretch>; 3],
+    /// The frames this device keeps until a link takes them, as stretches of the frames it kept
+    /// before: a device offline keeps every write it makes, and a write carries its own frame.
+    frames: Vec<FrameStretch>,
     /// The replica's stretches before its documents.
     head: Vec<Op>,
     /// Each document that changed, with its stretches now, or `None` when
@@ -91,6 +95,44 @@ enum Stretch {
     Writes(Vec<StoredOutgoing>),
 }
 
+/// An entry as a build before [`LAYOUT_VERSION`] appended it: the frames a device kept were among
+/// the workspace's fields. A device's writes made offline live only there until a link takes them,
+/// so a journal a device appended before it updated is read on, not refused.
+#[derive(Debug, Serialize, Deserialize)]
+struct EntryBeforeFrames {
+    revision: u64,
+    fields: Vec<Op>,
+    answered: Vec<((String, String), Option<JournalAnswer>)>,
+    unanswered: Vec<(AnswerSignature, bool)>,
+    writes: [Vec<Stretch>; 3],
+    head: Vec<Op>,
+    documents: Vec<(Route, Option<DocumentOps>)>,
+    tail: Vec<Op>,
+}
+
+impl From<EntryBeforeFrames> for Entry {
+    fn from(entry: EntryBeforeFrames) -> Self {
+        Self {
+            revision: entry.revision,
+            fields: entry.fields,
+            answered: entry.answered,
+            unanswered: entry.unanswered,
+            writes: entry.writes,
+            frames: Vec::new(),
+            head: entry.head,
+            documents: entry.documents,
+            tail: entry.tail,
+        }
+    }
+}
+
+/// One stretch of the frames a device keeps: frames it kept before, or frames of its own.
+#[derive(Debug, Serialize, Deserialize)]
+enum FrameStretch {
+    Kept { from: u32, len: u32 },
+    Frames(Vec<Vec<u8>>),
+}
+
 /// A document's stretches as a delta of what it held before.
 #[derive(Debug, Serialize, Deserialize)]
 struct DocumentOps {
@@ -102,6 +144,7 @@ struct DocumentOps {
 pub(crate) struct Written {
     fields: Arc<[u8]>,
     journaled: Journaled,
+    frames: Vec<Arc<[u8]>>,
     peer: DurableParts,
 }
 
@@ -123,13 +166,30 @@ impl Written {
 const FRAME_HEAD: usize = 4 + 32;
 
 /// The entry version whose journal this build reads: an entry is a delta of the snapshot it was
-/// appended beside, so a journal of another layout is refused. Version 9 changed no stored byte, so
-/// the journal a version 8 build appended reads here.
-pub(crate) const LAYOUT_VERSION: u32 = 8;
+/// appended beside. A journal of [`OLDEST_LAYOUT`] or later reads: one before this version carries
+/// the frames a device keeps among the workspace's fields ([`EntryBeforeFrames`]), and version 9
+/// changed no byte of version 8's.
+pub(crate) const LAYOUT_VERSION: u32 = 10;
+
+/// The oldest layout of a journal this build reads; one older is refused.
+pub(crate) const OLDEST_LAYOUT: u32 = 8;
+
+/// What an entry carries of a record: its fields, ownership's lists and the frames it keeps.
+struct Split {
+    fields: Arc<[u8]>,
+    journaled: Journaled,
+    frames: Vec<Arc<[u8]>>,
+}
 
 /// The workspace's own fields as JSON, as the snapshot holds them, without its replica and what
-/// [`Journaled`] carries apart: those as well.
-fn split(stored: &StoredWorkspace) -> Result<(Arc<[u8]>, Journaled), String> {
+/// [`Journaled`] and its frames carry apart: those as well.
+fn split(stored: &StoredWorkspace) -> Result<Split, String> {
+    split_as(stored, None)
+}
+
+/// [`split()`], or with `before_frames`, the fields as a build of that layout wrote them: its
+/// version, and the frames among them.
+fn split_as(stored: &StoredWorkspace, before_frames: Option<u32>) -> Result<Split, String> {
     let mut fields = StoredWorkspace {
         peer: DurablePeer::default(),
         ..stored.clone()
@@ -139,8 +199,22 @@ fn split(stored: &StoredWorkspace) -> Result<(Arc<[u8]>, Journaled), String> {
         .as_mut()
         .map(crate::owner::publication::StoredPublication::take_journaled)
         .unwrap_or_default();
+    let frames = match before_frames {
+        Some(version) => {
+            fields.version = version;
+            Vec::new()
+        }
+        None => std::mem::take(&mut fields.frames)
+            .into_iter()
+            .map(|frame| frame.bytes)
+            .collect(),
+    };
     let fields = serde_json::to_vec(&fields).map_err(|error| error.to_string())?;
-    Ok((fields.into(), journaled))
+    Ok(Split {
+        fields: fields.into(),
+        journaled,
+        frames,
+    })
 }
 
 /// What the first entry of a snapshot's journal is a delta of: `stored`,
@@ -150,10 +224,15 @@ fn split(stored: &StoredWorkspace) -> Result<(Arc<[u8]>, Journaled), String> {
 pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written, String> {
     let read: StoredWorkspace =
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
-    let (fields, journaled) = split(&read)?;
+    let Split {
+        fields,
+        journaled,
+        frames,
+    } = split(&read)?;
     Ok(Written {
         fields,
         journaled,
+        frames,
         peer: stored.peer.layout().clone(),
     })
 }
@@ -161,10 +240,15 @@ pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written
 /// What the next entry is a delta of, from the record itself: a store that
 /// decodes the record before it keeps it needs no second read of its snapshot.
 pub(super) fn first_of(stored: &StoredWorkspace) -> Result<Written, String> {
-    let (fields, journaled) = split(stored)?;
+    let Split {
+        fields,
+        journaled,
+        frames,
+    } = split(stored)?;
     Ok(Written {
         fields,
         journaled,
+        frames,
         peer: stored.peer.layout().clone(),
     })
 }
@@ -176,7 +260,11 @@ pub(super) fn next(
     stored: &StoredWorkspace,
     revision: u64,
 ) -> Result<(Vec<u8>, Written), String> {
-    let (fields, journaled) = split(stored)?;
+    let Split {
+        fields,
+        journaled,
+        frames,
+    } = split(stored)?;
     let peer = stored.peer.layout().clone();
     let empty: Arc<[Arc<[u8]>]> = Arc::from([]);
     let documents = Ordered::changes(
@@ -229,6 +317,7 @@ pub(super) fn next(
         .map(|change| (change.key.clone(), change.after.is_some()))
         .collect(),
         writes: stretches(&written.journaled.writes, &journaled.writes),
+        frames: frame_stretches(&written.frames, &frames),
         head: delta(&written.peer.head, &peer.head),
         documents,
         tail: delta(&written.peer.tail, &peer.tail),
@@ -238,6 +327,7 @@ pub(super) fn next(
         Written {
             fields,
             journaled,
+            frames,
             peer,
         },
     ))
@@ -256,22 +346,51 @@ fn frame(entry: &Entry) -> Result<Vec<u8>, String> {
 /// `stored`, a snapshot as read, as the entries of its journal `log` leave it, and
 /// the revision of the last entry, or `None` when the journal holds none.
 /// Reading stops at the first entry that is cut short or does not match its
-/// digest: no publication after it was acknowledged.
+/// digest: no publication after it was acknowledged. `layout` is the version of the snapshot the
+/// journal was appended beside, which a build of that version appended.
 pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
+    layout: u32,
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
     let mut rest = log;
-    replay_entries(stored, std::iter::from_fn(|| take(&mut rest).transpose()))
+    if layout < OLDEST_LAYOUT {
+        return Err(format!(
+            "the workspace's journal is a version {layout} one, and this build reads one of \
+             version {OLDEST_LAYOUT} or later"
+        ));
+    }
+    if layout < LAYOUT_VERSION {
+        return replay_entries(
+            stored,
+            std::iter::from_fn(|| {
+                take::<EntryBeforeFrames>(&mut rest)
+                    .map(|entry| entry.map(Entry::from))
+                    .transpose()
+            }),
+            Some(layout),
+        );
+    }
+    replay_entries(
+        stored,
+        std::iter::from_fn(|| take::<Entry>(&mut rest).transpose()),
+        None,
+    )
 }
 
-/// `stored`, a snapshot as read, as `entries` leave it, and the revision of the last one.
+/// `stored`, a snapshot as read, as `entries` leave it, and the revision of the last one: entries
+/// of the layout `before_frames` names when it names one ([`split_as`]).
 fn replay_entries(
     stored: StoredWorkspace,
     entries: impl Iterator<Item = Result<Entry, String>>,
+    before_frames: Option<u32>,
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
     let rope = |parts: &[Arc<[u8]>]| Rope::of(&parts.concat().into());
-    let (fields, mut journaled) = split(&stored)?;
+    let Split {
+        fields,
+        mut journaled,
+        mut frames,
+    } = split_as(&stored, before_frames)?;
     let mut fields = Rope::of(&fields);
     let layout = stored.peer.layout();
     let mut head = rope(&layout.head);
@@ -304,6 +423,7 @@ fn replay_entries(
             }
         }
         journaled.writes = replay_stretches(&journaled.writes, entry.writes)?;
+        frames = replay_frames(&frames, entry.frames)?;
         head = head.apply(entry.head)?;
         tail = tail.apply(entry.tail)?;
         for (route, ops) in entry.documents {
@@ -337,6 +457,13 @@ fn replay_entries(
     replayed.version = WORKSPACE_VERSION;
     if let Some(publication) = replayed.publication.as_mut() {
         publication.set_journaled(journaled);
+    }
+    // An entry before the frames went apart carried them in the fields, read back with them.
+    if before_frames.is_none() {
+        replayed.frames = frames
+            .into_iter()
+            .map(|bytes| FrameToSend { bytes })
+            .collect();
     }
     let whole = |rope: &Rope| -> Arc<[Arc<[u8]>]> { Arc::from([Arc::from(rope.to_vec())]) };
     replayed.peer = DurableParts {
@@ -416,6 +543,62 @@ fn replay_stretches(
         }
     }
     Ok(lists)
+}
+
+/// `new`, the frames a device keeps, as stretches of `old`, the frames it kept before: a link
+/// takes the oldest and a write adds its own, so the frames kept go on in their order and an
+/// entry carries only those it added, however many a device offline holds.
+fn frame_stretches(old: &[Arc<[u8]>], new: &[Arc<[u8]>]) -> Vec<FrameStretch> {
+    let mut stretches: Vec<FrameStretch> = Vec::new();
+    // The first frame before that a frame now may still be.
+    let mut next = 0usize;
+    for frame in new {
+        let kept = old
+            .get(next..)
+            .unwrap_or_default()
+            .iter()
+            .position(|before| Arc::ptr_eq(before, frame) || **before == **frame)
+            .map(|skipped| next.saturating_add(skipped));
+        if let Some(at) = kept {
+            next = at.saturating_add(1);
+        }
+        match (
+            stretches.last_mut(),
+            kept.and_then(|at| u32::try_from(at).ok()),
+        ) {
+            (Some(FrameStretch::Kept { from, len }), Some(at))
+                if from.checked_add(*len) == Some(at) =>
+            {
+                *len = len.saturating_add(1);
+            }
+            (_, Some(at)) => stretches.push(FrameStretch::Kept { from: at, len: 1 }),
+            (Some(FrameStretch::Frames(frames)), None) => frames.push(frame.to_vec()),
+            (_, None) => stretches.push(FrameStretch::Frames(vec![frame.to_vec()])),
+        }
+    }
+    stretches
+}
+
+/// The frames `stretches` make of `old`, the frames kept before ([`frame_stretches()`]).
+fn replay_frames(
+    old: &[Arc<[u8]>],
+    stretches: Vec<FrameStretch>,
+) -> Result<Vec<Arc<[u8]>>, String> {
+    let mut frames = Vec::new();
+    for stretch in stretches {
+        match stretch {
+            FrameStretch::Kept { from, len } => {
+                let from = usize::try_from(from).map_err(|e| e.to_string())?;
+                let end = from.saturating_add(usize::try_from(len).map_err(|e| e.to_string())?);
+                let kept = old
+                    .get(from..end)
+                    .ok_or("a journal entry keeps frames the device did not keep")?;
+                frames.extend(kept.iter().cloned());
+            }
+            FrameStretch::Frames(added) => frames.extend(added.into_iter().map(Arc::from)),
+        }
+    }
+    Ok(frames)
 }
 
 /// Bytes as stretches of the buffers they came from: the snapshot's, and the
@@ -534,11 +717,11 @@ pub(super) fn read_whole(log: &[u8]) -> bool {
 /// # Errors
 /// An entry that is whole and does not read as this build's layout: a build that appended another
 /// layout wrote it, and reading on past it would drop every publication after it without a word.
-fn take(rest: &mut &[u8]) -> Result<Option<Entry>, String> {
+fn take<E: serde::de::DeserializeOwned>(rest: &mut &[u8]) -> Result<Option<E>, String> {
     let Some(payload) = whole_payload(rest) else {
         return Ok(None);
     };
-    let Ok((entry, [])) = postcard::take_from_bytes::<Entry>(payload) else {
+    let Ok((entry, [])) = postcard::take_from_bytes::<E>(payload) else {
         return Err(
             "the workspace's journal holds an entry of a layout this build does not append".into(),
         );
@@ -981,6 +1164,86 @@ mod tests {
             assert!(replay_stretches(&empty, stretches(&old, &old)).is_err());
         }
 
+        phase frames_kept_carry_only_those_an_entry_added;
+        {
+            let frame = |id: u8| -> Arc<[u8]> { Arc::from(vec![id; 500]) };
+            let carried = |entry: &[FrameStretch]| -> usize {
+                entry.iter()
+                    .map(|stretch| match stretch {
+                        FrameStretch::Frames(frames) => frames.len(),
+                        FrameStretch::Kept { .. } => 0,
+                    })
+                    .sum()
+            };
+            let old: Vec<Arc<[u8]>> = (1..=4).map(frame).collect();
+            // A write adds one: the entry carries it alone.
+            let mut new = old.clone();
+            new.push(frame(5));
+            let entry = frame_stretches(&old, &new);
+            assert_eq!(carried(&entry), 1);
+            assert_eq!(replay_frames(&old, entry).unwrap(), new);
+            // A link took the oldest two and a write added one, read back as other allocations.
+            let read_back: Vec<Arc<[u8]>> = (1..=4).map(frame).collect();
+            let new = vec![frame(3), frame(4), frame(6)];
+            let entry = frame_stretches(&read_back, &new);
+            assert_eq!(carried(&entry), 1);
+            assert_eq!(replay_frames(&old, entry).unwrap(), new);
+            // Every frame taken leaves none, and an entry that keeps frames never kept is refused.
+            assert!(replay_frames(&old, frame_stretches(&old, &[])).unwrap().is_empty());
+            assert!(replay_frames(&[], frame_stretches(&old, &old)).is_err());
+        }
+
+        phase a_journal_a_device_appended_before_it_updated_keeps_its_frames;
+        // A device offline keeps its writes in its journal until a link takes them: the journal a
+        // version 9 build appended, its frames among the fields, reads on after the update.
+        {
+            let golden: Vec<u8> = include_str!("../../golden/owner-workspace-document/v9.hex")
+                .split_whitespace()
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect();
+            let before: StoredWorkspace = serde_json::from_slice(&golden).unwrap();
+            assert_eq!(before.version, 9);
+            let frame = |id: u8| FrameToSend { bytes: Arc::from(vec![id; 300]) };
+            let mut kept = before.clone();
+            kept.frames = vec![frame(1)];
+            let mut after = kept.clone();
+            after.frames.push(frame(2));
+            after.generation += 1;
+            // What the version 9 build journaled: the fields with the frames among them.
+            let fields = |stored: &StoredWorkspace| {
+                let mut fields = StoredWorkspace { peer: DurablePeer::default(), ..stored.clone() };
+                if let Some(publication) = fields.publication.as_mut() {
+                    publication.take_journaled();
+                }
+                serde_json::to_vec(&fields).unwrap()
+            };
+            let layout = kept.peer.layout().clone();
+            let entry = EntryBeforeFrames {
+                revision: 7,
+                fields: delta_chunked(&fields(&kept), &fields(&after)),
+                answered: Vec::new(),
+                unanswered: Vec::new(),
+                writes: Default::default(),
+                head: delta(&layout.head, &layout.head),
+                documents: Vec::new(),
+                tail: delta(&layout.tail, &layout.tail),
+            };
+            let payload = postcard::to_allocvec(&entry).unwrap();
+            let mut log = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+            log.extend_from_slice(blake3::hash(&payload).as_bytes());
+            log.extend_from_slice(&payload);
+            // Brought up to this build's version, as a store reads it, and replayed as version 9's.
+            let mut read = kept.clone();
+            read.version = WORKSPACE_VERSION;
+            let (replayed, revision) = replay(read, &log, 9).unwrap();
+            assert_eq!(revision, Some(7));
+            assert_eq!(replayed.frames, after.frames);
+            assert_eq!(replayed.generation, after.generation);
+            assert_eq!(replayed.version, WORKSPACE_VERSION);
+            // A journal older than the oldest layout this build reads is refused.
+            assert!(replay(kept, &log, OLDEST_LAYOUT - 1).is_err());
+        }
+
         phase a_torn_entry_ends_the_journal;
         {
             let entry = |revision| {
@@ -990,6 +1253,7 @@ mod tests {
                     answered: Vec::new(),
                     unanswered: Vec::new(),
                     writes: Default::default(),
+                    frames: Vec::new(),
                     head: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
                     documents: Vec::new(),
                     tail: Vec::new(),
@@ -1000,14 +1264,14 @@ mod tests {
             let whole = log.len();
             log.extend_from_slice(&entry(3)[..10]);
             let mut rest = &log[..];
-            let revisions: Vec<u64> = std::iter::from_fn(|| take(&mut rest).unwrap())
+            let revisions: Vec<u64> = std::iter::from_fn(|| take::<Entry>(&mut rest).unwrap())
                 .map(|entry| entry.revision)
                 .collect();
             assert_eq!(revisions, [1, 2]);
             assert_eq!(rest.len(), log.len() - whole);
             let mut corrupt = entry(4);
             *corrupt.last_mut().unwrap() ^= 1;
-            assert!(take(&mut &corrupt[..]).unwrap().is_none());
+            assert!(take::<Entry>(&mut &corrupt[..]).unwrap().is_none());
         }
 
         phase an_answer_without_an_order_reads_back_whole;
@@ -1023,13 +1287,14 @@ mod tests {
                 ],
                 unanswered: Vec::new(),
                 writes: Default::default(),
+                frames: Vec::new(),
                 head: Vec::new(),
                 documents: Vec::new(),
                 tail: Vec::new(),
             };
             let log = [frame(&entry(1)).unwrap(), frame(&entry(2)).unwrap()].concat();
             let mut rest = &log[..];
-            let read: Vec<Entry> = std::iter::from_fn(|| take(&mut rest).unwrap()).collect();
+            let read: Vec<Entry> = std::iter::from_fn(|| take::<Entry>(&mut rest).unwrap()).collect();
             assert_eq!(read.len(), 2);
             let answers: Vec<Option<Answer>> = read[1]
                 .answered
@@ -1050,7 +1315,7 @@ mod tests {
             let mut framed = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
             framed.extend_from_slice(blake3::hash(&payload).as_bytes());
             framed.extend_from_slice(&payload);
-            assert!(take(&mut &framed[..]).is_err());
+            assert!(take::<Entry>(&mut &framed[..]).is_err());
         }
     }
 }
