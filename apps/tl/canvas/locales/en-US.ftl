@@ -103,6 +103,17 @@ d-kytiqfia = Opacity
 d-y5teghkv = Open
     .doc = Whether the hand is still on it: the stroke a moving pointer extends.
 
+d-cdvrgjan = Src
+    .doc = A picture's bytes, by the address they are kept at, and the frame it is drawn in.
+
+d-vniyw6t3 = X
+
+d-v3wlgndz = Y
+
+d-4nv5sha3 = Width
+
+d-hlvljkif = Height
+
 d-54j6cyar-filter-layer = Layer
 
 d-54j6cyar-filter-size = Size
@@ -110,6 +121,14 @@ d-54j6cyar-filter-size = Size
 d-54j6cyar-filter-opacity = Opacity
 
 d-54j6cyar-filter-open = Open
+
+d-54j6cyar-filter-x = X
+
+d-54j6cyar-filter-y = Y
+
+d-54j6cyar-filter-width = Width
+
+d-54j6cyar-filter-height = Height
 
 d-73pl6fmd = Area
     .doc = The area selected for the next edit.
@@ -285,11 +304,29 @@ d-pqrpx7k3 = Brush
 
 d-kolk77nz = Opacity
 
+d-7hgp7nbk = Src
+
+d-vtafbavc = X
+
+d-el3izuuy = Y
+
+d-jzpg25ot = Width
+
+d-k7jjvary = Height
+
 d-uslws4n3-filter-layer = Layer
 
 d-uslws4n3-filter-size = Size
 
 d-uslws4n3-filter-opacity = Opacity
+
+d-uslws4n3-filter-x = X
+
+d-uslws4n3-filter-y = Y
+
+d-uslws4n3-filter-width = Width
+
+d-uslws4n3-filter-height = Height
 
 d-3pgxznsb = Area json
     .noun = { $count ->
@@ -457,6 +494,13 @@ d-srya3bgt-m = M
 
 d-srya3bgt-size = Size
 
+d-ynku6xaf = Place a picture
+    .doc = Places a picture the person chose on the top layer, fitted inside the artwork and centred: the picture stays its own object, so it moves, crops and syncs like paint.
+    .did = placed a picture
+    .w-a-picture-is-placed-from-a = A picture is placed from a file
+
+d-ynku6xaf-file = File
+
 d-5zqnfec7 = Select an area
     .doc = Selects an area, its outline as SVG path data.
     .did = selected an area
@@ -570,6 +614,8 @@ d-fbgqcv4q = Add stroke~present
 d-a3gxy4s7 = Add shape~present
 
 d-cfa5perl = Resize mark~present
+
+d-od5n7ehr = Place picture~present
 
 d-y2raac27 = Select area~present
 

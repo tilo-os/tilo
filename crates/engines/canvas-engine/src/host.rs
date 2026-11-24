@@ -114,6 +114,17 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
         brush: String,
         #[serde(default = "one")]
         opacity: f64,
+        /// A picture's bytes, by the address it is kept at, and the frame it is drawn in.
+        #[serde(default)]
+        src: String,
+        #[serde(default)]
+        x: f64,
+        #[serde(default)]
+        y: f64,
+        #[serde(default)]
+        width: f64,
+        #[serde(default)]
+        height: f64,
     }
     #[derive(serde::Deserialize)]
     struct RecordArea {
@@ -228,6 +239,16 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
                 scatter: None,
                 dab_length: None,
                 hatch: None,
+            }
+        } else if mark.kind == "image" {
+            Shape::Image {
+                src: mark.src.clone(),
+                x: mark.x,
+                y: mark.y,
+                width: mark.width,
+                height: mark.height,
+                crop: None,
+                straighten: None,
             }
         } else {
             style.fill = Some(colour);
@@ -543,6 +564,16 @@ mod tests {
                     "d": "M 0 0 L 10 10 Z",
                     "colour": "#2f7fb8",
                 },
+                {
+                    "layer": { "name": "Ink" },
+                    "kind": "image",
+                    "name": "Dawn.png",
+                    "src": "tilo-blob://aaaa",
+                    "x": 10.0,
+                    "y": 20.0,
+                    "width": 300.0,
+                    "height": 200.0,
+                },
             ],
             "selection": { "d": "M 0 0 L 5 5 Z", "feather": 2.0 },
         })
@@ -571,6 +602,24 @@ mod tests {
         assert_eq!(stroke.style.opacity, Some(0.8));
         let path = marks.next().expect("the shape");
         assert_eq!(path.style.fill.as_deref(), Some("#2f7fb8"));
+        let picture = marks.next().expect("the picture");
+        match &picture.shape {
+            Shape::Image {
+                src,
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                assert_eq!(src, "tilo-blob://aaaa");
+                assert!((x - 10.0).abs() < f64::EPSILON);
+                assert!((y - 20.0).abs() < f64::EPSILON);
+                assert!((width - 300.0).abs() < f64::EPSILON);
+                assert!((height - 200.0).abs() < f64::EPSILON);
+            }
+            other => panic!("an image, not {other:?}"),
+        }
 
         let selection = art.selection.expect("the selection is kept");
         assert_eq!(selection.d, "M 0 0 L 5 5 Z");

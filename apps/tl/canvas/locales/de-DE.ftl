@@ -597,3 +597,49 @@ d-3pgxznsb = Bereichs-JSON
         [one] Bereichs-JSON
        *[other] Bereichs-JSONs
     }
+
+d-cdvrgjan = Quelle
+    .doc = A picture's bytes, by the address they are kept at, and the frame it is drawn in.
+
+d-vniyw6t3 = X
+
+d-v3wlgndz = Y
+
+d-4nv5sha3 = Breite
+
+d-hlvljkif = Höhe
+
+d-54j6cyar-filter-x = X
+
+d-54j6cyar-filter-y = Y
+
+d-54j6cyar-filter-width = Breite
+
+d-54j6cyar-filter-height = Höhe
+
+d-7hgp7nbk = Quelle
+
+d-vtafbavc = X
+
+d-el3izuuy = Y
+
+d-jzpg25ot = Breite
+
+d-k7jjvary = Höhe
+
+d-uslws4n3-filter-x = X
+
+d-uslws4n3-filter-y = Y
+
+d-uslws4n3-filter-width = Breite
+
+d-uslws4n3-filter-height = Höhe
+
+d-ynku6xaf = Bild platzieren
+    .doc = Places a picture the person chose on the top layer, fitted inside the artwork and centred: the picture stays its own object, so it moves, crops and syncs like paint.
+    .did = platzierte ein Bild
+    .w-a-picture-is-placed-from-a = Ein Bild wird aus einer Datei platziert
+
+d-ynku6xaf-file = File
+
+d-od5n7ehr = Place picture~present

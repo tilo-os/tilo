@@ -64,6 +64,12 @@ type Mark (title: name) {
     /// Whether the hand is still on it: the stroke a moving pointer extends. A stroke whose end
     /// never came (the window closed midway) stops being extended once the next one starts.
     open: Bool = false
+    /// A picture's bytes, by the address they are kept at, and the frame it is drawn in.
+    src: Text = ""
+    x: Float = 0.0
+    y: Float = 0.0
+    width: Float = 0.0
+    height: Float = 0.0
 }
 
 /// The area selected for the next edit.
@@ -144,6 +150,11 @@ type MarkJson {
     colour: Text
     brush: Text
     opacity: Float
+    src: Text
+    x: Float
+    y: Float
+    width: Float
+    height: Float
 }
 
 type AreaJson {
@@ -226,7 +237,16 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                 }
                 for row in array_field(opened, "marks") {
                     if let layer = by_id.get(text_field(row, "layer")) {
-                        if let mark = mark_of(layer, row) { made.marks.insert(mark) }
+                        if let mark = mark_of(layer, row) {
+                            let kept = made.marks.insert(mark)
+                            // A picture the file held is listed with the artwork's pictures, so
+                            // the engine is given its bytes by the address the mark names.
+                            if kept.kind == "image"
+                                and kept.src != ""
+                                and made.pictures.find(p -> p.url == kept.src) == .none {
+                                made.pictures.insert(Picture(name: kept.name, url: kept.src))
+                            }
+                        }
                     }
                 }
                 if let area = object_field(opened, "selection") {
@@ -265,6 +285,21 @@ fn mark_of(layer: Layer, row: json.Value) -> Option<Mark> {
                     size: number_field(shape, "size") ?? 6.0,
                     colour: stroke,
                     brush: brush,
+                    opacity: opacity,
+                ),
+            )
+        }
+        if kind == "image" and text_field(shape, "src") != "" {
+            return .some(
+                Mark(
+                    name: text_field(row, "name"),
+                    layer: layer,
+                    kind: "image",
+                    src: text_field(shape, "src"),
+                    x: number_field(shape, "x") ?? 0.0,
+                    y: number_field(shape, "y") ?? 0.0,
+                    width: number_field(shape, "width") ?? 0.0,
+                    height: number_field(shape, "height") ?? 0.0,
                     opacity: opacity,
                 ),
             )
@@ -375,6 +410,11 @@ action duplicate_layer(a: Artwork, layer: Layer) -> Layer (
                 colour: m.colour,
                 brush: m.brush,
                 opacity: m.opacity,
+                src: m.src,
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
             ),
         )
     }
@@ -524,6 +564,39 @@ action resize_mark(a: Artwork, m: Mark, size: Float) (label: "Size a mark", did:
     m.size = size
 }
 
+/// Places a picture the person chose on the top layer, fitted inside the artwork and centred:
+/// the picture stays its own object, so it moves, crops and syncs like paint.
+action place_picture(a: Artwork, file: File) -> Mark uses image (
+    icon: .image,
+    label: "Place a picture",
+    did: "placed a picture",
+) {
+    require file.url != "" "A picture is placed from a file"
+    let on = top_layer(a)
+    if a.pictures.find(p -> p.url == file.url) == .none {
+        a.pictures.insert(Picture(name: file.name, url: file.url))
+    }
+    let natural_width = if let info = file.image_info() { info.width.to_float() } else { a.width }
+    let natural_height = if let info = file.image_info() {
+        info.height.to_float()
+    } else { a.height }
+    let fit = (a.width / natural_width.max(1.0)).min(a.height / natural_height.max(1.0))
+    let width = natural_width * fit
+    let height = natural_height * fit
+    a.marks.insert(
+        Mark(
+            name: file.name,
+            layer: on,
+            kind: "image",
+            src: file.url,
+            x: (a.width - width) / 2.0,
+            y: (a.height - height) / 2.0,
+            width: width,
+            height: height,
+        ),
+    )
+}
+
 /// Selects an area, its outline as SVG path data.
 action select_area(a: Artwork, d: Text, feather: Float = 0.0) (
     icon: .circle_dashed,
@@ -593,6 +666,11 @@ fn mark_json(m: Mark) -> MarkJson {
         colour: m.colour,
         brush: m.brush,
         opacity: m.opacity,
+        src: m.src,
+        x: m.x,
+        y: m.y,
+        width: m.width,
+        height: m.height,
     )
 }
 
@@ -1030,6 +1108,12 @@ view artwork_head(
         }
         ui.ToolbarButton("Add layer", icon: .layers) {
             on press: add_layer(a, "")
+        }
+        ui.ToolbarButton("Place a picture", icon: .image_plus) {
+            on press: file.choose(
+                place_picture(a),
+                accept: ["image/png", "image/jpeg", "image/webp"],
+            )
         }
         ui.ToolbarButton("Look", icon: .eye) {
             on press: draw_look(a)

@@ -499,6 +499,40 @@ mod cases {
     }
 
     #[test]
+    fn a_picture_placed_in_the_artwork_is_its_own_mark_and_the_artworks_picture() {
+        let c = Canvas::new();
+        let art = c.new_artwork("A picture");
+        let device = Device::default();
+        device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
+        c.rt.set_blobs(device);
+        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        let mark = returned_ref(c.call(
+            "place_picture",
+            vec![Value::resource(&art), Value::file(file)],
+        ));
+        assert_eq!(c.text(&mark, "kind"), "image");
+        let src = c.text(&mark, "src");
+        assert!(!src.is_empty(), "the mark names the picture's bytes");
+        assert_eq!(c.float(&mark, "width"), 800.0, "an artwork-wide picture");
+        assert_eq!(c.text(&mark, "name"), "Dawn.png");
+        let pictures = c.marks(&art).len();
+        assert_eq!(pictures, 1, "the picture is one mark");
+        match c.rt.read(&art, "pictures").unwrap() {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 1, "the artwork lists the picture it shows");
+                match &rows[0] {
+                    Value::Ref(r) => {
+                        let held = ResourceRef::clone(&r.target);
+                        assert_eq!(c.text(&held, "url"), src);
+                    }
+                    other => panic!("a picture, not {other:?}"),
+                }
+            }
+            other => panic!("pictures, not {other:?}"),
+        }
+    }
+
+    #[test]
     fn the_view_zooms_and_pans_through_the_surface() {
         let c = Canvas::new();
         let art = c.new_artwork("View");
