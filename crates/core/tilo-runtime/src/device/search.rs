@@ -112,13 +112,13 @@ impl DeviceSearch {
 /// this device installed it, verified as a launch verifies it (else as this build carries it),
 /// as the device's person reads them: the entries a window of the app publishes, with no window
 /// open.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct InstalledPackages {
     copies: Workspaces,
     person: String,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl InstalledPackages {
     fn new(copies: &Workspaces, person: &str) -> Self {
         Self {
@@ -128,7 +128,7 @@ impl InstalledPackages {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl StoreReader for InstalledPackages {
     /// An installed tilolang app, or one built into this build that the daemon runs for a
     /// workspace with no package of it installed.
@@ -146,7 +146,7 @@ impl StoreReader for InstalledPackages {
         app: &str,
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
         let installed = if super::package_runs::runs_in_process(app) {
-            Some(super::package_runs::verified_package(app)?.module)
+            Some(super::package_runs::verified_installed(workspace, app)?.module)
         } else {
             None
         };
@@ -157,17 +157,17 @@ impl StoreReader for InstalledPackages {
 
 /// Where no tilolang host runs, no tilolang app's resources are read: search holds what its
 /// windows publish.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 struct InstalledPackages;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 impl InstalledPackages {
     const fn new(_copies: &Workspaces, _person: &str) -> Self {
         Self
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 impl StoreReader for InstalledPackages {
     fn reads(&self, _app: &str) -> bool {
         false

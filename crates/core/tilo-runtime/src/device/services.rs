@@ -1225,7 +1225,7 @@ impl Daemon {
         );
         // The origin connectors this device starts are handed their workspace's account sign-ins
         // by them.
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         if let Some(sign_ins) = &account_sign_ins {
             apps.hand_sign_ins(Box::new(sign_ins.hands()));
         }

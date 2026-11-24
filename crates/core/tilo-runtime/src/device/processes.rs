@@ -285,11 +285,10 @@ pub struct Processes {
 
 impl Processes {
     /// The processes this device starts through `launcher`, keeping what they keep under the
-    /// person's data home.
+    /// person's data directory: the XDG data home on Linux, Application Support on a Mac.
     #[must_use]
     pub fn new(launcher: Launcher) -> Arc<Self> {
-        let data_home =
-            tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
+        let data_home = tilo_paths::data_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         Self::with(data_home, launcher, Box::new(verified_installed))
     }
 

@@ -54,7 +54,7 @@ impl crate::packet::Packet for Attach {}
 /// it starts.
 ///
 /// # Errors
-/// The socket error, or [`io::ErrorKind::Unsupported`] off Linux and Windows.
+/// The socket error, or [`io::ErrorKind::Unsupported`] off Unix and Windows.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     crate::packet::pair()
 }
@@ -94,7 +94,7 @@ pub fn stream(connection: Descriptor) -> tilo_socket::Stream {
 }
 
 /// The socket the launcher handed this connector, taken once: on Linux the service descriptor it
-/// names, on Windows the process link.
+/// names, on macOS and Windows the process link.
 #[must_use]
 pub fn take_socket() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -108,11 +108,11 @@ pub fn take_socket() -> Option<Descriptor> {
         // the flag above lets it be owned exactly once.
         Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
     }
-    #[cfg(windows)]
+    #[cfg(any(target_os = "macos", windows))]
     {
         crate::process_link::take()
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     None
 }
 

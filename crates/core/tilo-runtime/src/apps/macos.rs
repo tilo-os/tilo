@@ -165,6 +165,80 @@ pub(super) fn launch(
     })
 }
 
+/// Start `app`'s connector for `origin` in `workspace`, handed `socket` on its process link: the
+/// tilolang runtime's binary with no window and no module, in the sandbox the app's manifest
+/// declares, so with its origin's network, as the Linux launcher starts it.
+pub(super) fn connector(
+    apps: &Apps,
+    app: &InstalledApp,
+    workspace: &str,
+    (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
+) -> Result<launcher_macos::LaunchedApp, String> {
+    let catalog = apps
+        .catalog
+        .as_ref()
+        .ok_or("refusing to start a connector: no app store is available")?;
+    verify_installed(catalog, app)?;
+    let manifest = launcher::manifest::read_manifest(&app.manifest_path)
+        .map_err(|error| format!("refusing to start {}'s connector: {error}", app.app_id))?;
+    if !manifest
+        .entrypoint
+        .origins
+        .iter()
+        .any(|declared| declared == origin)
+    {
+        return Err(format!(
+            "{} declares no `{origin}` origin to connect",
+            app.app_id
+        ));
+    }
+    let runtime = manifest
+        .entrypoint
+        .runtime
+        .as_deref()
+        .filter(|runtime| launcher::manifest::is_tilolang(runtime))
+        .ok_or_else(|| format!("{} runs on no tilolang runtime", app.app_id))?;
+    let runtime = runtime_payload(catalog, app, runtime)?;
+    if apps.data_home.as_os_str().is_empty() {
+        return Err("refusing to start a connector: HOME is not set".into());
+    }
+    let container =
+        launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
+            .map_err(|error| {
+                format!(
+                    "refusing to start {}'s connector: its container: {error}",
+                    app.app_id
+                )
+            })?;
+    let (capabilities, egress) = apps.launch_capabilities(app, workspace, &manifest);
+    let request = launcher_macos::LaunchRequest {
+        package_id: app.app_id.to_string(),
+        executable: runtime.join(launcher::manifest::TILOLANG_BIN),
+        args: Vec::new(),
+        payload_dir: app.payload_root.clone(),
+        runtime_dir: Some(runtime),
+        container_dir: container,
+        capabilities,
+        egress,
+        inherit_fds: vec![socket.as_raw_fd()],
+        stderr: None,
+        env: [
+            (
+                runtime_portal::origin_connector::ORIGIN_ENV,
+                origin.to_owned(),
+            ),
+            (
+                runtime_portal::process_link::FD_ENV,
+                socket.as_raw_fd().to_string(),
+            ),
+        ]
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .to_vec(),
+        trust: launcher_macos::TrustRequirement::DeveloperId,
+    };
+    launcher_macos::launch(&request).map_err(|error| error.to_string())
+}
+
 /// A tilolang window's instance, running in its app's process, and the window's link.
 struct HostedWindow {
     /// The window's instance: the one its patch connection is for.

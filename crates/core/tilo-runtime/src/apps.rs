@@ -33,7 +33,7 @@ use tilo_workspace_service::apps::{
     },
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod connectors;
 #[cfg(unix)]
 mod instances;
@@ -101,11 +101,11 @@ pub struct Apps {
     #[cfg(unix)]
     instances: instances::Instances,
     /// The origin connectors this device runs for its tilolang apps' instances.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     connectors: connectors::Connectors,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl Apps {
     /// Hand each origin connector this device starts whose manifest grants it its workspace's
     /// account sign-ins through `sign_ins` from now on.
@@ -190,7 +190,7 @@ impl Apps {
             #[cfg(target_os = "macos")]
             data_home,
             #[cfg(target_os = "linux")]
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             connectors: connectors::Connectors::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
@@ -472,7 +472,7 @@ impl Apps {
     /// # Errors
     /// The app is not installed here, declares more than one origin, or its connector cannot
     /// start ([`Self::start_connector`]).
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn origin_connection(
         &self,
         app: &str,
@@ -497,7 +497,7 @@ impl Apps {
     ///
     /// # Errors
     /// The app reaches no such origin, or its connector cannot be started or takes no connection.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn attach_origin(
         &self,
         app: &str,
@@ -516,44 +516,20 @@ impl Apps {
             })
     }
 
-    /// The connection an instance of `app` in `workspace` reaches its origin's connector over:
-    /// `None` for an app whose types hold no outside service's resources, or that is no tilolang
-    /// app.
-    ///
-    /// # Errors
-    /// The app is not installed here or declares an origin: a Mac runs no origin connector yet,
-    /// so such an app's instance would show nothing of its service.
-    #[cfg(target_os = "macos")]
-    fn origin_connection(
-        &self,
-        app: &str,
-        _workspace: &str,
-    ) -> Result<Option<std::os::fd::OwnedFd>, String> {
-        if !crate::device::package_runs::runs_in_process(app) {
-            return Ok(None);
-        }
-        match crate::device::package_runs::origin_of(app)? {
-            None => Ok(None),
-            Some((origin, _)) => Err(format!(
-                "{app} reaches {origin} through its connector, which this Mac does not run"
-            )),
-        }
-    }
-
     /// Start `app_id`'s connector for `origin` in `workspace`, handed `socket`: the app's own
     /// launch with no window, in the sandbox its signed manifest declares for that origin.
     ///
     /// # Errors
     /// This device does not serve the workspace, the app is not installed here or its signed
     /// package does not verify, or no launcher can start it.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn start_connector(
         &self,
         app_id: &str,
         workspace: &str,
         origin: &str,
         socket: &std::os::fd::OwnedFd,
-    ) -> Result<std::process::Child, String> {
+    ) -> Result<connectors::Process, String> {
         use std::os::fd::AsFd as _;
         if !self
             .grants
@@ -569,20 +545,25 @@ impl Apps {
             .into_iter()
             .find(|app| app.app_id == app_id)
             .ok_or_else(|| format!("{app_id} is not installed"))?;
-        let sockets = Sockets {
-            collab: self.sockets.join(COLLAB_SOCKET),
-            identity: self.sockets.join(IDENTITY_SOCKET),
-            blobs: self.sockets.join(BLOB_SOCKET),
+        #[cfg(target_os = "linux")]
+        return {
+            let sockets = Sockets {
+                collab: self.sockets.join(COLLAB_SOCKET),
+                identity: self.sockets.join(IDENTITY_SOCKET),
+                blobs: self.sockets.join(BLOB_SOCKET),
+            };
+            let original = self.original_launch(&app)?;
+            linux::connector(
+                self,
+                &app,
+                workspace,
+                &sockets,
+                &original,
+                (origin, socket.as_fd()),
+            )
         };
-        let original = self.original_launch(&app)?;
-        linux::connector(
-            self,
-            &app,
-            workspace,
-            &sockets,
-            &original,
-            (origin, socket.as_fd()),
-        )
+        #[cfg(target_os = "macos")]
+        return macos::connector(self, &app, workspace, (origin, socket.as_fd()));
     }
 
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
@@ -1250,7 +1231,7 @@ pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl crate::device::processes::Origins for Apps {
     fn connection(
         &self,

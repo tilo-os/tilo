@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
-use std::process::Child;
 use std::sync::Mutex;
 
 use runtime_portal::origin_connector;
@@ -26,10 +25,17 @@ use tilo_lock::MutexRecover as _;
 /// Which connector: the app, its origin and the workspace.
 type Key = (String, String, String);
 
+/// A connector's process, as the platform's launcher started it.
+#[cfg(target_os = "linux")]
+pub(crate) type Process = std::process::Child;
+/// A connector's process, as the platform's launcher started it.
+#[cfg(target_os = "macos")]
+pub(crate) type Process = launcher_macos::LaunchedApp;
+
 /// A running connector: the device's end of its socket, and its process.
 struct Running {
     socket: OwnedFd,
-    child: Child,
+    child: Process,
 }
 
 /// What hands a connector whose manifest grants it the workspace's account sign-ins those
@@ -64,7 +70,7 @@ impl Connectors {
         (app, origin, workspace): (&str, &str, &str),
         signs_in: bool,
         theirs: &OwnedFd,
-        start: &dyn Fn(&OwnedFd) -> Result<Child, String>,
+        start: &dyn Fn(&OwnedFd) -> Result<Process, String>,
     ) -> Result<(), String> {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
         let mut running = self.running.lock_recover();
@@ -129,7 +135,7 @@ impl Drop for Connectors {
 }
 
 /// Reap `child` on a thread of its own; where none can start, here.
-fn reap(child: Child) {
+fn reap(child: Process) {
     let slot = std::sync::Arc::new(Mutex::new(Some(child)));
     let theirs = std::sync::Arc::clone(&slot);
     let spawned = std::thread::Builder::new()
@@ -146,13 +152,14 @@ fn reap(child: Child) {
     }
 }
 
-#[cfg(test)]
+// The tests start each connector as a plain child process, as the Linux launcher's is.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A connector process that keeps its socket and reads what it is sent until it closes.
-    fn connector_process(socket: &OwnedFd) -> Result<Child, String> {
+    fn connector_process(socket: &OwnedFd) -> Result<Process, String> {
         use std::os::fd::AsFd as _;
         let socket = socket
             .as_fd()

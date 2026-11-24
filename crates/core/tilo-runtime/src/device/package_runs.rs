@@ -133,7 +133,7 @@ pub fn origin_of(app: &str) -> Result<Option<(String, bool)>, String> {
 
 /// `app`, installed here, verified as `tilo-launcher` verifies a launch.
 #[cfg(target_os = "linux")]
-pub(super) fn verified_package(
+fn verified_package(
     app: &str,
 ) -> Result<launcher::run::tilolang_process::VerifiedInstance, String> {
     let installed = package_store::find_installed(app)
