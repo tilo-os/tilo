@@ -8,7 +8,7 @@ use tilolang::IdsLock;
 use tilolang_runtime::blob::FileValue;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
+use tilolang_tilo::host::{Host, RootView};
 
 const SOURCE: &str = include_str!("../../../../apps/tl/windows/app.tl");
 
@@ -240,7 +240,10 @@ impl Installed {
         host.runtime()
             .set_reading(&windows(), &reading)
             .expect("the Windows programs read");
-        let root = host.runtime().create_root("so.tilo.windows.Windows").expect("the app's root");
+        let root = host
+            .runtime()
+            .create_root("so.tilo.windows.Windows")
+            .expect("the app's root");
         Self {
             host,
             root,
@@ -293,7 +296,17 @@ impl Installed {
 }
 
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["title", "value", "label", "secondary", "text", "meta", "badge", "message", "description"] {
+    for prop in [
+        "title",
+        "value",
+        "label",
+        "secondary",
+        "text",
+        "meta",
+        "badge",
+        "message",
+        "description",
+    ] {
         if let Some(Value::Text(text)) = node.props.get(prop) {
             into.push(text.clone());
         }
@@ -315,7 +328,10 @@ fn contains(view: &ViewInstance, wanted: &str) -> bool {
 
 /// The case `case` of the app's `OpenWith`, as the package declares it.
 fn open_with(app: &Installed, case: &str) -> Value {
-    let package = app.host.package("so.tilo.windows").expect("the Windows package");
+    let package = app
+        .host
+        .package("so.tilo.windows")
+        .expect("the Windows package");
     let declared = package
         .meta
         .enums
@@ -337,7 +353,12 @@ fn open_with(app: &Installed, case: &str) -> Value {
 fn installer() -> Value {
     Value::file(FileValue {
         path: "/home/ada/Downloads/setup.exe".to_owned(),
-        ..FileValue::new("setup.exe", "application/vnd.microsoft.portable-executable", 4096, "h1")
+        ..FileValue::new(
+            "setup.exe",
+            "application/vnd.microsoft.portable-executable",
+            4096,
+            "h1",
+        )
     })
 }
 
@@ -354,18 +375,17 @@ fn the_window_lists_every_program_and_the_appliance() {
         "Windows VM",
         "Windows appliance",
     ] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
 #[test]
 fn an_empty_catalogue_says_so() {
-    let app = Installed::over(reading(
-        Vec::new(),
-        appliance(),
-        None,
-        support(),
-    ));
+    let app = Installed::over(reading(Vec::new(), appliance(), None, support()));
     let window = app.window();
     assert!(contains(&window, "No Windows apps"));
 }
@@ -385,7 +405,11 @@ fn a_program_page_says_how_it_opens_what_it_reaches_and_where_it_was_learned() {
         "Wine 11.0",
         "Installed 12 June 2026.",
     ] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -396,19 +420,18 @@ fn a_failed_setup_leads_with_running_it_again() {
     app["launch_available"] = serde_json::json!(false);
     app["can_retry_install"] = serde_json::json!(true);
     app["installation"] = serde_json::json!("The installer stopped before Reader was ready.");
-    let installed = Installed::over(reading(
-        vec![app],
-        appliance(),
-        None,
-        support(),
-    ));
+    let installed = Installed::over(reading(vec![app], appliance(), None, support()));
     let window = installed.at("adobe-reader");
     for wanted in [
         "Its setup did not finish",
         "The installer stopped before Reader was ready.",
         "Run the setup again",
     ] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -432,7 +455,11 @@ fn the_waiting_setup_offers_both_places_to_go() {
         "Windows",
         "Recommended",
     ] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -449,7 +476,11 @@ fn the_appliance_page_states_its_power_licence_and_recovery() {
         "Shut Windows down",
         "Open the recovery desktop",
     ] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -527,9 +558,7 @@ fn letting_the_catalogue_decide_carries_no_route() {
     );
     let asked = app.sent.last_asked("set_route");
     assert!(
-        asked
-            .iter()
-            .any(|value| matches!(value, Value::Opt(None))),
+        asked.iter().any(|value| matches!(value, Value::Opt(None))),
         "the last choice is no route: {asked:?}"
     );
 }
@@ -566,7 +595,9 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
     );
     let asked = app.sent.asked("open_file");
     assert!(
-        asked.iter().any(|value| matches!(value, Value::Text(app) if app == "visual-studio")),
+        asked
+            .iter()
+            .any(|value| matches!(value, Value::Text(app) if app == "visual-studio")),
         "{asked:?}"
     );
 }
@@ -600,10 +631,15 @@ fn the_appliance_works_with_the_window_closed() {
 fn the_support_banner_offers_to_install_windows_support() {
     let mut support = support();
     support["state"] = serde_json::json!("needs-install");
-    support["summary"] = serde_json::json!("Wine and Proton are not installed; installing takes 1.2 GB.");
+    support["summary"] =
+        serde_json::json!("Wine and Proton are not installed; installing takes 1.2 GB.");
     let app = Installed::over(reading(vec![reader_app()], appliance(), None, support));
     let window = app.at("adobe-reader");
-    assert!(contains(&window, "Install Windows support"), "{:?}", shown(&window));
+    assert!(
+        contains(&window, "Install Windows support"),
+        "{:?}",
+        shown(&window)
+    );
     assert!(contains(&window, "1.2 GB"));
 }
 
@@ -611,8 +647,14 @@ fn the_support_banner_offers_to_install_windows_support() {
 fn a_program_of_the_appliance_says_what_its_window_cannot_receive() {
     let app = Installed::full();
     let window = app.at("visual-studio");
-    assert!(contains(&window, "This app window can't receive files yet."));
-    assert!(contains(&window, "Only an administrator can change how this app opens."));
+    assert!(contains(
+        &window,
+        "This app window can't receive files yet."
+    ));
+    assert!(contains(
+        &window,
+        "Only an administrator can change how this app opens."
+    ));
 }
 
 #[test]
@@ -623,7 +665,11 @@ fn the_operations_an_installation_allows_are_the_ones_shown() {
     let installed = Installed::over(reading(vec![app], appliance(), None, support()));
     let window = installed.at("adobe-reader");
     for wanted in ["Add to Windows Apps", "Uninstall", "Delete its data"] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
     let mut quiet = reader_app();
     quiet["can_vendor_uninstall"] = serde_json::json!(false);
@@ -644,12 +690,7 @@ fn the_setups_programs_are_named_before_their_data_goes() {
     let mut second = suite.clone();
     second["id"] = serde_json::json!("psftp");
     second["name"] = serde_json::json!("PSFTP");
-    let installed = Installed::over(reading(
-        vec![suite, second],
-        appliance(),
-        None,
-        support(),
-    ));
+    let installed = Installed::over(reading(vec![suite, second], appliance(), None, support()));
     installed
         .host
         .runtime()
@@ -663,7 +704,9 @@ fn the_setups_programs_are_named_before_their_data_goes() {
     let window = installed.at("putty");
     let words = shown(&window);
     assert!(
-        words.iter().any(|text| text.contains("Delete PuTTY 0.85 (64-bit)'s data?")),
+        words
+            .iter()
+            .any(|text| text.contains("Delete PuTTY 0.85 (64-bit)'s data?")),
         "{words:?}"
     );
     assert!(
@@ -688,8 +731,15 @@ fn a_program_that_ended_says_how() {
     });
     let app = Installed::over(ended.to_string());
     let window = app.window();
-    assert!(contains(&window, "Adobe Acrobat Reader stopped"), "{:?}", shown(&window));
-    assert!(contains(&window, "It stopped with code 3: The capsule's runner is not installed."));
+    assert!(
+        contains(&window, "Adobe Acrobat Reader stopped"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(contains(
+        &window,
+        "It stopped with code 3: The capsule's runner is not installed."
+    ));
     ended["ended"] = serde_json::json!({
         "program": "adobe-reader", "name": "Adobe Acrobat Reader", "success": false,
         "exit_code": null, "error": "The capsule's runner is not installed.", "said": null
@@ -715,5 +765,144 @@ fn what_the_service_reports_as_wrong_is_said() {
     state["problem"] = serde_json::json!("The compatibility service did not answer.");
     let app = Installed::over(state.to_string());
     let window = app.window();
-    assert!(contains(&window, "The compatibility service did not answer."));
+    assert!(contains(
+        &window,
+        "The compatibility service did not answer."
+    ));
+}
+
+/// The window as the system opens it: an instance of the app over this computer's reading, so
+/// what search asks of the app (its `open`, told a program's anchor) reaches the window.
+struct Session;
+
+impl tilolang_tilo::instance::Platform for Session {
+    fn load(&self, host: &Host) -> u64 {
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+            .expect("the platform's packages read");
+        for meta in &metas {
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
+        }
+        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        host.load_compiled(&compiled).expect("the app loads");
+        host.runtime()
+            .set_reading(&windows(), &full())
+            .expect("the Windows programs read");
+        0
+    }
+
+    fn phrase(&self, id: &str, _args: &[(String, String)]) -> String {
+        id.to_owned()
+    }
+
+    fn now(&self) -> String {
+        "2026-11-22T12:00:00Z".to_owned()
+    }
+
+    fn waker(&self) -> tilolang_tilo::background::Waker {
+        std::sync::Arc::new(|| {})
+    }
+}
+
+struct Named;
+
+impl tilolang_tilo::runtime::NameHost for Named {
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
+    }
+}
+
+/// The Windows Apps window, opened as the session opens it.
+fn open_session() -> tilolang_tilo::instance::Instance {
+    use tilolang_tilo::instance::{Config, Mode};
+    let (app_end, _window) = tilo_render_protocol::patch::local::pair();
+    let mut window = tilolang_tilo::instance::Instance::new(
+        Config {
+            app: "so.tilo.windows".to_owned(),
+            me: "ada".into(),
+            mode: Mode::Live,
+            device: None,
+            store: tilolang_tilo::resources::ResourceStore::in_memory(),
+            root: RootView::default(),
+            sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+            link_home: None,
+        },
+        Rc::new(Session),
+        Rc::new(Named),
+        Box::new(app_end),
+    );
+    window.sync();
+    window
+}
+
+/// Whether the window says `wanted` anywhere in its tree.
+fn says(window: &tilolang_tilo::instance::Instance, wanted: &str) -> bool {
+    let Some(tree) = window.root_tree() else {
+        return false;
+    };
+    let mut texts = Vec::new();
+    words(&tree, &mut texts);
+    texts.iter().any(|text| text.contains(wanted))
+}
+
+/// A program found in search opens the window on that program's page: the app's `open`, told
+/// the program the anchor names, shows it as choosing its row does.
+#[test]
+fn a_search_hit_on_a_program_opens_the_window_at_its_page() {
+    use tilolang_tilo::OpenEffect;
+
+    let mut window = open_session();
+    assert!(
+        says(&window, "Choose a program on the left"),
+        "nothing is chosen yet"
+    );
+    window.open_requests().borrow_mut().push(OpenEffect::Open {
+        anchor: "windows-apps/visual-studio".to_owned(),
+    });
+    window.update();
+    window.sync();
+    assert!(
+        says(
+            &window,
+            "Visual Studio needs Windows services Wine can't provide."
+        ),
+        "the program search named is the page the window shows"
+    );
+    window.open_requests().borrow_mut().push(OpenEffect::Open {
+        anchor: "windows-apps/adobe-reader".to_owned(),
+    });
+    window.update();
+    window.sync();
+    assert!(
+        says(&window, "A verified recipe opens Reader in Wine."),
+        "another hit moves the window to its program"
+    );
+    assert!(!says(&window, "Choose a program on the left"));
+}
+
+/// The plan a hit on a program resolves to: the program, as the reading names it, in this
+/// window. One no list of the reading holds is nothing to open.
+#[test]
+fn a_program_of_the_reading_is_the_record_the_window_opens() {
+    let app = Installed::full();
+    let plan = app
+        .host
+        .open_plan("so.tilo.windows", "windows-apps/adobe-reader", None)
+        .expect("a program's page");
+    assert_eq!(plan.app, "so.tilo.windows");
+    let target = plan.target.expect("the program");
+    assert_eq!(
+        target.id_string(),
+        "adobe-reader",
+        "a reading names a record by its own id"
+    );
+    assert_eq!(target.ty, "so.tilo.device#WindowsApp");
+    assert!(
+        app.host
+            .open_plan("so.tilo.windows", "windows-apps/not-a-program", None)
+            .is_err(),
+        "a program the reading does not list names nothing"
+    );
 }

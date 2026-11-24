@@ -1143,6 +1143,20 @@ impl Runtime {
         self.core.registry.borrow().default_view(ty)
     }
 
+    /// The metadata of every package this runtime loaded, the apps whose code it does not run
+    /// among them ([`Self::load_foreign`]): what a window reads of a reading's roots and types
+    /// where the app that publishes them is not this one.
+    #[must_use]
+    pub fn metas(&self) -> Vec<Meta> {
+        self.core
+            .registry
+            .borrow()
+            .packages()
+            .iter()
+            .map(|package| package.meta.clone())
+            .collect()
+    }
+
     /// The name of the type `ty` (an id), as its package declares it (`Label`), for a surface
     /// that says what a resource is. `None` for a type this runtime holds no package of.
     pub fn type_name(&self, ty: &str) -> Option<String> {
