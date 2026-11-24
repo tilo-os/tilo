@@ -195,10 +195,6 @@ pub struct GovernedAccess {
     /// Its members, by their roots: every person its policy gives a role,
     /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
-    /// The members who administer it, by their roots: its owner and the people its policy makes
-    /// administrators. A server acts in the workspace (enrols a member's further device, signs
-    /// what a member asks of it) only when its own person is one of them.
-    pub administrators: Vec<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(

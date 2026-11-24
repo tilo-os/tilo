@@ -1366,6 +1366,57 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
     server.shutdown().await;
 }
 
+/// A server acts in a workspace only through its own person's row on the member list: what a
+/// member may do, it carries out for them only as far as that row lets it. A server whose
+/// person the list does not have carries out nothing, a governance action, an admission or a
+/// change of place alike, whatever the member asking may do.
+#[tokio::test]
+async fn a_server_without_a_place_on_the_member_list_carries_out_nothing() {
+    use super::{WorkspaceOp, decide_by_governance};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    for action in governance::ALL {
+        grant(workspaces, &workspace, &owner, &ada, action).await;
+    }
+    let held = workspaces.workspace(&workspace).await.unwrap();
+    let held = held.lock().await;
+    let now = tilo_clock::unix_now_ns();
+    let change = tilo_action_policy::Change::SetRole {
+        person: hex::encode(bo.user_public_key),
+        role: Role::Viewer,
+    };
+    let asks = [
+        WorkspaceOp::Govern(governance::REMOVE_MEMBER),
+        WorkspaceOp::Admit(Role::Viewer),
+        WorkspaceOp::Change(&change),
+    ];
+    let stranger = SigningKey::from_bytes(&[0x77; 32])
+        .verifying_key()
+        .to_bytes();
+    for op in asks {
+        // Ada may, and this server's person, the workspace's owner, may carry it out for her.
+        decide_by_governance(&held, &ada, op, now, Some(owner.user_public_key))
+            .unwrap_or_else(|error| panic!("{op:?} for Ada through the owner's server: {error}"));
+        // A server whose person has no place in the workspace may not, though Ada may.
+        assert!(
+            decide_by_governance(&held, &ada, op, now, Some(stranger)).is_err(),
+            "{op:?} for Ada through a server with no place"
+        );
+        // Nor one whose person is a plain member: Bo is an Editor, and holds none of it.
+        assert!(
+            decide_by_governance(&held, &ada, op, now, Some(bo.user_public_key)).is_err(),
+            "{op:?} for Ada through a server of an Editor's"
+        );
+    }
+    drop(held);
+    server.shutdown().await;
+}
+
 /// A workspace its host hands to a person is administered by them: they make
 /// administrators through the host, which serves the workspace as one of
 /// them, and an administrator makes more. Taking an administrator's grant back

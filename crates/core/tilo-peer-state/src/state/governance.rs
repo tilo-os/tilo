@@ -249,15 +249,9 @@ impl PeerGovernance<'_> {
         member_devices.dedup();
         member_user_roots.sort_unstable();
         member_user_roots.dedup();
-        let administrators = member_user_roots
-            .iter()
-            .copied()
-            .filter(|root| self.peer.governs_history(root))
-            .collect();
         Ok(GovernedAccess {
             member_devices,
             member_user_roots,
-            administrators,
         })
     }
 
