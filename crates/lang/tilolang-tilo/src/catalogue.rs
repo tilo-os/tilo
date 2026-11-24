@@ -838,19 +838,40 @@ impl Reader<'_> {
 
     /// Declares the type `own` of the resource `surface` describes: its top-level fields.
     fn own_type(&mut self, surface: &Surface, own: &str, rename: &dyn Fn(&str) -> String) {
-        let fields = surface
+        let declared = surface
             .fields
             .iter()
             .filter(|field| !field.path.contains('.'))
-            .filter_map(|field| {
-                let typed = tilo_actions::surface::TypeField {
-                    name: field.path.clone(),
-                    ty: field.ty.clone(),
-                    title: field.title.clone(),
-                };
-                self.field(own, &typed, rename)
+            .map(|field| tilo_actions::surface::TypeField {
+                name: field.path.clone(),
+                ty: field.ty.clone(),
+                title: field.title.clone(),
             })
+            .collect::<Vec<_>>();
+        let fields = declared
+            .iter()
+            .filter_map(|field| self.field(own, field, rename))
             .collect();
+        // The resource's own type is a declared type like any other: a resource after it that
+        // publishes a different type of the same name (`processes` reading a `Network` of its
+        // own beside the connectivity `network`) is renamed after itself, so neither reads as
+        // the other.
+        self.declared.insert(
+            own.to_owned(),
+            (
+                NamedType {
+                    name: own.to_owned(),
+                    doc: if surface.label == own {
+                        String::new()
+                    } else {
+                        surface.label.clone()
+                    },
+                    fields: declared,
+                    cases: Vec::new(),
+                },
+                false,
+            ),
+        );
         self.meta.types.push(TypeMeta {
             id: self.type_id(own),
             name: own.to_owned(),
@@ -1076,5 +1097,76 @@ impl Reader<'_> {
         } else {
             format!("{app}.{name}")
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{package_of, parse_surfaces};
+
+    /// The connectivity resource's reading, and the system monitor's: each publishes a type of
+    /// its own called `Network`, with different fields.
+    const DEVICE: &str = r#"
+[[resources]]
+kind = "network"
+label = "Network"
+version = 1
+
+[[resources.fields]]
+path = "wifi"
+type = { named = "Wifi" }
+
+[[resources.types]]
+name = "Wifi"
+fields = [ { name = "on", type = "bool" } ]
+
+[[resources]]
+kind = "processes"
+label = "Processes"
+version = 1
+
+[[resources.fields]]
+path = "machine"
+type = { named = "Machine" }
+
+[[resources.types]]
+name = "Machine"
+fields = [ { name = "network", type = { named = "Network" } } ]
+
+[[resources.types]]
+name = "Network"
+fields = [ { name = "rx_per_sec", type = "float" } ]
+"#;
+
+    /// A resource's own type is declared like any named type: the reading that publishes a
+    /// different `Network` after the connectivity one gets its own, and the record naming it
+    /// names that one.
+    #[test]
+    fn two_resources_publishing_one_type_name_keep_their_own() {
+        let surfaces = parse_surfaces(DEVICE).expect("the surfaces read");
+        let meta = package_of("so.tilo.device", "Device", &surfaces);
+        let names: Vec<&str> = meta.types.iter().map(|ty| ty.name.as_str()).collect();
+        assert!(names.contains(&"Network"), "{names:?}");
+        assert!(names.contains(&"ProcessesNetwork"), "{names:?}");
+        let machine = meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Machine")
+            .expect("the processes reading's Machine");
+        let network = machine
+            .fields
+            .iter()
+            .find(|field| field.name == "network")
+            .expect("the machine's network");
+        assert_eq!(network.ty, "ProcessesNetwork");
+        let connectivity = meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Network")
+            .expect("the connectivity reading's Network");
+        assert!(
+            connectivity.fields.iter().any(|field| field.name == "wifi"),
+            "the first Network stays the connectivity reading"
+        );
     }
 }
