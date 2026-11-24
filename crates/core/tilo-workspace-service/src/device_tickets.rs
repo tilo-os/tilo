@@ -184,6 +184,22 @@ impl TicketServer {
     /// This device cannot add a device (no identity, no network, no root of the person's), the
     /// plan is not one still waiting for its machine, or its ticket could not be kept.
     pub async fn issue(&self, role: Option<Role>) -> Result<Ticket, String> {
+        self.issued(role, true).await
+    }
+
+    /// [`Self::issue`] for one of several tickets a single act asks for (the first tickets a
+    /// person's founding hands back): served beside every ticket issued before it, none taking
+    /// another's place, so each computer it is handed to can still spend it.
+    ///
+    /// # Errors
+    /// As [`Self::issue`].
+    pub async fn issue_beside(&self, role: Option<Role>) -> Result<Ticket, String> {
+        self.issued(role, false).await
+    }
+
+    /// [`Self::issue`], whose ticket for a computer at hand takes the place of the one printed
+    /// before it when `replaces`.
+    async fn issued(&self, role: Option<Role>, replaces: bool) -> Result<Ticket, String> {
         // A device with no identity is told that first: it is what the person sets up first.
         self.0.issuer.device()?;
         let (reached, actions) = self.0.issuer.serving()?;
@@ -226,15 +242,18 @@ impl TicketServer {
                 )
                 .await?;
             // A newer ticket for a computer at hand takes the place of the one printed before
-            // it, which stops admitting a computer; a planned machine's stays served.
-            let replaced = self
-                .0
-                .printed
-                .lock_recover()
-                .replace((served.clone(), false));
+            // it, which stops admitting a computer; a planned machine's stays served, and so does
+            // one issued beside it.
             let tickets = actions.tickets();
-            if let Some((replaced, false)) = replaced {
-                tickets.withdraw(&replaced);
+            if replaces {
+                let replaced = self
+                    .0
+                    .printed
+                    .lock_recover()
+                    .replace((served.clone(), false));
+                if let Some((replaced, false)) = replaced {
+                    tickets.withdraw(&replaced);
+                }
             }
             tickets.serve(served);
         }

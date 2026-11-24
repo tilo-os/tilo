@@ -869,8 +869,8 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
 }
 
 /// A person's founding answers the tickets their first device asked for, issued as their own
-/// act: the ticket lets a computer in, with nothing else needed to approve it, which is the one
-/// way a fresh installation adds its first computers.
+/// act: each ticket lets a computer in, the first as well as the last, with nothing else needed
+/// to approve it, which is the one way a fresh installation adds its first computers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_act() {
     let workspace = tilo_desktop_model::WorkspaceId::new();
@@ -897,11 +897,18 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
     // call's tickets are issued through.
     let founding = super::unclaimed::Founding::default();
     founding.serving(issuer_cert.user_public_key, Arc::new(tickets));
+    // Asked for two, as a stack's first computers are: the first is spent after the second was
+    // issued, so it must still be served.
     let issued = founding
-        .issue(issuer_cert.user_public_key, &["device".to_owned()])
+        .issue(
+            issuer_cert.user_public_key,
+            &["device".to_owned(), "device".to_owned()],
+        )
         .await
-        .expect("the founding issues the ticket its person asked for");
+        .expect("the founding issues the tickets its person asked for");
     assert_eq!(issued[0]["kind"], "device", "{issued}");
+    assert_eq!(issued[1]["kind"], "device", "{issued}");
+    assert_ne!(issued[0]["ticket"], issued[1]["ticket"], "{issued}");
     let text = issued[0]["ticket"]
         .as_str()
         .expect("the founding answers a ticket")
