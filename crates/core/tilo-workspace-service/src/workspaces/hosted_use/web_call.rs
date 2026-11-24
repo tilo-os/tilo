@@ -564,24 +564,34 @@ pub(super) async fn send(
     deliver(reach, system_lookup(), ready).await
 }
 
+/// Who makes a web call, and what the vault records it for.
+#[cfg(test)]
+struct Calling<'a> {
+    by: &'a str,
+    app: Option<&'a str>,
+    purpose: UsedFor<'a>,
+}
+
 /// [`send`] with the vault's `items` in hand, looking a name up with `lookup`
 /// and reading the content a call carries with `content`.
 #[cfg(test)]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a test names each part of the call it makes, in one chain"
-)]
 async fn send_through(
     reach: Destinations,
     lookup: Lookup,
     items: &mut VaultItems,
     call: WebCall,
-    by: &str,
-    caller_app: Option<&str>,
-    purpose: UsedFor<'_>,
+    calling: Calling<'_>,
     content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
 ) -> Result<Value, String> {
-    let ready = ready(reach, items, call, by, caller_app, purpose, content)?;
+    let ready = ready(
+        reach,
+        items,
+        call,
+        calling.by,
+        calling.app,
+        calling.purpose,
+        content,
+    )?;
     deliver(reach, lookup, ready).await
 }
 
@@ -1005,9 +1015,11 @@ mod tests {
             lookup,
             &mut items,
             call.clone(),
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await
@@ -1064,9 +1076,11 @@ mod tests {
             lookup,
             &mut items,
             unkept,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await;
@@ -1104,9 +1118,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await
@@ -1133,9 +1149,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &|_, _| None,
         )
         .await;
@@ -1173,9 +1191,11 @@ mod tests {
                 lookup,
                 &mut items,
                 call.clone(),
-                "Scout",
-                None,
-                UsedFor::default(),
+                Calling {
+                    by: "Scout",
+                    app: None,
+                    purpose: UsedFor::default(),
+                },
                 &no_content,
             )
             .await;
@@ -1193,9 +1213,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &no_content,
         )
         .await;
@@ -1218,9 +1240,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &no_content,
         )
         .await;
@@ -1261,9 +1285,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            purpose,
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose,
+            },
             &no_content,
         )
         .await;
