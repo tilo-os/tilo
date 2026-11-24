@@ -13,7 +13,7 @@ accepts. Apps written in tilolang do not depend on it.
 
 ```toml
 [dependencies]
-tilolang-lex = "0.1"
+tilolang-lex = "0.4"
 ```
 
 ```rust

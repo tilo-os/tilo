@@ -20,7 +20,7 @@ tilolang package or for a host of your own.
 
 ```toml
 [dependencies]
-tilo-view = "0.1"
+tilo-view = "0.4"
 ```
 
 ```rust

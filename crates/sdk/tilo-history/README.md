@@ -22,8 +22,8 @@ read well.
 
 ```toml
 [dependencies]
-tilo-history = "0.1"
-tilo-actions = "0.1"
+tilo-history = "0.4"
+tilo-actions = "0.4"
 ```
 
 ```rust

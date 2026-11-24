@@ -24,7 +24,7 @@ for that resource's `Action::apply` and is not an application API.
 
 ```toml
 [dependencies]
-tilo-doc = "0.1"
+tilo-doc = "0.4"
 ```
 
 ```rust

@@ -18,7 +18,7 @@ or when testing one without a window.
 
 ```toml
 [dependencies]
-tilo-resource = "0.1"
+tilo-resource = "0.4"
 ```
 
 ```rust

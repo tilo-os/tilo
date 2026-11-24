@@ -20,7 +20,7 @@ headless use and the web.
 
 ```toml
 [dependencies]
-tilo-ui = { version = "0.1", default-features = false }
+tilo-ui = { version = "0.4", default-features = false }
 ```
 
 ## Learn more

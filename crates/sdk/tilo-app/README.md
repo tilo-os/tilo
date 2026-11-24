@@ -19,7 +19,7 @@ you already have.
 
 ```toml
 [dependencies]
-ui = { package = "tilo-app", version = "0.1" }
+ui = { package = "tilo-app", version = "0.4" }
 ```
 
 Apps rename the package to `ui`. A counter, with its labels in a Fluent catalog
