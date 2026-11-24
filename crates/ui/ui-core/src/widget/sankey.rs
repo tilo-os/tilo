@@ -454,13 +454,15 @@ impl SankeyMarks {
         grounds
     }
 
-    /// The ink `tone` takes to read at 4.5:1 on everything under `rects`.
+    /// The ink `tone` takes to read on everything under `rects`: the small-text floor, so a
+    /// pixel of ribbon blending cannot leave it under the 4.5:1 a label needs.
     fn label_ink(&self, links: &[LinkBand], rects: &[Rect], tone: Color, theme: &Theme) -> Color {
         let grounds = self.label_grounds(links, rects, theme);
-        theme
-            .tokens
-            .colors
-            .ink_on_any(&grounds, tone, crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+        theme.tokens.colors.ink_on_any(
+            &grounds,
+            tone,
+            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+        )
     }
 
     fn draw_node_labels(
