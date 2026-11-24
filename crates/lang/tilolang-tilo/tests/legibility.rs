@@ -7,7 +7,7 @@
 use crate::fixtures::Workspace;
 use tilolang_runtime::seen::{SeenMark, SeenWrite};
 use tilolang_runtime::store::{Version, VersionKind};
-use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Store as _, Value};
+use tilolang_runtime::{Actor, ResourceRef, Store as _, Value};
 
 use tilolang_tilo::host::Host;
 

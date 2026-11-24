@@ -254,7 +254,7 @@ impl Installed {
         }
     }
 
-    fn with_engine(mut self) -> Self {
+    fn with_engine(self) -> Self {
         self.host.runtime().set_engine(self.pulls.clone());
         self.host.runtime().set_device_files(self.shells.clone());
         self

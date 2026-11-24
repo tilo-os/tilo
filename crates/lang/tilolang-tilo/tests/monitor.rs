@@ -188,10 +188,6 @@ impl Installed {
             .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
             .expect("the window opens")
     }
-
-    fn root_value(&self) -> Value {
-        Value::resource(&self.root)
-    }
 }
 
 fn words(node: &UiNode, into: &mut Vec<String>) {
