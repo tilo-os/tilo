@@ -161,6 +161,28 @@ impl DocumentId {
         Self::derived("default", &Self::for_tab(instance))
     }
 
+    /// Whether `record` is one of the records the framework keeps for an app's window: its
+    /// [default document](Self::window_default), or the view a device keeps of it
+    /// (`derived:view.<device>@` that document). Exact: nothing else an app writes reads as one.
+    #[must_use]
+    pub fn is_window_record(record: &str) -> bool {
+        let default = record
+            .strip_prefix("derived:view.")
+            .and_then(|view| view.split_once('@'))
+            .filter(|(device, _)| !device.is_empty() && !device.contains(':'))
+            .map_or(record, |(_, of)| of);
+        default
+            .strip_prefix("derived:default@tab:")
+            .is_some_and(|tab| tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Whether `record` is the view a device keeps of a window's default document
+    /// ([`Self::is_window_record`]), rather than the document itself.
+    #[must_use]
+    pub fn is_window_view(record: &str) -> bool {
+        record.starts_with("derived:view.") && Self::is_window_record(record)
+    }
+
     /// The window whose [default document](Self::window_default) is stored
     /// under `storage_key` ([`Self::storage_key`]), if that is what it is.
     /// Exact: the whole key, hash included, must be that document's.
