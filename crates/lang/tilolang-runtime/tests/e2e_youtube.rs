@@ -1,4 +1,4 @@
-//! The YouTube app (`apps/tl/tube/app.tl`) end to end: the settings place that holds each
+//! The `YouTube` app (`apps/tl/tube/app.tl`) end to end: the settings place that holds each
 //! playback preference, a comments switch its video page obeys, and the speed the person chose
 //! following them to the next video.
 
@@ -83,7 +83,9 @@ mod cases {
                         assert!(asked, "{action} did not ask the person first");
                         return outcome;
                     }
-                    other => panic!("{action}, the person said yes, came to {other:?}"),
+                    other @ InvokeOutcome::Denied => {
+                        panic!("{action}, the person said yes, came to {other:?}")
+                    }
                 }
             }
         }
@@ -105,7 +107,7 @@ mod cases {
                 vec![
                     ("key", Value::text(key)),
                     ("name", Value::text(name)),
-                    ("handle", Value::text(&format!("@{key}"))),
+                    ("handle", Value::text(format!("@{key}"))),
                     ("subscribers", Value::Int(1000)),
                 ],
             )
@@ -127,7 +129,7 @@ mod cases {
                     ("published", Value::text("2026-11-01T12:00:00Z")),
                     (
                         "stream",
-                        Value::text(&format!("https://video.example/{key}.mp4")),
+                        Value::text(format!("https://video.example/{key}.mp4")),
                     ),
                 ],
             )
@@ -161,7 +163,7 @@ mod cases {
         }
 
         /// Every text the window shows.
-        fn texts(&self, view: &ViewInstance) -> Vec<String> {
+        fn texts(view: &ViewInstance) -> Vec<String> {
             of_kind(view.tree(), "ui.Text")
                 .into_iter()
                 .map(|node| text_prop(node, "value"))
@@ -261,12 +263,12 @@ mod cases {
             w.comment("c1", "v1", "The ferry was late");
             let page = w.open("video_page", vec![Value::resource(&video)]);
             assert!(
-                w.texts(&page).iter().any(|t| t == "The ferry was late"),
+                Watch::texts(&page).iter().any(|t| t == "The ferry was late"),
                 "the comment is shown while comments are on"
             );
             w.call("set_comments", vec![Value::resource(&w.yt), Value::Bool(false)]);
             let page = w.open("video_page", vec![Value::resource(&video)]);
-            let texts = w.texts(&page);
+            let texts = Watch::texts(&page);
             assert!(
                 !texts.iter().any(|t| t == "The ferry was late"),
                 "a page with comments off shows none: {texts:?}"
@@ -277,7 +279,7 @@ mod cases {
             );
             w.call("set_comments", vec![Value::resource(&w.yt), Value::Bool(true)]);
             let page = w.open("video_page", vec![Value::resource(&video)]);
-            assert!(w.texts(&page).iter().any(|t| t == "The ferry was late"), "and back");
+            assert!(Watch::texts(&page).iter().any(|t| t == "The ferry was late"), "and back");
         }
 
         phase the_speed_chosen_is_the_player_s_speed;
@@ -311,12 +313,16 @@ mod cases {
 
     impl EngineHost for Bridge {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            if app != "so.tilo.tube" {
+                return Err(format!("`{app}` is not the app this bridge answers"));
+            }
             self.0.call(op, input)
         }
 
         fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            if app != "so.tilo.tube" {
+                return Err(format!("`{app}` is not the app this bridge answers"));
+            }
             let job = "grayjay-1";
             self.0.start(job, op, input)?;
             Ok(serde_json::json!({ "job": job }).to_string())
@@ -331,7 +337,7 @@ mod cases {
         }
     }
 
-    /// The YouTube app over its Grayjay bridge, with a Grayjay device the test runs.
+    /// The `YouTube` app over its Grayjay bridge, with a Grayjay device the test runs.
     struct Linked {
         rt: Runtime,
         app: App,
@@ -459,7 +465,7 @@ mod cases {
             opened
         }
 
-        fn texts(&self, view: &ViewInstance) -> Vec<String> {
+        fn texts(view: &ViewInstance) -> Vec<String> {
             of_kind(view.tree(), "ui.Text")
                 .into_iter()
                 .map(|node| text_prop(node, "value"))
@@ -477,7 +483,7 @@ mod cases {
                 vec![
                     ("key", Value::text(key)),
                     ("name", Value::text(name)),
-                    ("handle", Value::text(&format!("@{key}"))),
+                    ("handle", Value::text(format!("@{key}"))),
                     ("subscribers", Value::Int(1000)),
                 ],
             )
@@ -505,7 +511,7 @@ mod cases {
             let peer = grayjay_peer();
             app.call(
                 "pair_device",
-                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+                vec![Value::resource(&app.yt), Value::text(peer.invite())],
             );
             app.settle();
 
@@ -560,7 +566,7 @@ mod cases {
             let peer = grayjay_peer();
             app.call(
                 "pair_device",
-                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+                vec![Value::resource(&app.yt), Value::text(peer.invite())],
             );
             app.settle();
             let device = app.devices().remove(0);
@@ -615,7 +621,7 @@ mod cases {
             let peer = grayjay_peer();
             app.call(
                 "pair_device",
-                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+                vec![Value::resource(&app.yt), Value::text(peer.invite())],
             );
             app.settle();
             let device = app.devices().remove(0);
@@ -637,7 +643,7 @@ mod cases {
 
             // The settings place says the device is gone from the exchange.
             let page = app.open("settings_page", vec![Value::resource(&app.yt)]);
-            let texts = app.texts(&page);
+            let texts = Linked::texts(&page);
             assert!(
                 texts.iter().any(|text| text == "No approved devices yet. Pairing needs a confirmation on both ends."),
                 "{texts:?}"
@@ -650,7 +656,7 @@ mod cases {
             let peer = grayjay_peer();
             app.call(
                 "pair_device",
-                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+                vec![Value::resource(&app.yt), Value::text(peer.invite())],
             );
             app.settle();
             let device = app.devices().remove(0);
@@ -691,7 +697,7 @@ mod cases {
             );
             app.call(
                 "pair_device",
-                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+                vec![Value::resource(&app.yt), Value::text(peer.invite())],
             );
             app.settle();
             let device = app.devices().remove(0);

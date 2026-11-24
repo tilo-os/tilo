@@ -65,8 +65,10 @@ mod cases {
                 .iter()
                 .rev()
                 .find(|(asked, _)| asked == op)
-                .map(|(_, input)| input.clone())
-                .unwrap_or_else(|| panic!("the device was never asked `{op}`"))
+                .map_or_else(
+                    || panic!("the device was never asked `{op}`"),
+                    |(_, input)| input.clone(),
+                )
         }
 
         /// Says the live play reached `at`, as the device pushes it with every few frames.
@@ -100,8 +102,7 @@ mod cases {
                 "still" => Ok(format!(r#"{{"url":"{STILL}"}}"#)),
                 "thumb" => Ok(format!(r#"{{"url":"{SWATCH}"}}"#)),
                 "sample" => Ok(r#"{"red":0.25,"green":0.5,"blue":0.75}"#.to_owned()),
-                "scrub" => Ok(String::new()),
-                "cut" => Ok(String::new()),
+                "scrub" | "cut" => Ok(String::new()),
                 "waveform" => Ok(r#"{"peaks":[0.2,0.6,0.4,0.9]}"#.to_owned()),
                 other => Err(format!("`{other}` is no op this device runs")),
             }
@@ -144,7 +145,7 @@ mod cases {
             if op != "play" {
                 return Err(format!("`{op}` is no stream this device runs"));
             }
-            let job = format!("live-{}", self.live.borrow().len() + 1);
+            let job = format!("live-{}", self.live.borrow().len().saturating_add(1));
             self.live.borrow_mut().push(job.clone());
             self.streams.borrow_mut().push((job.clone(), push));
             Ok(format!(r#"{{"job":"{job}"}}"#))
@@ -208,9 +209,12 @@ mod cases {
         }
     }
 
+    /// The media type and bytes of what the person copied.
+    type Copied = Option<(String, Vec<u8>)>;
+
     /// The person's clipboard, as the device answers it.
     #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+    struct Selection(Rc<RefCell<Copied>>);
 
     impl ClipboardHost for Selection {
         fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
@@ -395,8 +399,8 @@ mod cases {
             let p = s.new_project();
             assert_eq!(s.text(&p, "name"), "Untitled project");
             assert_eq!(s.tracks(&p).len(), 2);
-            assert_eq!(s.number(&p, "fps"), 30.0, "the shape a cut starts at");
-            assert_eq!(s.number(&p, "width"), 1920.0);
+            assert!((s.number(&p, "fps") - 30.0).abs() < f64::EPSILON, "the shape a cut starts at");
+            assert!((s.number(&p, "width") - 1920.0).abs() < f64::EPSILON);
         }
 
         phase a_source_is_probed_and_reaches_the_bin;
@@ -412,8 +416,8 @@ mod cases {
             let media = s.media(&p);
             assert_eq!(media.len(), 1);
             assert_eq!(s.text(&media[0], "name"), "Harbour.mp4");
-            assert_eq!(s.number(&media[0], "duration"), 10.0);
-            assert_eq!(s.number(&media[0], "width"), 1920.0);
+            assert!((s.number(&media[0], "duration") - 10.0).abs() < f64::EPSILON);
+            assert!((s.number(&media[0], "width") - 1920.0).abs() < f64::EPSILON);
             assert_eq!(
                 s.text(&media[0], "still"),
                 STILL,
@@ -423,11 +427,7 @@ mod cases {
                 Value::List(peaks) => assert_eq!(peaks.len(), 4, "the waveform reached the source"),
                 other => panic!("peaks read {other:?}"),
             }
-            assert_eq!(
-                s.number(&p, "width"),
-                1920.0,
-                "a cut takes its shape from its first source"
-            );
+            assert!((s.number(&p, "width") - 1920.0).abs() < f64::EPSILON, "a cut takes its shape from its first source");
         }
 
         phase a_source_placed_becomes_a_clip_at_a_place_on_its_track;
@@ -436,8 +436,8 @@ mod cases {
             let (p, media, clip) = s.placed();
             assert_eq!(s.clips(&p).len(), 1);
             assert_eq!(s.text(&clip, "name"), "Harbour.mp4");
-            assert_eq!(s.number(&clip, "start"), 0.0);
-            assert_eq!(s.number(&clip, "out_point"), 10.0);
+            assert!((s.number(&clip, "start") - 0.0).abs() < f64::EPSILON);
+            assert!((s.number(&clip, "out_point") - 10.0).abs() < f64::EPSILON);
             let _ = media;
             // The frame the preview shows comes from the cut as the engine reads it.
             s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
@@ -470,20 +470,20 @@ mod cases {
                     Value::List(Vec::new()),
                 ],
             );
-            assert_eq!(s.number(&clip, "start"), 3.0, "moved along the timeline");
-            assert_eq!(s.number(&clip, "in_point"), 0.0, "its source stayed put");
+            assert!((s.number(&clip, "start") - 3.0).abs() < f64::EPSILON, "moved along the timeline");
+            assert!((s.number(&clip, "in_point") - 0.0).abs() < f64::EPSILON, "its source stayed put");
             s.call(
                 "commit_drag",
                 vec![
                     Value::resource(&p),
                     Value::text("tail"),
-                    Value::text(id.clone()),
+                    Value::text(id),
                     Value::Float(0.0),
                     Value::Float(-4.0),
                     Value::List(Vec::new()),
                 ],
             );
-            assert_eq!(s.number(&clip, "out_point"), 6.0, "trimmed from its tail");
+            assert!((s.number(&clip, "out_point") - 6.0).abs() < f64::EPSILON, "trimmed from its tail");
         }
 
         phase a_clip_is_split_and_speed_changes_its_length;
@@ -497,10 +497,10 @@ mod cases {
                 .iter()
                 .find(|c| (s.number(c, "start") - 4.0).abs() < 1e-6)
                 .expect("the second half starts where the cut was");
-            assert_eq!(s.number(&clip, "out_point"), 4.0, "the first half ends there");
-            assert_eq!(s.number(right, "in_point"), 4.0, "the second reads on from there");
+            assert!((s.number(&clip, "out_point") - 4.0).abs() < f64::EPSILON, "the first half ends there");
+            assert!((s.number(right, "in_point") - 4.0).abs() < f64::EPSILON, "the second reads on from there");
             s.call("set_speed", vec![Value::resource(right), Value::Float(2.0)]);
-            assert_eq!(s.number(right, "speed_rate"), 2.0);
+            assert!((s.number(right, "speed_rate") - 2.0).abs() < f64::EPSILON);
         }
 
         phase a_transition_a_marker_and_the_marks_are_kept;
@@ -519,13 +519,13 @@ mod cases {
             s.call("add_marker", vec![Value::resource(&p), Value::Float(2.0)]);
             let markers = s.records(&p, "markers");
             assert_eq!(markers.len(), 1);
-            assert_eq!(s.number(&markers[0], "t"), 2.0);
+            assert!((s.number(&markers[0], "t") - 2.0).abs() < f64::EPSILON);
             s.call("mark_in", vec![Value::resource(&p), Value::Float(1.0)]);
             s.call("mark_out", vec![Value::resource(&p), Value::Float(5.0)]);
-            assert_eq!(s.number(&p, "mark_in"), 1.0);
-            assert_eq!(s.number(&p, "mark_out"), 5.0);
+            assert!((s.number(&p, "mark_in") - 1.0).abs() < f64::EPSILON);
+            assert!((s.number(&p, "mark_out") - 5.0).abs() < f64::EPSILON);
             s.call("clear_marks", vec![Value::resource(&p)]);
-            assert_eq!(s.number(&p, "mark_in"), -1.0);
+            assert!((s.number(&p, "mark_in") - -1.0).abs() < f64::EPSILON);
         }
 
         phase a_title_is_words_the_cut_draws;
@@ -569,7 +569,7 @@ mod cases {
             let cut: serde_json::Value = serde_json::from_str(ask["project"].as_str().unwrap()).unwrap();
             assert_eq!(cut["name"], "Untitled project");
             s.call("poll_render", vec![Value::resource(&p)]);
-            assert_eq!(s.number(&p, "job_done"), 120.0, "how far it has got");
+            assert!((s.number(&p, "job_done") - 120.0).abs() < f64::EPSILON, "how far it has got");
             *s.engine.ready.borrow_mut() = true;
             s.call("poll_render", vec![Value::resource(&p)]);
             assert_eq!(s.text(&p, "exported"), FILM);
@@ -603,8 +603,8 @@ mod cases {
             assert_eq!(s.media(&opened).len(), 1, "its sources came with it");
             assert_eq!(s.clips(&opened).len(), 1, "and their places");
             let reopened = s.clips(&opened).into_iter().next().expect("a clip");
-            assert_eq!(s.number(&reopened, "anchor_x"), 0.0, "the anchor came with it");
-            assert_eq!(s.number(&reopened, "anchor_y"), 1.0);
+            assert!((s.number(&reopened, "anchor_x") - 0.0).abs() < f64::EPSILON, "the anchor came with it");
+            assert!((s.number(&reopened, "anchor_y") - 1.0).abs() < f64::EPSILON);
         }
 
         phase keys_colours_filmstrips_and_notes_are_a_clip_s_own;
@@ -624,7 +624,7 @@ mod cases {
             assert_eq!(keys.len(), 1, "one key on the clip");
             assert_eq!(s.text(&keys[0], "param"), "opacity");
             assert_eq!(s.text(&keys[0], "interp"), "ease");
-            assert_eq!(s.number(&keys[0], "v"), 1.0, "the value the field held");
+            assert!((s.number(&keys[0], "v") - 1.0).abs() < f64::EPSILON, "the value the field held");
             // A sample from the frame becomes the colour the key removes.
             s.call(
                 "sample_key",
@@ -636,8 +636,8 @@ mod cases {
                     Value::Float(0.6),
                 ],
             );
-            assert_eq!(s.number(&clip, "key_red"), 0.25);
-            assert_eq!(s.number(&clip, "key_green"), 0.5);
+            assert!((s.number(&clip, "key_red") - 0.25).abs() < f64::EPSILON);
+            assert!((s.number(&clip, "key_green") - 0.5).abs() < f64::EPSILON);
             assert!(matches!(s.rt.read(&clip, "key_enabled").unwrap(), Value::Bool(true)));
             // The filmstrip: eight frames of the clip, kept.
             s.call("filmstrip", vec![Value::resource(&p), Value::resource(&clip)]);
@@ -687,7 +687,7 @@ mod cases {
                 "set_look",
                 vec![Value::resource(&clip), look("opacity"), Value::Float(0.4)],
             );
-            assert_eq!(s.number(&clip, "opacity"), 0.4);
+            assert!((s.number(&clip, "opacity") - 0.4).abs() < f64::EPSILON);
             assert_eq!(stills(), before + 1, "the frame was drawn again after the edit");
             // The mask is a shape the clip shows through, with its place, size and edge.
             s.call("set_mask", vec![Value::resource(&clip), Value::text("ellipse")]);
@@ -701,7 +701,7 @@ mod cases {
                 "set_look",
                 vec![Value::resource(&clip), look("mask_feather"), Value::Float(0.3)],
             );
-            assert_eq!(s.number(&clip, "mask_feather"), 0.3);
+            assert!((s.number(&clip, "mask_feather") - 0.3).abs() < f64::EPSILON);
             // Crop reaches every side, and both scales are the clip's.
             s.call(
                 "set_look",
@@ -711,8 +711,8 @@ mod cases {
                 "set_look",
                 vec![Value::resource(&clip), look("scale_y"), Value::Float(0.5)],
             );
-            assert_eq!(s.number(&clip, "crop_top"), 0.2);
-            assert_eq!(s.number(&clip, "scale_y"), 0.5);
+            assert!((s.number(&clip, "crop_top") - 0.2).abs() < f64::EPSILON);
+            assert!((s.number(&clip, "scale_y") - 0.5).abs() < f64::EPSILON);
             // The track's mix is its own: level, pan and the switches.
             let track = s
                 .tracks(&p)
@@ -731,15 +731,15 @@ mod cases {
                 "set_track_muted",
                 vec![Value::resource(&track), Value::Bool(true)],
             );
-            assert_eq!(s.number(&track, "gain_db"), -6.0);
-            assert_eq!(s.number(&track, "pan"), -1.0);
+            assert!((s.number(&track, "gain_db") - -6.0).abs() < f64::EPSILON);
+            assert!((s.number(&track, "pan") - -1.0).abs() < f64::EPSILON);
             assert!(matches!(
                 s.rt.read(&track, "muted").unwrap(),
                 Value::Bool(true)
             ));
             s.call("reset_mix", vec![Value::resource(&track)]);
-            assert_eq!(s.number(&track, "gain_db"), 0.0);
-            assert_eq!(s.number(&track, "pan"), 0.0);
+            assert!((s.number(&track, "gain_db") - 0.0).abs() < f64::EPSILON);
+            assert!((s.number(&track, "pan") - 0.0).abs() < f64::EPSILON);
         }
 
         phase the_window_draws_the_bin_the_timeline_and_the_inspector;
@@ -857,7 +857,7 @@ mod cases {
             );
             assert!(!s.flag(&media, "missing"), "the source reads again");
             assert_eq!(s.text(&media, "name"), "Harbour-found.mp4");
-            assert_eq!(s.number(&media, "duration"), 10.0, "what its new file says");
+            assert!((s.number(&media, "duration") - 10.0).abs() < f64::EPSILON, "what its new file says");
             assert_eq!(
                 s.bin_meta("Harbour-found.mp4").as_deref(),
                 Some("0:10.0"),
@@ -898,7 +898,7 @@ mod cases {
                 Some(&Value::List(vec![Value::Float(3.0), Value::text(track_named("V1"))])),
             );
             assert!(matches!(moved, Ok(InvokeOutcome::Done(_))), "{moved:?}");
-            assert_eq!(s.number(&clip, "start"), 3.0, "moved along the timeline");
+            assert!((s.number(&clip, "start") - 3.0).abs() < f64::EPSILON, "moved along the timeline");
             // Dragged onto a sound track: a picture does not go there, but the time it was let go
             // at still holds.
             let window = s.window();
@@ -908,7 +908,7 @@ mod cases {
                 Some(&Value::List(vec![Value::Float(4.0), Value::text(track_named("A1"))])),
             );
             assert!(matches!(onto_sound, Ok(InvokeOutcome::Done(_))), "{onto_sound:?}");
-            assert_eq!(s.number(&clip, "start"), 4.0);
+            assert!((s.number(&clip, "start") - 4.0).abs() < f64::EPSILON);
             let on_track = match s.rt.read(&clip, "track").unwrap() {
                 Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target).id_string(),
                 other => panic!("track reads {other:?}"),
@@ -922,8 +922,8 @@ mod cases {
                 Some(&Value::List(vec![Value::Float(4.0), Value::Float(4.0)])),
             );
             assert!(matches!(trimmed, Ok(InvokeOutcome::Done(_))), "{trimmed:?}");
-            assert_eq!(s.number(&clip, "out_point"), 4.0, "trimmed from its tail");
-            assert_eq!(s.number(&clip, "start"), 4.0, "its start stayed");
+            assert!((s.number(&clip, "out_point") - 4.0).abs() < f64::EPSILON, "trimmed from its tail");
+            assert!((s.number(&clip, "start") - 4.0).abs() < f64::EPSILON, "its start stayed");
             // A marker dragged along the ruler lands on the frame nearest where it was let go.
             s.call("add_marker", vec![Value::resource(&p), Value::Float(1.0)]);
             let window = s.window();
@@ -935,15 +935,15 @@ mod cases {
             let dragged = window.fire_with(&marker, "moved", Some(&Value::Float(2.5)));
             assert!(matches!(dragged, Ok(InvokeOutcome::Done(_))), "{dragged:?}");
             let marked = s.records(&p, "markers");
-            assert_eq!(s.number(&marked[0], "t"), 2.5);
+            assert!((s.number(&marked[0], "t") - 2.5).abs() < f64::EPSILON);
         }
 
         phase a_clip_turns_around_its_anchor;
         {
             let s = Studio::new();
-            let (p, media, clip) = s.placed();
-            assert_eq!(s.number(&clip, "anchor_x"), 0.5, "a clip starts pinned at its middle");
-            assert_eq!(s.number(&clip, "anchor_y"), 0.5);
+            let (p, _media, clip) = s.placed();
+            assert!((s.number(&clip, "anchor_x") - 0.5).abs() < f64::EPSILON, "a clip starts pinned at its middle");
+            assert!((s.number(&clip, "anchor_y") - 0.5).abs() < f64::EPSILON);
             s.call(
                 "set_anchor",
                 vec![
@@ -952,8 +952,8 @@ mod cases {
                     Value::Float(1.0),
                 ],
             );
-            assert_eq!(s.number(&clip, "anchor_x"), 0.0);
-            assert_eq!(s.number(&clip, "anchor_y"), 1.0);
+            assert!((s.number(&clip, "anchor_x") - 0.0).abs() < f64::EPSILON);
+            assert!((s.number(&clip, "anchor_y") - 1.0).abs() < f64::EPSILON);
             // The engine draws the frame turned around the point the clip names.
             s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
             let ask: serde_json::Value =
@@ -992,8 +992,8 @@ mod cases {
                         Value::Float(side),
                     ],
                 );
-                assert_eq!(s.number(&clip, "anchor_x"), anchor);
-                assert_eq!(s.number(&clip, "pos_x"), side);
+                assert!((s.number(&clip, "anchor_x") - anchor).abs() < f64::EPSILON);
+                assert!((s.number(&clip, "pos_x") - side).abs() < f64::EPSILON);
             }
             s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
             let ask: serde_json::Value =
@@ -1064,28 +1064,24 @@ mod cases {
                 "shuttle",
                 vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
             );
-            assert_eq!(rate(), 1.0);
-            assert_eq!(s.number(&p, "live_rate"), 1.0);
+            assert!((rate() - 1.0).abs() < f64::EPSILON);
+            assert!((s.number(&p, "live_rate") - 1.0).abs() < f64::EPSILON);
             s.call(
                 "shuttle",
                 vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
             );
-            assert_eq!(rate(), 2.0, "the same way again doubles it");
+            assert!((rate() - 2.0).abs() < f64::EPSILON, "the same way again doubles it");
             s.call(
                 "shuttle",
                 vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
             );
-            assert_eq!(rate(), 4.0);
+            assert!((rate() - 4.0).abs() < f64::EPSILON);
             s.call(
                 "shuttle",
                 vec![Value::resource(&p), Value::Float(3.0), Value::Float(-1.0)],
             );
-            assert_eq!(
-                rate(),
-                -1.0,
-                "the other way starts again at normal speed, backwards"
-            );
-            assert_eq!(s.number(&p, "live_rate"), -1.0);
+            assert!((rate() - -1.0).abs() < f64::EPSILON, "the other way starts again at normal speed, backwards");
+            assert!((s.number(&p, "live_rate") - -1.0).abs() < f64::EPSILON);
         }
 
         phase a_scrub_draws_the_frame_and_plays_the_sound_there;
@@ -1272,21 +1268,27 @@ mod cases {
             assert_eq!(starts, vec![0.0, 12.0, 40.0, 52.0], "keeping their distance from the playhead");
             let pasted = clips
                 .iter()
-                .find(|c| s.number(c, "start") == 40.0)
+                .find(|c| (s.number(c, "start") - 40.0).abs() < f64::EPSILON)
                 .expect("the pasted first clip");
-            assert_eq!(s.number(pasted, "brightness"), 0.8, "with its look");
+            assert!((s.number(pasted, "brightness") - 0.8).abs() < f64::EPSILON, "with its look");
             assert_eq!(s.records(pasted, "effects").len(), 1, "and its effects");
 
             // A nudge moves them together, a second's frames on; duplicate puts a copy right
             // after them; delete takes them away.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a cut's frame rate is far inside i64"
+            )]
             let second_of_frames = s.number(&p, "fps").round() as i64;
             s.call("nudge", vec![Value::resource(&p), both.clone(), Value::Int(second_of_frames)]);
-            assert_eq!(s.number(&first, "start"), 1.0, "a second later");
-            assert_eq!(s.number(&second, "start"), 13.0, "and the other with it");
+            assert!((s.number(&first, "start") - 1.0).abs() < f64::EPSILON, "a second later");
+            assert!((s.number(&second, "start") - 13.0).abs() < f64::EPSILON, "and the other with it");
             s.call("duplicate_clips", vec![Value::resource(&p), both.clone()]);
             assert_eq!(s.clips(&p).len(), 6);
             assert!(
-                s.clips(&p).iter().any(|c| s.number(c, "start") == 23.0),
+                s.clips(&p)
+                    .iter()
+                    .any(|c| (s.number(c, "start") - 23.0).abs() < f64::EPSILON),
                 "the copy of the first starts where the second ended"
             );
             s.call("remove_clips", vec![Value::resource(&p), both]);

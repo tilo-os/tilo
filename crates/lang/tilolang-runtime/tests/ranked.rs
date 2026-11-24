@@ -73,7 +73,10 @@ view by_use(l: Library) {
     impl Plays {
         /// Sets the clock `day` days after the first.
         fn at(&self, day: i64) {
-            let at = jiff::Timestamp::from_second(1_790_000_000 + day * DAY).unwrap();
+            let at = jiff::Timestamp::from_second(
+                1_790_000_000_i64.saturating_add(day.saturating_mul(DAY)),
+            )
+            .unwrap();
             *self.clock.borrow_mut() = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
         }
 

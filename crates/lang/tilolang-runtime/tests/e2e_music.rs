@@ -80,16 +80,16 @@ mod cases {
                 &field_id(&self.app, "Library", "tracks"),
                 &type_id(&self.app, "Track"),
                 vec![
-                    ("key", Value::text(&format!("k-{title}"))),
+                    ("key", Value::text(format!("k-{title}"))),
                     ("title", Value::text(title)),
                     ("artist", Value::text(artist)),
                     ("artist_key", Value::text(artist_key)),
                     ("album", Value::text(album)),
-                    ("album_key", Value::text(&format!("a-{album}"))),
+                    ("album_key", Value::text(format!("a-{album}"))),
                     ("seconds", Value::Int(200)),
                     (
                         "stream",
-                        Value::text(&format!("https://music.example/{title}.wav")),
+                        Value::text(format!("https://music.example/{title}.wav")),
                     ),
                 ],
             )
@@ -205,7 +205,7 @@ mod cases {
             };
             assert_eq!(
                 s.rt.read(&playing, "track").unwrap(),
-                Value::text(&blue.id_string())
+                Value::text(blue.id_string())
             );
         }
 

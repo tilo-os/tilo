@@ -100,7 +100,10 @@ mod cases {
 
         /// The PDF the engine wrote for a page it printed, and nothing else.
         fn read(&self, path: &str) -> Result<Vec<u8>, String> {
-            if path.ends_with(".pdf") {
+            if std::path::Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+            {
                 Ok(PRINTED_PDF.to_vec())
             } else {
                 Err("the test keeps no files".to_owned())
@@ -330,7 +333,7 @@ mod cases {
     #[test]
     fn the_window_search_finds_in_the_open_page_and_clearing_it_takes_the_find_away() {
         let b = Browser::new();
-        let mut view = b.page_view();
+        let view = b.page_view();
         let shell = of_kind(view.tree(), "ui.NavShell")[0].key.clone();
         view.fire_with(&shell, "search", Some(&Value::text("harbour")))
             .unwrap();
@@ -624,7 +627,7 @@ mod cases {
         assert!(
             matches!(
                 presented.props.get("showing"),
-                Some(Value::Bool(true)) | Some(Value::Int(1))
+                Some(Value::Bool(true) | Value::Int(1))
             ),
             "it presents the page: {:?}",
             presented.props
@@ -1012,7 +1015,7 @@ mod cases {
     #[test]
     fn a_saved_download_is_shown_in_files_through_its_own_action() {
         let authority = TestAuthority::new();
-        let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
+        let rt = Runtime::new(AmStore::new(), authority).unwrap();
         rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
         let files = App::compile(FILES_SOURCE, &[]);
         files.load(&rt);
@@ -1500,7 +1503,30 @@ mod cases {
             "went_to",
             &[("url", Value::text("https://example.org/login"))],
         );
+        a_login_is_discovered_and_saved(&b);
+        the_vaults_logins_are_listed_and_filled(&b);
+        a_login_that_cannot_be_saved_keeps_its_capture(&b);
+    }
 
+    /// The engine's `remember_credential` answer, naming what it did and what it holds.
+    fn answered(did: &str, capture: &str, accounts: &str) -> Vec<(&'static str, Value)> {
+        vec![
+            ("did", Value::text(did)),
+            ("success", Value::Bool(true)),
+            ("message", Value::text("")),
+            (
+                "forms",
+                Value::text(r#"[{"form":"1","username":"ada","kind":"current-password"}]"#),
+            ),
+            ("accounts", Value::text(accounts)),
+            ("capture", Value::text(capture)),
+            ("username", Value::text("ada")),
+            ("late", Value::Bool(false)),
+        ]
+    }
+
+    /// The page's login is found, captured and saved under the vault's name.
+    fn a_login_is_discovered_and_saved(b: &Browser) {
         b.page("discover_logins", &[]);
         assert_eq!(b.page.ops(), ["credential"]);
         let ask = b.page.last();
@@ -1512,21 +1538,6 @@ mod cases {
         );
 
         // What the engine's store answered reaches the page's record.
-        let answered = |did: &str, capture: &str, accounts: &str| {
-            vec![
-                ("did", Value::text(did)),
-                ("success", Value::Bool(true)),
-                ("message", Value::text("")),
-                (
-                    "forms",
-                    Value::text(r#"[{"form":"1","username":"ada","kind":"current-password"}]"#),
-                ),
-                ("accounts", Value::text(accounts)),
-                ("capture", Value::text(capture)),
-                ("username", Value::text("ada")),
-                ("late", Value::Bool(false)),
-            ]
-        };
         b.page("remember_credential", &answered("discover", "", "[]"));
         let view = b.page_view();
         assert_eq!(
@@ -1550,9 +1561,10 @@ mod cases {
         assert_eq!(b.page.last()["capture"].as_str(), Some("7"));
         b.page("remember_credential", &answered("save", "", "[]"));
         assert_eq!(b.text(&b.opened, "capture"), "", "the capture is spent");
+    }
 
-        // The vault's logins for the site, by name alone: the Browser's own and one the person
-        // keeps, which fills only once they allow it.
+    /// The vault's logins for the site are listed, one fills once allowed, and one is deleted.
+    fn the_vaults_logins_are_listed_and_filled(b: &Browser) {
         b.page("list_saved_logins", &[]);
         assert_eq!(b.page.last()["credential"].as_str(), Some("list"));
         b.page(
@@ -1605,8 +1617,10 @@ mod cases {
         view.fire(&button_key(&view, "Delete"), "press").unwrap();
         assert_eq!(b.page.last()["credential"].as_str(), Some("delete"));
         assert_eq!(b.page.last()["account"].as_str(), Some("vault.item:a"));
+    }
 
-        // A login the engine could not save leaves the capture for another try and says why.
+    /// A login the engine could not save leaves the capture for another try and says why.
+    fn a_login_that_cannot_be_saved_keeps_its_capture(b: &Browser) {
         b.page("remember_credential", &answered("capture", "9", "[]"));
         b.page(
             "remember_credential",
@@ -1928,7 +1942,7 @@ mod cases {
             &[
                 (
                     "installed",
-                    Value::text(&format!(
+                    Value::text(format!(
                         r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":["sidePanel"],"enabled":true,"keyword":"","side_panel":true}}]"#
                     )),
                 ),
@@ -2013,7 +2027,7 @@ mod cases {
             &[
                 (
                     "installed",
-                    Value::text(&format!(
+                    Value::text(format!(
                         r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":[],"enabled":true,"keyword":"kw","side_panel":false}}]"#
                     )),
                 ),
@@ -2246,8 +2260,9 @@ mod cases {
     /// The address bar offers the person's bookmarks, the pages this browser opened and the ones
     /// another browser's history brought over, each page once, with the search engine's row
     /// first for words that name no address; choosing a row opens it and empties the bar.
-    #[test]
-    fn the_address_bar_offers_bookmarks_imported_pages_and_the_search_and_each_row_opens() {
+    /// A browser with a bookmark, two pages it visited and another browser's history, for the
+    /// bar's words and addresses to draw on.
+    fn address_bar_world() -> Browser {
         let b = Browser::new();
         b.run(
             "bookmark",
@@ -2286,6 +2301,12 @@ mod cases {
                 ),
             ],
         );
+        b
+    }
+
+    #[test]
+    fn the_address_bar_offers_bookmarks_imported_pages_and_the_search_and_each_row_opens() {
+        let b = address_bar_world();
 
         let mut view = b.page_view();
         type_address(&mut view, "kitchen");

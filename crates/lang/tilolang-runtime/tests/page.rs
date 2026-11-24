@@ -63,7 +63,7 @@ action look(f: Feed) uses page {
     fn world(page: Option<&FakePage>) -> World {
         let reader = App::compile(READER, &[]);
         let store = AmStore::new();
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
         if let Some(page) = page {
             rt.set_page(page.clone());
         }

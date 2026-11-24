@@ -25,7 +25,6 @@ mod cases {
         method: String,
         url: String,
         headers: Vec<(String, String)>,
-        body: String,
         auth_scheme: String,
         vars: Vec<(String, String, String)>,
     }
@@ -54,14 +53,6 @@ mod cases {
                 answer: Rc::new(RefCell::new(String::new())),
                 cancelled: Rc::default(),
             }
-        }
-
-        fn ops(&self) -> Vec<String> {
-            self.calls
-                .borrow()
-                .iter()
-                .map(|(op, _)| op.clone())
-                .collect()
         }
 
         fn last_ask(&self) -> Asked {
@@ -108,7 +99,8 @@ mod cases {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_owned();
-                    let reference = format!("api-ref-{}", self.kept.borrow().len() + 1);
+                    let reference =
+                        format!("api-ref-{}", self.kept.borrow().len().saturating_add(1));
                     self.kept.borrow_mut().insert(reference.clone(), value);
                     Ok(format!(r#"{{"reference":"{reference}"}}"#))
                 }
@@ -159,7 +151,6 @@ mod cases {
                 method: text("method"),
                 url: text("url"),
                 headers: pairs("headers"),
-                body: text("body"),
                 auth_scheme: text("auth_scheme"),
                 vars,
             });
@@ -198,9 +189,12 @@ mod cases {
         }
     }
 
+    /// The media type and bytes of what the person copied.
+    type Copied = Option<(String, Vec<u8>)>;
+
     /// The person's clipboard, as the device answers it.
     #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+    struct Selection(Rc<RefCell<Copied>>);
 
     impl Selection {
         fn text(&self) -> String {
@@ -369,7 +363,7 @@ mod cases {
         }
 
         /// Types `url` into the window's address field, as a person does.
-        fn type_url(&self, window: &ViewInstance, url: &str) {
+        fn type_url(window: &ViewInstance, url: &str) {
             let input = of_kind(window.tree(), "ui.TextInput")
                 .into_iter()
                 .find(|node| prop(node, "placeholder") == "Enter a URL")
@@ -390,7 +384,6 @@ mod cases {
 
     /// Every node of a component, by its kind.
     fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        let mut found = Vec::new();
         fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
             if node.kind == kind {
                 found.push(node);
@@ -399,6 +392,7 @@ mod cases {
                 walk(child, kind, found);
             }
         }
+        let mut found = Vec::new();
         walk(tree, kind, &mut found);
         found
     }
@@ -417,13 +411,6 @@ mod cases {
         of_kind(tree, "ui.Button")
             .iter()
             .map(|b| prop(b, "label"))
-            .collect()
-    }
-
-    fn texts(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "ui.Text")
-            .iter()
-            .map(|t| prop(t, "value"))
             .collect()
     }
 
@@ -574,7 +561,7 @@ mod cases {
         );
         // The address is typed into the window.
         let window = s.window();
-        s.type_url(&window, "{{base}}/users");
+        Tester::type_url(&window, "{{base}}/users");
         assert_eq!(s.text(&s.draft(), "url"), "{{base}}/users");
 
         // The sign-in is kept on the device, and only its reference stands in the workspace.
@@ -615,7 +602,7 @@ mod cases {
     fn the_answer_reaches_the_window_and_the_history() {
         let s = Tester::new();
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/users");
+        Tester::type_url(&window, "https://api.example.com/users");
         let body = "{\"id\":1}";
         s.engine.answer_with(&answer_json(200, body));
 
@@ -665,7 +652,7 @@ mod cases {
     fn a_send_can_be_stopped_and_a_failed_one_says_why() {
         let s = Tester::new();
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/slow");
+        Tester::type_url(&window, "https://api.example.com/slow");
         s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("cancel_send", vec![Value::resource(&s.root)]);
         assert!(*s.engine.cancelled.borrow());
@@ -689,7 +676,7 @@ mod cases {
     fn a_send_answers_its_caller_with_the_response() {
         let s = Tester::new();
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/users");
+        Tester::type_url(&window, "https://api.example.com/users");
         let body = "{\"id\":1}";
         s.engine.answer_with(
             &serde_json::json!({
@@ -773,7 +760,7 @@ mod cases {
     fn a_sent_request_opens_again_and_can_be_saved() {
         let s = Tester::new();
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/users");
+        Tester::type_url(&window, "https://api.example.com/users");
         s.done("add_param", vec![Value::resource(&s.draft())]);
         s.engine.answer_with(&answer_json(201, "{}"));
         s.done("start_send", vec![Value::resource(&s.root)]);
@@ -832,7 +819,7 @@ mod cases {
     fn the_answer_and_the_request_leave_the_app_as_a_copy() {
         let s = Tester::new();
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/users");
+        Tester::type_url(&window, "https://api.example.com/users");
         let body = "{\"id\":1}";
         s.engine.answer_with(&answer_json(200, body));
         s.done("start_send", vec![Value::resource(&s.root)]);
@@ -887,7 +874,7 @@ mod cases {
 
         // With an answer, the pane shows the status and the body.
         let window = s.window();
-        s.type_url(&window, "https://api.example.com/users");
+        Tester::type_url(&window, "https://api.example.com/users");
         s.engine.answer_with(&answer_json(200, "{\"id\":1}"));
         s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("poll_send", vec![Value::resource(&s.root)]);
@@ -898,6 +885,6 @@ mod cases {
             "the answer's status stands in the window"
         );
         let editors = of_kind(&tree, "ui.CodeEditor");
-        assert!(editors.len() >= 1, "the response has its editor");
+        assert!(!editors.is_empty(), "the response has its editor");
     }
 }

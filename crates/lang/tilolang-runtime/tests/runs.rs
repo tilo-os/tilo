@@ -523,7 +523,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
 
     struct Trim {
         rt: Runtime,
-        trim: App,
+        app: App,
         dispatch: Dispatch,
         design: tilolang_runtime::ResourceRef,
         desk: tilolang_runtime::ResourceRef,
@@ -552,7 +552,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
         }
         Trim {
             rt,
-            trim,
+            app: trim,
             dispatch,
             design,
             desk,
@@ -565,7 +565,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
                 .invoke_action(
                     &me(),
                     (
-                        self.trim.action("trim").as_str(),
+                        self.app.action("trim").as_str(),
                         vec![
                             Value::resource(&self.design),
                             Value::resource(&self.desk),
@@ -598,7 +598,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
 
         /// The invocation each change the trim made to the design belongs to.
         fn trim_changes(&self) -> Vec<Option<String>> {
-            let trim = self.trim.action("trim");
+            let trim = self.app.action("trim");
             self.rt
                 .history(&self.design.doc)
                 .unwrap()
@@ -664,7 +664,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
         phase parts_a_filter_and_remove_where_pick_go_once_before_the_ask;
         {
             let w = trim_world();
-            let prune = w.trim.action("prune");
+            let prune = w.app.action("prune");
             let InvokeOutcome::Waits { run, .. } = w
                 .rt
                 .invoke_action(
@@ -832,7 +832,7 @@ action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text
         let dispatch = Dispatch::new();
         rt.set_foreign_invoker(dispatch.clone());
         let shelf = rt.create_root("Shelf").unwrap();
-        let desk = rt.create_root("Desk").unwrap();
+        let desk_root = rt.create_root("Desk").unwrap();
         let move_then_ask = mover.action("move_then_ask");
         let InvokeOutcome::Waits { run, .. } = rt
             .invoke_action(
@@ -841,7 +841,7 @@ action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text
                     move_then_ask.as_str(),
                     vec![
                         Value::resource(&shelf),
-                        Value::resource(&desk),
+                        Value::resource(&desk_root),
                         Value::text("~/Downloads/report.pdf"),
                         Value::text("~/Documents"),
                     ],
@@ -873,7 +873,7 @@ action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text
         );
         assert_eq!(rt.read(&shelf, "moved").unwrap(), Value::text("holds 1"));
         assert_eq!(rt.read(&shelf, "refused").unwrap(), Value::text(""));
-        assert_eq!(rt.read(&desk, "asked").unwrap(), Value::Int(1));
+        assert_eq!(rt.read(&desk_root, "asked").unwrap(), Value::Int(1));
     }
 
     /// A package whose action makes a resource and answers it, as the discussion makes a comment.

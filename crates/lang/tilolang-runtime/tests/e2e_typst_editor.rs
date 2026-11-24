@@ -478,7 +478,7 @@ mod cases {
             "",
             "a page that draws something else is drawn again"
         );
-        assert_eq!(desk.float(&changed, "height"), 900.0);
+        assert!((desk.float(&changed, "height") - 900.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -724,15 +724,15 @@ mod cases {
         desk.call("draw_next", vec![Value::resource(&d)]);
         let window = desk.window(&d);
         let tree = window.tree();
-        let sources = of_kind(&tree, "ui.CodeEditor");
+        let sources = of_kind(tree, "ui.CodeEditor");
         assert_eq!(sources.len(), 1, "the source is edited in a code editor");
-        let pictures = of_kind(&tree, "ui.Image");
+        let pictures = of_kind(tree, "ui.Image");
         assert!(
             pictures.len() >= 3,
             "each page and each thumbnail is a picture: {}",
             pictures.len()
         );
-        let overlays = of_kind(&tree, "ui.Drawing");
+        let overlays = of_kind(tree, "ui.Drawing");
         assert!(
             overlays.len() >= 2,
             "each page carries the selection overlay over it: {}",

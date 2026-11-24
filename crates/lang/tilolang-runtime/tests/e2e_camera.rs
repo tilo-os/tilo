@@ -27,8 +27,10 @@ mod cases {
         }
 
         fn reads(&self, code: &str) {
-            *self.codes.borrow_mut() =
-                format!(r#"{{"codes":[{{"text":{},"x":0.1,"y":0.1,"w":0.2,"h":0.2}}]}}"#, json_text(code));
+            *self.codes.borrow_mut() = format!(
+                r#"{{"codes":[{{"text":{},"x":0.1,"y":0.1,"w":0.2,"h":0.2}}]}}"#,
+                json_text(code)
+            );
         }
 
         fn asked(&self) -> Vec<String> {
@@ -90,8 +92,7 @@ mod cases {
 
     impl Camera {
         fn new() -> Self {
-            let camera = Self::with_clock("2026-11-24T09:00:00Z");
-            camera
+            Self::with_clock("2026-11-24T09:00:00Z")
         }
 
         fn with_clock(at: &str) -> Self {
@@ -135,7 +136,11 @@ mod cases {
 
         fn view(&self, name: &str) -> tilolang_runtime::ViewInstance {
             self.rt
-                .open_view(&me(), &self.app.view(name), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view(name),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap()
         }
     }

@@ -268,7 +268,7 @@ mod cases {
     fn number(value: &Value) -> f64 {
         match value {
             Value::Float(f) => *f,
-            Value::Int(i) => *i as f64,
+            Value::Int(i) => f64::from(i32::try_from(*i).unwrap_or(0)),
             other => panic!("{other:?} is no number"),
         }
     }
@@ -322,13 +322,13 @@ mod cases {
                 "ten megabytes over a tenth of a second: {downloaded} Mbps"
             );
             // The download came in chunks of a reply the language holds whole.
-            let chunks: Vec<WebRequest> = s
+            let chunks = s
                 .services
                 .asked()
                 .into_iter()
                 .filter(|request| request.url.contains("/__down?bytes=2000000"))
-                .collect();
-            assert_eq!(chunks.len(), 5, "five chunks of two megabytes");
+                .count();
+            assert_eq!(chunks, 5, "five chunks of two megabytes");
 
             let outcome = s.poll();
             let asked: Vec<String> = s
@@ -359,7 +359,7 @@ mod cases {
             assert_eq!(kept[0].2, "Laptop", "the device that ran it is kept");
             let download: f64 = kept[0].1.parse().expect("a number");
             assert!((300.0..2500.0).contains(&download), "{kept:?}");
-            assert_eq!(number(&s.run_field("bytes")), 12_000_000.0, "ten down, two up");
+            assert!((number(&s.run_field("bytes")) - 12_000_000.0).abs() < f64::EPSILON, "ten down, two up");
         }
 
         phase a_measurement_is_recorded_newest_first_and_the_twentieth_lets_the_oldest_go;
@@ -371,7 +371,7 @@ mod cases {
             let kept = s.results();
             assert_eq!(kept.len(), 20, "twenty runs are kept");
             assert!(kept[0].1.starts_with("22"), "newest first: {:?}", kept[0]);
-            assert!(kept[19].1.starts_with("3"), "the oldest three went: {:?}", kept[19]);
+            assert!(kept[19].1.starts_with('3'), "the oldest three went: {:?}", kept[19]);
         }
 
         phase stopping_ends_the_run_and_the_dial_goes_back_to_ready;

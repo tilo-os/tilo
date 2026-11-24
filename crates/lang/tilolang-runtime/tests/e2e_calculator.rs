@@ -65,7 +65,7 @@ mod cases {
             let kept = returned_ref(done);
             match self.rt.read(&kept, "result").unwrap() {
                 Value::Text(said) => Ok(said),
-                other => panic!("result reads {other:?}"),
+                other => Err(format!("result reads {other:?}")),
             }
         }
 

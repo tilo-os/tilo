@@ -102,9 +102,12 @@ mod cases {
         }
     }
 
+    /// The media type and bytes of what the person copied.
+    type Copied = Option<(String, Vec<u8>)>;
+
     /// The person's selection, as the device answers it.
     #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+    struct Selection(Rc<RefCell<Copied>>);
 
     impl ClipboardHost for Selection {
         fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
@@ -248,11 +251,17 @@ mod cases {
 
         fn cursor(&self, d: &ResourceRef) -> usize {
             let desk = self.desk(d);
-            usize::try_from(self.number(&desk, "cursor") as i64).unwrap_or(0)
+            match self.rt.read(&desk, "cursor").unwrap() {
+                Value::Int(n) => usize::try_from(n).unwrap_or(0),
+                other => panic!("cursor reads {other:?}"),
+            }
         }
 
         fn edited(&self, d: &ResourceRef) -> usize {
-            usize::try_from(self.number(d, "edited") as i64).unwrap_or(0)
+            match self.rt.read(d, "edited").unwrap() {
+                Value::Int(n) => usize::try_from(n).unwrap_or(0),
+                other => panic!("edited reads {other:?}"),
+            }
         }
 
         fn window(&self, d: &ResourceRef) -> ViewInstance {
@@ -274,10 +283,10 @@ mod cases {
     }
 
     fn texts(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text" {
-            if let Some(Value::Text(text)) = node.props.get("value") {
-                out.push(text.clone());
-            }
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
         }
         for child in &node.children {
             texts(child, out);
@@ -294,10 +303,10 @@ mod cases {
             let d = s.open(&path);
             assert_eq!(s.text(&d, "name"), "Bytes Grün.bin");
             assert_eq!(s.text(&d, "path"), path);
-            assert_eq!(s.number(&d, "length"), 4.0);
+            assert!((s.number(&d, "length") - 4.0).abs() < f64::EPSILON);
             assert_eq!(s.bytes(&d), [0x00, 0x11, 0x22, 0x33]);
             assert_eq!(s.rows(&d), ["00112233"]);
-            assert_eq!(s.number(&s.desk(&d), "cursor"), 0.0);
+            assert!((s.number(&s.desk(&d), "cursor") - 0.0).abs() < f64::EPSILON);
         }
 
         phase a_file_another_app_hands_over_opens_from_its_address;
@@ -310,7 +319,7 @@ mod cases {
             };
             let d = s.opened_file(file);
             assert_eq!(s.text(&d, "name"), "handed.bin");
-            assert_eq!(s.number(&d, "length"), 2.0);
+            assert!((s.number(&d, "length") - 2.0).abs() < f64::EPSILON);
             assert_eq!(s.bytes(&d), [0xDE, 0xAD]);
         }
 
@@ -319,7 +328,7 @@ mod cases {
             let s = Desk::new();
             let d = s.new_buffer();
             assert_eq!(s.text(&d, "name"), "Untitled.bin");
-            assert_eq!(s.number(&d, "length"), 0.0);
+            assert!((s.number(&d, "length") - 0.0).abs() < f64::EPSILON);
             assert_eq!(s.edited(&d), 0);
             assert!(s.rows(&d).is_empty());
         }
@@ -350,7 +359,7 @@ mod cases {
             s.press(&d, "1");
             s.press(&d, "2");
             assert_eq!(s.bytes(&d), [0x12, 0xAA]);
-            assert_eq!(s.number(&d, "length"), 2.0);
+            assert!((s.number(&d, "length") - 2.0).abs() < f64::EPSILON);
             assert_eq!(s.cursor(&d), 1);
             s.press(&d, "Backspace");
             assert_eq!(s.bytes(&d), [0xAA], "insert mode takes the byte before the cursor");
@@ -384,10 +393,10 @@ mod cases {
             s.press(&d, "PageDown");
             assert_eq!(s.cursor(&d), 16 + 16 * 16);
             let desk = s.desk(&d);
-            assert_eq!(s.number(&desk, "first"), 1.0, "the rows shown follow the cursor");
+            assert!((s.number(&desk, "first") - 1.0).abs() < f64::EPSILON, "the rows shown follow the cursor");
             s.call("scrolled", vec![Value::resource(&d), Value::Int(30)]);
             let desk = s.desk(&d);
-            assert_eq!(s.number(&desk, "first"), 31.0, "the wheel moves the window");
+            assert!((s.number(&desk, "first") - 31.0).abs() < f64::EPSILON, "the wheel moves the window");
             assert_eq!(s.rows(&d).len(), 96, "the rows the window reads ahead");
         }
 
@@ -407,7 +416,7 @@ mod cases {
             }
             s.press(&d, "Delete");
             assert_eq!(s.bytes(&d), [4, 5]);
-            assert_eq!(s.number(&d, "length"), 2.0);
+            assert!((s.number(&d, "length") - 2.0).abs() < f64::EPSILON);
         }
 
         phase ctrl_copy_carries_the_bytes_then_paste_puts_them_back;
@@ -440,7 +449,7 @@ mod cases {
                 vec![Value::resource(&d), Value::text("49 48 44 52")],
             );
             let desk = s.desk(&d);
-            assert_eq!(s.number(&desk, "at_match"), 0.0);
+            assert!((s.number(&desk, "at_match") - 0.0).abs() < f64::EPSILON);
             assert_eq!(s.cursor(&d), 0, "the first match holds the cursor");
             s.call("search_kind", vec![Value::resource(&d), Value::Int(1)]);
             s.call("search", vec![Value::resource(&d), Value::text("ihdr")]);
@@ -540,7 +549,7 @@ mod cases {
                 "insert_bytes",
                 vec![Value::resource(&d), Value::Int(9), Value::text("FF")],
             );
-            assert_eq!(s.number(&d, "length"), before);
+            assert!((s.number(&d, "length") - before).abs() < f64::EPSILON);
         }
 
         phase saving_writes_the_file_and_what_was_saved_is_the_base;
@@ -578,7 +587,7 @@ mod cases {
             let path = s.file("window.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
             let d = s.open(&path);
             let window = s.window(&d);
-            let grid = find(&window.tree(), "ui.HexGrid").expect("the grid stands in the window");
+            let grid = find(window.tree(), "ui.HexGrid").expect("the grid stands in the window");
             match grid.props.get("rows") {
                 Some(Value::List(rows)) => {
                     assert_eq!(rows.first(), Some(&Value::text("DEADBEEF")));
@@ -590,7 +599,7 @@ mod cases {
                 other => panic!("total reads {other:?}"),
             }
             let mut words = Vec::new();
-            texts(&window.tree(), &mut words);
+            texts(window.tree(), &mut words);
             assert!(
                 words.iter().any(|w| w.contains("Offset 0x00000000")),
                 "{words:?}"
@@ -608,7 +617,7 @@ mod cases {
                 .open_view(&me(), &s.app.view("library"), vec![Value::resource(&s.root)])
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
-            let row = find(&window.tree(), "ui.ListRow").expect("the buffer's row stands in the window");
+            let row = find(window.tree(), "ui.ListRow").expect("the buffer's row stands in the window");
             assert_eq!(row.props.get("title"), Some(&Value::text("listed.bin")));
             assert_eq!(s.text(&d, "name"), "listed.bin");
         }

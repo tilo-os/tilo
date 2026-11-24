@@ -424,7 +424,7 @@ view chooser(p: Picking) {
 
         phase a_mounted_drive_is_a_place_that_opens_its_folder;
         {
-            let mut disk = Disk::default();
+            let disk = Disk::default();
             for folder in ["/home", "/home/ada", "/home/ada/Documents", "/media", "/media/USB"] {
                 disk.folder(folder);
             }

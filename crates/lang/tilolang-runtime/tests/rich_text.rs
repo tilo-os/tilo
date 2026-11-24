@@ -603,7 +603,7 @@ mod cases {
                     "<p>Hello <strong>Ada</strong>,</p>\
                      <p>The <a href=\"https://tilo.sh\">plan</a> is ready.</p>\
                      <img src=\"https://pictures.example/lighthouse.png\" alt=\"the lighthouse\">\
-                     <script>alert('secret words')</script><style>p{color:red}</style>",
+                     <script>alert('secret words')</script><style>p { color: red; }</style>",
                 ),
             ],
         );

@@ -130,8 +130,7 @@ action take_in(b: Board, names: List<Text>) -> Int {
                 .iter()
                 .find(|declared| declared.name == ty)
                 .and_then(|declared| declared.fields.iter().find(|f| f.name == field))
-                .map(|f| f.id.clone())
-                .unwrap_or_else(|| panic!("{ty} has no field {field}"))
+                .map_or_else(|| panic!("{ty} has no field {field}"), |f| f.id.clone())
         }
 
         fn names(&self) -> Vec<String> {

@@ -18,7 +18,7 @@ mod cases {
     struct Clocks {
         rt: Runtime,
         app: App,
-        clocks: ResourceRef,
+        root: ResourceRef,
     }
 
     impl Clocks {
@@ -38,7 +38,11 @@ mod cases {
             )
             .expect("the person's devices read");
             let clocks = rt.create_root("Clocks").unwrap();
-            Self { rt, app, clocks }
+            Self {
+                rt,
+                app,
+                root: clocks,
+            }
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
@@ -62,7 +66,7 @@ mod cases {
                 .open_view(
                     &me(),
                     &self.app.view("clocks_page"),
-                    vec![Value::resource(&self.clocks)],
+                    vec![Value::resource(&self.root)],
                 )
                 .unwrap();
             view.set_lazy_rows(false).unwrap();
@@ -124,13 +128,13 @@ mod cases {
         {
             let t = Clocks::new();
             let tokyo = returned_ref(t.call("add_world_clock", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Tokyo"),
                 Value::text("Asia/Tokyo"),
             ]));
             // The same zone again is the clock that is already there.
             let again = returned_ref(t.call("add_world_clock", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Tokyo again"),
                 Value::text("Asia/Tokyo"),
             ]));
@@ -138,7 +142,7 @@ mod cases {
             assert_eq!(t.rt.read(&tokyo, "city").unwrap(), Value::text("Tokyo"));
             assert_eq!(t.rt.read(&tokyo, "zone").unwrap(), Value::text("Asia/Tokyo"));
             t.call("remove_world_clock", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::resource(&tokyo),
             ]);
         }
@@ -147,7 +151,7 @@ mod cases {
         {
             let t = Clocks::new();
             let alarm = returned_ref(t.call("add_alarm", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Wake up"),
                 Value::Int(7),
                 Value::Int(0),
@@ -186,7 +190,7 @@ mod cases {
         {
             let t = Clocks::new();
             let alarm = returned_ref(t.call("add_alarm", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Gym"),
                 Value::Int(18),
                 Value::Int(30),
@@ -203,7 +207,7 @@ mod cases {
         {
             let t = Clocks::new();
             let timer = returned_ref(t.call("add_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Tea"),
                 Value::Int(300),
             ]));
@@ -220,7 +224,7 @@ mod cases {
             assert_eq!(t.rt.read(&timer, "left").unwrap(), Value::Opt(None));
             assert!(matches!(t.rt.read(&timer, "ends_at").unwrap(), Value::Opt(Some(_))));
             t.call("remove_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::resource(&timer),
             ]);
         }
@@ -229,21 +233,21 @@ mod cases {
         {
             let t = Clocks::new();
             // The clocks start holding one stopwatch: a record of its own, made with the root.
-            let stopwatch = stopwatch_of(&t.rt, &t.clocks);
-            t.call("start_stopwatch", vec![Value::resource(&t.clocks)]);
+            let stopwatch = stopwatch_of(&t.rt, &t.root);
+            t.call("start_stopwatch", vec![Value::resource(&t.root)]);
             let since = t.rt.read(&stopwatch, "since").unwrap();
             assert!(matches!(since, Value::Opt(Some(_))), "{since:?}");
-            t.call("lap", vec![Value::resource(&t.clocks)]);
+            t.call("lap", vec![Value::resource(&t.root)]);
             assert!(
                 matches!(t.rt.read(&stopwatch, "laps").unwrap(), Value::List(laps) if laps.len() == 1),
                 "the lap is one the stopwatch keeps"
             );
-            t.call("pause_stopwatch", vec![Value::resource(&t.clocks)]);
+            t.call("pause_stopwatch", vec![Value::resource(&t.root)]);
             assert_eq!(
                 t.rt.read(&stopwatch, "since").unwrap(),
                 Value::Opt(None)
             );
-            t.call("reset_stopwatch", vec![Value::resource(&t.clocks)]);
+            t.call("reset_stopwatch", vec![Value::resource(&t.root)]);
             assert_eq!(
                 t.rt.read(&stopwatch, "elapsed").unwrap(),
                 Value::Int(0)
@@ -254,7 +258,7 @@ mod cases {
         {
             let t = Clocks::new();
             let alarm = returned_ref(t.call("add_alarm", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Wake up"),
                 Value::Int(7),
                 Value::Int(0),
@@ -279,7 +283,7 @@ mod cases {
             let add = button_named(view.tree(), "Add alarm").expect("the form adds the alarm");
             view.fire(&add, "press").unwrap();
             // The alarm the press made repeats on the day the chip named.
-            let alarms = match t.rt.read(&t.clocks, "alarms").unwrap() {
+            let alarms = match t.rt.read(&t.root, "alarms").unwrap() {
                 Value::List(items) => items,
                 other => panic!("the clocks hold alarms, not {other:?}"),
             };
@@ -299,7 +303,7 @@ mod cases {
         {
             let t = Clocks::new();
             let alarm = returned_ref(t.call("add_alarm", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Wake up"),
                 Value::Int(7),
                 Value::Int(0),
@@ -354,7 +358,7 @@ mod cases {
                     (
                         t.app.action("add_timer").as_str(),
                         vec![
-                            Value::resource(&t.clocks),
+                            Value::resource(&t.root),
                             Value::text("Zero"),
                             Value::Int(0),
                         ],
@@ -365,7 +369,7 @@ mod cases {
             assert!(refused.contains("greater than zero"), "{refused}");
             // An hour, a minute and a second are one timer of 3661 seconds.
             let timer = returned_ref(t.call("add_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Long"),
                 Value::Int(3661),
             ]));
@@ -376,17 +380,17 @@ mod cases {
         {
             let t = Clocks::new();
             assert_eq!(
-                t.rt.read(&t.clocks, "active").unwrap(),
+                t.rt.read(&t.root, "active").unwrap(),
                 Value::Bool(false),
                 "nothing of the clocks is live at rest"
             );
             let timer = returned_ref(t.call("add_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Tea"),
                 Value::Int(300),
             ]));
             assert_eq!(
-                t.rt.read(&t.clocks, "active").unwrap(),
+                t.rt.read(&t.root, "active").unwrap(),
                 Value::Bool(true),
                 "a running timer makes the clocks live"
             );
@@ -415,7 +419,7 @@ mod cases {
             let mut view = t.rt.open_view(
                 &me(),
                 &t.app.view("live"),
-                vec![Value::resource(&t.clocks)],
+                vec![Value::resource(&t.root)],
             ).unwrap();
             view.poll_patches().unwrap();
             for label in ["Pause", "Add a minute", "Remove"] {
@@ -432,12 +436,12 @@ mod cases {
                 "the shell's pause is the timer's own pause"
             );
             assert_eq!(
-                t.rt.read(&t.clocks, "active").unwrap(),
+                t.rt.read(&t.root, "active").unwrap(),
                 Value::Bool(true),
                 "a paused timer with time left still stands in the shell"
             );
             // Starting the stopwatch floats it beside the timers.
-            t.call("start_stopwatch", vec![Value::resource(&t.clocks)]);
+            t.call("start_stopwatch", vec![Value::resource(&t.root)]);
             view.poll_patches().unwrap();
             assert!(
                 any_prop_text(view.tree(), "Stopwatch"),
@@ -446,12 +450,12 @@ mod cases {
             assert!(button_named(view.tree(), "Lap").is_some());
             // Reset, with no timers left, takes the clocks off the shell.
             t.call("remove_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::resource(&timer),
             ]);
-            t.call("reset_stopwatch", vec![Value::resource(&t.clocks)]);
+            t.call("reset_stopwatch", vec![Value::resource(&t.root)]);
             assert_eq!(
-                t.rt.read(&t.clocks, "active").unwrap(),
+                t.rt.read(&t.root, "active").unwrap(),
                 Value::Bool(false),
                 "nothing of the clocks runs any more"
             );
@@ -466,7 +470,7 @@ mod cases {
                 "the window is the app's shell"
             );
             t.call("add_timer", vec![
-                Value::resource(&t.clocks),
+                Value::resource(&t.root),
                 Value::text("Tea"),
                 Value::Int(300),
             ]);

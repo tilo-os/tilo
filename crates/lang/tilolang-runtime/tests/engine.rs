@@ -241,7 +241,7 @@ action refused(p: Page) {
             asked.push(format!("status {job}"));
             let mut running = self.running.borrow_mut();
             if *running > 0 {
-                *running -= 1;
+                *running = running.saturating_sub(1);
                 return Ok(r#"{"state":"running","done":1,"total":8}"#.to_owned());
             }
             Ok(r#"{"state":"done","answer":"201"}"#.to_owned())
@@ -292,12 +292,9 @@ action refused(p: Page) {
     fn a_run_keeps_its_answer_in_the_window_when_its_action_does() {
         let bench = Bench::new(false);
         let slow = Slow::default();
-        bench.rt.set_engine(slow.clone());
+        bench.rt.set_engine(slow);
         bench.call("awaited");
-        assert_eq!(
-            bench.words(),
-            r#"{"state":"done","answer":"201"}"#
-        );
+        assert_eq!(bench.words(), r#"{"state":"done","answer":"201"}"#);
     }
 
     #[test]

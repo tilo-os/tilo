@@ -30,10 +30,6 @@ mod cases {
     }
 
     impl Engine {
-        fn asked(&self) -> Vec<(String, String)> {
-            self.calls.borrow().clone()
-        }
-
         fn last_input(&self) -> serde_json::Value {
             let text = self
                 .calls
@@ -166,7 +162,7 @@ mod cases {
             }],
             "snapshots": [
                 {
-                    "id": "1795080000",
+                    "id": "1_795_080_000",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
                     "taken_unix_seconds": 1795080000_i64,
@@ -184,7 +180,7 @@ mod cases {
                     ],
                 },
                 {
-                    "id": "1795076400",
+                    "id": "1_795_076_400",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
                     "taken_unix_seconds": 1795076400_i64,
@@ -266,13 +262,6 @@ mod cases {
             }
         }
 
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn held(&self, r: &ResourceRef, field: &str) -> ResourceRef {
             match self.rt.read(r, field).unwrap() {
                 Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
@@ -343,7 +332,6 @@ mod cases {
 
     /// Every node of a component, by its kind.
     fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        let mut found = Vec::new();
         fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
             if node.kind == kind {
                 found.push(node);
@@ -352,6 +340,7 @@ mod cases {
                 walk(child, kind, found);
             }
         }
+        let mut found = Vec::new();
         walk(tree, kind, &mut found);
         found
     }
@@ -448,7 +437,7 @@ mod cases {
         );
         assert_eq!(s.text(&s.root, "working"), "verify");
         let ask = s.engine.last_input();
-        assert_eq!(ask["snapshot"], "1795076400");
+        assert_eq!(ask["snapshot"], "1_795_076_400");
         assert_eq!(ask["destination"], "/home/you/backup-drive");
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
@@ -477,7 +466,7 @@ mod cases {
         assert_eq!(s.text(&s.root, "working"), "restore");
         let ask = s.engine.last_input();
         assert_eq!(ask["target"], "/home/you/restored");
-        assert_eq!(ask["snapshot"], "1795076400");
+        assert_eq!(ask["snapshot"], "1_795_076_400");
         assert_eq!(ask["overwrite"], false);
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);

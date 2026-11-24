@@ -475,7 +475,7 @@ mod cases {
                     points.len(),
                     9,
                     "the start, the move and the lift of x, y, pressure"
-                )
+                );
             }
             other => panic!("points, not {other:?}"),
         }
@@ -592,7 +592,10 @@ mod cases {
         assert_eq!(c.text(&mark, "kind"), "image");
         let src = c.text(&mark, "src");
         assert!(!src.is_empty(), "the mark names the picture's bytes");
-        assert_eq!(c.float(&mark, "width"), 800.0, "an artwork-wide picture");
+        assert!(
+            (c.float(&mark, "width") - 800.0).abs() < f64::EPSILON,
+            "an artwork-wide picture"
+        );
         assert_eq!(c.text(&mark, "name"), "Dawn.png");
         let pictures = c.marks(&art).len();
         assert_eq!(pictures, 1, "the picture is one mark");
@@ -620,10 +623,19 @@ mod cases {
         device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
         c.rt.set_blobs(device);
         c.rt.set_canvas(Drawing(log.clone()));
+
+        let combined = shapes_combine_into_one_mark(&c, &art);
+        the_ink_is_measured(&c, &art, &combined);
+        the_reference_is_compared(&c, &art, &log);
+        the_system_history_holds_each_change(&c, &art);
+    }
+
+    /// Two shapes are drawn and combined, and the bottom one's place holds the one merged mark.
+    fn shapes_combine_into_one_mark(c: &Canvas, art: &ResourceRef) -> ResourceRef {
         let one = returned_ref(c.call(
             "add_shape",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::none(),
                 Value::text("M 0 0 L 10 0 L 10 10 Z"),
                 Value::text("#2f7fb8"),
@@ -632,7 +644,7 @@ mod cases {
         let two = returned_ref(c.call(
             "add_shape",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::none(),
                 Value::text("M 2 2 L 12 2 L 12 8 Z"),
                 Value::text("#d24b3a"),
@@ -641,7 +653,7 @@ mod cases {
         let combined = match c.call(
             "combine_marks",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::List(vec![Value::resource(&one), Value::resource(&two)]),
                 Value::text("union"),
             ],
@@ -656,16 +668,20 @@ mod cases {
         assert_eq!(c.text(&combined, "kind"), "path");
         assert_eq!(c.text(&combined, "colour"), "#2f7fb8");
         assert_eq!(
-            c.marks(&art).len(),
+            c.marks(art).len(),
             1,
             "the shapes became one mark, in the bottom one's place"
         );
+        combined
+    }
 
+    /// The engine measures the mark's ink, and the window says what it weighs.
+    fn the_ink_is_measured(c: &Canvas, art: &ResourceRef, combined: &ResourceRef) {
         let measured = match c.call(
             "measure_marks",
             vec![
-                Value::resource(&art),
-                Value::List(vec![Value::resource(&combined)]),
+                Value::resource(art),
+                Value::List(vec![Value::resource(combined)]),
             ],
         ) {
             InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
@@ -679,20 +695,23 @@ mod cases {
             "the engine measured the mark: {measured}"
         );
         assert!(
-            c.text(&art, "notice").contains("units of ink"),
+            c.text(art, "notice").contains("units of ink"),
             "the window says what the ink weighs: {}",
-            c.text(&art, "notice")
+            c.text(art, "notice")
         );
+    }
 
+    /// A reference picture is set, and the engine compares the artwork against it.
+    fn the_reference_is_compared(c: &Canvas, art: &ResourceRef, log: &Rc<RefCell<Vec<String>>>) {
         let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
         c.call(
             "set_reference",
-            vec![Value::resource(&art), Value::file(file), Value::Float(0.5)],
+            vec![Value::resource(art), Value::file(file), Value::Float(0.5)],
         );
         let compared = c.call(
             "compare_reference",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::text("overlay"),
                 Value::Int(640),
             ],
@@ -714,9 +733,12 @@ mod cases {
             "the reference's picture is lent to the engine: {seen}"
         );
         assert!(seen.contains("\"mode\":\"overlay\""), "the mode: {seen}");
+    }
 
+    /// Each of the four actions stands in the system's history as Canvas's own change.
+    fn the_system_history_holds_each_change(c: &Canvas, art: &ResourceRef) {
         let actions: Vec<String> =
-            c.rt.versions(&art)
+            c.rt.versions(art)
                 .unwrap()
                 .into_iter()
                 .map(|version| version.action)
@@ -742,6 +764,12 @@ mod cases {
         let log = Rc::new(RefCell::new(Vec::new()));
         c.rt.set_blobs(Device::default());
         c.rt.set_canvas(Drawing(log.clone()));
+        let kept = two_picked_marks_combine_into_one(&c, &art);
+        the_mark_is_clipped_finished_and_drawn(&c, &art, &kept, &log);
+    }
+
+    /// Two of three marks are picked and combined, and the one kept moves and turns.
+    fn two_picked_marks_combine_into_one(c: &Canvas, art: &ResourceRef) -> ResourceRef {
         let mut made = Vec::new();
         for d in [
             "M 0 0 L 4 0 L 4 4 Z",
@@ -751,7 +779,7 @@ mod cases {
             made.push(returned_ref(c.call(
                 "add_shape",
                 vec![
-                    Value::resource(&art),
+                    Value::resource(art),
                     Value::none(),
                     Value::text(d),
                     Value::text("#2f7fb8"),
@@ -761,18 +789,18 @@ mod cases {
         c.call(
             "pick_marks",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::List(vec![Value::resource(&made[0]), Value::resource(&made[1])]),
             ],
         );
-        match c.rt.read(&art, "picked") {
+        match c.rt.read(art, "picked") {
             Ok(Value::List(rows)) => assert_eq!(rows.len(), 2, "two marks picked"),
             other => panic!("picked, not {other:?}"),
         }
         let combined = c.call(
             "combine_marks",
             vec![
-                Value::resource(&art),
+                Value::resource(art),
                 Value::List(Vec::new()),
                 Value::text("union"),
             ],
@@ -781,7 +809,7 @@ mod cases {
             InvokeOutcome::Done(Value::Opt(Some(_))) => {}
             other => panic!("the combined mark, not {other:?}"),
         }
-        let remaining = c.marks(&art);
+        let remaining = c.marks(art);
         assert_eq!(
             remaining.len(),
             2,
@@ -806,14 +834,24 @@ mod cases {
             other => panic!("a transform, not {other:?}"),
         };
         assert_eq!(transform, 6, "a move and a turn compose into one affine");
+        kept
+    }
+
+    /// The mark is clipped, finished and given dynamics, and the engine reads all of it.
+    fn the_mark_is_clipped_finished_and_drawn(
+        c: &Canvas,
+        art: &ResourceRef,
+        kept: &ResourceRef,
+        log: &Rc<RefCell<Vec<String>>>,
+    ) {
         c.call(
             "clip_mark",
-            vec![Value::resource(&kept), Value::text("icons")],
+            vec![Value::resource(kept), Value::text("icons")],
         );
         c.call(
             "finish_mark",
             vec![
-                Value::resource(&kept),
+                Value::resource(kept),
                 Value::Bool(true),
                 Value::Float(0.5),
                 Value::Float(4.0),
@@ -829,11 +867,11 @@ mod cases {
         );
         c.call(
             "set_dynamics",
-            vec![Value::resource(&kept), Value::Float(0.4), Value::Float(0.7)],
+            vec![Value::resource(kept), Value::Float(0.4), Value::Float(0.7)],
         );
         let inspected = c.call(
             "inspect_artwork",
-            vec![Value::resource(&art), Value::Bool(false)],
+            vec![Value::resource(art), Value::Bool(false)],
         );
         match inspected {
             InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
@@ -843,21 +881,21 @@ mod cases {
             other => panic!("the inspection, not {other:?}"),
         }
         assert!(
-            c.text(&art, "notice").contains("marks listed"),
+            c.text(art, "notice").contains("marks listed"),
             "the window says what it listed: {}",
-            c.text(&art, "notice")
+            c.text(art, "notice")
         );
         c.call(
             "set_curve",
             vec![
-                Value::resource(&kept),
+                Value::resource(kept),
                 Value::List(vec![
                     Value::List(vec![Value::Float(0.1), Value::Float(0.0)]),
                     Value::List(vec![Value::Float(0.9), Value::Float(1.0)]),
                 ]),
             ],
         );
-        let layer = c.layers(&art).first().cloned().expect("a layer");
+        let layer = c.layers(art).first().cloned().expect("a layer");
         c.call(
             "adjust_layer",
             vec![
@@ -878,7 +916,7 @@ mod cases {
                 Value::Float(0.0),
             ],
         );
-        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        c.call("draw_look", vec![Value::resource(art), Value::Int(128)]);
         let seen = log.borrow().first().cloned().expect("the engine was asked");
         for field in [
             "\"transform\":[",
@@ -902,7 +940,7 @@ mod cases {
         let art = c.new_artwork("Selecting");
         let log = Rc::new(RefCell::new(Vec::new()));
         c.rt.set_blobs(Device::default());
-        c.rt.set_canvas(Drawing(log.clone()));
+        c.rt.set_canvas(Drawing(log));
         let selected = c.call(
             "select_shape",
             vec![
@@ -1038,7 +1076,7 @@ mod cases {
             "the region the surface lays the comparison over"
         );
         assert!(
-            c.text(&art, "version_overlay") != "",
+            !c.text(&art, "version_overlay").is_empty(),
             "the comparison's picture is kept for the surface"
         );
         let seen = log.borrow().last().cloned().expect("the engine compared");
@@ -1117,12 +1155,12 @@ mod cases {
                 Value::Float(0.0),  // vignette
             ],
         );
-        assert_eq!(c.float(&picture, "crop_x"), 0.25);
-        assert_eq!(c.float(&picture, "crop_width"), 0.5);
-        assert_eq!(c.float(&picture, "straighten"), 3.0);
+        assert!((c.float(&picture, "crop_x") - 0.25).abs() < f64::EPSILON);
+        assert!((c.float(&picture, "crop_width") - 0.5).abs() < f64::EPSILON);
+        assert!((c.float(&picture, "straighten") - 3.0).abs() < f64::EPSILON);
         assert!(c.flag(&picture, "flip_h"), "the picture stands mirrored");
         assert_eq!(c.text(&picture, "blend"), "multiply");
-        assert_eq!(c.float(&picture, "exposure"), 1.5);
+        assert!((c.float(&picture, "exposure") - 1.5).abs() < f64::EPSILON);
         // The engine reads all of it from the records.
         c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
         let seen = log.borrow().first().cloned().expect("the engine was asked");
@@ -1200,7 +1238,7 @@ mod cases {
                 Value::Bool(true),
             ],
         );
-        assert_eq!(c.float(&mask, "base"), 0.4);
+        assert!((c.float(&mask, "base") - 0.4).abs() < f64::EPSILON);
         assert!(c.flag(&mask, "invert"));
         assert!(c.flag(&mask, "unlinked"));
         c.call(
@@ -1486,7 +1524,10 @@ mod cases {
                 Some(Value::Float(zoom)) => *zoom,
                 other => panic!("the surface's zoom, not {other:?}"),
             };
-        assert_eq!(zoom_of(&view), 1.0, "an artwork opens at its own size");
+        assert!(
+            (zoom_of(&view) - 1.0).abs() < f64::EPSILON,
+            "an artwork opens at its own size"
+        );
 
         // The wheel up zooms in, and a pinch scales what is shown.
         view.fire_with(
@@ -1568,13 +1609,13 @@ mod cases {
             "the file opens without a complaint"
         );
         assert_eq!(c.text(&art, "title"), "A study");
-        assert_eq!(c.float(&art, "width"), 800.0);
+        assert!((c.float(&art, "width") - 800.0).abs() < f64::EPSILON);
         assert_eq!(c.text(&art, "ground_texture"), "linen");
         assert_eq!(c.text(&art, "ground_colour"), "#ffffff");
 
         let ink = c.layer(&art, "Ink");
-        assert_eq!(c.float(&ink, "opacity"), 0.5);
-        assert_eq!(c.float(&ink, "texture"), 0.25);
+        assert!((c.float(&ink, "opacity") - 0.5).abs() < f64::EPSILON);
+        assert!((c.float(&ink, "texture") - 0.25).abs() < f64::EPSILON);
         assert!(
             c.flag(&ink, "locked"),
             "a held-still layer opens held still"
@@ -1589,7 +1630,7 @@ mod cases {
         assert_eq!(c.text(&marks[0], "kind"), "stroke");
         assert_eq!(c.text(&marks[0], "brush"), "pen");
         assert_eq!(c.text(&marks[0], "colour"), "#d24b3a");
-        assert_eq!(c.float(&marks[0], "opacity"), 0.8);
+        assert!((c.float(&marks[0], "opacity") - 0.8).abs() < f64::EPSILON);
         match c.rt.read(&marks[0], "points").unwrap() {
             Value::List(points) => assert_eq!(points.len(), 6, "two points of x, y, pressure"),
             other => panic!("points, not {other:?}"),

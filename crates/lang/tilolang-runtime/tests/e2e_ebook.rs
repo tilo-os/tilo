@@ -79,13 +79,16 @@ action open_window(resource: host.Resource) {
     const SEARCH: &str = r#"{"count":1,"results":[{"title":"The Tide Glass","authors":[{"name":"Ada Ferrer"}],"languages":["en"],"formats":{"application/epub+zip":"https://www.gutenberg.org/ebooks/1.epub"}}]}"#;
 
     /// What a device's content store and network said: the files it keeps, and the requests it
+    /// What a path on the device's disk holds: whether it is a folder, and its bytes.
+    type DiskEntry = (bool, Vec<u8>);
+
     /// answered.
     #[derive(Clone, Default)]
     struct Device {
         files: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
         requests: Rc<RefCell<Vec<WebRequest>>>,
         /// The device's disk: each path it holds, and whether it is a folder.
-        disk: Rc<RefCell<std::collections::BTreeMap<String, (bool, Vec<u8>)>>>,
+        disk: Rc<RefCell<std::collections::BTreeMap<String, DiskEntry>>>,
         /// The folders the app asked to watch, by path, with the action each runs.
         watches: Rc<RefCell<Vec<(String, String)>>>,
         /// What the person last copied.
@@ -1302,7 +1305,7 @@ action open_window(resource: host.Resource) {
             assert!(
                 matches!(
                     dialog.props.get("open"),
-                    Some(Value::Bool(true)) | Some(Value::Int(1))
+                    Some(Value::Bool(true) | Value::Int(1))
                 ),
                 "the form stands open: {:?}",
                 dialog.props
@@ -1318,7 +1321,7 @@ action open_window(resource: host.Resource) {
             assert!(
                 matches!(
                     dialog.props.get("primary_enabled"),
-                    Some(Value::Bool(false)) | Some(Value::Int(0))
+                    Some(Value::Bool(false) | Value::Int(0))
                 ),
                 "a book without a title cannot be saved: {:?}",
                 dialog.props
@@ -1475,7 +1478,7 @@ action open_window(resource: host.Resource) {
                 format!("{held} passages")
             };
             assert!(
-                said.iter().any(|text| *text == count),
+                said.contains(&count),
                 "the line counts the passages the chapter holds: {said:?}"
             );
 

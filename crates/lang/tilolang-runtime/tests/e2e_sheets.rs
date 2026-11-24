@@ -78,7 +78,7 @@ view member_row(p: Member) {
             self.call(action, args);
         }
 
-        fn words(&self, text: &str) -> Value {
+        fn words(text: &str) -> Value {
             Value::Rich(RichValue::from_text(text))
         }
 
@@ -181,7 +181,7 @@ view member_row(p: Member) {
 
         fn count(&self, at: &ResourceRef, field: &str) -> usize {
             let held = self.rt.read(at, field).unwrap();
-            self.rt.project(&held)["count"].as_u64().unwrap_or(0) as usize
+            usize::try_from(self.rt.project(&held)["count"].as_u64().unwrap_or(0)).unwrap_or(0)
         }
     }
 
@@ -272,14 +272,14 @@ view member_row(p: Member) {
                 Value::resource(&sheets.book),
                 Value::text("Sheet1"),
                 Value::text("A1"),
-                sheets.words("Is this the total?"),
+                Sheets::words("Is this the total?"),
             ],
         ));
         let reply = returned_ref(sheets.call(
             "reply",
             vec![
                 Value::resource(&comment),
-                sheets.words("Yes, for the quarter."),
+                Sheets::words("Yes, for the quarter."),
             ],
         ));
         assert_eq!(sheets.count(&comment, "replies"), 1);

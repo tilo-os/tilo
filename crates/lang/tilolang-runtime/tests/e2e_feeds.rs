@@ -19,6 +19,9 @@ mod cases {
     const BROKEN: &str = "https://broken.test/feed";
     const CAPSULE: &str = "gemini://example.org/";
 
+    /// A file the content store holds: its name and bytes.
+    type Stored = (String, Vec<u8>);
+
     /// What the device answered, and what it was asked: the engine's side of a refresh, played
     /// over the app's own JSON, so both ends of the contract are read here.
     #[derive(Clone, Default)]
@@ -31,7 +34,7 @@ mod cases {
         /// What a `take` was asked for.
         taken: Rc<RefCell<Vec<String>>>,
         /// The bytes the content store holds, by hash.
-        files: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+        files: Rc<RefCell<Vec<Stored>>>,
     }
 
     impl Device {
@@ -68,7 +71,9 @@ mod cases {
 
     impl EngineHost for Device {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.feeds", "the engine answers its own app");
+            if app != "so.tilo.feeds" {
+                return Err(format!("`{app}` is not the app this engine answers"));
+            }
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -97,8 +102,12 @@ mod cases {
         }
 
         fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.feeds");
-            assert_eq!(op, "refresh");
+            if app != "so.tilo.feeds" {
+                return Err(format!("`{app}` is not the app this engine answers"));
+            }
+            if op != "refresh" {
+                return Err(format!("`{op}` is no work this test's engine starts"));
+            }
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -114,7 +123,9 @@ mod cases {
         }
 
         fn status(&self, job: &str) -> Result<String, String> {
-            assert_eq!(job, "job-1");
+            if job != "job-1" {
+                return Err(format!("no work `{job}` runs on this engine"));
+            }
             let feeds = self.feeds.borrow().len();
             let ready = self.ready.borrow().clone();
             let done = feeds.saturating_sub(ready.len());
@@ -649,8 +660,7 @@ mod cases {
             .device
             .inputs()
             .into_iter()
-            .filter(|input| input.contains("\"feeds\""))
-            .next_back()
+            .rfind(|input| input.contains("\"feeds\""))
             .expect("the export names the subscriptions");
         assert!(
             export.contains("LWN") && export.contains("lwn.net"),
@@ -677,15 +687,11 @@ mod cases {
         );
 
         // A subscription just added is read and shown, so the window stands on it.
-        let rows: Vec<ResourceRef> = of_kind(window.tree(), "ui.ListItem")
+        let rows = of_kind(window.tree(), "ui.ListItem")
             .into_iter()
             .map(row_item)
-            .collect();
-        assert_eq!(
-            rows.len(),
-            1,
-            "the capsule's own article, in the place it opened"
-        );
+            .count();
+        assert_eq!(rows, 1, "the capsule's own article, in the place it opened");
 
         feeds.call(
             "show_place",
@@ -695,12 +701,17 @@ mod cases {
             ],
         );
         let all = feeds.feeds_window();
-        let rows: Vec<ResourceRef> = of_kind(all.tree(), "ui.ListItem")
+        let rows = of_kind(all.tree(), "ui.ListItem")
             .into_iter()
             .map(row_item)
-            .collect();
-        assert_eq!(rows.len(), 3, "two articles and the capsule's");
+            .count();
+        assert_eq!(rows, 3, "two articles and the capsule's");
+        the_article_reads_in_the_chosen_size_face_and_paper(&feeds);
+        a_search_hit_and_a_tag_name_their_place(&feeds);
+    }
 
+    /// The article's page is set in the reader's size, face and paper.
+    fn the_article_reads_in_the_chosen_size_face_and_paper(feeds: &Feeds) {
         // The article's page is set in the reader's size, face and paper.
         let article = feeds.article("A quiet morning");
         let page = feeds.page(&article);
@@ -746,8 +757,11 @@ mod cases {
         assert_eq!(text(reading, "face"), "mono");
         assert!((number(reading, "scale") - 1.4).abs() < 0.001);
         assert_eq!(text(reading, "paper"), "#f4ecdc", "the sepia page");
+    }
 
-        // A search hit (or an agent's open) shows the article's feed in the window's places.
+    /// A search hit (or an agent's open) places the article's feed, and a tag its articles.
+    fn a_search_hit_and_a_tag_name_their_place(feeds: &Feeds) {
+        let article = feeds.article("A quiet morning");
         feeds.call("show_article", &[("a", Value::resource(&article))]);
         let guardian = feeds.feed(GUARDIAN);
         assert_eq!(
@@ -771,11 +785,11 @@ mod cases {
             ],
         );
         let window = feeds.feeds_window();
-        let rows: Vec<ResourceRef> = of_kind(window.tree(), "ui.ListItem")
+        let rows = of_kind(window.tree(), "ui.ListItem")
             .into_iter()
             .map(row_item)
-            .collect();
-        assert_eq!(rows.len(), 1, "only the tagged article");
+            .count();
+        assert_eq!(rows, 1, "only the tagged article");
         assert_eq!(feeds.field(&feeds.reader(), "place"), json!("tag:morning"));
     }
 

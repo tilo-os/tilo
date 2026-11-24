@@ -228,19 +228,16 @@ mod cases {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
-            if op == "load" {
-                return Ok(self.loaded());
-            }
-            let mut repo = self.repo.borrow_mut();
             match op {
-                "stage_file" | "unstage_file" => {
+                "load" => Ok(self.loaded()),
+                "stage_file" | "unstage_file" => self.changed(|repo| {
                     let file = field(input, "file");
                     let area = if op == "stage_file" {
                         "staged"
                     } else {
                         "unstaged"
                     };
-                    for change in repo.changes.iter_mut() {
+                    for change in &mut repo.changes {
                         if serde_json::Value::String(change.path.to_owned()) == file {
                             change.area = area;
                             if area == "staged" && change.kind == "untracked" {
@@ -248,143 +245,95 @@ mod cases {
                             }
                         }
                     }
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "stage_all" | "unstage_all" => {
+                    ""
+                }),
+                "stage_all" | "unstage_all" => self.changed(|repo| {
                     let area = if op == "stage_all" {
                         "staged"
                     } else {
                         "unstaged"
                     };
-                    for change in repo.changes.iter_mut() {
+                    for change in &mut repo.changes {
                         change.area = area;
                     }
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
+                    ""
+                }),
+                "apply_hunk" | "discard_hunk" | "stash_apply" | "fetch" | "pull" | "push" => {
+                    self.changed(|_| "")
                 }
-                "apply_hunk" | "discard_hunk" => {
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "discard_file" => {
+                "discard_file" => self.changed(|repo| {
                     let file = field(input, "file");
                     repo.changes
                         .retain(|c| serde_json::Value::String(c.path.to_owned()) != file);
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "commit" => {
+                    ""
+                }),
+                "commit" => self.changed(|repo| {
                     repo.changes.retain(|c| c.area != "staged");
                     repo.commits.push(("Flush the blur pass", "abc1234"));
-                    repo.answer = "abc1234";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "create_branch" => {
+                    "abc1234"
+                }),
+                "create_branch" => self.changed(|repo| {
                     repo.branches.push("topic");
                     if field(input, "checkout") == true {
                         repo.head = "topic";
                     }
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "checkout_branch" => {
+                    ""
+                }),
+                "checkout_branch" => self.changed(|repo| {
                     repo.head = "main";
-                    repo.answer = if field(input, "stash") == true {
+                    if field(input, "stash") == true {
                         repo.stashes.push("before switching");
                         "9f8e7d6"
                     } else {
                         ""
-                    };
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "delete_branch" => {
+                    }
+                }),
+                "delete_branch" => self.changed(|repo| {
                     repo.branches.retain(|name| *name != "topic");
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "stash_save" => {
+                    ""
+                }),
+                "stash_save" => self.changed(|repo| {
                     repo.stashes.push("WIP on main");
-                    repo.answer = "1a2b3c4";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "stash_apply" => {
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "create_worktree" => {
+                    "1a2b3c4"
+                }),
+                "create_worktree" => self.changed(|repo| {
                     repo.worktrees.push("/srv/repos/garden-experiment");
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "fetch" | "pull" | "push" => {
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
-                "resolve_conflict" => {
+                    ""
+                }),
+                "resolve_conflict" => self.changed(|repo| {
                     let file = field(input, "file");
                     repo.changes
                         .retain(|c| serde_json::Value::String(c.path.to_owned()) != file);
-                    repo.answer = "";
-                    drop(repo);
-                    Ok(self.loaded())
-                }
+                    ""
+                }),
                 "conflict_cost" => Ok(r#"{"ours":2,"theirs":3}"#.to_owned()),
-                "commit_detail" => {
-                    let files: Vec<String> = repo
-                        .files
-                        .iter()
-                        .map(|path| {
-                            serde_json::json!({
-                            "path": path,
-                            "old_path": null,
-                            "kind": "modified",
-                            "additions": 2,
-                            "deletions": 1,
-                            "binary": false,
-                            "language": "rust",
-                            "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
-                            "left": "   1  fn beds() {}\n   2  -one\n",
-                            "right": "   1  fn beds() {}\n   2  +two\n",
-                        }).to_string()
-                        })
-                        .collect();
-                    Ok(serde_json::to_string(&files).unwrap())
-                }
-                "commit_files" => {
-                    let files: Vec<String> = repo
-                        .files
-                        .iter()
-                        .map(|path| {
-                            serde_json::json!({
-                                "path": path,
-                                "old_path": null,
-                                "area": "staged",
-                                "kind": "modified",
-                                "additions": 2,
-                                "deletions": 1,
-                            })
-                            .to_string()
-                        })
-                        .collect();
-                    Ok(serde_json::to_string(&files).unwrap())
-                }
-                "commit_diff" => {
-                    repo.diff_reads += 1;
-                    Ok(serde_json::json!({
-                        "path": field(input, "file"),
+                "commit_detail" => self.commit_detail(),
+                "commit_files" => self.commit_files(),
+                "commit_diff" => self.commit_diff(input),
+                other => Err(format!("`{other}` is no op this device runs")),
+            }
+        }
+
+        /// Carries `run` out on the repository, which answers what `run` gives, and answers the
+        /// loaded repository.
+        fn changed(&self, run: impl FnOnce(&mut Repo) -> &'static str) -> Result<String, String> {
+            {
+                let mut repo = self.repo.borrow_mut();
+                let answer = run(&mut repo);
+                repo.answer = answer;
+            }
+            Ok(self.loaded())
+        }
+
+        /// The files of the newest commit, each as the app shows it.
+        fn commit_detail(&self) -> Result<String, String> {
+            let repo = self.repo.borrow();
+            let files: Vec<String> = repo
+                .files
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path,
                         "old_path": null,
                         "kind": "modified",
                         "additions": 2,
@@ -395,10 +344,50 @@ mod cases {
                         "left": "   1  fn beds() {}\n   2  -one\n",
                         "right": "   1  fn beds() {}\n   2  +two\n",
                     })
-                    .to_string())
-                }
-                other => Err(format!("`{other}` is no op this device runs")),
-            }
+                    .to_string()
+                })
+                .collect();
+            Ok(serde_json::to_string(&files).unwrap())
+        }
+
+        /// The files of the staged change, each as the app lists it.
+        fn commit_files(&self) -> Result<String, String> {
+            let repo = self.repo.borrow();
+            let files: Vec<String> = repo
+                .files
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path,
+                        "old_path": null,
+                        "area": "staged",
+                        "kind": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                    })
+                    .to_string()
+                })
+                .collect();
+            Ok(serde_json::to_string(&files).unwrap())
+        }
+
+        /// The difference the newest commit made to the file `input` names.
+        fn commit_diff(&self, input: &str) -> Result<String, String> {
+            let mut repo = self.repo.borrow_mut();
+            repo.diff_reads = repo.diff_reads.saturating_add(1);
+            Ok(serde_json::json!({
+                "path": field(input, "file"),
+                "old_path": null,
+                "kind": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "binary": false,
+                "language": "rust",
+                "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
+                "left": "   1  fn beds() {}\n   2  -one\n",
+                "right": "   1  fn beds() {}\n   2  +two\n",
+            })
+            .to_string())
         }
 
         fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
@@ -648,7 +637,7 @@ mod cases {
     }
 
     /// The rows of the first list of `window`: the rows the arrow keys step through.
-    fn rows_of<'a>(window: &'a ViewInstance) -> Vec<&'a tilolang_runtime::UiNode> {
+    fn rows_of(window: &ViewInstance) -> Vec<&tilolang_runtime::UiNode> {
         let list = of_kind(window.tree(), "ui.VirtualList")
             .into_iter()
             .next()
@@ -697,7 +686,7 @@ mod cases {
                 Some(serde_json::Value::String(REPO.to_owned())),
                 "the engine read the repository at the path"
             );
-            let session = s.session();
+            let _session = s.session();
             assert_eq!(s.text(&s.root, "name"), "garden");
             assert_eq!(s.text(&s.root, "head"), "main");
             let changes = s.records(&s.session(), "changes");
