@@ -62,6 +62,23 @@ struct State {
     gradient: Option<(Color, Color)>,
 }
 
+thread_local! {
+    /// The shell's wallpaper, as the host of the views drawing it handed it over: what a
+    /// [`crate::widget::Backdrop`] paints under everything.
+    static INSTALLED: RefCell<Option<Source>> = const { RefCell::new(None) };
+}
+
+/// Hand the views' host the shell's wallpaper, or none where the shell shows none.
+pub fn install(source: Option<Source>) {
+    INSTALLED.with(|slot| *slot.borrow_mut() = source);
+}
+
+/// The shell's wallpaper the views' host was handed, when one was.
+#[must_use]
+pub fn installed() -> Option<Source> {
+    INSTALLED.with(|slot| slot.borrow().clone())
+}
+
 impl Source {
     #[must_use]
     pub fn new() -> Self {
@@ -91,6 +108,12 @@ impl Source {
     #[must_use]
     pub fn picture(&self) -> Option<ImageData> {
         self.state.borrow().picture.clone()
+    }
+
+    /// The gradient the shell shows where it has no picture, corner to corner, when it set one.
+    #[must_use]
+    pub fn gradient(&self) -> Option<(Color, Color)> {
+        self.state.borrow().gradient
     }
 
     /// The picture covering `rect`, blurred by `blur_px` logical pixels: what a surface resting on

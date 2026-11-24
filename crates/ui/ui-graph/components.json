@@ -197,6 +197,24 @@
       }
     },
     {
+      "name": "Backdrop",
+      "doc": "The shell's wallpaper under everything a view draws: the picture the session handed the host, covering the box, or the shell's gradient where it has no picture.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it shows, for assistive technology; empty reads as nothing.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
+      }
+    },
+    {
       "name": "Badge",
       "doc": "A small pill on another element: how many new things there are, a dot for something new, a short status (\"Owner\", \"Beta\"), or the mark of unsaved changes.",
       "props": [

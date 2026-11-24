@@ -2673,6 +2673,8 @@ pub mod skeleton;
 pub use skeleton::{
     Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, SkeletonShape, skeleton_tone,
 };
+pub mod backdrop;
+pub use backdrop::{Backdrop, BackdropProps};
 pub mod arrival_failure;
 pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
