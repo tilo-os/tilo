@@ -1,9 +1,11 @@
-// The Discord bridge: Discord's REST and gateway on this side, the workspace's records and
-// actions on the other. It runs as the app's process, attested as this package, and it is the
-// device's held connection that carries the gateway; a process started for a call writes records
-// the holder watches and never opens the gateway.
+// The Discord bridge: Discord's REST, gateway and voice on this side, the workspace's records,
+// actions and calls on the other. It runs as the app's process, attested as this package, and it
+// is the device's held connection that carries the gateway and the call lane a voice channel's
+// call is bridged through.
 
 import { Calls } from "./src/tilo.js";
+import { startCalls } from "./src/call.js";
+import { connect as connectVoice } from "./src/voice.js";
 import {
   fromDiscord,
   toDiscord,
@@ -38,7 +40,14 @@ export const RELEASE_TRIES = 90;
 
 /// A procedure the process runs once: the bridge starts, answers the setup its person asks for,
 /// and holds the gateway of the server it bridges until the connection ends.
-export async function run({ tilo, makeClient, fetch = globalThis.fetch, wait, log = () => {} }) {
+export async function run({
+  tilo,
+  makeClient,
+  makeVoice,
+  fetch = globalThis.fetch,
+  wait,
+  log = () => {},
+}) {
   const calls = new Calls(tilo.workspace ? tilo.workspace() : tilo);
   // The setup is answered beside whatever the bridge carries: a press reaches this process
   // through the record, and nothing else does.
@@ -52,14 +61,39 @@ export async function run({ tilo, makeClient, fetch = globalThis.fetch, wait, lo
     return setup;
   }
   const token = await released(calls, account.token_item, { wait });
+  // The call lane this app's connection was granted: a client that carries none leaves the
+  // bridge reading and writing, never in a call.
+  const lane = calls.lane();
+  let gateway = null;
+  const carried = lane
+    ? startCalls({
+        calls,
+        lane,
+        makeVoice: makeVoice ?? ((options) => connectVoice(options)),
+        log,
+        gateway: {
+          get user() {
+            return gateway?.user ?? null;
+          },
+          joinVoice: (guild, channel) => gateway.joinVoice(guild, channel),
+          leaveVoice: (guild) => gateway.leaveVoice(guild),
+        },
+      })
+    : null;
+  if (!carried) {
+    log("this build carries no call lane: the bridge reads and writes but joins no call");
+  }
   const client = await import("./src/gateway.js").then(({ connect }) =>
     connect({
       make: makeClient,
       token,
       onEvent: (event) => carryFromDiscord({ calls, account, event, log }),
+      onVoice: (event) => carried?.hear(event),
       log,
     }),
   );
+  gateway = client;
+  await carried?.start();
   await carryFromWorkspace({ calls, account, log });
   return client;
 }

@@ -290,3 +290,43 @@ export function reactToDiscord(state, conversation, message, emoji, added, there
     },
   ];
 }
+
+// ---- voice -------------------------------------------------------------------------------
+
+/// Every paired voice channel the bridge reaches: a Discord voice channel and the workspace's
+/// voice channel it is one call with, by the Discord channel's id.
+export function voicePairs(state) {
+  const pairs = [];
+  for (const m of Object.values(state.map ?? {})) {
+    if (m?.kind !== "channel") continue;
+    const seen = observed(state, m.discord);
+    if (seen?.kind !== "voice") continue;
+    if (state.only_channel && state.only_channel !== m.discord) continue;
+    pairs.push({ discord: m.discord, tilo: m.tilo });
+  }
+  pairs.sort((a, b) => (a.discord < b.discord ? -1 : a.discord > b.discord ? 1 : 0));
+  return pairs;
+}
+
+/// Who Discord says is in `channel` of `guild`, the bridge's own account left out: their account
+/// id, the name Discord shows, their avatar hash, and whether their microphone or ear is off.
+/// What a call's bridged participants are made of.
+export function callPeople(states, { guild, channel, self }) {
+  const people = [];
+  for (const state of states ?? []) {
+    if (String(state.guild) !== String(guild)) continue;
+    if (String(state.channel) !== String(channel)) continue;
+    if (!state.user || state.user === self) continue;
+    people.push({
+      account: String(state.user),
+      name: state.name || "Someone",
+      avatar_url: state.avatar
+        ? `https://cdn.discordapp.com/avatars/${state.user}/${state.avatar}.png?size=128`
+        : "",
+      muted: Boolean(state.mute) || Boolean(state.self_mute),
+      deafened: Boolean(state.deaf) || Boolean(state.self_deaf),
+    });
+  }
+  people.sort((a, b) => (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
+  return people;
+}

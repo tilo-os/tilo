@@ -64,6 +64,20 @@ export class Calls {
   async *watch(path) {
     yield* this.ws.watch(path);
   }
+
+  /// This app's call lane, when the workspace client has one: the daemon's side of a call
+  /// carried from an outside service. `null` for a client that carries none, which is a bridge
+  /// that reads and writes but never joins a call.
+  lane() {
+    const lane = this.ws.callLane;
+    if (!lane) return null;
+    return {
+      carry: (pair) => lane.carry(pair),
+      report: (report) => lane.report(report),
+      heard: (frame) => lane.heard(frame),
+      said: () => lane.said(),
+    };
+  }
 }
 
 /// The id a call answered: a resource reference's id, or the id text itself.

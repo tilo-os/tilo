@@ -25,8 +25,15 @@ const REFUSED_CLOSE = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 /// Connect `client` to Discord as `token`, handing every gateway event to `onEvent`.
 ///
 /// `make`: the client factory, given so a test can replace the gateway.
-export async function connect({ make, token, onEvent, watch, url, log = () => {} }) {
+export async function connect({ make, token, onEvent, onVoice, watch, url, log = () => {} }) {
   const client = make ? make() : new Gateway({ log });
+  if (onVoice) {
+    // What Discord hands the bot when it is moved into a voice channel: the session and token a
+    // voice connection is opened with. The gateway process is the only holder, so it passes
+    // them on rather than a second process opening the gateway.
+    client.on("voiceServer", (update) => onVoice(update));
+    client.on("voiceState", (state) => onVoice({ state }));
+  }
   client.on("messageCreate", (message) => onEvent(discordMessage("MESSAGE_CREATED", message)));
   client.on("messageUpdate", (_, message) => onEvent(discordMessage("MESSAGE_UPDATED", message)));
   client.on("messageDelete", (message) => onEvent(discordMessage("MESSAGE_DELETED", message)));
@@ -169,6 +176,10 @@ export class Gateway {
   #ready = null;
   #log;
   user = null;
+  /// Where the bot is in voice, by guild: the channel it was moved into, and the session and
+  /// token Discord answers with.
+  voice = new Map();
+  #joining = new Map();
 
   constructor({ log = () => {} } = {}) {
     this.#log = log;
@@ -201,6 +212,41 @@ export class Gateway {
     });
     this.#open();
     return ready;
+  }
+
+  /// Move the bot into `channel` of `guild`. Answers once Discord said both the session and the
+  /// voice server, or rejects with the reason it said instead.
+  joinVoice(guild, channel) {
+    const key = String(guild);
+    const wanted = String(channel);
+    const previous = this.#joining.get(key);
+    if (previous) {
+      clearTimeout(previous.timer);
+      previous.reject(new Error("another call was asked for first"));
+      this.#joining.delete(key);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#joining.delete(key);
+        reject(new Error("Discord did not answer the call in time"));
+      }, 15_000);
+      this.#joining.set(key, { channel: wanted, resolve, reject, timer });
+      // Op 4: join the channel with the bot's microphone and speakers on.
+      this.#send({ op: 4, d: { guild_id: key, channel_id: wanted, self_mute: false, self_deaf: false } });
+    });
+  }
+
+  /// Move the bot out of the call it is in in `guild`.
+  leaveVoice(guild) {
+    const key = String(guild);
+    const joining = this.#joining.get(key);
+    if (joining) {
+      clearTimeout(joining.timer);
+      joining.reject(new Error("the call was left before it opened"));
+      this.#joining.delete(key);
+    }
+    if (!this.voice.has(key)) return;
+    this.#send({ op: 4, d: { guild_id: key, channel_id: null, self_mute: false, self_deaf: false } });
   }
 
   /// End the session for good.
@@ -378,11 +424,95 @@ export class Gateway {
           ...data,
           botUser: this.user?.id ?? "",
         });
+        // A resumed session's call is where Discord still has it: the guild's voice states say
+        // so before any new event does.
+        for (const state of data?.voice_states ?? []) {
+          this.#voiceState(data?.id ?? "", state);
+        }
+        return;
+      case "VOICE_STATE_UPDATE":
+        this.#voiceState(data?.guild_id ?? "", data);
+        return;
+      case "VOICE_SERVER_UPDATE":
+        this.#voiceServer(data?.guild_id ?? "", data);
         return;
       default:
         return;
     }
   }
+
+  /// A voice state: who is in which call. The bot's own state says when Discord moved it, so a
+  /// call the person ended in Discord ends the bridge's side here too.
+  #voiceState(guild, state) {
+    const key = String(guild);
+    const read = voiceStateOf(key, state);
+    if (!read.guild) return;
+    const held = this.voice.get(key);
+    if (read.user === this.user?.id) {
+      if (read.channel) {
+        this.voice.set(key, { ...held, ...read });
+      } else if (held) {
+        this.voice.delete(key);
+        const joining = this.#joining.get(key);
+        if (joining) {
+          clearTimeout(joining.timer);
+          joining.reject(new Error("Discord ended the call"));
+          this.#joining.delete(key);
+        }
+      }
+    } else if (held?.channel === read.channel) {
+      this.voice.set(key, { ...held, people: { ...(held.people ?? {}), [read.user]: read } });
+    }
+    this.#emit("voiceState", read);
+  }
+
+  /// The voice server Discord handed the bot for `guild`: the endpoint, token and session a
+  /// voice connection opens with. Answers the waiting join once both halves are here.
+  #voiceServer(guild, data) {
+    const key = String(guild);
+    if (data?.user_id && this.user?.id && String(data.user_id) !== this.user.id) return;
+    const held = this.voice.get(key) ?? {};
+    const state = held.channel ? held : null;
+    const merged = {
+      ...held,
+      ...(state ?? {}),
+      guild: key,
+      endpoint: String(data?.endpoint ?? ""),
+      token: String(data?.token ?? ""),
+      session: this.#session ?? "",
+      channel: String(held.channel ?? ""),
+    };
+    this.voice.set(key, merged);
+    this.#emit("voiceServer", merged);
+    const joining = this.#joining.get(key);
+    if (!joining) return;
+    if (!merged.channel || !merged.endpoint || !merged.token) return;
+    clearTimeout(joining.timer);
+    this.#joining.delete(key);
+    if (joining.channel !== merged.channel) {
+      joining.reject(new Error("Discord moved the bot to another call"));
+      return;
+    }
+    joining.resolve(merged);
+  }
+}
+
+/// What one voice state says: who, in which channel, and whether they may be heard.
+export function voiceStateOf(guild, data) {
+  return {
+    guild: String(guild ?? ""),
+    user: String(data?.user_id ?? ""),
+    channel: data?.channel_id ? String(data.channel_id) : "",
+    session: String(data?.session_id ?? ""),
+    self_mute: Boolean(data?.self_mute),
+    self_deaf: Boolean(data?.self_deaf),
+    mute: Boolean(data?.mute),
+    deaf: Boolean(data?.deaf),
+    suppress: Boolean(data?.suppress),
+    bot: Boolean(data?.member?.user?.bot),
+    name: String(data?.member?.user?.username ?? data?.member?.nick ?? "Someone"),
+    avatar: data?.member?.user?.avatar ?? null,
+  };
 }
 
 /// A gateway message as the client's callers read it.
