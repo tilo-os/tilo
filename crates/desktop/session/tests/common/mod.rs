@@ -564,11 +564,18 @@ pub fn canvas_shown(session: &Session) -> bool {
 }
 
 /// The words the shell lists the style `style` (`so.tilo.shell:frames`) under: its doc line, or its
-/// view's name when its author wrote none, as the bar's switch and Settings both name it.
+/// view's name when its author wrote none, as the bar's switch and Settings both name it. A
+/// session no daemon serves lists none; the shell's own styles are then named as a daemon would
+/// offer them, by the one rule that finds a package's styles.
 fn style_label(session: &Session, style: &str) -> Option<String> {
-    let found = styles(session)
-        .into_iter()
-        .find(|found| found.style == style)?;
+    let listed = styles(session);
+    let found = if listed.is_empty() {
+        tilo_workspace_service::styles::installed(&[])
+    } else {
+        listed
+    }
+    .into_iter()
+    .find(|found| found.style == style)?;
     [found.line, found.name, found.package]
         .into_iter()
         .find(|words| !words.is_empty())
@@ -699,6 +706,45 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            ..options
+        },
+        outputs,
+    )
+    .expect("session")
+}
+
+/// A headless session as the shell of a device daemon of the test's own, started in this process
+/// over a profile and a home of its own: the session is the daemon's person's (`options.person`
+/// is theirs), on the link the daemon made for it, as a computer's session is on the daemon that
+/// started it. What the daemon publishes in the person's own workspace (the styles the installed
+/// packages offer among it) is what the session reads. The daemon stops after the session ends.
+///
+/// # Panics
+/// The home, the daemon or the session does not start.
+#[track_caller]
+pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+    let identity = home.root().join("identity");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &identity)
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    let within = tilo_test_env::hang_bound();
+    let daemon =
+        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    let person = daemon.person(within).expect("its person's services run");
+    let shell_link = daemon
+        .link_shell(within)
+        .expect("the daemon makes the session's link");
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person,
+            shell_link: Some(shell_link),
+            shell_daemon: Some(Box::new((daemon, profile, home))),
             ..options
         },
         outputs,
@@ -1663,12 +1709,14 @@ pub fn windows(session: &Session) -> Vec<tilo_session::windows::Window> {
         .expect("the session publishes its windows")
 }
 
-/// The styles every installed package offers, as `session:styles` publishes them.
-pub fn styles(session: &Session) -> Vec<tilo_session::styles::Style> {
+/// The styles the session's shell lists: what the device's daemon publishes in the person's own
+/// workspace ([`STYLES_APP`](tilo_workspace_service::styles::STYLES_APP)), each marked as this
+/// session's shell last loaded it. Empty for a session no daemon serves.
+pub fn styles(session: &Session) -> Vec<tilo_workspace_service::styles::Style> {
     session
-        .read("session:styles")
+        .read(tilo_workspace_service::styles::STYLES_APP)
         .and_then(|styles| serde_json::from_value(styles["offered"].clone()).ok())
-        .expect("the session publishes its styles")
+        .expect("the session shows the styles")
 }
 
 /// The resource publishing `action` among everything the session publishes.

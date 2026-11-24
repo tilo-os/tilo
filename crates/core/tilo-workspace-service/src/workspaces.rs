@@ -1019,6 +1019,18 @@ impl WorkspaceServices {
     }
 }
 
+/// Who reads a resource this device publishes of its own ([`Workspaces::publish_own`]), beside
+/// this device's own person acting as themselves on it, who always does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnReaders {
+    /// Nobody else: what stands on this computer alone, as where its folders stand.
+    ThisDevice,
+    /// Whoever the person's own workspace lets read its records, by its own read rules: what
+    /// the person reads anywhere they are, as the styles the device's packages offer, read by a
+    /// page of theirs, a member's view and an agent alike.
+    Workspace,
+}
+
 /// The workspaces this server governs.
 #[derive(Clone)]
 pub struct Workspaces {
@@ -1140,7 +1152,10 @@ struct WorkspacesInner {
     /// The resources this device publishes of its own, by the app they are read at
     /// ([`Workspaces::publish_own`]).
     own_readings: std::sync::RwLock<
-        std::collections::BTreeMap<&'static str, Arc<dyn tilo_actions::remote::ResourceReads>>,
+        std::collections::BTreeMap<
+            &'static str,
+            (OwnReaders, Arc<dyn tilo_actions::remote::ResourceReads>),
+        >,
     >,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
@@ -1955,21 +1970,27 @@ impl Workspaces {
     }
 
     /// Answer the reads of `app` with `reads` from now on: a resource of this device's own (where
-    /// its folders stand), read in the person's own workspace by this device's own person on this
-    /// device alone ([`record_reads::RecordReads`]).
+    /// its folders stand, the styles its packages offer), read in the person's own workspace by
+    /// this device's own person and, as `readers` says, by whoever else that workspace lets read
+    /// it ([`record_reads::RecordReads`]).
     pub fn publish_own(
         &self,
         app: &'static str,
+        readers: OwnReaders,
         reads: Arc<dyn tilo_actions::remote::ResourceReads>,
     ) {
-        self.inner.own_readings.write_recover().insert(app, reads);
+        self.inner
+            .own_readings
+            .write_recover()
+            .insert(app, (readers, reads));
     }
 
-    /// What answers the reads of `app`, when it is a resource of this device's own.
+    /// What answers the reads of `app`, when it is a resource of this device's own, and who reads
+    /// it.
     pub(crate) fn own_reading(
         &self,
         app: &str,
-    ) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+    ) -> Option<(OwnReaders, Arc<dyn tilo_actions::remote::ResourceReads>)> {
         self.inner.own_readings.read_recover().get(app).cloned()
     }
 

@@ -65,7 +65,11 @@ pub(crate) fn serve(
     let folders = Folders::default();
     workspaces
         .copies()
-        .publish_own(FOLDERS_APP, Arc::new(folders.clone()));
+        .publish_own(
+            FOLDERS_APP,
+            tilo_workspace_service::workspaces::OwnReaders::ThisDevice,
+            Arc::new(folders.clone()),
+        );
     let serving = socket::serve(
         path,
         service,

@@ -33,8 +33,9 @@ pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
 pub(crate) const TRAY_RESOURCE: &str = "session:tray";
 /// The agents the person admitted at their MCP server.
 pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
-/// The styles every installed package offers.
-pub(crate) const STYLES_RESOURCE: &str = "session:styles";
+/// The styles the device's installed packages offer, as the device's daemon publishes them in the
+/// person's own workspace, with what failed in this session's shell marked on them.
+pub(crate) const STYLES_RESOURCE: &str = tilo_workspace_service::styles::STYLES_APP;
 /// The workspaces' folders on this computer, and whether what is put in them reached the server.
 pub(crate) const FOLDERS_RESOURCE: &str = "session:folders";
 /// The shell's open search: what is typed and the rows it found, as the launcher shows them.
@@ -64,14 +65,6 @@ pub fn tray_surface() -> tilo_resource::surface::Surface {
 pub fn agents_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<crate::agent_sessions::Agents, AgentsEffect>(
         "agents", "Agents",
-    )
-}
-
-/// The styles as a view of another language reads them (`device.styles`).
-#[must_use]
-pub fn styles_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<OfferedStyles, tilo_resource::NoEffect>(
-        "styles", "Styles",
     )
 }
 
@@ -427,21 +420,6 @@ pub(crate) struct TrayItem {
     pub badge: i64,
     /// Whether it wants the person: a pulsing dot, as a status notifier says with `NeedsAttention`.
     pub attention: bool,
-}
-
-/// The styles every installed package offers (shell.md §6).
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-pub(crate) struct OfferedStyles {
-    pub offered: Vec<crate::styles::Style>,
 }
 
 /// What the tray offers.
@@ -888,17 +866,6 @@ impl Surfaces {
     }
 }
 
-/// The styles every installed package offers, with the revision that moves when the
-/// session re-reads its store: a package installed or taken away moves the shell's reading.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Styles {
-    pub(crate) revision: u64,
-    pub(crate) list: Vec<crate::styles::Style>,
-    /// The store's registry the list was read at: a store that reads the same is not read again,
-    /// and what the log says of it is said only when it changes.
-    pub(crate) registry: Option<crate::styles::Registry>,
-}
-
 /// The shell as the session reads it. See the module docs.
 pub(crate) struct DeviceLists {
     pub(crate) handle: DesktopHandle,
@@ -923,10 +890,12 @@ pub(crate) struct DeviceLists {
     /// session's own surface and not a layer the shell draws.
     pub(crate) asks:
         Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
-    /// The styles every installed package offers, as `device.styles` reads them
-    /// (shell.md §6): what the person's switch offers. The session fills it from its package
-    /// store, and moves it when a package is installed or taken away.
-    pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
+    /// The styles the device's installed packages offer, as its daemon publishes them in the
+    /// person's own workspace (shell.md §6): what the person's switch offers. It moves when a
+    /// package is installed or taken away.
+    pub(crate) styles: Followed<tilo_workspace_service::styles::StyleList>,
+    /// The styles that failed in this session's shell, marked on what it shows of them.
+    pub(crate) failed_styles: Rc<std::cell::RefCell<crate::styles::Failed>>,
     /// The workspaces' folders on this computer, as the device's daemon last said each stands.
     pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     /// The apps this device lists, whose generation says which welcome cards stand here.
@@ -952,14 +921,14 @@ pub(crate) struct Shared {
     pub(crate) asks:
         Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
     pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
+    pub(crate) styles: Followed<tilo_workspace_service::styles::StyleList>,
     pub(crate) lists: crate::lists::Lists,
 }
 
-/// A factory making the session's shell, its styles read from the person's store as they move
-/// (shell.md §6): called once for the shell's own service and once for the shell, each a view of
-/// the same agent sessions, surfaces and records.
+/// A factory making the session's shell: called once for the shell's own service and once for the
+/// shell, each a view of the same agent sessions, surfaces, records and styles.
 pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
-    let styles = Rc::new(std::cell::RefCell::new(Styles::default()));
+    let failed_styles = Rc::new(std::cell::RefCell::new(crate::styles::Failed::default()));
     move || DeviceLists {
         agent_sessions: std::sync::Arc::clone(&shared.agent_sessions),
         handle: shared.handle.clone(),
@@ -970,7 +939,8 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         tray: shared.tray.clone(),
         view: shared.view.clone(),
         asks: Rc::clone(&shared.asks),
-        styles: Rc::clone(&styles),
+        styles: shared.styles.clone(),
+        failed_styles: Rc::clone(&failed_styles),
         folders: shared.folders.clone(),
         lists_source: shared.lists.clone(),
         lists: None,
@@ -996,7 +966,12 @@ impl DeviceLists {
                 false,
             ),
             (self.agent_sessions.revision(), 0, 0, false),
-            (self.styles.borrow().revision, 0, 0, false),
+            (
+                self.styles.revision(),
+                self.failed_styles.borrow().revision,
+                0,
+                false,
+            ),
             (self.folders.revision(), 0, 0, false),
             (self.handle.search_revision(), 0, 0, false),
             (self.lists_source.snapshot().0, 0, 0, false),
@@ -1022,8 +997,8 @@ impl DeviceLists {
             AGENTS_RESOURCE => Some(reading(&crate::agent_sessions::Agents {
                 sessions: self.agent_sessions.readings(),
             })),
-            STYLES_RESOURCE => Some(reading(&OfferedStyles {
-                offered: self.styles.borrow().list.clone(),
+            STYLES_RESOURCE => Some(reading(&tilo_workspace_service::styles::StyleList {
+                offered: self.failed_styles.borrow().marked(self.styles.get().offered),
             })),
             FOLDERS_RESOURCE => Some(reading(&Folders {
                 folders: self

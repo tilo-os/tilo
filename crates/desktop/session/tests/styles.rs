@@ -26,20 +26,21 @@ use tilo_session::{Options, Session};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
-const PERSON: &str = "Pat";
 
 fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
-        person: PERSON.to_owned(),
         ..Options::default()
     }
 }
 
+/// A session as the shell of a device daemon of the test's own: the styles it lists are the ones
+/// the daemon publishes from the device's store.
 fn session() -> Session {
-    let mut session =
-        Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-            .expect("session");
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        options(),
+    );
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,
@@ -238,6 +239,44 @@ view timeline(a: shell.Layout) {
     });
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// A style package a person or their agent installs while the session runs is listed with no
+/// restart: the device's daemon reads its store again when the store moves, and publishes the
+/// styles in the person's own workspace, which the session follows.
+#[test]
+fn a_style_installed_while_the_session_runs_is_listed_without_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let store = crate::common::app_store();
+    let mut session = session();
+    until(&mut session, |session| !session.shell_parts().is_empty());
+    until(&mut session, |session| {
+        style_state(session, "so.tilo.shell:frames").is_some()
+    });
+    assert!(
+        style_state(&session, "atest.later:later").is_none(),
+        "the style is not offered before its package is installed"
+    );
+    let scratch = Scratch::new("layout-style-later");
+    let installed = scratch.install("later", LATER_STYLE, store);
+    assert_eq!(installed, "atest.later", "the style package installs");
+    let (loads, reason) = crate::common::wait_for(
+        &mut session,
+        "the style installed while the session runs to be listed",
+        |session| style_state(session, "atest.later:later"),
+    );
+    assert!(loads, "the installed style loads: {reason}");
+}
+
+/// The style the person installs while their session runs.
+const LATER_STYLE: &str = r#"app atest.later "A later style"
+
+use so.tilo.shell as shell
+
+/// A later style of the layout
+view later(a: shell.Layout) {
+    ui.Text("Later: {a.places.count()} places")
+}
+"#;
 
 /// A style whose package does not load — step 3's failure at the session (`shell.md` §6,
 /// "Nothing can lock a person out").

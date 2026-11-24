@@ -639,7 +639,7 @@ impl Core {
     }
 
     /// `target` as `read` gives it, from the reading its service publishes (`reading`) rather than
-    /// a record: what `read(device.styles)` answers, each field as a view of it reads it, or as it
+    /// a record: what `read(styles.installed)` answers, each field as a view of it reads it, or as it
     /// would start where the reading leaves it out. A field that does not read as its type says is
     /// shown as the error it gave, as [`Self::read_local`] shows one.
     pub(crate) fn read_reading(

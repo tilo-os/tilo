@@ -3326,56 +3326,6 @@
       ]
     },
     {
-      "kind": "styles",
-      "label": "Styles",
-      "version": 1,
-      "verbs": [],
-      "fields": [
-        {
-          "path": "offered",
-          "stored": "value",
-          "type": {
-            "list": {
-              "named": "Style"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
-          "fields": [
-            {
-              "name": "style",
-              "type": "text"
-            },
-            {
-              "name": "package",
-              "type": "text"
-            },
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "line",
-              "type": "text"
-            },
-            {
-              "name": "loads",
-              "type": "bool"
-            },
-            {
-              "name": "reason",
-              "type": "text"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "kind": "folders",
       "label": "Folders",
       "version": 1,

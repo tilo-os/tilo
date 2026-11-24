@@ -141,24 +141,39 @@ impl RecordReads {
     }
 
     /// What answers `address` when it is a resource this device publishes of its own
-    /// ([`Workspaces::publish_own`]): read in the person's own workspace by this device's own
-    /// person, acting as themselves on this device, and refused to every other caller and in
-    /// every other workspace.
+    /// ([`Workspaces::publish_own`]): a resource of the person's own workspace, refused in every
+    /// other. This device's own person, acting as themselves on this device, reads it. Where it is
+    /// published for the workspace's readers ([`super::OwnReaders::Workspace`]), every other
+    /// caller reads it as that workspace's read rules decide ([`Self::decides`]), exactly as they
+    /// read any record of it: the person at a page of theirs, a member's view, an agent; otherwise
+    /// nobody else does.
     fn own(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Option<Result<Arc<dyn ResourceReads>, ActionCallError>> {
         let workspaces = self.workspaces.as_ref()?.upgrade()?;
-        let reads = workspaces.own_reading(&address.app)?;
+        let (readers, reads) = workspaces.own_reading(&address.app)?;
         let device = workspaces.device_cert();
-        let mine = address.workspace
-            == tilo_server_protocol::servers::person_workspace_id(&device.user_public_key)
-            && caller.user_public_key() == Some(&device.user_public_key)
+        if address.workspace
+            != tilo_server_protocol::servers::person_workspace_id(&device.user_public_key)
+        {
+            return Some(Err(refused()));
+        }
+        let mine = caller.user_public_key() == Some(&device.user_public_key)
             && caller.device_public_key() == Some(&device.device_public_key)
             && *caller.acting()
                 == tilo_action_policy::Acting::person(hex::encode(device.user_public_key));
-        Some(if mine { Ok(reads) } else { Err(refused()) })
+        if mine {
+            return Some(Ok(reads));
+        }
+        if readers == super::OwnReaders::ThisDevice {
+            return Some(Err(refused()));
+        }
+        let admitted = Self::kept_here(&workspaces, &address.workspace)
+            .ok_or_else(refused)
+            .and_then(|state| self.decides(&state, caller, address));
+        Some(admitted.map(|()| reads))
     }
 
     /// Whether `caller` may read `address` now, decided by the workspace the address names
@@ -362,13 +377,13 @@ impl RecordReads {
         address: &ResourceAddress,
         bytes: Option<Vec<u8>>,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let state = Self::held(workspaces, &address.workspace).ok_or_else(refused)?;
+        let state = Self::kept_here(workspaces, &address.workspace).ok_or_else(refused)?;
         self.decides(&state, caller, address)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
     /// `workspace` as this device holds it, when it does.
-    fn held(workspaces: &Workspaces, workspace: &str) -> Option<StatePeer> {
+    fn kept_here(workspaces: &Workspaces, workspace: &str) -> Option<StatePeer> {
         let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
         crate::device_documents::on_its_own(async move { workspaces.state(&workspace).await })
     }
@@ -377,7 +392,7 @@ impl RecordReads {
     /// workspace's governance let the caller read it; the app action server, for any other.
     fn route(&self, caller: &Caller, address: &ResourceAddress) -> Result<Route, ActionCallError> {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
-            && let Some(state) = Self::held(&workspaces, &address.workspace)
+            && let Some(state) = Self::kept_here(&workspaces, &address.workspace)
         {
             self.decides(&state, caller, address)?;
             return Ok(Route::Held(workspaces));
@@ -482,7 +497,7 @@ impl ResourceReads for RecordReads {
             .workspaces
             .as_ref()
             .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| Self::held(&workspaces, &address.workspace));
+            .and_then(|workspaces| Self::kept_here(&workspaces, &address.workspace));
         tilo_actions::remote::Pending::ready(match state {
             Some(state) => self.decides(&state, caller, address),
             None => Err(refused()),
@@ -542,7 +557,7 @@ impl ResourceReads for RecordReads {
             .as_ref()
             .and_then(WeakWorkspaces::upgrade)
             .ok_or_else(refused)?;
-        let state = Self::held(&workspaces, workspace).ok_or_else(refused)?;
+        let state = Self::kept_here(&workspaces, workspace).ok_or_else(refused)?;
         let listed = workspaces
             .own_listing(workspace)
             .map_err(|reason| ActionCallError::Unavailable { reason })?;

@@ -10,7 +10,10 @@
 //! Between the person's devices they travel in their own workspace
 //! ([`crate::PersonResources`]), which carries each of the shell's documents exactly as it
 //! carries every app's own record of theirs — what this device writes is written there, and what
-//! another of their devices wrote is merged here (`Shell::sync_resource`).
+//! another of their devices wrote is merged here (`Shell::sync_resource`). Each document is named
+//! there as the store names it here, under the shell's app: the name the device's dispatch writes
+//! when it runs the shell's actions (an agent's `shell#show-style`, a press on a desktop page), so
+//! the person's shell is one set of documents, whoever changes it.
 //!
 //! A store this build cannot read is never written over: the session keeps the shell's resources
 //! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
@@ -34,8 +37,6 @@ pub(crate) struct ShellRecord {
     store: ResourceStore,
     /// Where the store is kept on this device, while it is.
     path: Option<PathBuf>,
-    /// The record id the person's other devices name the shell's resources under.
-    id: String,
     /// Why the store on disk was not opened, once: the person is told, and is not told again.
     refused: RefCell<Option<String>>,
 }
@@ -47,37 +48,30 @@ impl ShellRecord {
     /// showed the shell, whose defaults this session's first part seeds by the package's
     /// migrations.
     pub(crate) fn open(state: Option<&Path>) -> Self {
-        let id = document_id();
         let Some(dir) = state.and_then(|_| person_dir()) else {
-            return Self::keeping(LocalPort::in_memory(), None, id, None);
+            return Self::keeping(LocalPort::in_memory(), None, None);
         };
         let dir = dir.join(APP).join("resources");
         match LocalPort::at(dir.clone()) {
-            Ok(port) => Self::keeping(port, Some(dir), id, None),
+            Ok(port) => Self::keeping(port, Some(dir), None),
             Err(error) => {
                 tracing::error!(
                     %error,
                     "the shell's resources are not opened; the shell starts from the defaults \
                      this session"
                 );
-                Self::keeping(LocalPort::in_memory(), None, id, Some(error))
+                Self::keeping(LocalPort::in_memory(), None, Some(error))
             }
         }
     }
 
-    fn keeping(
-        port: LocalPort,
-        path: Option<PathBuf>,
-        id: String,
-        refused: Option<String>,
-    ) -> Self {
+    fn keeping(port: LocalPort, path: Option<PathBuf>, refused: Option<String>) -> Self {
         let port = Rc::new(port);
         let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn tilolang_tilo::resources::Port>);
         Self {
             port,
             store,
             path,
-            id,
             refused: RefCell::new(refused),
         }
     }
@@ -86,12 +80,6 @@ impl ShellRecord {
     #[must_use]
     pub(crate) fn store(&self) -> ResourceStore {
         self.store.clone()
-    }
-
-    /// The record id the person's other devices name the shell's resources under.
-    #[must_use]
-    pub(crate) fn id(&self) -> &str {
-        &self.id
     }
 
     /// Where the store is kept on this device, while it is.
@@ -145,13 +133,6 @@ impl ShellRecord {
             }
         }
     }
-}
-
-/// The shell document's id in the person's own workspace.
-fn document_id() -> String {
-    ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))
-        .as_str()
-        .to_owned()
 }
 
 /// Where the person's own records are kept on this device: the directory the launcher binds into

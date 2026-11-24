@@ -52,11 +52,11 @@ pub(super) fn shipped_styles() -> serde_json::Value {
     .collect()
 }
 
-/// The shell styles the session publishes.
+/// The shell styles the device offers, as the session shows them.
 pub(super) fn publish_styles(link: &SessionLink, styles: &serde_json::Value) {
     link.publish_reading(
-        "session:styles",
-        "so.tilo.device#Styles",
+        tilolang_tilo::platform_apps::STYLES_APP,
+        "tilo.styles#Styles",
         serde_json::json!({ "offered": styles }),
     );
 }

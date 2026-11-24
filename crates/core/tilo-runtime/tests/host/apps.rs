@@ -68,6 +68,38 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
     env
 }
 
+/// Build the package `source` (an `app.tl`), written into a scratch directory as `name`, and
+/// install it into the store the device's process names (`TILO_APPS_DATA_DIR`), as a person or
+/// their agent installs a package while the device runs: signed by the publisher [`install`]
+/// made, and built against the packages it installed.
+///
+/// # Panics
+/// The process names no store [`install`] made, or the package does not build or install.
+pub fn install_source(name: &str, source: &str) {
+    let store = PathBuf::from(
+        std::env::var_os("TILO_APPS_DATA_DIR").expect("the device's process names its store"),
+    );
+    let root = store.parent().expect("the store is in the test's root").to_owned();
+    let publisher = tilolang_cli::identity_at(&root.join("publisher.json")).unwrap();
+    let dir = root.join("written").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.ids"), "").unwrap();
+    std::fs::write(dir.join("app.tl"), source).unwrap();
+    let built = package::build(
+        &BuildOptions {
+            dir,
+            search: vec![root.join("tl"), packages()],
+            out: root.join("tapps"),
+            tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
+            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            version: "0.1.0".to_owned(),
+        },
+        &publisher,
+    )
+    .unwrap_or_else(|error| panic!("{name} builds: {error}"));
+    install_tapp(&store, &built.last().unwrap().tapp);
+}
+
 /// Install the package at `tapp` into the app store at `store`.
 fn install_tapp(store: &Path, tapp: &Path) {
     let from = tapp.display().to_string();

@@ -1454,7 +1454,7 @@ impl Hosted {
         // The shell, shown where no session runs it (a web page of the workspace's desktop),
         // reads its layout, apps and windows from the device's dispatch.
         let shell = (spec.app == crate::shell_page::SHELL_APP && spec.shows == Shows::View)
-            .then(|| ShellPage::new(&spec.workspace, &mut instance));
+            .then(|| ShellPage::new(&spec.workspace, &spec.person, &mut instance));
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace, &spec.provided));

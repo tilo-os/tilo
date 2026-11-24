@@ -302,9 +302,10 @@ impl tilo_service::Service for Styles {
     }
 }
 
-/// A program's read of a resource the session publishes (the device's styles) is answered from
-/// the session's own services on the loop's pass, where they are: one `tilo` call reads
-/// `device.styles.offered` with no record and no app, as the shell's own parts read it.
+/// A program's read of a resource the session publishes (the device's styles, as this session
+/// shows them) is answered from the session's own services on the loop's pass, where they are:
+/// one `tilo` call reads `styles.installed.offered` with no record and no app, as the shell's own
+/// parts read it.
 #[test]
 fn a_program_reads_the_reading_a_session_service_publishes() {
     let offered = serde_json::json!({
@@ -315,16 +316,19 @@ fn a_program_reads_the_reading_a_session_service_publishes() {
     services.add(Box::new(Styles {
         offered: offered.clone(),
     }));
-    let app = tilolang_tilo::platform_apps::DEVICE_APP;
     assert_eq!(
-        published_reading(&services, app, crate::device_lists::STYLES_RESOURCE),
+        published_reading(
+            &services,
+            tilolang_tilo::platform_apps::STYLES_APP,
+            crate::device_lists::STYLES_RESOURCE
+        ),
         Some(offered),
         "the reading its service publishes"
     );
     // A device resource no service of this device serves is published empty, as the shell's
     // parts are handed it: a program reads its fields as absent and goes on.
     assert_eq!(
-        published_reading(&services, app, "power"),
+        published_reading(&services, tilolang_tilo::platform_apps::DEVICE_APP, "power"),
         Some(serde_json::json!({})),
         "a resource no service serves is published empty"
     );
@@ -479,7 +483,7 @@ fn a_live_reading_that_changes_reaches_its_follower() {
     let asks = [ResourceAsk {
         address: ResourceAddress {
             workspace: "studio".to_owned(),
-            app: tilolang_tilo::platform_apps::DEVICE_APP.to_owned(),
+            app: tilolang_tilo::platform_apps::STYLES_APP.to_owned(),
             record: crate::device_lists::STYLES_RESOURCE.to_owned(),
         },
         joined: false,
@@ -603,7 +607,7 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     };
     let address = tilo_actions::remote::ResourceAddress {
         workspace: "studio".to_owned(),
-        app: tilolang_tilo::platform_apps::DEVICE_APP.to_owned(),
+        app: tilolang_tilo::platform_apps::STYLES_APP.to_owned(),
         record: crate::device_lists::STYLES_RESOURCE.to_owned(),
     };
     let read_as = |caller: &Caller, kind: Option<&str>| {

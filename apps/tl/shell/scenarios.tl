@@ -2333,14 +2333,14 @@ scenario "the strips style's settings" -> Layout {
 
 /// The frames style's own settings, over the canvas they change.
 scenario "the frames style's settings" -> Layout {
-    // The note has its point and size on the canvas, and the styles the session publishes are
+    // The note has its point and size on the canvas, and the styles the device offers are
     // staged, so the shot shows the style the panel belongs to standing behind it and the switch
     // above the settings listing the canvas beside the other three.
     stage(
-        device.styles,
-        device.Styles(
+        styles.installed,
+        styles.Styles(
             offered: [
-                device.Style(
+                styles.Style(
                     style: "so.tilo.shell:strips",
                     package: "so.tilo.shell",
                     name: "strips",
@@ -2348,7 +2348,7 @@ scenario "the frames style's settings" -> Layout {
                     loads: true,
                     reason: "",
                 ),
-                device.Style(
+                styles.Style(
                     style: "so.tilo.shell:frames",
                     package: "so.tilo.shell",
                     name: "frames",
@@ -2356,7 +2356,7 @@ scenario "the frames style's settings" -> Layout {
                     loads: true,
                     reason: "",
                 ),
-                device.Style(
+                styles.Style(
                     style: "so.tilo.shell:frameless",
                     package: "so.tilo.shell",
                     name: "frameless",
@@ -2364,7 +2364,7 @@ scenario "the frames style's settings" -> Layout {
                     loads: true,
                     reason: "",
                 ),
-                device.Style(
+                styles.Style(
                     style: "so.tilo.shell:desktop",
                     package: "so.tilo.shell",
                     name: "desktop",

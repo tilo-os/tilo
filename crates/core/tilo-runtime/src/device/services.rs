@@ -107,6 +107,10 @@ pub struct Daemon {
     /// The workspaces' trees, served to the files daemon that mounts them. Before the media
     /// host, whose content store its mounts' bytes are read from.
     _files_tree: Option<super::files_tree::FilesTree>,
+    /// The styles the device's installed packages offer, published in the person's own
+    /// workspace and read again as the store moves.
+    #[cfg(not(windows))]
+    _styles: super::styles::StylesShown,
     /// The account sign-ins socket, while this login has a runtime directory to serve it in.
     #[cfg(unix)]
     account_sign_ins: Option<super::account_sign_ins::AccountSignIns>,
@@ -1414,8 +1418,13 @@ impl Daemon {
         if let Some(sign_ins) = &account_sign_ins {
             apps.hand_sign_ins(Box::new(sign_ins.hands()));
         }
+        stage("publishing the styles the installed packages offer");
+        #[cfg(not(windows))]
+        let styles = super::styles::publish(&workspaces);
         let daemon = Self {
             _files_tree: files_tree,
+            #[cfg(not(windows))]
+            _styles: styles,
             #[cfg(unix)]
             account_sign_ins,
             policy_origin,

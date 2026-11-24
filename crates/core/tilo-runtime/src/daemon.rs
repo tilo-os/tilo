@@ -301,6 +301,18 @@ impl Running {
         Ok(self.person.within(within)?.shell_link()?.into())
     }
 
+    /// The person the daemon serves, by their id (the hex of their root), once their services
+    /// run (within `within`): who a test's session in this process is the shell of
+    /// ([`Self::link_shell`]), and whose own workspace the device's resources are read in.
+    ///
+    /// # Errors
+    /// The person's services did not start in time.
+    #[cfg(feature = "test-support")]
+    pub fn person(&self, within: Duration) -> io::Result<String> {
+        use crate::RuntimeServices as _;
+        Ok(self.person.within(within)?.actor().to_owned())
+    }
+
     /// Where the daemon's native endpoint listens.
     #[must_use]
     pub fn native_socket(&self) -> &Path {

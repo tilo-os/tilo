@@ -12,6 +12,10 @@
 //! - **The apps** the launcher lists (`session:apps`) are those the dispatch's catalogue lists the
 //!   person, and **the windows** the dock and the switcher walk (`session:windows`) are the
 //!   layout's.
+//! - **The styles** the person's switch lists (`styles.installed`) are the ones the device
+//!   publishes in the person's own workspace, read as the person at the page and followed by
+//!   revision, so a style installed while the page is open is offered there too. Picking one is
+//!   the shell's own `show_style`, which the dispatch runs over the person's shell record.
 //! - **What the views ask of the session** is carried out where its state is: a window's Close
 //!   and the launcher's Open are the layout's `close` and `place`, as the person at the page;
 //!   the surface over the windows (`desktop:overlays`) is the page's own, as a device's shell
@@ -27,8 +31,8 @@ use std::rc::Rc;
 use collaboration::{CollabEvent, CollabRequest};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    CatalogueQuery, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget,
+    CatalogueQuery, InvocationReceipt, InvokeArgument, InvokeRequest, ReadAnswer, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, ResourceReadRequest,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilolang_tilo::instance::Instance;
@@ -45,6 +49,9 @@ const LAYOUT_RESOURCE: &str = "workspace:layout";
 
 /// The session's app, whose arranging actions the page carries out on the shared layout.
 const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
+
+/// The app the device publishes the styles at, and the platform root the shell reads them by.
+const STYLES_APP: &str = tilolang_tilo::platform_apps::STYLES_APP;
 
 /// The device's app, whose `show-surface` the page carries out on its own overlays.
 const DEVICE_APP: &str = tilolang_tilo::platform_apps::DEVICE_APP;
@@ -63,6 +70,10 @@ const READ_LOST: Duration = Duration::from_secs(10);
 
 /// The most apps the launcher lists.
 const MOST_APPS: u32 = 200;
+
+/// How long a follow of the styles waits for them to move before it is answered as they stand:
+/// within [`READ_LOST`], so a follow that waits is never taken for one that was lost.
+const STYLES_WAIT_MS: u32 = 5_000;
 
 /// What the shell's views asked that the page carries out, as they asked it.
 type Asked = Rc<RefCell<Vec<Invocation>>>;
@@ -120,6 +131,13 @@ pub struct ShellPage {
     here: String,
     layout_read: Read,
     apps_read: Read,
+    styles_read: Read,
+    /// The person's own workspace, where the device publishes the styles: `None` for a page
+    /// whose person names no person key, which lists no styles.
+    styles_workspace: Option<String>,
+    /// The styles as last read, and the revision they were read at: the next read waits past it.
+    styles: Option<Value>,
+    styles_after: Option<String>,
     /// The layout's last answer, and the apps as last listed.
     layout: Option<Value>,
     apps: Option<Vec<Listed>>,
@@ -130,13 +148,16 @@ pub struct ShellPage {
     changing: HashMap<InvocationId, &'static str>,
     /// The catalogue read in flight.
     listing: Option<u64>,
+    /// The styles read in flight.
+    styles_reading: Option<u64>,
     next_correlation: u64,
     queued: Vec<RemoteActionMessage>,
 }
 
 impl ShellPage {
-    /// The shell of a page of `workspace`, writing the layout into `instance` from now on.
-    pub fn new(workspace: &str, instance: &mut Instance) -> Self {
+    /// The shell of a page of `workspace` shown to `person`, writing the layout into `instance`
+    /// from now on.
+    pub fn new(workspace: &str, person: &str, instance: &mut Instance) -> Self {
         let origin = Rc::new(RefCell::new(LayoutOrigin::default()));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
         Self {
@@ -146,12 +167,17 @@ impl ShellPage {
             here: String::new(),
             layout_read: Read::default(),
             apps_read: Read::default(),
+            styles_read: Read::default(),
+            styles_workspace: tilo_action_policy::roles::workspace_of_person(person),
+            styles: None,
+            styles_after: None,
             layout: None,
             apps: None,
             untold: true,
             reading: None,
             changing: HashMap::new(),
             listing: None,
+            styles_reading: None,
             next_correlation: 1,
             queued: Vec::new(),
         }
@@ -173,7 +199,8 @@ impl ShellPage {
         let soonest = self
             .layout_read
             .wakes_in(now)
-            .min(self.apps_read.wakes_in(now));
+            .min(self.apps_read.wakes_in(now))
+            .min(self.styles_read.wakes_in(now));
         Some(std::time::Duration::from_millis(
             u64::try_from(soonest.as_millis()).unwrap_or(u64::MAX),
         ))
@@ -203,6 +230,15 @@ impl ShellPage {
                         tracing::debug!(?error, "the apps a page's shell lists were not read");
                     }
                 }
+                return true;
+            }
+            RemoteActionMessage::ResourceReading {
+                correlation,
+                result,
+            } if self.styles_reading == Some(*correlation) => {
+                self.styles_reading = None;
+                self.styles_read.waiting = false;
+                self.take_styles(result);
                 return true;
             }
             RemoteActionMessage::Receipt(receipt) => receipt.clone(),
@@ -275,6 +311,28 @@ impl ShellPage {
                 },
             });
         }
+        if let Some(workspace) = &self.styles_workspace
+            && self.styles_reading.is_none()
+            && self.styles_read.due(now)
+        {
+            self.styles_read.ask(now);
+            let correlation = self.next_correlation;
+            self.next_correlation = self.next_correlation.saturating_add(1);
+            self.styles_reading = Some(correlation);
+            self.queued.push(RemoteActionMessage::ResourceRead {
+                correlation,
+                on_behalf_of: None,
+                read: ResourceReadRequest {
+                    workspace: workspace.clone(),
+                    app: STYLES_APP.to_owned(),
+                    record: String::new(),
+                    joined: false,
+                    wait_ms: self.styles_after.is_some().then_some(STYLES_WAIT_MS),
+                    after: self.styles_after.clone(),
+                    answer: ReadAnswer::Reading,
+                },
+            });
+        }
         if self.untold {
             self.untold = false;
             if let Err(error) = self.tell(instance) {
@@ -292,7 +350,8 @@ impl ShellPage {
                 _ => None,
             };
             let correlation = match &message {
-                RemoteActionMessage::CatalogueRequest { correlation, .. } => Some(*correlation),
+                RemoteActionMessage::CatalogueRequest { correlation, .. }
+                | RemoteActionMessage::ResourceRead { correlation, .. } => Some(*correlation),
                 _ => None,
             };
             if send(CollabRequest::RemoteAction { message }) {
@@ -309,6 +368,10 @@ impl ShellPage {
             if correlation.is_some() && correlation == self.listing {
                 self.listing = None;
                 self.apps_read.waiting = false;
+            }
+            if correlation.is_some() && correlation == self.styles_reading {
+                self.styles_reading = None;
+                self.styles_read.waiting = false;
             }
         }
     }
@@ -367,7 +430,39 @@ impl ShellPage {
             }),
         )?;
         fill(instance, "session:apps", &apps_reading(apps))?;
+        if let Some(styles) = &self.styles {
+            fill(instance, STYLES_APP, styles)?;
+        }
         fill(instance, "session:windows", &windows)
+    }
+
+    /// Take in the styles a read answered: the reading and the revision it is at. A read that was
+    /// refused or did not read is asked again when it is due, and the styles last read stand.
+    fn take_styles(&mut self, result: &Result<String, tilo_actions::remote::ActionCallError>) {
+        let readings = match result
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|text| serde_json::from_str::<Value>(text).map_err(|e| e.to_string()))
+        {
+            Ok(readings) => readings,
+            Err(error) => {
+                tracing::debug!(%error, "the styles a page's shell lists were not read");
+                return;
+            }
+        };
+        self.styles_after = readings["revision"].as_str().map(str::to_owned);
+        let Some(record) = readings["records"].get(0) else {
+            return;
+        };
+        let styles = if record["absent"].as_bool() == Some(true) {
+            json!({ "offered": [] })
+        } else {
+            record["value"].clone()
+        };
+        if self.styles.as_ref() != Some(&styles) {
+            self.styles = Some(styles);
+            self.untold = true;
+        }
     }
 
     /// The layout as the shell's views read it: each workspace leading to its own desktop page,

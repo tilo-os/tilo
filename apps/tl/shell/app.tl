@@ -2,6 +2,7 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system, resources: .own)
 
 use so.tilo.session as session
 use desktop as desktop
+use tilo.styles as styles
 
 root layout: Layout
 
@@ -72,11 +73,11 @@ view shell_view(a: Layout) window "Desktop shell" {
     }
 }
 
-/// Whether the style `chosen` loads, as the session publishes it (`Style.loads`): a style
-/// the session has not listed yet is one it has said nothing against, so it is drawn and, if it
-/// cannot be, the failed state the runtime draws stands in for it.
+/// Whether the style `chosen` loads, as the device lists it and this session marks it
+/// (`Style.loads`): a style not listed yet is one nothing has said anything against, so it is
+/// drawn and, if it cannot be, the failed state the runtime draws stands in for it.
 fn loads_style(chosen: Text) -> Bool {
-    if let found = device.styles.offered.find(s -> s.style == chosen) {
+    if let found = styles.installed.offered.find(s -> s.style == chosen) {
         return found.loads
     }
     true
@@ -515,7 +516,7 @@ view person_menu() {
     let me = if layout.person != "" { layout.person } else { "You" }
     let face = if layout.person != "" { workspace.me } else { person("You") }
     ui.MenuButton("{me}: style and workspaces", faces: [face], role: .bar) {
-        for style in device.styles.offered {
+        for style in styles.installed.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {
                     on choose: show_style(v, style.style)

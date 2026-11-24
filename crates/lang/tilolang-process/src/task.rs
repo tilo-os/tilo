@@ -1251,14 +1251,14 @@ mod tests {
 
         phase a_program_reads_the_reading_the_session_publishes;
         {
-            // A resource the session publishes itself (the device's styles) is read within the
+            // A resource the session publishes itself (the styles it shows) is read within the
             // program: the host asks its API for the newest reading, and goes on with it, so one
             // call reads the style ids and may switch the style itself.
             let (task, _reader, api) = task();
             let calls = scripted(&api, |message| match message.get("reading") {
                 Some(reading) => {
-                    assert_eq!(reading["app"], "so.tilo.device", "{message:#}");
-                    assert_eq!(reading["resource"], "session:styles", "{message:#}");
+                    assert_eq!(reading["app"], "tilo.styles", "{message:#}");
+                    assert_eq!(reading["resource"], "tilo.styles", "{message:#}");
                     json!({"ok": {"reading": {"offered": [
                         {"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
                          "name": "strips", "line": "The strips", "loads": true, "reason": ""},
@@ -1268,7 +1268,7 @@ mod tests {
             });
             let answer = ran(
                 &task,
-                "for s in device.styles.offered {\n    print(s.style)\n}",
+                "for s in styles.installed.offered {\n    print(s.style)\n}",
             );
             assert_eq!(answer["state"], "done", "{answer:#}");
             assert_eq!(
@@ -1281,8 +1281,8 @@ mod tests {
             assert_eq!(
                 calls,
                 [json!({"reading": {
-                    "app": "so.tilo.device",
-                    "resource": "session:styles",
+                    "app": "tilo.styles",
+                    "resource": "tilo.styles",
                     "type": "Styles",
                 }})],
                 "the reading asked for once, and nothing else: {calls:#?}"
@@ -1291,7 +1291,7 @@ mod tests {
 
         phase a_read_of_a_reading_shows_its_fields;
         {
-            // `read(device.styles)` of a resource the session publishes itself is the reading's
+            // `read(styles.installed)` of a resource the session publishes itself is the reading's
             // fields, as a view of it reads them: no app is asked, and no record is read.
             let (task, _reader, api) = task();
             let calls = scripted(&api, |message| match message.get("reading") {
@@ -1301,11 +1301,11 @@ mod tests {
                 ]}}}),
                 None => json!({"err": format!("the API is asked only for a reading: {message}")}),
             });
-            let answer = ran(&task, "read(device.styles)");
+            let answer = ran(&task, "read(styles.installed)");
             assert_eq!(answer["state"], "done", "{answer:#}");
             let text = answer["output"][0].as_str().unwrap_or_default().to_owned();
             assert!(
-                text.contains(".offered") && text.contains("session:styles.offered.0"),
+                text.contains(".offered") && text.contains("tilo.styles.offered.0"),
                 "the reading's field is read as the view reads it: {text}"
             );
             closed(&api);

@@ -94,6 +94,9 @@ pub mod service;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod service_authority;
+/// The styles this device's installed packages offer, as a resource of its person's workspace.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod styles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]

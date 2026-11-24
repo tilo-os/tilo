@@ -1588,9 +1588,9 @@ fn the_shells_preset_reaches_the_screen() {
     );
 }
 
-/// The shell styles arrive on a reading the shell draws after its first frame, as the session
-/// publishes them once its store is read: the switch re-runs when the styles' collection moves,
-/// and offers them without a restart (shell.md §6).
+/// The shell styles arrive on a reading the shell draws after its first frame, as the device's
+/// daemon publishes them once it read its store: the switch re-runs when the styles' collection
+/// moves, and offers them without a restart (shell.md §6).
 #[test]
 fn the_style_switch_lists_the_styles_a_later_reading_carries() {
     let (mut part, link) = super::tests_support::part_as(reading(), None);

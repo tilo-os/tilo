@@ -20,20 +20,21 @@ use crate::common::Api;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
-const PERSON: &str = "Pat";
 
 fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
-        person: PERSON.to_owned(),
         ..Options::default()
     }
 }
 
+/// A session as the shell of a device daemon of the test's own: the styles it lists are the ones
+/// the daemon publishes from the device's store.
 fn session() -> Session {
-    let mut session =
-        Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-            .expect("session");
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        options(),
+    );
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,

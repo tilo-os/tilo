@@ -283,7 +283,7 @@ impl TaskSession {
         });
         // A program that reads a resource the session publishes rather than an app's record (the
         // device's sound, the session's windows, Settings' sections) is handed its newest reading
-        // there and then, so one `tilo` call reads `device.styles.offered` and switches the style
+        // there and then, so one `tilo` call reads `styles.installed.offered` and switches the style
         // in the same program. The readings are the ones the shell's own parts are given, so a
         // resource reads the same here as there.
         let reading_of = Rc::clone(api);

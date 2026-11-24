@@ -68,6 +68,8 @@ pub mod services;
 #[cfg(unix)]
 mod shell;
 pub mod shortcuts;
+#[cfg(not(windows))]
+mod styles;
 pub(crate) mod signing;
 pub mod take_work;
 #[cfg(target_os = "linux")]

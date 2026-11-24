@@ -704,4 +704,8 @@ pub struct Session {
     /// its wait, by the key the controller source gave each.
     #[cfg(target_os = "linux")]
     pub(crate) controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
+    /// The test's daemon this session is the shell of ([`crate::Options::shell_daemon`]): the
+    /// last field, so it ends after everything of the session that reaches it.
+    #[cfg(unix)]
+    pub(crate) shell_daemon: Option<Box<dyn std::any::Any>>,
 }

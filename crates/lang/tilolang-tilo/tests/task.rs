@@ -83,13 +83,13 @@ fn seeded() -> Task {
 }
 
 /// A program reads a resource the session publishes rather than one of an app's records — the
-/// device's styles here, as `device.styles` — in the same call it runs: the API answers the
+/// device's styles here, as `styles.installed` — in the same call it runs: the API answers the
 /// reading the session's services publish, and the program goes on with it (the style ids a
 /// person may switch to).
 #[test]
 fn a_program_reads_the_reading_the_session_publishes() {
     let task = task(Vec::new());
-    let published = "session:styles";
+    let published = "tilo.styles";
     task.api.readings.borrow_mut().insert(
         published.to_owned(),
         json!({
@@ -101,13 +101,13 @@ fn a_program_reads_the_reading_the_session_publishes() {
             ],
         }),
     );
-    let said = task.said("for s in device.styles.offered { print(s.style) }");
+    let said = task.said("for s in styles.installed.offered { print(s.style) }");
     assert_eq!(said, "so.tilo.shell:strips", "{said}");
     // One call: the reading was asked for, and it was asked for once.
     let asked = task.api.read_for.borrow().clone();
     assert_eq!(
         asked,
-        [("so.tilo.device".to_owned(), published.to_owned())],
+        [("tilo.styles".to_owned(), published.to_owned())],
         "the reading asked of the session once, within the program"
     );
     assert!(
@@ -115,7 +115,7 @@ fn a_program_reads_the_reading_the_session_publishes() {
         "nothing an app does: a reading is read"
     );
     // A second program asks again: what the session publishes may have moved.
-    let again = task.said("print(device.styles.offered.len())");
+    let again = task.said("print(styles.installed.offered.len())");
     assert_eq!(again, "2", "{again}");
     assert_eq!(
         task.api.read_for.borrow().len(),

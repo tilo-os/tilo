@@ -44,6 +44,12 @@ pub const VISION_APP: &str = "so.tilo.vision";
 /// follows from the workspace ([`platform_listings`]).
 pub const INVOCATIONS_APP: &str = tilo_actions::remote::workspace_invocations::PROVIDER;
 
+/// The app the styles the device's installed packages offer are read from: `use tilo.styles as
+/// styles`, then `styles.installed.offered`. The device publishes them in its person's own
+/// workspace, at this app (`tilo_workspace_service::styles::STYLES_APP`).
+pub const STYLES_APP: &str = "tilo.styles";
+const STYLES_ROOTS: &[(&str, &str, &str)] = &[("installed", "Styles", STYLES_APP)];
+
 /// The app the session's own resources are described as: `use so.tilo.session`.
 pub const SESSION_APP: &str = "so.tilo.session";
 /// The app a part of the shell is drawn as: `use desktop as desktop` reads the window menu's
@@ -96,7 +102,6 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("windows", "Windows", "session:windows"),
     ("tray", "Tray", "session:tray"),
     ("agents", "Agents", "session:agents"),
-    ("styles", "Styles", "session:styles"),
     ("folders", "Folders", "session:folders"),
     ("live", "Live", "session:live"),
     ("search", "Search", "session:search"),
@@ -334,6 +339,18 @@ const PUBLISHED: &[Published] = &[
         roots: &[],
         files: &[include_str!(
             "../../../desktop/session/window-menu-surface.toml"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: STYLES_APP,
+        title: "Styles",
+        kinds: &[],
+        roots: STYLES_ROOTS,
+        // What the styles read as, written beside the type the device publishes them as.
+        files: &[include_str!(
+            "../../../core/tilo-workspace-service/styles-surface.json"
         )],
         described: false,
         listed: &[],

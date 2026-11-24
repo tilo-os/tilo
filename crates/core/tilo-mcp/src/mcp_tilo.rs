@@ -15,7 +15,7 @@
 //!   sound, its power, the session's windows and styles, Settings' sections) is read from the
 //!   newest reading its service publishes, through the same record API
 //!   ([`tilo_actions::remote::ResourceReads::read`]): the shell's parts read the same ones, so
-//!   `device.styles.offered` is a program's to read;
+//!   `styles.installed.offered` is a program's to read;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -1739,7 +1739,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// type}`), through the same record API a program reads an app's record by
     /// ([`tilo_actions::remote::ResourceReads::read`]): `{"ok": {"reading": …}}`, `{"none": true}`
     /// for a resource no service publishes, or `{"err": why}`. Taken at once, so the program
-    /// reading it goes on within the same call: `device.styles.offered`, `device.time.clock`, the
+    /// reading it goes on within the same call: `styles.installed.offered`, `device.time.clock`, the
     /// session's windows and Settings' sections are read this way, and by the shell's parts too,
     /// so one reading serves every reader.
     async fn task_reading(&self, reading: &Value) -> Value {

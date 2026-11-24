@@ -114,7 +114,6 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::windows_surface(),
         crate::device_lists::tray_surface(),
         crate::device_lists::agents_surface(),
-        crate::device_lists::styles_surface(),
         crate::device_lists::folders_surface(),
         crate::device_lists::search_surface(),
         crate::device_lists::launchpad_surface(),
@@ -175,6 +174,8 @@ pub(crate) struct Shell {
     /// style that failed to load and was reinstalled fixed has the same package id and needs
     /// its new module sent (`shell.md` §6).
     republish: bool,
+    /// The revision of the device's styles the shell last followed ([`Self::follow_styles`]).
+    styles_seen: Option<u64>,
     /// How many of the session's turns read some of them: what the views composed in places waited
     /// on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
@@ -295,6 +296,7 @@ impl Shell {
             listings: std::collections::BTreeMap::new(),
             needed: std::collections::BTreeSet::new(),
             republish: false,
+            styles_seen: None,
             rounds: 0,
             record_kept: record,
             parts: Vec::new(),
@@ -310,9 +312,9 @@ impl Shell {
         };
         shell.person = shell.lists.person.clone();
         shell.follow_outputs(compositor, surfaces, &[]);
-        // The styles every installed package offers, before the first frame draws the
-        // switch: a shell that starts already knows what its person may pick (shell.md §6).
-        shell.refresh_styles();
+        // The styles the device offers, as far as the daemon said yet: the switch lists them as
+        // they arrive (shell.md §6).
+        shell.follow_styles();
         shell.follow_deadline(None);
         tilo_startup_metrics::mark("shell-build-done");
         Ok(shell)
@@ -761,75 +763,26 @@ impl Shell {
         self.link.publish_asking(questions);
     }
 
-    /// Read the styles every installed package offers, when the person's package store
-    /// moved: a style the person or their agent installed is offered by the switch without a
-    /// restart (`shell.md` §6). The shell's own package's styles — the four that ship — always
-    /// stand, from the package the shell runs, so the switch offers them even where the store
-    /// holds nothing (the built-in fallback shell). Cheap when nothing was installed, which is
-    /// what every frame runs.
-    pub(crate) fn refresh_styles(&mut self) {
-        // The shell's own styles, from the package it runs: the four that ship are its views.
-        let Ok(catalog) = package_store::Catalog::from_env() else {
-            let own = crate::styles::of_shell(&self.packages);
-            let mut styles = self.lists.styles.borrow_mut();
-            styles.list = own;
-            styles.revision = styles.revision.saturating_add(1);
+    /// Follow the styles the device's daemon publishes (`shell.md` §6): when they moved — a
+    /// package installed, reinstalled or taken away — every style package is published to the
+    /// shell's parts again, so a style that failed and was reinstalled fixed draws again with no
+    /// restart, and what failed in this session is cleared: the shell must draw a style again to
+    /// learn whether it is fixed, and a store that moved is the only news the session gets of a
+    /// reinstall. Cheap when nothing moved, which is what every frame runs.
+    pub(crate) fn follow_styles(&mut self) {
+        let revision = self.lists.styles.revision();
+        if self.styles_seen.replace(revision) == Some(revision) {
             return;
-        };
-        let now = crate::styles::registry(&catalog);
-        {
-            let mut styles = self.lists.styles.borrow_mut();
-            let former = styles.registry.as_ref();
-            if former == Some(&now) {
-                return;
-            }
-            // The store is read on every frame, so what the log says of it is said to the frame
-            // that found it changed: the warning when it starts, and the line that it reads again
-            // when it recovers, rather than the same line thousands of times a second.
-            match crate::styles::news(former, &now) {
-                Some(crate::styles::News::Unreadable(why)) => {
-                    tracing::warn!(
-                        error = %why,
-                        "the app store's registry does not read; its styles wait"
-                    );
-                }
-                Some(crate::styles::News::ReadsAgain) => {
-                    tracing::info!("the app store's registry reads again; its styles are read");
-                }
-                None => {}
-            }
-            styles.registry = Some(now);
         }
-        // A package installed or taken away is published again, so a style that failed and was
-        // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
-        // cleared too: the shell must draw it again for its view to run and tell whether it is
-        // fixed, and a store that moved is the only news the session gets of a reinstall.
         self.republish = true;
-        for style in crate::styles::installed(&catalog, &self.packages) {
+        for style in self.lists.styles.get().offered {
             // The shell's own package is the one the part already runs, never one loaded
             // beside itself.
             if style.package != tilo_session_core::shell::SHELL_APP {
-                self.needed.insert(style.package.clone());
+                self.needed.insert(style.package);
             }
         }
-        for entry in &mut self.lists.styles.borrow_mut().list {
-            if !entry.loads {
-                entry.loads = true;
-                entry.reason.clear();
-            }
-        }
-        // The store's styles, the shell's own among them when the store holds the shell: each
-        // package's styles are offered once, the shell's own from the package the shell runs.
-        let own = crate::styles::of_shell(&self.packages);
-        let mut list = crate::styles::installed(&catalog, &self.packages);
-        for style in own {
-            if !list.iter().any(|s| s.style == style.style) {
-                list.push(style);
-            }
-        }
-        let mut styles = self.lists.styles.borrow_mut();
-        styles.list = list;
-        styles.revision = styles.revision.saturating_add(1);
+        self.lists.failed_styles.borrow_mut().recover(|_| true);
     }
 
     /// The link the session publishes the shell on and the shell asks through: what a test stages a
@@ -866,22 +819,12 @@ impl Shell {
     /// (`shell.md` §6). `app` is the app whose failure ended, and `style` the call's view when
     /// one names it (`app:view`).
     pub(crate) fn note_style_recovered(&self, app: &str, style: Option<&str>) {
-        let mut styles = self.lists.styles.borrow_mut();
-        let mut moved = false;
-        for entry in &mut styles.list {
-            let of_app = entry.package == app;
-            let named = style.is_some_and(|style| {
-                entry.style == format!("{app}:{style}") || entry.style == style
-            });
-            if (of_app || named) && !entry.loads {
-                entry.loads = true;
-                entry.reason.clear();
-                moved = true;
-            }
-        }
-        if moved {
-            styles.revision = styles.revision.saturating_add(1);
-        }
+        let named = style.map(|style| format!("{app}:{style}"));
+        self.lists.failed_styles.borrow_mut().recover(|failed| {
+            failed.split_once(':').map(|(package, _)| package) == Some(app)
+                || named.as_deref() == Some(failed)
+                || style == Some(failed)
+        });
     }
 
     /// A style the person chose could not be shown: its entry says so with `failure`'s reason,
@@ -902,23 +845,25 @@ impl Shell {
         } else {
             format!("{}:{}", failure.app, failure.view)
         };
-        let mut styles = self.lists.styles.borrow_mut();
-        let Some(found) = styles.list.iter_mut().find(|s| s.style == style) else {
+        let offered = self.lists.styles.get().offered;
+        let Some(found) = offered.iter().find(|s| s.style == style) else {
             // A view that is no style failed some other way (a place's own view): the
             // shell has nothing to say of it.
             return None;
         };
-        if !found.loads && found.reason == failure.reason {
+        if !self
+            .lists
+            .failed_styles
+            .borrow_mut()
+            .fail(&style, &failure.reason)
+        {
             return None;
         }
-        found.loads = false;
-        found.reason.clone_from(&failure.reason);
         let name = if found.line.is_empty() {
             found.name.clone()
         } else {
             found.line.clone()
         };
-        styles.revision = styles.revision.saturating_add(1);
         Some(crate::notices::style_failed_notice(&name, &failure.reason))
     }
 
@@ -1062,21 +1007,17 @@ impl Shell {
             return;
         }
         // The documents their workspace holds that this device has none of yet: a shell arranged
-        // on another device, which this one has not drawn.
-        let prefix = format!("{}/", self.record_kept.id());
+        // on another device, or changed by the device's dispatch (an agent's `show-style`, a
+        // press on a desktop page), which this one has not drawn. Each is named there as the
+        // store names it here.
         let mut docs: std::collections::BTreeSet<String> =
             own.iter().map(|(doc, _)| doc.clone()).collect();
-        docs.extend(
-            store
-                .documents(app)
-                .into_iter()
-                .filter_map(|id| id.strip_prefix(&prefix).map(str::to_owned)),
-        );
+        docs.extend(store.documents(app));
         for doc in &docs {
-            let id = format!("{prefix}{doc}");
+            let id = doc.as_str();
             // What another device of theirs wrote since the last look is taken in first, so what
             // this device writes next carries it rather than opening a rival branch.
-            let theirs = store.document((app, &id));
+            let theirs = store.document((app, id));
             if let Some(bytes) = &theirs {
                 self.record_kept.take_in(doc, bytes);
             }
@@ -1085,7 +1026,7 @@ impl Shell {
             };
             // What this device arranged of the document, merged into what their workspace holds
             // of it: the ops it already has leave nothing pending, and nothing is written.
-            store.edit_document((app, &id), move |document| {
+            store.edit_document((app, id), move |document| {
                 let mut source =
                     automerge::AutoCommit::load(&whole).map_err(|error| error.to_string())?;
                 tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
@@ -1943,10 +1884,9 @@ impl crate::Session {
                     body,
                 ));
         }
-        // The styles every installed package offers: read when the store moved, so a
-        // style a person or their agent installed is offered without a restart (shell.md §6).
-        // Read before the shell is published, so the reading carries the list.
-        shell.refresh_styles();
+        // The styles the device offers, followed as its daemon publishes them, so a style a
+        // person or their agent installed is offered without a restart (shell.md §6).
+        shell.follow_styles();
         // What the shell's views could not show — a style package that did not load, a view
         // that failed — so the shell says so and the person's choice is kept: a style that
         // cannot load shows the built-in strips until it is fixed (shell.md §6, "Nothing can

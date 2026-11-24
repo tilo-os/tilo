@@ -127,7 +127,7 @@ view style_settings_body() {
             frames_style_settings(s)
         } else if chosen == "so.tilo.shell:frameless" {
             frameless_style_settings(s)
-        } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
+        } else if let declared = styles.installed.offered.find(x -> x.style == chosen) {
             // A style another package declares: its own settings are its own document's, which the
             // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
             // way: by declaring actions on its own document"). Its description stands here, and

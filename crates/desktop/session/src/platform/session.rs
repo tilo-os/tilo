@@ -359,6 +359,7 @@ impl Session {
         // The shell link the device's daemon handed this session when it started it: the
         // session's own reads and writes go there, the workspace resources it shows itself are
         // followed there, and its apps are vouched for on it.
+        let shell_daemon = options.shell_daemon.take();
         let daemon_link = tilo_session_client::daemon_documents::inherited_link(
             options.shell_link.take(),
             tilo_rt::app().handle(),
@@ -465,6 +466,13 @@ impl Session {
         let folders = crate::followed_resource::FollowedReading::follow(
             &daemon,
             (&own_workspace, tilo_workspace_service::files::FOLDERS_APP),
+            options.wake.handle(),
+        );
+        // The styles the device's installed packages offer, as its daemon publishes them: what
+        // the person's switch lists, moving when a package is installed or taken away.
+        let styles = crate::followed_resource::FollowedReading::follow(
+            &daemon,
+            (&own_workspace, tilo_workspace_service::styles::STYLES_APP),
             options.wake.handle(),
         );
         // The agents each workspace keeps, followed where the workspace keeps them.
@@ -1003,6 +1011,7 @@ impl Session {
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
             folders: folders.clone(),
+            styles,
             lists: options.lists.clone(),
         });
         let shell_service = shell();
@@ -2055,6 +2064,7 @@ impl Session {
                 .take()
                 .map(crate::controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
+            shell_daemon,
             origins: crate::connectors::Reached::default(),
         };
         session.watch_sockets()?;

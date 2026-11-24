@@ -183,6 +183,11 @@ pub struct Options {
     /// the daemon started reads from `TILO_SHELL_FD` instead. `None`: that one.
     #[cfg(unix)]
     pub shell_link: Option<std::os::fd::OwnedFd>,
+    /// What keeps the daemon that made [`Self::shell_link`] running, ended only after the session
+    /// is: a test's daemon in its own process, with the profile it serves. `None` for a session
+    /// the daemon started.
+    #[cfg(unix)]
+    pub shell_daemon: Option<Box<dyn std::any::Any>>,
 }
 
 /// Which machine a session draws on.
@@ -432,6 +437,8 @@ impl Default for Options {
             drives: None,
             #[cfg(unix)]
             shell_link: None,
+            #[cfg(unix)]
+            shell_daemon: None,
         }
     }
 }
