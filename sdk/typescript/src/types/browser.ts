@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@5397115c7e87a460";
+export const SURFACE = "so.tilo.browser@a85c1e83f1c420ff";
 
 /** The arguments of `remove_bookmark`. */
 export interface RemoveBookmarkArgs {
@@ -85,6 +85,14 @@ export interface RememberFullscreenArgs {
   fullscreen: boolean;
 }
 
+/** The arguments of `note_print`. */
+export interface NotePrintArgs {
+  ok: boolean;
+  path: string;
+  name: string;
+  message: string;
+}
+
 /** The arguments of `float_page_video`. */
 export interface FloatPageVideoArgs {
   floating?: boolean;
@@ -102,6 +110,23 @@ export interface NoteExtensionArgs {
   kind: string;
   message: string;
   id: string;
+}
+
+/** The arguments of `remember_panel`. */
+export interface RememberPanelArgs {
+  open: boolean;
+  kind: string;
+  id: string;
+  url: string;
+  interactive: boolean;
+}
+
+/** The arguments of `remember_omnibox`. */
+export interface RememberOmniboxArgs {
+  id: string;
+  name: string;
+  text: string;
+  rows: string;
 }
 
 /** The arguments of `note_extension_updates`. */
@@ -393,8 +418,11 @@ export interface Page extends tilo.Resource {
   jbnzv4tj: Array<tilo.Entry<LoginAccount>>;  // login_accounts
   jz6xwcus: string;  // capture
   wqz44fsx: string;  // login_notice
+  ylu3tat4: string;  // print_notice
   a45urcsf: Array<tilo.Entry<PageButton>>;  // buttons
   "3wa3bkzu": Array<tilo.Entry<ExtensionNotice>>;  // notices
+  mbgqkffs: Panel | null;  // panel
+  osrvi5lh: Omnibox | null;  // omnibox
   ctm6ma5g: Array<tilo.Entry<HistoryEntry>>;  // back
   znzxwmxa: Array<tilo.Entry<HistoryEntry>>;  // forward
   eiqyiw53: boolean;  // loading
@@ -582,6 +610,14 @@ export interface Page extends tilo.Resource {
   navigate(args: {
     url: string;
   }): Promise<Answer>;
+  /** What Enter in the address does: what follows an extension's keyword goes to the extension, which hears of it and goes where it sends the page; anything else is an address to go to. */
+  submit_address(args: {
+    typed: string;
+  }): Promise<Answer>;
+  /** The person chose one of the rows under the address: the extension hears what it stands for. */
+  choose_omnibox(args: {
+    content: string;
+  }): Promise<Answer>;
   /** Go back to the page before this one. */
   back(): Promise<Answer>;
   /** Go forward to the page this one followed. */
@@ -655,6 +691,17 @@ export interface Page extends tilo.Resource {
   cancel_all_downloads(): Promise<Answer>;
   /** Opens the engine's developer tools for this page: its console, its elements and its network. */
   developer_tools(): Promise<Answer>;
+  /** Writes the page as a PDF and hands it to Print Centre, where the person chooses the printer and how it prints. The engine answers with the file once it has written it; a page with nothing open has nothing to print. */
+  print_page(): Promise<Answer>;
+  /** Hands the PDF the engine wrote to Print Centre, through its own action, so the person chooses the printer and how it prints there; the copy the engine wrote goes. The window raises it once the engine is done; a person, agent or script never does. */
+  note_print(args: {
+    ok: boolean;
+    path: string;
+    name: string;
+    message: string;
+  }): Promise<void>;
+  /** Runs `note_print` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  note_printMany(items: NotePrintArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Silences the page's sound, or lets it play again. */
   mute(args?: {
     muted?: boolean;
@@ -764,6 +811,41 @@ export interface Page extends tilo.Resource {
   }): Promise<void>;
   /** Runs `note_extension` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   note_extensionMany(items: NoteExtensionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the extension for its side panel beside the page: its own page says what the panel shows, and the page's window shows it there. */
+  open_side_panel(args: {
+    e: Extension;
+  }): Promise<Answer>;
+  /** Closes the extension's page the page's window showed beside or over this one: its side panel, or the page it asked the person to sign in on, which ends as turned down. */
+  close_panel(): Promise<Answer>;
+  /** Writes the extension's page the page's window shows beside this one into its record, or takes it away. The window raises it; a person, agent or script never does. */
+  remember_panel(args: {
+    open: boolean;
+    kind: string;
+    id: string;
+    url: string;
+    interactive: boolean;
+  }): Promise<void>;
+  /** Runs `remember_panel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remember_panelMany(items: RememberPanelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes the extension the address addresses, and the rows it offers, into the page's record; an empty identifier takes them away, since the address no longer addresses one. The window raises it; a person, agent or script never does. */
+  remember_omnibox(args: {
+    id: string;
+    name: string;
+    text: string;
+    rows: string;
+  }): Promise<void>;
+  /** Runs `remember_omnibox` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remember_omniboxMany(items: RememberOmniboxArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** What the person typed in the page's address: when it starts with an extension's keyword and a space, what follows is the extension's, which hears of each change. */
+  typed_address(args: {
+    typed: string;
+  }): Promise<Answer>;
+  /** The person left the address without Enter: the extension hears of it. */
+  address_left(): Promise<Answer>;
+  /** The person pressed Enter, or chose one of the rows: the extension hears what it was given. */
+  enter_omnibox(args: {
+    text: string;
+  }): Promise<Answer>;
   /** Writes what asking the Chrome Web Store for newer versions came to, in the person's words. The window raises it; a person, agent or script never does. */
   note_extension_updates(args: {
     checked: number;
@@ -842,7 +924,7 @@ export interface Page extends tilo.Resource {
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "print_page", "note_print", "note_printMany", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "open_side_panel", "close_panel", "remember_panel", "remember_panelMany", "remember_omnibox", "remember_omniboxMany", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {
@@ -1040,6 +1122,71 @@ export function extensionNotice(ws: tilo.Workspace, path: string): ExtensionNoti
   return resourceProxy(ws, path, SURFACE, EXTENSIONNOTICE_ACTIONS) as unknown as ExtensionNotice;
 }
 
+/** Panel — `tl.so.tilo.browser.Panel`. */
+export interface Panel extends tilo.Resource {
+  "52ms3sap": string;  // kind
+  sgn42dz6: string;  // ext
+  uzhylkwp: string;  // url
+  "6vgotm2u": boolean;  // interactive
+}
+
+/** The actions `Panel` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PANEL_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.Panel` kind at `path`. */
+export function panel(ws: tilo.Workspace, path: string): Panel {
+  return resourceProxy(ws, path, SURFACE, PANEL_ACTIONS) as unknown as Panel;
+}
+
+/** Omnibox — `tl.so.tilo.browser.Omnibox`. */
+export interface Omnibox extends tilo.Resource {
+  yf5tqm24: string;  // ext
+  h6pi6u6y: string;  // name
+  tzxibbua: string;  // text
+  oaxzyzwj: OmniboxRow[];  // rows
+}
+
+/** The actions `Omnibox` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OMNIBOX_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.Omnibox` kind at `path`. */
+export function omnibox(ws: tilo.Workspace, path: string): Omnibox {
+  return resourceProxy(ws, path, SURFACE, OMNIBOX_ACTIONS) as unknown as Omnibox;
+}
+
+/** OmniboxRow — `tl.so.tilo.browser.OmniboxRow`. */
+export interface OmniboxRow extends tilo.Resource {
+  wdpe6rh5: string;  // title
+  d662kmwa: string;  // content
+}
+
+/** The actions `OmniboxRow` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OMNIBOXROW_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.OmniboxRow` kind at `path`. */
+export function omniboxRow(ws: tilo.Workspace, path: string): OmniboxRow {
+  return resourceProxy(ws, path, SURFACE, OMNIBOXROW_ACTIONS) as unknown as OmniboxRow;
+}
+
+/** Addressed — `tl.so.tilo.browser.Addressed`. */
+export interface Addressed extends tilo.Resource {
+  mkrajvka: string;  // ext
+  "7sy22uee": string;  // name
+  mcydjsg5: string;  // text
+}
+
+/** The actions `Addressed` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ADDRESSED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.Addressed` kind at `path`. */
+export function addressed(ws: tilo.Workspace, path: string): Addressed {
+  return resourceProxy(ws, path, SURFACE, ADDRESSED_ACTIONS) as unknown as Addressed;
+}
+
 /** Extension — `tl.so.tilo.browser.Extension`. */
 export interface Extension extends tilo.Resource {
   iymjskx5: string;  // key
@@ -1049,6 +1196,8 @@ export interface Extension extends tilo.Resource {
   iaycfmmk: string;  // description
   kkeg7wgf: string;  // permissions
   "372chbvw": boolean;  // enabled
+  pqaac6ny: string;  // keyword
+  amvgds6o: boolean;  // side_panel
 }
 
 /** The actions `Extension` reaches before it is read: `ws` calls them without a
@@ -1116,6 +1265,7 @@ export interface Ask extends tilo.Resource {
   oerj5bdj: string | null;  // file
   xic2qsit: string | null;  // item
   "5px2ripq": string | null;  // extension
+  d7deek3g: string | null;  // rest
   xtjgu4pr: string | null;  // notification
   lqvkggvx: number | null;  // level
   zroiv7hs: string[] | null;  // values

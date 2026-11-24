@@ -30,8 +30,11 @@ __all__ = [
     "Conversations",
     "Category",
     "VoiceChannel",
+    "Hearing",
+    "Heard",
     "TextChannel",
     "OutsideAuthor",
+    "LiveShare",
     "OutsideEmoji",
     "Message",
     "ChatReport",
@@ -57,6 +60,8 @@ __all__ = [
     "VoiceChannelBridgeArgs",
     "VoiceChannelUnbridgeArgs",
     "RenameVoiceChannelArgs",
+    "SetHearingArgs",
+    "SilenceArgs",
     "TextChannelBridgeArgs",
     "TextChannelUnbridgeArgs",
     "SummarizeArgs",
@@ -67,12 +72,14 @@ __all__ = [
     "EditBlockArgs",
     "InsertBlockArgs",
     "DeleteBlockArgs",
+    "SetShareAccessArgs",
+    "StopSharingArgs",
     "RelayReactionArgs",
     "PinArgs",
     "ReactArgs",
     "DecideArgs",
-    "OverturnArgs",
     "ThreadSummarizeArgs",
+    "ArchiveThreadArgs",
     "ThreadDeleteArgs",
     "DirectBridgeArgs",
     "DirectUnbridgeArgs",
@@ -89,6 +96,8 @@ __all__ = [
     "DropExampleArgs",
     "AddEmojiArgs",
     "RemoveEmojiArgs",
+    "RenameEmojiArgs",
+    "RenameAnyEmojiArgs",
     "RemoveAnyEmojiArgs",
     "ReportMessageArgs",
     "ReportPersonArgs",
@@ -206,6 +215,18 @@ RenameVoiceChannelArgs = TypedDict("RenameVoiceChannelArgs", {
 })
 """The arguments of `rename_voice_channel`."""
 
+SetHearingArgs = TypedDict("SetHearingArgs", {
+    "who": "str",
+    "percent": "int",
+})
+"""The arguments of `set_hearing`."""
+
+SilenceArgs = TypedDict("SilenceArgs", {
+    "who": "str",
+    "on": NotRequired["bool | None"],
+})
+"""The arguments of `silence`."""
+
 TextChannelBridgeArgs = TypedDict("TextChannelBridgeArgs", {
     "service": "str",
     "outside_id": NotRequired["str | None"],
@@ -258,6 +279,15 @@ DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
 })
 """The arguments of `delete-block`."""
 
+SetShareAccessArgs = TypedDict("SetShareAccessArgs", {
+    "can_edit": "bool",
+})
+"""The arguments of `set_share_access`."""
+
+StopSharingArgs = TypedDict("StopSharingArgs", {
+})
+"""The arguments of `stop_sharing`."""
+
 RelayReactionArgs = TypedDict("RelayReactionArgs", {
     "emoji": "str",
     "persona": "str",
@@ -281,15 +311,15 @@ DecideArgs = TypedDict("DecideArgs", {
 })
 """The arguments of `decide`."""
 
-OverturnArgs = TypedDict("OverturnArgs", {
-    "why": "str",
-})
-"""The arguments of `overturn`."""
-
 ThreadSummarizeArgs = TypedDict("ThreadSummarizeArgs", {
     "summary": "str",
 })
 """The arguments of `summarize`."""
+
+ArchiveThreadArgs = TypedDict("ArchiveThreadArgs", {
+    "archived": NotRequired["bool | None"],
+})
+"""The arguments of `archive_thread`."""
 
 ThreadDeleteArgs = TypedDict("ThreadDeleteArgs", {
     "m": "Message",
@@ -379,6 +409,18 @@ RemoveEmojiArgs = TypedDict("RemoveEmojiArgs", {
 })
 """The arguments of `remove-emoji`."""
 
+RenameEmojiArgs = TypedDict("RenameEmojiArgs", {
+    "name": "str",
+    "to": "str",
+})
+"""The arguments of `rename-emoji`."""
+
+RenameAnyEmojiArgs = TypedDict("RenameAnyEmojiArgs", {
+    "name": "str",
+    "to": "str",
+})
+"""The arguments of `rename-any-emoji`."""
+
 RemoveAnyEmojiArgs = TypedDict("RemoveAnyEmojiArgs", {
     "name": "str",
 })
@@ -413,7 +455,7 @@ OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -474,7 +516,7 @@ class Notice(Resource):
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -629,6 +671,14 @@ class Conversations(Resource):
         """Reports a person to the workspace's moderators, for how they behave here rather than for one message: what the reporter says is the whole of it, and the moderators decide it as any other report."""
         return self.action("report_person", who=who, reason=reason)
 
+    def ban(self,
+        *,
+        who: str,
+        reason: str,
+    ) -> ChatReport:
+        """Bans a person from the workspace: they leave it and stay out until a moderator lifts the ban. The workspace's own ban decides who may, its owners and moderators; Chat keeps the ban on the moderators' Reports page as a decided report, which overturning lifts."""
+        return self.action("ban", who=who, reason=reason)
+
     def ask_for_sub_agent(self,
         *,
         agent: Any,
@@ -643,12 +693,12 @@ class Conversations(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "report_person", "ask_for_sub_agent"})
+    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "report_person", "ban", "ask_for_sub_agent"})
 
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
     @property
@@ -708,7 +758,7 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     olqjezxu: str  # name
     enzjdbyp: str  # service
     nvzanb5n: str  # outside_id
@@ -750,9 +800,55 @@ class VoiceChannel(Resource):
     __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "rename_voice_channel", "rename_voice_channel_many"})
 
 
+class Hearing(Resource):
+    """Hearing — `tl.so.tilo.chat.Hearing`."""
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
+    ua6lm2xh: list[Entry[Heard]]  # people
+
+    def set_hearing(self,
+        *,
+        who: str,
+        percent: int,
+    ) -> None:
+        """Plays `who` in calls on this device at `percent` of as they arrive, and hears them again if they were silenced. Only this device plays them so; nobody else hears a difference."""
+        return self.action("set_hearing", who=who, percent=percent)
+
+    def set_hearing_many(self, items: list[SetHearingArgs]) -> list[dict[str, Any]]:
+        """Runs `set_hearing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_hearing", items)
+
+    def silence(self,
+        *,
+        who: str,
+        on: bool | None = None,
+    ) -> None:
+        """Silences `who` in calls on this device, or hears them again at the level they had. Only this person stops hearing them; everyone else in the call still does."""
+        args: dict[str, Any] = {}
+        args["who"] = who
+        if on is not None:
+            args["on"] = on
+        return self.action("silence", **args)
+
+    def silence_many(self, items: list[SilenceArgs]) -> list[dict[str, Any]]:
+        """Runs `silence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("silence", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_hearing", "set_hearing_many", "silence", "silence_many"})
+
+
+class Heard(Resource):
+    """Heard — `tl.so.tilo.chat.Heard`."""
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
+    a2np4gvd: str  # who
+    u4nfj5zx: int  # percent
+    xtnm4w32: bool  # silenced
+
+
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     fld77g72: str  # summary
@@ -824,6 +920,18 @@ class TextChannel(Resource):
     ) -> Message:
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
         return self.action("send_view", title=title, definition=definition)
+
+    def share_window(self,
+        *,
+        window: str,
+        can_edit: bool | None = None,
+    ) -> Message:
+        """Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it."""
+        args: dict[str, Any] = {}
+        args["window"] = window
+        if can_edit is not None:
+            args["can_edit"] = can_edit
+        return self.action("share_window", **args)
 
     def relay(self,
         *,
@@ -927,12 +1035,12 @@ class TextChannel(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "send", "summarize", "summarize_many", "send_view", "relay", "rename_channel", "rename_channel_many", "set_topic", "set_topic_many", "archive_channel", "archive_channel_many", "continue_answer", "delete", "delete_many", "report", "start_thread"})
+    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "rename_channel", "rename_channel_many", "set_topic", "set_topic_many", "archive_channel", "archive_channel_many", "continue_answer", "delete", "delete_many", "report", "start_thread"})
 
 
 class OutsideAuthor(Resource):
     """OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def _5fxndhc2(self) -> str:
         """name (`5fxndhc2` on the wire)."""
@@ -946,16 +1054,28 @@ class OutsideAuthor(Resource):
     ew25p5fb: str | None  # member
 
 
+class LiveShare(Resource):
+    """LiveShare — `tl.so.tilo.chat.LiveShare`."""
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
+    noscllor: str  # window
+    n4s3rmdn: str  # workspace
+    k535m2ok: str  # title
+    ntg5vyds: str  # app_name
+    dzpk5b7g: str  # icon
+    a4wmd33j: bool  # can_edit
+    jfgns7zp: bool  # ended
+
+
 class OutsideEmoji(Resource):
     """OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     ldtylgfu: str  # name
     jjutyqgx: str  # picture
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -979,6 +1099,14 @@ class Message(Resource):
     t2kepujk: str  # reasoning
     ofad24rc: dict[str, list[str]]  # reactions
     dh6346no: str  # sent_view
+    @property
+    def _4upqznm4(self) -> LiveShare | None:
+        """live_share (`4upqznm4` on the wire)."""
+        return self.fields["4upqznm4"]
+
+    @_4upqznm4.setter
+    def _4upqznm4(self, value: LiveShare | None) -> None:
+        self.edit("4upqznm4", value=value)
     wqxsenb3: OutsideAuthor | None  # outside
     bbu6225x: list[Entry[OutsideEmoji]]  # outside_emoji
     tz5yw5dt: str  # by
@@ -1034,6 +1162,22 @@ class Message(Resource):
         """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-block", items)
 
+    def set_share_access(self, *, can_edit: bool) -> None:
+        """Lets the members viewing a window shared into a conversation control it, or only view it: the shell's share changes, and the message says so."""
+        return self.action("set_share_access", can_edit=can_edit)
+
+    def set_share_access_many(self, items: list[SetShareAccessArgs]) -> list[dict[str, Any]]:
+        """Runs `set_share_access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_share_access", items)
+
+    def stop_sharing(self) -> None:
+        """Stops sharing a window shared into a conversation: the shell's share ends, and the message says the window is no longer shared in its place."""
+        return self.action("stop_sharing")
+
+    def stop_sharing_many(self, items: list[StopSharingArgs]) -> list[dict[str, Any]]:
+        """Runs `stop_sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop_sharing", items)
+
     def relay_reaction(self,
         *,
         emoji: str,
@@ -1083,12 +1227,12 @@ class Message(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "relay_reaction", "relay_reaction_many", "pin", "pin_many", "react", "react_many", "copy_text"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "set_share_access", "set_share_access_many", "stop_sharing", "stop_sharing_many", "relay_reaction", "relay_reaction_many", "pin", "pin_many", "react", "react_many", "copy_text"})
 
 
 class ChatReport(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -1102,6 +1246,14 @@ class ChatReport(Resource):
     def _3oner4zg(self, value: str) -> None:
         self.edit("3oner4zg", value=value)
     maczz6ef: str  # overturned
+    @property
+    def _5gbnohgv(self) -> bool:
+        """banned (`5gbnohgv` on the wire)."""
+        return self.fields["5gbnohgv"]
+
+    @_5gbnohgv.setter
+    def _5gbnohgv(self, value: bool) -> None:
+        self.edit("5gbnohgv", value=value)
 
     def decide(self, *, decision: str) -> None:
         """Settles a report: what a moderator decided about it. A report whose decision was overturned is decided again this way."""
@@ -1112,21 +1264,21 @@ class ChatReport(Resource):
         return self.many("decide", items)
 
     def overturn(self, *, why: str) -> None:
-        """Overturns what was decided about a report, saying why: the report is open again, for a moderator to decide anew, and the decision overturned stays in its history."""
+        """Overturns what was decided about a report, saying why: the report is open again, for a moderator to decide anew, and the decision overturned stays in its history. A ban it decided is lifted, so the person may come back."""
         return self.action("overturn", why=why)
 
-    def overturn_many(self, items: list[OverturnArgs]) -> list[dict[str, Any]]:
-        """Runs `overturn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("overturn", items)
+    def ban_reported(self) -> None:
+        """Settles a report by banning the person it is about from the workspace, as [`ban`] does."""
+        return self.action("ban_reported")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"decide", "decide_many", "overturn", "overturn_many"})
+    __actions__ = frozenset({"decide", "decide_many", "overturn", "ban_reported"})
 
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     xuvfifa5: str  # name
     cv664irm: str  # summary
     ijy454g6: list[Entry[Message]]  # messages
@@ -1178,6 +1330,18 @@ class Thread(Resource):
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
         return self.action("send_view", title=title, definition=definition)
 
+    def share_window(self,
+        *,
+        window: str,
+        can_edit: bool | None = None,
+    ) -> Message:
+        """Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it."""
+        args: dict[str, Any] = {}
+        args["window"] = window
+        if can_edit is not None:
+            args["can_edit"] = can_edit
+        return self.action("share_window", **args)
+
     def relay(self,
         *,
         body: str,
@@ -1212,6 +1376,20 @@ class Thread(Resource):
             args["member"] = member
         return self.action("relay", **args)
 
+    def archive_thread(self,
+        *,
+        archived: bool | None = None,
+    ) -> None:
+        """Sets a thread aside once its talk is done, keeping everything said in it, or reopens it. Its chip says so under the message it started from; a reply in it reopens it. The person who started it or a moderator does this."""
+        args: dict[str, Any] = {}
+        if archived is not None:
+            args["archived"] = archived
+        return self.action("archive_thread", **args)
+
+    def archive_thread_many(self, items: list[ArchiveThreadArgs]) -> list[dict[str, Any]]:
+        """Runs `archive_thread` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("archive_thread", items)
+
     def continue_answer(self, *, m: Message) -> Message:
         """Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out of room, was stopped or broke off is finished this way, not written again from its start."""
         return self.action("continue_answer", m=m)
@@ -1238,12 +1416,12 @@ class Thread(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "summarize", "summarize_many", "send_view", "relay", "continue_answer", "delete", "delete_many", "report"})
+    __actions__ = frozenset({"send", "summarize", "summarize_many", "send_view", "share_window", "relay", "archive_thread", "archive_thread_many", "continue_answer", "delete", "delete_many", "report"})
 
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -1334,6 +1512,18 @@ class Direct(Resource):
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
         return self.action("send_view", title=title, definition=definition)
 
+    def share_window(self,
+        *,
+        window: str,
+        can_edit: bool | None = None,
+    ) -> Message:
+        """Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it."""
+        args: dict[str, Any] = {}
+        args["window"] = window
+        if can_edit is not None:
+            args["can_edit"] = can_edit
+        return self.action("share_window", **args)
+
     def relay(self,
         *,
         body: str,
@@ -1406,12 +1596,12 @@ class Direct(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "unread_count", "send", "summarize", "summarize_many", "send_view", "relay", "continue_answer", "delete", "delete_many", "report", "start_thread"})
+    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "unread_count", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "continue_answer", "delete", "delete_many", "report", "start_thread"})
 
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.chat.Draft`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def _5shwuvrs(self) -> Direct | TextChannel | Thread:
         """conversation (`5shwuvrs` on the wire)."""
@@ -1478,7 +1668,7 @@ class Draft(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -1495,7 +1685,7 @@ class Attached(Resource):
 
 class RelayedReaction(Resource):
     """RelayedReaction — `tl.so.tilo.chat.RelayedReaction`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     r2zcptjt: str  # emoji
     awgtnj33: str  # persona
     hammizbi: str  # by
@@ -1503,7 +1693,7 @@ class RelayedReaction(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -1517,7 +1707,7 @@ class Part(Resource):
 
 class Skill(Resource):
     """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     gfk6pm4a: str  # name
     gnfldsvz: str  # work
     bn3w5doj: str  # how
@@ -1599,7 +1789,7 @@ class Skill(Resource):
 
 class Example(Resource):
     """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     fspydtu6: str  # text
     @property
     def _2u2ngevv(self) -> bool:
@@ -1622,11 +1812,11 @@ class Example(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     emoji: dict[str, Emoji]  # Emoji
 
     def add_emoji(self,
@@ -1649,6 +1839,30 @@ class WorkspaceEmoji(Resource):
         """Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-emoji", items)
 
+    def rename_emoji(self,
+        *,
+        name: str,
+        to: str,
+    ) -> None:
+        """One you added: its picture and who added it stay. Reactions and text that wrote its old `:name:` no longer draw it."""
+        return self.action("rename-emoji", name=name, to=to)
+
+    def rename_emoji_many(self, items: list[RenameEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename-emoji", items)
+
+    def rename_any_emoji(self,
+        *,
+        name: str,
+        to: str,
+    ) -> None:
+        """Someone else's emoji: the workspace's roles decide who may."""
+        return self.action("rename-any-emoji", name=name, to=to)
+
+    def rename_any_emoji_many(self, items: list[RenameAnyEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename-any-emoji", items)
+
     def remove_any_emoji(self, *, name: str) -> None:
         """Someone else's emoji: the workspace's roles decide who may."""
         return self.action("remove-any-emoji", name=name)
@@ -1659,12 +1873,12 @@ class WorkspaceEmoji(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_emoji", "add_emoji_many", "remove_emoji", "remove_emoji_many", "remove_any_emoji", "remove_any_emoji_many"})
+    __actions__ = frozenset({"add_emoji", "add_emoji_many", "remove_emoji", "remove_emoji_many", "rename_emoji", "rename_emoji_many", "rename_any_emoji", "rename_any_emoji_many", "remove_any_emoji", "remove_any_emoji_many"})
 
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    __surface__ = "so.tilo.chat@e8d4764e347966ce"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Reports"""

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@a94aab50a8de42a2";
+export const SURFACE = "so.tilo.pdf-viewer@85261215fd825975";
 
 /** What a mark does on a page. One of "markup", "ink", "note", "text". */
 export type MarkKind = "markup" | "ink" | "note" | "text";
@@ -137,6 +137,20 @@ export interface DeleteCommentArgs {
 export interface DeleteReplyArgs {
   c: Comment;
   r: Reply;
+}
+
+/** The arguments of `move_signature`. */
+export interface MoveSignatureArgs {
+  s: Signature;
+  x: number;
+  y: number;
+}
+
+/** The arguments of `move_placed_signature`. */
+export interface MovePlacedSignatureArgs {
+  p: Page;
+  who: string;
+  at: number[];
 }
 
 /** The arguments of `sign_with_name`. */
@@ -373,6 +387,14 @@ export interface Document extends tilo.Resource {
     colour: string;
     rects: number[];
   }): Promise<Mark>;
+  /** Marks exactly the words a selection covers: the runs of `p` from `first` to `last`, both counted in, as a highlight, an underline, a strikethrough or a squiggle in the colour the reader holds. This is how a person marks lines of text they selected, the way the words are read; dragging a box still marks the words the box covers. */
+  mark_selection(args: {
+    p: Page;
+    style: string;
+    colour: string;
+    first: number;
+    last: number;
+  }): Promise<Mark>;
   /** Draws ink on a page: one list of points a stroke, its points as x and y in turn in fractions of the page's box. */
   draw_ink(args: {
     p: Page;
@@ -476,6 +498,22 @@ export interface Document extends tilo.Resource {
     width?: number;
     height?: number;
   }): Promise<Signature>;
+  /** Puts a placed signature at another point of its page: its top-leading corner as fractions of the page's box. It is a change like any other, so everyone looking sees it move and one undo takes the move back. */
+  move_signature(args: {
+    s: Signature;
+    x: number;
+    y: number;
+  }): Promise<void>;
+  /** Runs `move_signature` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_signatureMany(items: MoveSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves the signature `who` names, as the place over its page reports it: its new corner as whole points of the page. */
+  move_placed_signature(args: {
+    p: Page;
+    who: string;
+    at: number[];
+  }): Promise<void>;
+  /** Runs `move_placed_signature` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_placed_signatureMany(items: MovePlacedSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Signs a page with a typed name, in its lower right corner: for the palette, a script and an agent. */
   sign_with_name(args: {
     p: Page;
@@ -586,7 +624,7 @@ export interface Document extends tilo.Resource {
 
 /** The actions `Document` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOCUMENT_ACTIONS = ["lay_out", "lay_outMany", "read_outline", "read_outlineMany", "read_fields", "read_fieldsMany", "read_page", "read_pageMany", "read_links", "read_linksMany", "show_page", "show_pageMany", "read_next", "read_nextMany", "draw_next", "draw_nextMany", "rotate_page", "rotate_pageMany", "move_page", "move_pageMany", "duplicate_page", "delete_page", "delete_pageMany", "import_pages", "import_pagesMany", "mark_text", "draw_ink", "new_note", "add_note", "add_noteMany", "new_text_box", "write_mark", "write_markMany", "move_mark", "move_markMany", "recolour", "recolourMany", "delete_mark", "delete_markMany", "comment_on", "reply", "resolve_comment", "resolve_commentMany", "edit_comment", "edit_commentMany", "delete_comment", "delete_commentMany", "delete_reply", "delete_replyMany", "place_signature", "sign_with_name", "sign_with_nameMany", "delete_signature", "delete_signatureMany", "fill_field", "fill_fieldMany", "choose_field", "choose_fieldMany", "check_field", "check_fieldMany", "remember_reading", "remember_readingMany", "adopt_markup", "adopt_markupMany", "find_in", "copy_selected", "copy_page", "save_copy", "turn_to", "turn_toMany", "reorder", "reorderMany", "import_after", "press", "pressMany", "release", "releaseMany", "speak"] as const;
+export const DOCUMENT_ACTIONS = ["lay_out", "lay_outMany", "read_outline", "read_outlineMany", "read_fields", "read_fieldsMany", "read_page", "read_pageMany", "read_links", "read_linksMany", "show_page", "show_pageMany", "read_next", "read_nextMany", "draw_next", "draw_nextMany", "rotate_page", "rotate_pageMany", "move_page", "move_pageMany", "duplicate_page", "delete_page", "delete_pageMany", "import_pages", "import_pagesMany", "mark_text", "mark_selection", "draw_ink", "new_note", "add_note", "add_noteMany", "new_text_box", "write_mark", "write_markMany", "move_mark", "move_markMany", "recolour", "recolourMany", "delete_mark", "delete_markMany", "comment_on", "reply", "resolve_comment", "resolve_commentMany", "edit_comment", "edit_commentMany", "delete_comment", "delete_commentMany", "delete_reply", "delete_replyMany", "place_signature", "move_signature", "move_signatureMany", "move_placed_signature", "move_placed_signatureMany", "sign_with_name", "sign_with_nameMany", "delete_signature", "delete_signatureMany", "fill_field", "fill_fieldMany", "choose_field", "choose_fieldMany", "check_field", "check_fieldMany", "remember_reading", "remember_readingMany", "adopt_markup", "adopt_markupMany", "find_in", "copy_selected", "copy_page", "save_copy", "turn_to", "turn_toMany", "reorder", "reorderMany", "import_after", "press", "pressMany", "release", "releaseMany", "speak"] as const;
 
 /** The `tl.so.tilo.pdf-viewer.Document` kind at `path`. */
 export function pdfViewerDocument(ws: tilo.Workspace, path: string): Document {

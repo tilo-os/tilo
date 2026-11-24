@@ -57,6 +57,7 @@ __all__ = [
     "ServerProgress",
     "ServerState",
     "Project",
+    "Settings",
     "CodeEditor",
     "SetLanguageArgs",
     "ReplaceTextArgs",
@@ -111,6 +112,9 @@ __all__ = [
     "ToggleLanguageServersArgs",
     "ToggleFormatOnSaveArgs",
     "RestartServerArgs",
+    "ZoomInArgs",
+    "ZoomOutArgs",
+    "ZoomResetArgs",
 ]
 
 EntryKind = Literal["file", "folder"]
@@ -407,9 +411,21 @@ RestartServerArgs = TypedDict("RestartServerArgs", {
 })
 """The arguments of `restart_server`."""
 
+ZoomInArgs = TypedDict("ZoomInArgs", {
+})
+"""The arguments of `zoom_in`."""
+
+ZoomOutArgs = TypedDict("ZoomOutArgs", {
+})
+"""The arguments of `zoom_out`."""
+
+ZoomResetArgs = TypedDict("ZoomResetArgs", {
+})
+"""The arguments of `zoom_reset`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -470,7 +486,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.code-editor.Entry`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     jr3jrrmx: EntryKind  # kind
     wlnikenq: str  # name
     otwgp44c: Entry | None  # parent
@@ -677,7 +693,7 @@ class Entry(Resource):
 
 class Problem(Resource):
     """Problem — `tl.so.tilo.code-editor.Problem`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     nbyucnyk: Severity  # severity
     cg3ctzdq: int  # line
     f5kva2nw: int  # column
@@ -686,7 +702,7 @@ class Problem(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.code-editor.Found`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     hzzanee7: int  # line
     qt6b4p4a: int  # column
     @property
@@ -701,7 +717,7 @@ class Found(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.code-editor.Item`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     gvqsbkfl: ItemKind  # kind
     @property
     def _6zcxi5vb(self) -> str:
@@ -732,7 +748,7 @@ class Item(Resource):
 
 class Command(Resource):
     """Command — `tl.so.tilo.code-editor.Command`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     c4ytwucq: str  # command
     i3avwdem: str  # cwd
     @property
@@ -754,7 +770,7 @@ class Command(Resource):
 
 class Hit(Resource):
     """Hit — `tl.so.tilo.code-editor.Hit`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     bcptqatu: str  # path
     zwn4bgwt: str  # rel
     bgpnyksl: int  # line
@@ -765,7 +781,7 @@ class Hit(Resource):
 
 class Completion(Resource):
     """Completion — `tl.so.tilo.code-editor.Completion`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     qg4m5uwr: str  # label
     xm4myjqj: str  # detail
     kwj5llbq: str  # insert
@@ -773,7 +789,7 @@ class Completion(Resource):
 
 class Location(Resource):
     """Location — `tl.so.tilo.code-editor.Location`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     trhzxars: str  # path
     pu4qmppj: int  # line
     e2bphgrg: int  # column
@@ -781,7 +797,7 @@ class Location(Resource):
 
 class Loaded(Resource):
     """Loaded — `tl.so.tilo.code-editor.Loaded`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     pisboohb: str  # text
     wcz4xfj7: int  # mtime
     jqqoxnpy: int  # len
@@ -789,14 +805,14 @@ class Loaded(Resource):
 
 class Stamped(Resource):
     """Stamped — `tl.so.tilo.code-editor.Stamped`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     fj7hqru4: int  # mtime
     qw5jig3a: int  # len
 
 
 class Exists(Resource):
     """Exists — `tl.so.tilo.code-editor.Exists`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     uvwwyzvs: bool  # exists
     @property
     def _7n6rmzco(self) -> int:
@@ -811,13 +827,13 @@ class Exists(Resource):
 
 class DiskAsk(Resource):
     """DiskAsk — `tl.so.tilo.code-editor.DiskAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     kn6q47ka: str  # path
 
 
 class DiskSave(Resource):
     """DiskSave — `tl.so.tilo.code-editor.DiskSave`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     haepmky3: str  # path
     pwykv2y3: str  # text
     zetzlvco: int  # mtime
@@ -827,7 +843,7 @@ class DiskSave(Resource):
 
 class DiskEntry(Resource):
     """DiskEntry — `tl.so.tilo.code-editor.DiskEntry`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     bfnbknrx: str  # name
     wv4a7ixx: str  # path
     @property
@@ -843,13 +859,13 @@ class DiskEntry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.code-editor.Listing`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     pd7egi2y: list[DiskEntry]  # entries
 
 
 class SearchAsk(Resource):
     """SearchAsk — `tl.so.tilo.code-editor.SearchAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     xkrqnga5: str  # root
     @property
     def _5dkbrhtv(self) -> str:
@@ -865,20 +881,20 @@ class SearchAsk(Resource):
 
 class RunAsk(Resource):
     """RunAsk — `tl.so.tilo.code-editor.RunAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     qhqdbt2f: str  # command
     vqlkdbpf: str  # cwd
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.code-editor.JobAnswer`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     o7kaxwxn: str  # job
 
 
 class SearchState(Resource):
     """SearchState — `tl.so.tilo.code-editor.SearchState`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     zby3g4ps: str  # state
     aqlgsja7: list[Hit]  # hits
     vp2ht5bq: int  # files
@@ -887,7 +903,7 @@ class SearchState(Resource):
 
 class RunState(Resource):
     """RunState — `tl.so.tilo.code-editor.RunState`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     coxzozlk: str  # state
     swqx5bgj: int  # exit
     wsbgo4u6: str  # output
@@ -897,14 +913,14 @@ class RunState(Resource):
 
 class ServerAsk(Resource):
     """ServerAsk — `tl.so.tilo.code-editor.ServerAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     dwxem6ty: str  # language
     fegqdch5: str  # root
 
 
 class DocumentAsk(Resource):
     """DocumentAsk — `tl.so.tilo.code-editor.DocumentAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     jmzsddw6: str  # job
     cimxyukl: str  # path
     u2ozcojk: str  # language
@@ -914,7 +930,7 @@ class DocumentAsk(Resource):
 
 class AskAsk(Resource):
     """AskAsk — `tl.so.tilo.code-editor.AskAsk`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     gxbdmbnd: str  # job
     ysxutqlg: str  # path
     p4m2am32: int  # line
@@ -924,7 +940,7 @@ class AskAsk(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.code-editor.Progress`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     agn2f2db: str  # title
     g7hzlu2h: str  # detail
     whcglspc: int  # percent
@@ -932,7 +948,7 @@ class Progress(Resource):
 
 class Diag(Resource):
     """Diag — `tl.so.tilo.code-editor.Diag`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     ioyqdqpm: str  # severity
     beb3ijea: int  # line
     mev4fmk5: int  # column
@@ -941,28 +957,28 @@ class Diag(Resource):
 
 class CompletionAnswer(Resource):
     """CompletionAnswer — `tl.so.tilo.code-editor.CompletionAnswer`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     z5gkzdtb: str  # what
     xm2tpahh: list[Completion]  # items
 
 
 class HoverAnswer(Resource):
     """HoverAnswer — `tl.so.tilo.code-editor.HoverAnswer`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     jchhxxfm: str  # what
     m4blp7e7: str  # text
 
 
 class DefinitionAnswer(Resource):
     """DefinitionAnswer — `tl.so.tilo.code-editor.DefinitionAnswer`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     qb2osbdn: str  # what
     u57x3dub: list[Location]  # locations
 
 
 class FormatEdit(Resource):
     """FormatEdit — `tl.so.tilo.code-editor.FormatEdit`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     @property
     def _7flc4fke(self) -> int:
         """start (`7flc4fke` on the wire)."""
@@ -979,7 +995,7 @@ class FormatEdit(Resource):
 
 class FormatAnswer(Resource):
     """FormatAnswer — `tl.so.tilo.code-editor.FormatAnswer`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     um2x3bkg: str  # what
     wikls7kq: list[FormatEdit]  # edits
     zke66gso: str  # error
@@ -987,7 +1003,7 @@ class FormatAnswer(Resource):
 
 class ServerProgress(Resource):
     """ServerProgress — `tl.so.tilo.code-editor.ServerProgress`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     b22hm43k: str  # title
     @property
     def _33vetzuz(self) -> str:
@@ -1002,7 +1018,7 @@ class ServerProgress(Resource):
 
 class ServerState(Resource):
     """ServerState — `tl.so.tilo.code-editor.ServerState`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     mxvtycpj: str  # state
     kqcbbx2v: str  # server
     @property
@@ -1020,7 +1036,7 @@ class ServerState(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.code-editor.Project`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
     evbsknez: list[Entry[Entry]]  # files
     inupl3md: list[Entry[Command]]  # commands
     ubr6i22h: str  # folder
@@ -1091,6 +1107,7 @@ class Project(Resource):
     w3quhvl4: bool  # search_truncated
     b5q44glb: list[Found]  # found
     vwrqicgc: str  # trouble
+    qenijz3o: list[Entry[Settings]]  # settings
 
     def new_file(self,
         *,
@@ -1617,12 +1634,58 @@ class Project(Resource):
         """Runs `restart_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("restart_server", items)
 
+    def show_problems(self) -> None:
+        """Shows the file's problems under the code, as the window's own key does anywhere in it."""
+        return self.action("show_problems")
+
+    def show_terminal(self) -> None:
+        """Shows the project's terminal under the code, as Ctrl+J does anywhere in the window."""
+        return self.action("show_terminal")
+
+    def show_search_results(self) -> None:
+        """Shows what the project search found under the code, as Ctrl+Shift+F does anywhere in the window."""
+        return self.action("show_search_results")
+
+    def ensure_settings(self) -> Settings:
+        """This person's settings, made by their own first change so they are theirs to read and write."""
+        return self.action("ensure_settings")
+
+    def zoom_in(self) -> None:
+        """Shows the code one step larger: the editor's own text size, kept for the person on every device."""
+        return self.action("zoom_in")
+
+    def zoom_in_many(self, items: list[ZoomInArgs]) -> list[dict[str, Any]]:
+        """Runs `zoom_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("zoom_in", items)
+
+    def zoom_out(self) -> None:
+        """Shows the code one step smaller."""
+        return self.action("zoom_out")
+
+    def zoom_out_many(self, items: list[ZoomOutArgs]) -> list[dict[str, Any]]:
+        """Runs `zoom_out` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("zoom_out", items)
+
+    def zoom_reset(self) -> None:
+        """Shows the code at its own size again."""
+        return self.action("zoom_reset")
+
+    def zoom_reset_many(self, items: list[ZoomResetArgs]) -> list[dict[str, Any]]:
+        """Runs `zoom_reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("zoom_reset", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_file", "new_folder", "rename", "rename_many", "move_entry", "move_entry_many", "move_after", "move_after_many", "delete", "delete_many", "find_in_window", "find_in_window_many", "check", "check_many", "open_folder", "open_folder_many", "read_into", "read_into_many", "read_folder_into", "read_folder_into_many", "read_text", "read_text_many", "open_file", "open_file_many", "save", "save_many", "write", "overwrite", "overwrite_many", "reload", "reload_many", "save_all", "save_all_many", "save_into", "save_into_many", "move_on_disk", "move_on_disk_many", "import_dropped", "import_dropped_many", "run", "run_many", "stop", "stop_many", "rerun", "rerun_many", "rerun_test", "rerun_test_many", "run_", "run__many", "clear_commands", "clear_commands_many", "open_terminal", "open_terminal_many", "poll", "poll_many", "reveal_item", "reveal_item_many", "go_to_line", "go_to_line_many", "search_project", "search_project_many", "stop_search", "stop_search_many", "open_hit", "open_hit_many", "ensure_server", "ensure_server_many", "announce", "poll_server", "poll_server_many", "read_answer", "read_answer_many", "complete", "complete_many", "hover", "hover_many", "definition", "definition_many", "accept_completion", "accept_completion_many", "format_file", "format_file_many", "toggle_language_servers", "toggle_language_servers_many", "toggle_format_on_save", "toggle_format_on_save_many", "restart_server", "restart_server_many"})
+    __actions__ = frozenset({"new_file", "new_folder", "rename", "rename_many", "move_entry", "move_entry_many", "move_after", "move_after_many", "delete", "delete_many", "find_in_window", "find_in_window_many", "check", "check_many", "open_folder", "open_folder_many", "read_into", "read_into_many", "read_folder_into", "read_folder_into_many", "read_text", "read_text_many", "open_file", "open_file_many", "save", "save_many", "write", "overwrite", "overwrite_many", "reload", "reload_many", "save_all", "save_all_many", "save_into", "save_into_many", "move_on_disk", "move_on_disk_many", "import_dropped", "import_dropped_many", "run", "run_many", "stop", "stop_many", "rerun", "rerun_many", "rerun_test", "rerun_test_many", "run_", "run__many", "clear_commands", "clear_commands_many", "open_terminal", "open_terminal_many", "poll", "poll_many", "reveal_item", "reveal_item_many", "go_to_line", "go_to_line_many", "search_project", "search_project_many", "stop_search", "stop_search_many", "open_hit", "open_hit_many", "ensure_server", "ensure_server_many", "announce", "poll_server", "poll_server_many", "read_answer", "read_answer_many", "complete", "complete_many", "hover", "hover_many", "definition", "definition_many", "accept_completion", "accept_completion_many", "format_file", "format_file_many", "toggle_language_servers", "toggle_language_servers_many", "toggle_format_on_save", "toggle_format_on_save_many", "restart_server", "restart_server_many", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "zoom_reset", "zoom_reset_many"})
+
+
+class Settings(Resource):
+    """Settings — `tl.so.tilo.code-editor.Settings`."""
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    douj4xux: float  # editor_zoom
 
 
 class CodeEditor(Resource):
     """Code Editor — `tl.so.tilo.code-editor`."""
-    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    __surface__ = "so.tilo.code-editor@5305c907565048a5"
 

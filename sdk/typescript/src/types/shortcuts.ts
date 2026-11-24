@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shortcuts@68b6226c2ffe01a0";
+export const SURFACE = "so.tilo.shortcuts@dd32ad37ca4641ea";
 
 /** How a value is held: typed, one of the shortcut's inputs, a variable, an earlier step's output, text with placeholders, or an object or list of values. One of "none", "literal", "input", "variable", "step", "template", "object", "list". */
 export type Bind = "none" | "literal" | "input" | "variable" | "step" | "template" | "object" | "list";
@@ -106,7 +106,7 @@ export interface ApplyOfferArgs {
 
 /** The arguments of `apply_trigger`. */
 export interface ApplyTriggerArgs {
-  from: Trigger;
+  from?: Trigger;
 }
 
 /** The arguments of `load_slot`. */
@@ -558,9 +558,9 @@ export interface Trigger extends tilo.Resource {
   kr5hkco2: string;  // filter
   solyra7s: string;  // source_at
   "5pqw4rrp": number;  // every_secs
-  /** Copies every field of one trigger onto another. */
-  apply_trigger(args: {
-    from: Trigger;
+  /** Copies every field of one trigger onto another, or the type's own defaults onto it when none is named: a trigger built here is a value no action takes, so the action builds what it copies. */
+  apply_trigger(args?: {
+    from?: Trigger;
   }): Promise<void>;
   /** Runs `apply_trigger` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   apply_triggerMany(items: ApplyTriggerArgs[]): Promise<tilo.ActionAnswer[]>;

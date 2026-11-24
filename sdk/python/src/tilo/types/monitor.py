@@ -28,7 +28,7 @@ __all__ = [
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.monitor@83a7a73f63ad6390"
+    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -89,7 +89,7 @@ class Notice(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.monitor.Row`."""
-    __surface__ = "so.tilo.monitor@83a7a73f63ad6390"
+    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
     uoc4p4dx: Any  # process
     qwzsalow: int  # depth
     @property
@@ -100,15 +100,37 @@ class Row(Resource):
     @_6waph57m.setter
     def _6waph57m(self, value: bool) -> None:
         self.edit("6waph57m", value=value)
+    @property
+    def _22v7oibb(self) -> float:
+        """cpu (`22v7oibb` on the wire)."""
+        return self.fields["22v7oibb"]
+
+    @_22v7oibb.setter
+    def _22v7oibb(self, value: float) -> None:
+        self.edit("22v7oibb", value=value)
+    u6hj324t: int  # memory_bytes
+    cwilirks: int  # threads
 
 
 class Monitor(Resource):
     """Monitor — `tl.so.tilo.monitor.Monitor`."""
-    __surface__ = "so.tilo.monitor@83a7a73f63ad6390"
+    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
+    def apply_cadence(self,
+        *,
+        ms: int,
+        paused: bool,
+    ) -> None:
+        """Keeps this device's reading at the cadence the person watches it by."""
+        return self.action("apply_cadence", ms=ms, paused=paused)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"apply_cadence"})
+
 
 class TiloMonitor(Resource):
     """System Monitor — `tl.so.tilo.monitor`."""
-    __surface__ = "so.tilo.monitor@83a7a73f63ad6390"
+    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
     def end_app(self, *, application: str) -> None:
         """Asks every process of an app to close."""
         return self.action("end_app", application=application)

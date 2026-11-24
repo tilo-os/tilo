@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@ebe6ea8372974b5d";
+export const SURFACE = "so.tilo.logs@8f6a67d584534406";
 
 /** The arguments of `set_severity`. */
 export interface SetSeverityArgs {
@@ -42,6 +42,11 @@ export interface SetBootArgs {
 /** The arguments of `set_search`. */
 export interface SetSearchArgs {
   value: string;
+}
+
+/** The arguments of `choose`. */
+export interface ChooseArgs {
+  key: string;
 }
 
 /** The arguments of `clear_filters`. */
@@ -75,6 +80,7 @@ export interface Logs extends tilo.Resource {
   vzywk5iy: string;  // boot
   yuygrdvc: string;  // search
   rumvop3c: boolean;  // following
+  cctmzqe2: string;  // selected
   /** The records an export writes, one JSON object a line. */
   made_export(): Promise<string>;
   /** Shows records of at least `value`'s severity. */
@@ -101,6 +107,12 @@ export interface Logs extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_searchMany(items: SetSearchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows one record's detail. */
+  choose(args: {
+    key: string;
+  }): Promise<void>;
+  /** Runs `choose` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  chooseMany(items: ChooseArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Clears every journal filter. */
   clear_filters(): Promise<void>;
   /** Runs `clear_filters` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -116,7 +128,7 @@ export interface Logs extends tilo.Resource {
 
 /** The actions `Logs` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOGS_ACTIONS = ["made_export", "set_severity", "set_severityMany", "set_unit", "set_unitMany", "set_boot", "set_bootMany", "set_search", "set_searchMany", "clear_filters", "clear_filtersMany", "follow", "poll_tail"] as const;
+export const LOGS_ACTIONS = ["made_export", "set_severity", "set_severityMany", "set_unit", "set_unitMany", "set_boot", "set_bootMany", "set_search", "set_searchMany", "choose", "chooseMany", "clear_filters", "clear_filtersMany", "follow", "poll_tail"] as const;
 
 /** The `tl.so.tilo.logs.Logs` kind at `path`. */
 export function logs(ws: tilo.Workspace, path: string): Logs {

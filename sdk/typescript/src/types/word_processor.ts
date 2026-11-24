@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@78785339f6d9571e";
+export const SURFACE = "so.tilo.word-processor@554a1c0b462fbcb3";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
@@ -70,24 +70,75 @@ export interface InsertTableArgs {
 
 /** The arguments of `add_row`. */
 export interface AddRowArgs {
+  row?: number;
+  table?: number;
 }
 
 /** The arguments of `add_column`. */
 export interface AddColumnArgs {
+  column?: number;
+  table?: number;
 }
 
 /** The arguments of `delete_row`. */
 export interface DeleteRowArgs {
   row: number;
+  table?: number;
 }
 
 /** The arguments of `delete_column`. */
 export interface DeleteColumnArgs {
   column: number;
+  table?: number;
 }
 
 /** The arguments of `delete_table`. */
 export interface DeleteTableArgs {
+  table?: number;
+}
+
+/** The arguments of `write_cell`. */
+export interface WriteCellArgs {
+  row: number;
+  column: number;
+  text: string;
+  table?: number;
+}
+
+/** The arguments of `set_style_look`. */
+export interface SetStyleLookArgs {
+  style: string;
+  font?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  align?: string;
+  before?: number;
+  after?: number;
+  indent?: number;
+}
+
+/** The arguments of `set_style_ink`. */
+export interface SetStyleInkArgs {
+  style: string;
+  swatch: number;
+}
+
+/** The arguments of `new_style`. */
+export interface NewStyleArgs {
+  name: string;
+  from?: string;
+}
+
+/** The arguments of `duplicate_style`. */
+export interface DuplicateStyleArgs {
+  style: string;
+}
+
+/** The arguments of `delete_style`. */
+export interface DeleteStyleArgs {
+  style: string;
 }
 
 /** The arguments of `set_page_margins`. */
@@ -227,7 +278,7 @@ export interface Document extends tilo.Resource {
   replace_bodyMany(items: ReplaceBodyArgs[]): Promise<tilo.ActionAnswer[]>;
   /** What the document says as Markdown, ready for an agent or a file. */
   read_content(): Promise<string>;
-  /** Finds `find` in the document and replaces the first of it, or every one, with `replace`. A paragraph's marks stay around the words that stay. */
+  /** Finds `find` in the document and replaces the first of it, or every one, with `replace`. The words are replaced where they stand, as the editor replaces them: a paragraph's marks, its formatting and the comments anchored in it stay around the words that stay. */
   replace_text(args: {
     find: string;
     replace: string;
@@ -242,30 +293,90 @@ export interface Document extends tilo.Resource {
   }): Promise<void>;
   /** Runs `insert_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insert_tableMany(items: InsertTableArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Adds a row like the last of the document's first table, under it. */
-  add_row(): Promise<void>;
+  /** Adds a blank row to a table of the document, under the row `row` counted from its head at 1, or under its last row. Only that table changes, as a row added in the editor's grid does. */
+  add_row(args?: {
+    row?: number;
+    table?: number;
+  }): Promise<void>;
   /** Runs `add_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   add_rowMany(items: AddRowArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Adds a cell to every row of the document's first table. */
-  add_column(): Promise<void>;
+  /** Adds a blank column to a table of the document, right of the column `column` counted from its left at 1, or right of its last. */
+  add_column(args?: {
+    column?: number;
+    table?: number;
+  }): Promise<void>;
   /** Runs `add_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   add_columnMany(items: AddColumnArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes a row of the document's first table, counted from its head at 1. */
+  /** Deletes a row of a table of the document, counted from its head at 1. */
   delete_row(args: {
     row: number;
+    table?: number;
   }): Promise<void>;
   /** Runs `delete_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_rowMany(items: DeleteRowArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes a column of the document's first table, counted from its left at 1. */
+  /** Deletes a column of a table of the document, counted from its left at 1. */
   delete_column(args: {
     column: number;
+    table?: number;
   }): Promise<void>;
   /** Runs `delete_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_columnMany(items: DeleteColumnArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes the document's first table and everything it holds. */
-  delete_table(): Promise<void>;
+  /** Deletes a table of the document and everything it holds; the words around it stay. */
+  delete_table(args?: {
+    table?: number;
+  }): Promise<void>;
   /** Runs `delete_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_tableMany(items: DeleteTableArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes `text` in one cell of a table of the document, at `row` counted from its head at 1 and `column` from its left at 1: that cell's words change and nothing else does, as typing in the editor's grid changes them. */
+  write_cell(args: {
+    row: number;
+    column: number;
+    text: string;
+    table?: number;
+  }): Promise<void>;
+  /** Runs `write_cell` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  write_cellMany(items: WriteCellArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Changes how the named style `style` looks: its face (sans, serif or mono), its size in points, whether it is bold or italic, its colour (#rrggbb), how its lines align (left, center, right, justify), and the space before and after it and its indent, in points. What is left out stays as it was. The style is the document's own, so every paragraph set in it changes at once, on every device, and the change is one a person takes back. */
+  set_style_look(args: {
+    style: string;
+    font?: string;
+    size?: number;
+    bold?: boolean;
+    italic?: boolean;
+    color?: string;
+    align?: string;
+    before?: number;
+    after?: number;
+    indent?: number;
+  }): Promise<void>;
+  /** Runs `set_style_look` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_style_lookMany(items: SetStyleLookArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets the ink of the named style `style` to one of the inks the page offers, counted from 0 in the order its colour swatches show them: the page's black and greys, then blue, green, ochre, red, violet and pink. */
+  set_style_ink(args: {
+    style: string;
+    swatch: number;
+  }): Promise<void>;
+  /** Runs `set_style_ink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_style_inkMany(items: SetStyleInkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Makes a new named style called `name`, looking as the style `from` does: a person sets paragraphs in it and changes its look without touching the styles every document has. */
+  new_style(args: {
+    name: string;
+    from?: string;
+  }): Promise<void>;
+  /** Runs `new_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  new_styleMany(items: NewStyleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Makes a copy of the named style `style`, called '`style` copy', to change apart from it. */
+  duplicate_style(args: {
+    style: string;
+  }): Promise<void>;
+  /** Runs `duplicate_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  duplicate_styleMany(items: DuplicateStyleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a style the document made: its paragraphs go back to the body's look. The styles every document has (Body, the headings, Quote and List item) stay. */
+  delete_style(args: {
+    style: string;
+  }): Promise<void>;
+  /** Runs `delete_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_styleMany(items: DeleteStyleArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets the page's margins, in points from the page's edges. */
   set_page_margins(args: {
     top: number;
@@ -365,7 +476,7 @@ export interface Document extends tilo.Resource {
 
 /** The actions `Document` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOCUMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_document", "dismiss_notice", "dismiss_noticeMany", "append_paragraph", "append_paragraphMany", "replace_body", "replace_bodyMany", "read_content", "replace_text", "replace_textMany", "insert_table", "insert_tableMany", "add_row", "add_rowMany", "add_column", "add_columnMany", "delete_row", "delete_rowMany", "delete_column", "delete_columnMany", "delete_table", "delete_tableMany", "set_page_margins", "set_page_marginsMany", "set_paper", "set_paperMany", "set_page_words", "set_page_wordsMany", "generate_toc", "generate_tocMany", "set_hyperlink", "set_hyperlinkMany", "insert_page_break", "insert_page_breakMany", "paste", "pasteMany", "replace_selection", "replace_selectionMany", "place_image", "place_imageMany", "share_image", "delete_image", "delete_imageMany", "react", "reactMany", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"] as const;
+export const DOCUMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_document", "dismiss_notice", "dismiss_noticeMany", "append_paragraph", "append_paragraphMany", "replace_body", "replace_bodyMany", "read_content", "replace_text", "replace_textMany", "insert_table", "insert_tableMany", "add_row", "add_rowMany", "add_column", "add_columnMany", "delete_row", "delete_rowMany", "delete_column", "delete_columnMany", "delete_table", "delete_tableMany", "write_cell", "write_cellMany", "set_style_look", "set_style_lookMany", "set_style_ink", "set_style_inkMany", "new_style", "new_styleMany", "duplicate_style", "duplicate_styleMany", "delete_style", "delete_styleMany", "set_page_margins", "set_page_marginsMany", "set_paper", "set_paperMany", "set_page_words", "set_page_wordsMany", "generate_toc", "generate_tocMany", "set_hyperlink", "set_hyperlinkMany", "insert_page_break", "insert_page_breakMany", "paste", "pasteMany", "replace_selection", "replace_selectionMany", "place_image", "place_imageMany", "share_image", "delete_image", "delete_imageMany", "react", "reactMany", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"] as const;
 
 /** The `tl.so.tilo.word-processor.Document` kind at `path`. */
 export function wordProcessorDocument(ws: tilo.Workspace, path: string): Document {

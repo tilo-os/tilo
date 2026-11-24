@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@80232e7aa79e585a";
+export const SURFACE = "so.tilo.settings@3adcc0e7d181e2cf";
 
 /** The arguments of `import_theme`. */
 export interface ImportThemeArgs {
@@ -80,7 +80,7 @@ export function notice(ws: tilo.Workspace, path: string): Notice {
 
 /** Settings — `tl.so.tilo.settings.Settings`. */
 export interface Settings extends tilo.Resource {
-  vfi4twig: string;  // pane
+  m2ye55z2: string;  // pane
   /** Takes in a theme saved with Export, from this workspace or another: every role, tuned value and glass shader, once it is admitted and keeps every contrast floor. Importing names it by its own name, so what a person exported under a name comes back under one. */
   import_theme(args: {
     file: unknown;
@@ -98,6 +98,20 @@ export function settings(ws: tilo.Workspace, path: string): Settings {
   return resourceProxy(ws, path, SURFACE, SETTINGS_ACTIONS) as unknown as Settings;
 }
 
+/** ProblemReport — `tl.so.tilo.settings.ProblemReport`. */
+export interface ProblemReport extends tilo.Resource {
+  kopqq6j4: string;  // body
+}
+
+/** The actions `ProblemReport` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PROBLEMREPORT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.settings.ProblemReport` kind at `path`. */
+export function problemReport(ws: tilo.Workspace, path: string): ProblemReport {
+  return resourceProxy(ws, path, SURFACE, PROBLEMREPORT_ACTIONS) as unknown as ProblemReport;
+}
+
 /** Settings — `tl.so.tilo.settings`. */
 export interface TiloSettings extends tilo.Resource {
   /** Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped to a small grid: a drag too small to mean anything is not a change. */
@@ -106,6 +120,12 @@ export interface TiloSettings extends tilo.Resource {
     picked: number;
     start: number[];
     let_go: number[];
+  }): Promise<void>;
+  /** Set how bright ordinary content looks in HDR, from the slider's value in cd/m². */
+  set_sdr_brightness(args: {
+    displays: unknown;
+    display: string;
+    nits: number;
   }): Promise<void>;
   /** Show the pane a search page names, as the search's own row runs it from outside the window. */
   open_pane(args: {
@@ -119,6 +139,15 @@ export interface TiloSettings extends tilo.Resource {
   }): Promise<void>;
   /** Runs `show_setting` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   show_settingMany(items: ShowSettingArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opens the provider's page where a card, a plan and the invoices change, in the app that opens web addresses: the provider's own page, never a form Tilo draws. The page is the one the account names, so nothing an app or an agent passes can open another, and an account that names none opens nothing. */
+  open_manage_page(args: {
+    account: unknown;
+  }): Promise<void>;
+  /** Opens one of the account's invoices on the provider's page. The invoice is the account's own, looked up by its id, so only a page the account names opens and an id it does not hold opens nothing. */
+  open_invoice(args: {
+    account: unknown;
+    invoice: string;
+  }): Promise<void>;
   /** The processors this device keeps free for the people at it: the slider's share, made whole. */
   set_processors_room(args: {
     percent: number;
@@ -126,6 +155,10 @@ export interface TiloSettings extends tilo.Resource {
   /** The memory this device keeps free for the people at it. */
   set_memory_room(args: {
     percent: number;
+  }): Promise<void>;
+  /** Files this computer's record of a problem as a problem report in the workspace's feedback channel, where the people who make Tilo read what went wrong, with the record's own words. */
+  send_problem_report(args: {
+    body: string;
   }): Promise<void>;
   /** Lists every contrast floor the theme would miss with `role` at the control's value, so its editor shows each pairing under its floor while the theme is tuned. The theme keeps the roles it admits; a value that would break a floor is refused, and this says which pairs it would break. */
   review_contrast(args: {
@@ -157,7 +190,7 @@ export interface TiloSettings extends tilo.Resource {
 
 /** The actions `TiloSettings` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSETTINGS_ACTIONS = ["move_screen", "open_pane", "open_paneMany", "show_setting", "show_settingMany", "set_processors_room", "set_memory_room", "review_contrast", "review_contrastMany", "review_contrast_on", "review_contrast_onMany", "review_contrast_now", "review_contrast_nowMany", "export_theme"] as const;
+export const TILOSETTINGS_ACTIONS = ["move_screen", "set_sdr_brightness", "open_pane", "open_paneMany", "show_setting", "show_settingMany", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrastMany", "review_contrast_on", "review_contrast_onMany", "review_contrast_now", "review_contrast_nowMany", "export_theme"] as const;
 
 /** The `tl.so.tilo.settings` kind at `path`. */
 export function tiloSettings(ws: tilo.Workspace, path: string): TiloSettings {

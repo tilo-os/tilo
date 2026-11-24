@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@27d9c91d6b27f659";
+export const SURFACE = "so.tilo.weather@fedb92c4c730c9b5";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {

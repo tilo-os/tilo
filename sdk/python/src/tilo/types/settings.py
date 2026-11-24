@@ -22,6 +22,7 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Notice",
     "Settings",
+    "ProblemReport",
     "TiloSettings",
     "ImportThemeArgs",
     "OpenPaneArgs",
@@ -67,7 +68,7 @@ ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.settings@80232e7aa79e585a"
+    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -128,8 +129,8 @@ class Notice(Resource):
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@80232e7aa79e585a"
-    vfi4twig: str  # pane
+    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
+    m2ye55z2: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
         """Takes in a theme saved with Export, from this workspace or another: every role, tuned value and glass shader, once it is admitted and keeps every contrast floor. Importing names it by its own name, so what a person exported under a name comes back under one."""
@@ -144,9 +145,15 @@ class Settings(Resource):
     __actions__ = frozenset({"import_theme", "import_theme_many"})
 
 
+class ProblemReport(Resource):
+    """ProblemReport — `tl.so.tilo.settings.ProblemReport`."""
+    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
+    kopqq6j4: str  # body
+
+
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@80232e7aa79e585a"
+    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
     def move_screen(self,
         *,
         screens: Any,
@@ -156,6 +163,15 @@ class TiloSettings(Resource):
     ) -> None:
         """Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped to a small grid: a drag too small to mean anything is not a change."""
         return self.action("move_screen", screens=screens, picked=picked, start=start, let_go=let_go)
+
+    def set_sdr_brightness(self,
+        *,
+        displays: Any,
+        display: str,
+        nits: float,
+    ) -> None:
+        """Set how bright ordinary content looks in HDR, from the slider's value in cd/m²."""
+        return self.action("set_sdr_brightness", displays=displays, display=display, nits=nits)
 
     def open_pane(self, *, page: str) -> None:
         """Show the pane a search page names, as the search's own row runs it from outside the window."""
@@ -173,6 +189,18 @@ class TiloSettings(Resource):
         """Runs `show_setting` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show_setting", items)
 
+    def open_manage_page(self, *, account: Any) -> None:
+        """Opens the provider's page where a card, a plan and the invoices change, in the app that opens web addresses: the provider's own page, never a form Tilo draws. The page is the one the account names, so nothing an app or an agent passes can open another, and an account that names none opens nothing."""
+        return self.action("open_manage_page", account=account)
+
+    def open_invoice(self,
+        *,
+        account: Any,
+        invoice: str,
+    ) -> None:
+        """Opens one of the account's invoices on the provider's page. The invoice is the account's own, looked up by its id, so only a page the account names opens and an id it does not hold opens nothing."""
+        return self.action("open_invoice", account=account, invoice=invoice)
+
     def set_processors_room(self, *, percent: float) -> None:
         """The processors this device keeps free for the people at it: the slider's share, made whole."""
         return self.action("set_processors_room", percent=percent)
@@ -180,6 +208,10 @@ class TiloSettings(Resource):
     def set_memory_room(self, *, percent: float) -> None:
         """The memory this device keeps free for the people at it."""
         return self.action("set_memory_room", percent=percent)
+
+    def send_problem_report(self, *, body: str) -> None:
+        """Files this computer's record of a problem as a problem report in the workspace's feedback channel, where the people who make Tilo read what went wrong, with the record's own words."""
+        return self.action("send_problem_report", body=body)
 
     def review_contrast(self,
         *,
@@ -221,6 +253,6 @@ class TiloSettings(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"move_screen", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "set_processors_room", "set_memory_room", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
+    __actions__ = frozenset({"move_screen", "set_sdr_brightness", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
 
 

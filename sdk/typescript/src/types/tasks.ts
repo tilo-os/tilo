@@ -22,21 +22,21 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@0ece4bf9ddf57aad";
+export const SURFACE = "so.tilo.tasks@5b5326ecaac4546f";
 
-/** Which kind of project this is. One of "project", "area". */
+/** Which kind of project this is: a finite goal whose work ends with it, or an ongoing responsibility that has no end, only what is done next. One of "project", "area". */
 export type Kind = "project" | "area";
 
-/** Where a task stands in its work: a board's columns, fixed so that every task of the workspace reads in the same place in the same column. One of "backlog", "todo", "in_progress", "in_review", "done", "cancelled". */
+/** Where a task stands in its work: a board's columns, fixed so that every task of the workspace reads in the same place in the same column. Backlog is written down and not planned yet; todo is the next thing to pick up; in progress is being worked on; in review is done by whoever worked on it and waits for a person to look; done is checked by its person; cancelled is not to be done. One of "backlog", "todo", "in_progress", "in_review", "done", "cancelled". */
 export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "cancelled";
 
-/** What a wait waits for: the kinds a session of an agent tells apart. One of "time", "reply", "change", "answer", "people", "pieces". */
+/** What a wait waits for: the kinds a session of an agent tells apart. A moment ends at its time; a reply in a mail thread or a conversation; a change in a resource of the workspace; an answer of the person the work is for; answers of several people; and its pieces, the tasks under it, which let it go on when none of them is still to be worked on. One of "time", "reply", "change", "answer", "people", "pieces". */
 export type WaitKind = "time" | "reply" | "change" | "answer" | "people" | "pieces";
 
-/** Why a task's work stopped. One of "failed", "budget", "time", "lost_worker", "person". */
+/** Why a task's work stopped: it could not go on, its budget in money or in working time is spent, its agent sessions were interrupted and did not come back, or a person stopped it. One of "failed", "budget", "time", "lost_worker", "person". */
 export type StoppedWhy = "failed" | "budget" | "time" | "lost_worker" | "person";
 
-/** Whose budget a task's work spends. One of "person", "agent". */
+/** Whose budget a task's work spends: its person's, or the agent working on it. One of "person", "agent". */
 export type BudgetBy = "person" | "agent";
 
 /** How much a task matters, most urgent last. One of "none", "low", "medium", "high", "urgent". */
@@ -595,7 +595,7 @@ export interface Task extends tilo.Resource {
   outdent(): Promise<void>;
   /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   outdentMany(items: OutdentArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Puts a task in a column of the board, at the place `at` among the tasks already there: what a card's drag names. */
+  /** Puts a task in a column of the board, at the place `at` among the tasks already there: what a card's drag names. A drop in its own column only moves it among the column's tasks. */
   set_status(args: {
     status: Status;
     at?: number;

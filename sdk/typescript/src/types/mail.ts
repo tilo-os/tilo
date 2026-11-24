@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@56b3ff63c744e05c";
+export const SURFACE = "so.tilo.mail@3882fabea750171d";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -411,11 +411,15 @@ export interface Message extends tilo.Resource {
   attachment(args: {
     name: string;
   }): Promise<unknown>;
+  /** Opens a file a message came with in the app that opens its kind, as Files opens one: the file reaches that app as the same content both read, never as a path neither has. */
+  open_attachment(args: {
+    name: string;
+  }): Promise<void>;
 }
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["show_pictures", "show_picturesMany", "links", "open_link", "copy_link", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
+export const MESSAGE_ACTIONS = ["show_pictures", "show_picturesMany", "links", "open_link", "copy_link", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment", "open_attachment"] as const;
 
 /** The `tl.so.tilo.mail.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {

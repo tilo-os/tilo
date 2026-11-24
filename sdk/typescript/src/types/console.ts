@@ -22,7 +22,27 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@b47f71f9d7c13b5f";
+export const SURFACE = "so.tilo.console@25a248c332df2e65";
+
+/** The arguments of `stop_agent`. */
+export interface StopAgentArgs {
+}
+
+/** The arguments of `take_over_agent`. */
+export interface TakeOverAgentArgs {
+}
+
+/** The arguments of `undo_agent_session`. */
+export interface UndoAgentSessionArgs {
+}
+
+/** The arguments of `let_agent_go_on`. */
+export interface LetAgentGoOnArgs {
+}
+
+/** The arguments of `publish`. */
+export interface PublishArgs {
+}
 
 /** Notice — `tl.tilo.host.Notice`. */
 export interface Notice extends tilo.Resource {
@@ -44,14 +64,75 @@ export function notice(ws: tilo.Workspace, path: string): Notice {
   return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
+/** SessionLink — `tl.so.tilo.console.SessionLink`. */
+export interface SessionLink extends tilo.Resource {
+  acxv3wxd: string;  // run
+  "2pulq7rs": string;  // instruction
+}
+
+/** The actions `SessionLink` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SESSIONLINK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.console.SessionLink` kind at `path`. */
+export function sessionLink(ws: tilo.Workspace, path: string): SessionLink {
+  return resourceProxy(ws, path, SURFACE, SESSIONLINK_ACTIONS) as unknown as SessionLink;
+}
+
+/** AgentCard — `tl.so.tilo.console.AgentCard`. */
+export interface AgentCard extends tilo.Resource {
+  mpwn6fmy: string;  // client
+  /** Stops the client's working session, keeping its grant. */
+  stop_agent(): Promise<void>;
+  /** Runs `stop_agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stop_agentMany(items: StopAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the client's session and opens what it changed last, or the workspace it worked in. */
+  take_over_agent(): Promise<void>;
+  /** Runs `take_over_agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  take_over_agentMany(items: TakeOverAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes back every change of the client's newest session, when the history says it can. */
+  undo_agent_session(): Promise<void>;
+  /** Runs `undo_agent_session` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  undo_agent_sessionMany(items: UndoAgentSessionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes back the grant the client came in by. */
+  revoke_agent(): Promise<void>;
+  /** Lets a stopped client's calls through again. */
+  let_agent_go_on(): Promise<void>;
+  /** Runs `let_agent_go_on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  let_agent_go_onMany(items: LetAgentGoOnArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `AgentCard` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AGENTCARD_ACTIONS = ["stop_agent", "stop_agentMany", "take_over_agent", "take_over_agentMany", "undo_agent_session", "undo_agent_sessionMany", "revoke_agent", "let_agent_go_on", "let_agent_go_onMany"] as const;
+
+/** The `tl.so.tilo.console.AgentCard` kind at `path`. */
+export function agentCard(ws: tilo.Workspace, path: string): AgentCard {
+  return resourceProxy(ws, path, SURFACE, AGENTCARD_ACTIONS) as unknown as AgentCard;
+}
+
 /** Window — `tl.so.tilo.console.Window`. */
 export interface Window extends tilo.Resource {
   e6xn3nds: string;  // place
+  ujzhryea: Array<tilo.Entry<SessionLink>>;  // sessions
+  hadfiy76: Array<tilo.Entry<AgentCard>>;  // cards
+  /** Gives each of the newest sessions the history lists, and each client that acted here, a resource of its own, so each can be linked to, found and opened outside this window. An insert under a key a resource already stands under leaves that resource as it stands, so a reading that answers again changes nothing twice. */
+  publish(): Promise<void>;
+  /** Runs `publish` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  publishMany(items: PublishArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The resource of the session `run`, made now when the window has not published it yet: every way of opening a session goes through it, so the list, a link, search and another app open the same window. */
+  session_link(args: {
+    run: string;
+  }): Promise<SessionLink>;
+  /** The card of `client`, made now when the window has not published it yet: every way of opening a client's card goes through it. */
+  agent_card(args: {
+    client: string;
+  }): Promise<AgentCard>;
 }
 
 /** The actions `Window` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WINDOW_ACTIONS = [] as const;
+export const WINDOW_ACTIONS = ["publish", "publishMany", "session_link", "agent_card"] as const;
 
 /** The `tl.so.tilo.console.Window` kind at `path`. */
 export function consoleWindow(ws: tilo.Workspace, path: string): Window {

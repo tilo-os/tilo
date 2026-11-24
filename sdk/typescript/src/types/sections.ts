@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@f00b3793a302d0f0";
+export const SURFACE = "so.tilo.settings.sections@aa9522275a0a0cb6";
 
 export interface Ink {
   primary: number;
@@ -144,6 +144,16 @@ export interface TabletConfig {
   pad_map_button: number | null;
   pad_rings: Record<string, PadDialAction[]>;
   pad_strips: Record<string, PadDialAction[]>;
+}
+
+export interface Snapshot {
+  revision: number;
+  words: Word[];
+}
+
+export interface Word {
+  spelling: string;
+  language: string | null;
 }
 
 /** One of "suspend", "lock", "ignore". */
@@ -356,6 +366,12 @@ export interface ActionShortcut {
   chord: string;
 }
 
+export interface MovedCommand {
+  app: string;
+  action: string;
+  chord: string;
+}
+
 export interface ShortcutChord {
   id: string;
   chord: string;
@@ -437,6 +453,16 @@ export interface SetLayoutsArgs {
   active: string;
 }
 
+/** The arguments of `set-caps-lock`. */
+export interface SetCapsLockArgs {
+  behaviour: string;
+}
+
+/** The arguments of `set-compose-key`. */
+export interface SetComposeKeyArgs {
+  key: string;
+}
+
 /** The arguments of `set-paste-shortcut`. */
 export interface SetPasteShortcutArgs {
   app: string;
@@ -447,6 +473,13 @@ export interface SetPasteShortcutArgs {
 export interface SetKeyboardLayoutsArgs {
   keyboard: string;
   profile: KeyboardProfile;
+}
+
+/** The arguments of `set-keyboard-sources`. */
+export interface SetKeyboardSourcesArgs {
+  keyboard: string;
+  sources: string[];
+  active: string;
 }
 
 /** The arguments of `use-shared-layouts`. */
@@ -466,9 +499,9 @@ export interface ShowKeyboardLayoutArgs {
 
 /** The arguments of `inspect-keyboard`. */
 export interface InspectKeyboardArgs {
+  shape: number;
   level: number;
   extra_levels: boolean;
-  key: string;
 }
 
 /** The arguments of `set-tablet-output`. */
@@ -522,6 +555,16 @@ export interface SetPadDialArgs {
   index: number;
   mode: number;
   action: string;
+}
+
+/** The arguments of `add`. */
+export interface AddArgs {
+  spelling: string;
+  language?: string;
+}
+
+/** The arguments of `clear`. */
+export interface ClearArgs {
 }
 
 /** The arguments of `set-suspend-plugged-in`. */
@@ -652,6 +695,19 @@ export interface ResetArgs {
 
 /** The arguments of `reset-all`. */
 export interface ResetAllArgs {
+}
+
+/** The arguments of `rebind-command`. */
+export interface RebindCommandArgs {
+  app: string;
+  action: string;
+  chord: string;
+}
+
+/** The arguments of `reset-command`. */
+export interface ResetCommandArgs {
+  app: string;
+  action: string;
 }
 
 /** The arguments of `set-action-chords`. */
@@ -954,6 +1010,16 @@ export interface Input extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLayoutsMany(items: SetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setCapsLock(args: {
+    behaviour: string;
+  }): Promise<void>;
+  /** Runs `set-caps-lock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setCapsLockMany(items: SetCapsLockArgs[]): Promise<tilo.ActionAnswer[]>;
+  setComposeKey(args: {
+    key: string;
+  }): Promise<void>;
+  /** Runs `set-compose-key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setComposeKeyMany(items: SetComposeKeyArgs[]): Promise<tilo.ActionAnswer[]>;
   setPasteShortcut(args: {
     app: string;
     shortcut: string;
@@ -964,7 +1030,7 @@ export interface Input extends tilo.Resource {
 
 /** The actions `Input` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const INPUT_ACTIONS = ["setKeyRepeat", "setKeyRepeatMany", "chooseLayout", "chooseLayoutMany", "setLayouts", "setLayoutsMany", "setPasteShortcut", "setPasteShortcutMany"] as const;
+export const INPUT_ACTIONS = ["setKeyRepeat", "setKeyRepeatMany", "chooseLayout", "chooseLayoutMany", "setLayouts", "setLayoutsMany", "setCapsLock", "setCapsLockMany", "setComposeKey", "setComposeKeyMany", "setPasteShortcut", "setPasteShortcutMany"] as const;
 
 /** The `settings.input` kind at `path`. */
 export function input(ws: tilo.Workspace, path: string): Input {
@@ -980,7 +1046,7 @@ export interface InputDevice extends tilo.Resource {
   readonly keyboard_preview: string | null;
   readonly keyboard_preview_extra_levels: boolean;
   readonly keyboard_preview_level: number;
-  readonly keyboard_inspected_key: string;
+  readonly keyboard_inspected_shape: number;
   readonly tablets: Record<string, TabletConfig>;
   setKeyboardLayouts(args: {
     keyboard: string;
@@ -988,6 +1054,13 @@ export interface InputDevice extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setKeyboardSources(args: {
+    keyboard: string;
+    sources: string[];
+    active: string;
+  }): Promise<void>;
+  /** Runs `set-keyboard-sources` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setKeyboardSourcesMany(items: SetKeyboardSourcesArgs[]): Promise<tilo.ActionAnswer[]>;
   useSharedLayouts(args: {
     keyboard: string;
   }): Promise<void>;
@@ -1004,9 +1077,9 @@ export interface InputDevice extends tilo.Resource {
   /** Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   showKeyboardLayoutMany(items: ShowKeyboardLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectKeyboard(args: {
+    shape: number;
     level: number;
     extra_levels: boolean;
-    key: string;
   }): Promise<void>;
   /** Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   inspectKeyboardMany(items: InspectKeyboardArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -1067,7 +1140,7 @@ export interface InputDevice extends tilo.Resource {
 
 /** The actions `InputDevice` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const INPUTDEVICE_ACTIONS = ["setKeyboardLayouts", "setKeyboardLayoutsMany", "useSharedLayouts", "useSharedLayoutsMany", "setKeyboardModel", "setKeyboardModelMany", "showKeyboardLayout", "showKeyboardLayoutMany", "inspectKeyboard", "inspectKeyboardMany", "setTabletOutput", "setTabletOutputMany", "setTabletKeepAspect", "setTabletKeepAspectMany", "setTabletLeftHanded", "setTabletLeftHandedMany", "setTabletTipFeel", "setTabletTipFeelMany", "setTabletButton", "setTabletButtonMany", "setTabletEraser", "setTabletEraserMany", "setPadButton", "setPadButtonMany", "setPadDial", "setPadDialMany"] as const;
+export const INPUTDEVICE_ACTIONS = ["setKeyboardLayouts", "setKeyboardLayoutsMany", "setKeyboardSources", "setKeyboardSourcesMany", "useSharedLayouts", "useSharedLayoutsMany", "setKeyboardModel", "setKeyboardModelMany", "showKeyboardLayout", "showKeyboardLayoutMany", "inspectKeyboard", "inspectKeyboardMany", "setTabletOutput", "setTabletOutputMany", "setTabletKeepAspect", "setTabletKeepAspectMany", "setTabletLeftHanded", "setTabletLeftHandedMany", "setTabletTipFeel", "setTabletTipFeelMany", "setTabletButton", "setTabletButtonMany", "setTabletEraser", "setTabletEraserMany", "setPadButton", "setPadButtonMany", "setPadDial", "setPadDialMany"] as const;
 
 /** The `settings.input-device` kind at `path`. */
 export function inputDevice(ws: tilo.Workspace, path: string): InputDevice {
@@ -1088,6 +1161,30 @@ export const TEXTASSISTANCE_ACTIONS = [] as const;
 /** The `settings.text-assistance` kind at `path`. */
 export function textAssistance(ws: tilo.Workspace, path: string): TextAssistance {
   return resourceProxy(ws, path, SURFACE, TEXTASSISTANCE_ACTIONS, true) as unknown as TextAssistance;
+}
+
+/** Personal dictionary — `settings.personal-dictionary`. */
+export interface PersonalDictionary extends tilo.Resource {
+  readonly words: Snapshot;
+  add(args: {
+    spelling: string;
+    language?: string;
+  }): Promise<void>;
+  /** Runs `add` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  addMany(items: AddArgs[]): Promise<tilo.ActionAnswer[]>;
+  // the app's `remove` action is the SDK's own: run it with `action("remove")`.
+  clear(): Promise<void>;
+  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `PersonalDictionary` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PERSONALDICTIONARY_ACTIONS = ["add", "addMany", "clear", "clearMany"] as const;
+
+/** The `settings.personal-dictionary` kind at `path`. */
+export function personalDictionary(ws: tilo.Workspace, path: string): PersonalDictionary {
+  return resourceProxy(ws, path, SURFACE, PERSONALDICTIONARY_ACTIONS, true) as unknown as PersonalDictionary;
 }
 
 /** Power — `settings.power`. */
@@ -1414,6 +1511,7 @@ export function continuity(ws: tilo.Workspace, path: string): Continuity {
 export interface Shortcuts extends tilo.Resource {
   readonly bindings: unknown;
   readonly actions: unknown;
+  readonly commands: unknown;
   rebind(args: {
     shortcut: string;
     chord: string;
@@ -1428,6 +1526,19 @@ export interface Shortcuts extends tilo.Resource {
   resetAll(): Promise<void>;
   /** Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetAllMany(items: ResetAllArgs[]): Promise<tilo.ActionAnswer[]>;
+  rebindCommand(args: {
+    app: string;
+    action: string;
+    chord: string;
+  }): Promise<void>;
+  /** Runs `rebind-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rebindCommandMany(items: RebindCommandArgs[]): Promise<tilo.ActionAnswer[]>;
+  resetCommand(args: {
+    app: string;
+    action: string;
+  }): Promise<void>;
+  /** Runs `reset-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resetCommandMany(items: ResetCommandArgs[]): Promise<tilo.ActionAnswer[]>;
   setActionChords(args: {
     chords: unknown;
   }): Promise<void>;
@@ -1437,7 +1548,7 @@ export interface Shortcuts extends tilo.Resource {
 
 /** The actions `Shortcuts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SHORTCUTS_ACTIONS = ["rebind", "rebindMany", "reset", "resetMany", "resetAll", "resetAllMany", "setActionChords", "setActionChordsMany"] as const;
+export const SHORTCUTS_ACTIONS = ["rebind", "rebindMany", "reset", "resetMany", "resetAll", "resetAllMany", "rebindCommand", "rebindCommandMany", "resetCommand", "resetCommandMany", "setActionChords", "setActionChordsMany"] as const;
 
 /** The `settings.shortcuts` kind at `path`. */
 export function shortcuts(ws: tilo.Workspace, path: string): Shortcuts {
@@ -1739,6 +1850,7 @@ export function agentModels(ws: tilo.Workspace, path: string): AgentModels {
 export interface ShortcutsTable extends tilo.Resource {
   readonly bindings: ShortcutChord[];
   readonly actions: ActionShortcut[];
+  readonly commands: MovedCommand[];
 }
 
 /** The actions `ShortcutsTable` reaches before it is read: `ws` calls them without a
