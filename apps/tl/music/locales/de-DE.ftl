@@ -437,6 +437,7 @@ d-juhtgzza = Titel
     .w-play-next = Play next
     .w-remove-download = Remove download
     .w-lyrics = Lyrics
+    .w-add-to-spotify-s-queue = In Spotifys Warteschlange
 
 d-4oohdtzr = Album
     .w-this-album-has-no-songs-yet = This album has no songs yet
@@ -447,6 +448,7 @@ d-gpcmrwgr = Künstler
     .w-albums = Albums
     .w-more-of-this-artist = Mehr von diesem Künstler
     .w-not-this-artist = Diesen Künstler nicht
+    .w-artists-like-them = Ähnliche Künstler
 
 d-uvzkg6uq = Playlist
     .w-this-playlist-has-no-songs-yet = This playlist has no songs yet
@@ -454,6 +456,9 @@ d-uvzkg6uq = Playlist
 d-sum4fpxx = Eigene Playlist
     .w-cover = Cover
     .w-add-songs-to-this-playlist = Add songs to this playlist
+    .w-on-spotify = Auf Spotify
+    .w-playlist-name = Name der Playlist
+    .w-what-this-playlist-is-for = Wofür diese Playlist ist
 
 d-wnohn7ep = Startseite
     .w-find-music = Find music
@@ -463,6 +468,10 @@ d-wnohn7ep = Startseite
     .w-made-from-your-library = Aus deiner Bibliothek
     .w-play = Abspielen
     .w-hide = Ausblenden
+    .w-more-liked-songs = Mehr gelikte Titel
+    .w-more-saved-albums = Mehr gespeicherte Alben
+    .w-more-playlists = Mehr Playlists
+    .w-more-followed-artists = Mehr gefolgte Künstler
 
 d-x2xe6gcf = Suche
     .w-search-youtube-music = Search YouTube Music
@@ -488,6 +497,12 @@ d-5hj6kcvh = Playlists
 
 d-6tpcfsjw = Empfehlungen
     .w-artists-followed = Artists followed
+    .w-artists-like-these = Künstler wie diese
+    .w-what-plays-next-there = Was dort als Nächstes läuft
+    .w-read-spotify-s-queue = Spotifys Warteschlange lesen
+    .w-spotify-s-queue-has-not-been = Spotifys Warteschlange wurde noch nicht gelesen.
+    .w-reconnect-spotify = Spotify neu verbinden
+    .w-spotify-ended-the-sign-in-connect = Spotify hat die Anmeldung beendet. Verbinde dich neu, um weiter zu nutzen, was du dort behältst.
     .w-catalogue = Catalogue
     .w-youtube-music = YouTube Music
     .w-off = Off
@@ -634,3 +649,92 @@ d-tkebe3bj-filter-hidden = Verborgen
 d-aymfw7yu-filter-spotify_playing = Spielt auf Spotify
 
 d-so-tilo-music-keywords = music, musik, song, songs, titel, track, tracks, album, alben, artist, artists, künstler, kuenstler, playlist, playlists, wiedergabe, player, audio, listen, hören, hoeren, spotify, youtube music, lyrics, songtext, liedtext
+
+# Was Spotify behält, was dort als Nächstes läuft, und was die Künstler für Musik machen.
+
+d-nb4ehhax = Genres
+    .doc = Die Musikrichtungen, die der Katalog ihnen zuschreibt: leer, wo er keine nennt, wie YouTube Music keine nennt.
+
+d-qu3zxatt = Beschreibung
+    .doc = Was die Playlist über sich sagt; leer, wenn sie nichts sagt.
+
+d-ijme5amc = Spotify-Warteschlangeneintrag
+    .doc = Ein Titel dessen, was auf Spotify als Nächstes läuft, in Spotifys eigener Reihenfolge: eine Momentaufnahme, die die Person neu liest, keine Warteschlange, die diese App bearbeitet.
+    .noun = { $count ->
+        [one] Eintrag
+       *[other] Einträge
+    }
+    .untitled = Unbekannter Titel
+
+d-r4rop6xj = Schlüssel
+    .doc = Die Spotify-Adresse des Titels, nach der das Abspielen fragt.
+
+d-teom6gyk = Titel
+
+d-b4nh57k6 = Künstler
+
+d-cjgrr3sx = Album
+
+d-edgjqah3 = Cover
+
+d-gbooyryg = Sekunden
+
+d-ijme5amc-filter-seconds = Sekunden
+
+d-ltrfuiaz = Beschreibung
+    .doc = Was die Playlist über sich sagt, für Lesende.
+
+d-xp3dtewi = Spotify
+    .doc = Die Spotify-Playlist, die sie ist, sobald der Katalog der Person Spotify ist: jeder hier hinzugefügte Titel wird dort hinzugefügt, und Name und Beschreibung bleiben im Gleichschritt.
+
+d-myoyyape = Ähnliche Künstler
+    .doc = Fragt nach Titeln von Künstlern, deren Musikrichtung die Person schon hört.
+
+d-hiupwos3 = Spotify-Warteschlange
+    .doc = Was auf Spotify als Nächstes läuft, wie Spotifys eigene Warteschlange es beim letzten Lesen hatte.
+
+d-ekk67ewc = Nächste Spotify-Titel
+    .doc = Wo die nächste Seite jeder Spotify-Sammlung der Person beginnt; 0 heißt keine.
+
+d-gwbm6xq4 = Nächste Spotify-Alben
+
+d-q6w6ykgo = Nächste Spotify-Playlists
+
+d-hbxo67cl = Nächste Spotify-Künstler
+
+d-aymfw7yu-filter-spotify_next_tracks = Nächste Spotify-Titel
+
+d-aymfw7yu-filter-spotify_next_albums = Nächste Spotify-Alben
+
+d-aymfw7yu-filter-spotify_next_playlists = Nächste Spotify-Playlists
+
+d-aymfw7yu-filter-spotify_next_artists = Nächste Spotify-Künstler
+
+d-tkebe3bj-filter-similar_artists = Ähnliche Künstler
+
+d-ilknh6a6 = Playlist umbenennen
+    .doc = Gibt einer Playlist der Person einen anderen Namen, bei Spotify auch, wenn sie eine Spotify-Playlist ist.
+
+d-ilknh6a6-name = Name
+
+d-mj6ddil6 = Playlist beschreiben
+    .doc = Setzt, was eine Playlist über sich sagt, bei Spotify auch, wenn sie eine Spotify-Playlist ist.
+
+d-mj6ddil6-description = Beschreibung
+
+d-o6zynibu = Playlist an Spotify senden
+    .doc = Schickt Name und Beschreibung einer Playlist an Spotify, die Fassung, die ihre Person auf ihren anderen Geräten liest; eine Playlist, die nicht Spotifys ist, sagt nichts.
+
+d-mirav5ur = Spotifys Warteschlange lesen
+    .doc = Liest, was auf Spotify als Nächstes läuft: Spotifys eigene Warteschlange, hier gezeigt und hier nie bearbeitet.
+
+d-sdo3anxm = In Spotifys Warteschlange
+    .doc = Stellt einen Titel hinter das, was auf Spotify läuft.
+
+d-sdo3anxm-t = Titel
+
+d-nvvyoutq = Mehr von Spotify
+    .doc = Fragt Spotify nach einer weiteren Seite dessen, was die Person dort behält.
+
+d-nvvyoutq-kind = Art
+
