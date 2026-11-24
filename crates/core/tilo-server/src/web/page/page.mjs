@@ -238,6 +238,9 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
+/** `data`'s bytes as lowercase hex, two digits each: how the wire spells a key, a hash or a signature. */
+const hex = data => Array.from(data, b => b.toString(16).padStart(2, '0')).join('');
+
 function u64(n) {
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigUint64(0, BigInt(n), true);
