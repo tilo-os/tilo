@@ -1,7 +1,9 @@
 //! The person's workspaces on one device: the workspace a fresh device starts from, and the ones
 //! they make, come back with the shell when they come back to it, none of them twice. Their list,
 //! which carries them to their other devices, is a resource of their own workspace
-//! (`tests/person_workspace.rs`).
+//! (`tests/person_workspace.rs`). What the desktop leaves for its next session is the device's
+//! record and a branch is copied by the device's daemon, so the tests run the session as the
+//! shell of a daemon of their own.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -14,19 +16,70 @@
 )]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
+use tilo_runtime::daemon::Running;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 
-/// A session keeping this device's shell under `state` .
-fn session_keeping(state: &Path) -> Session {
-    crate::common::headless(Options {
-        collab: false,
-        state: Some(state.to_path_buf()),
-        ..Options::default()
-    })
+/// This computer: the device daemon the test's sessions run as the shell of, started in this
+/// process over a profile and a home of its own. A computer's session runs on its daemon, and the
+/// daemon keeps what the desktop leaves for its next session and branches a workspace the person
+/// asks for; two sessions on one of these are the same computer started twice.
+struct Computer {
+    daemon: Running,
+    /// The person the daemon holds this computer's services for.
+    person: String,
+    /// The home the daemon's identity lives in, kept for as long as it runs.
+    _home: tilo_test_env::TestHome,
+    /// The profile the daemon serves, its sockets inside it.
+    _profile: tempfile::TempDir,
+}
+
+impl Computer {
+    /// Start the daemon over a profile of the test's own, and wait for the person's services.
+    fn start() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+        let identity = home.root().join("identity");
+        home.env()
+            .set("TILO_IDENTITY_ROOT", &identity)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        let profile = tempfile::tempdir().expect("a profile for the daemon");
+        std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the profile is this user's");
+        let within = tilo_test_env::hang_bound();
+        let daemon = Running::start(profile.path()).expect("the device's daemon starts");
+        let person = daemon.person(within).expect("its person's services run");
+        Self {
+            daemon,
+            person,
+            _home: home,
+            _profile: profile,
+        }
+    }
+
+    /// A headless session on this computer, keeping `state`: the device started again.
+    fn session(&self, state: &Path) -> Session {
+        let within = tilo_test_env::hang_bound();
+        let link = self
+            .daemon
+            .link_shell(within)
+            .expect("the daemon makes the session's link");
+        Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                person: self.person.clone(),
+                shell_link: Some(link),
+                collab: false,
+                state: Some(state.to_path_buf()),
+                ..Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session")
+    }
 }
 
 /// The workspaces on this session: id, name, the id it has on every device, in order.
@@ -45,50 +98,12 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
     })
 }
 
-/// This computer's person: a device of theirs, certified for their own root key, kept in an
-/// identity root of the test's own.
-fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
-    let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_device_identity::IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
-    let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
-    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
-        .expect("this computer's device key");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "The laptop".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
-        .expect("this computer's certificate");
-    env.set("TILO_IDENTITY_ROOT", root.path());
-    // The name they go by, which the workspace learns of them: never their device's.
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
-            group_public_key: cert.user_public_key,
-            display_name: "Ada".to_owned(),
-            avatar_color: [40, 80, 120],
-            device_public_key: None,
-        },
-    ))));
-    root
-}
-
 #[test]
 fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env);
+    let computer = Computer::start();
     let state = tempfile::tempdir().expect("a state directory");
     let started = {
-        let mut session = session_keeping(state.path());
+        let mut session = computer.session(state.path());
         session.step(Duration::from_millis(1)).expect("a frame");
         let held = held(&session);
         assert_eq!(held.len(), 1, "a fresh device starts from one workspace");
@@ -104,7 +119,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it() {
         (name, workspace.to_string())
     };
 
-    let mut again = session_keeping(state.path());
+    let mut again = computer.session(state.path());
     again.step(Duration::from_millis(1)).expect("a frame");
     let held = held(&again);
     assert_eq!(
@@ -121,11 +136,10 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it() {
 
 #[test]
 fn a_workspace_the_person_makes_here_comes_back_with_the_shell() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env);
+    let computer = Computer::start();
     let state = tempfile::tempdir().expect("a state directory");
     let made = {
-        let mut session = session_keeping(state.path());
+        let mut session = computer.session(state.path());
         session.step(Duration::from_millis(1)).expect("a frame");
         session
             .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
@@ -136,7 +150,7 @@ fn a_workspace_the_person_makes_here_comes_back_with_the_shell() {
         held
     };
 
-    let mut again = session_keeping(state.path());
+    let mut again = computer.session(state.path());
     again.step(Duration::from_millis(1)).expect("a frame");
     assert_eq!(
         held(&again),
@@ -163,12 +177,9 @@ fn step_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
 /// keeps all it had, and the branch comes back after a restart.
 #[test]
 fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env);
-    let data = tempfile::tempdir().expect("a data home");
-    env.set("XDG_DATA_HOME", data.path());
+    let computer = Computer::start();
     let state = tempfile::tempdir().expect("a state directory");
-    let mut session = session_keeping(state.path());
+    let mut session = computer.session(state.path());
     session.step(Duration::from_millis(1)).expect("a frame");
     session
         .invoke(
@@ -274,7 +285,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
     );
     drop(session);
 
-    let mut again = session_keeping(state.path());
+    let mut again = computer.session(state.path());
     again.step(Duration::from_millis(1)).expect("a frame");
     let after: Vec<String> = held(&again).into_iter().map(|(_, _, id)| id).collect();
     assert!(after.contains(&branch), "the branch came back: {after:?}");
@@ -284,12 +295,9 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
 /// A branch names a workspace the shell has: one it does not have is refused, and nothing is made.
 #[test]
 fn a_branch_of_no_workspace_here_is_refused() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env);
-    let data = tempfile::tempdir().expect("a data home");
-    env.set("XDG_DATA_HOME", data.path());
+    let computer = Computer::start();
     let state = tempfile::tempdir().expect("a state directory");
-    let mut session = session_keeping(state.path());
+    let mut session = computer.session(state.path());
     session.step(Duration::from_millis(1)).expect("a frame");
     let before = held(&session);
     assert!(
