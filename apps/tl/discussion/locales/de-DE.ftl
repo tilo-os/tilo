@@ -109,8 +109,16 @@ d-kflwfuct = Gelöscht
 
 d-upy33rnt = Thread
     .w-discussion = Diskussion
-    .w-add-a-comment = Kommentar hinzufügen
+    .w-edit-comment = Kommentar bearbeiten
+    .w-cancel = Abbrechen
+    .w-save = Speichern
+    .w-edit = Bearbeiten
+    .w-reply = Antworten
+    .w-open-again = Wieder öffnen
+    .w-resolve = Erledigen
+    .w-write-a-reply = Antwort schreiben
     .w-send = Senden
+    .w-add-a-comment = Kommentar hinzufügen
 
 d-nsv2jvpu = Geschrieben
     .w-edited = bearbeitet
