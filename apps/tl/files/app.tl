@@ -555,6 +555,33 @@ action new_file(f: Files, name: Text = "New file.txt") uses files, time (icon: .
     }
 }
 
+/// Writes the files a person dropped on the window into the folder shown, each under its own
+/// name; a name the folder already holds is kept both, so nothing is replaced.
+action import_dropped(f: Files, files: List<File>) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if not folder_place(s.here) {
+        s.notice = "Open a folder to drop files into it"
+        return
+    }
+    for file in files {
+        let name = free_name(f, s.here, file.name)
+        match file.bytes() {
+            .ok(bytes) => {
+                match File.write(join(s.here, name), bytes) {
+                    .ok(_) => {}
+                    .err(why) => {
+                        s.notice = "Couldn’t copy “{file.name}”: {why}"
+                    }
+                }
+            }
+            .err(why) => {
+                s.notice = "Couldn’t read “{file.name}”: {why}"
+            }
+        }
+    }
+    read_listing(f, s.here)
+}
+
 /// Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any
 /// other folder. A drive that still has to open shows as such until the device says where it is.
 action open_drive(f: Files, drive: device.DriveVolume) uses files, time {
@@ -1059,6 +1086,8 @@ view files(f: Files) {
             } else { visible.len() },
         ) {
             on search(t: Text): set(found, t)
+            // A file dragged in from another app lands in the folder shown, under its own name.
+            on drop(files: List<File>): import_dropped(f, files)
             sidebar_actions: {
                 ui.Button(
                     "Add the folder shown to Favorites",

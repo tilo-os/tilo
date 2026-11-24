@@ -3724,6 +3724,13 @@ impl Checker<'_> {
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),
+            // A file's content as the bytes it holds, so an action handed a file (one a person
+            // dropped or chose) can write it where it wants it.
+            (Ty::File, "bytes") if args.is_empty() => Ex::host(
+                Imp::FileData,
+                vec![r],
+                Ty::Result(Box::new(Ty::Bytes), Box::new(Ty::Text)),
+            ),
             // A document file as the Markdown an editor shows: by the format its name ends in,
             // a Word, OpenDocument, RTF, EPUB, HTML or Markdown file; plain text as itself.
             (Ty::File, "markdown") if args.is_empty() => Ex::host(

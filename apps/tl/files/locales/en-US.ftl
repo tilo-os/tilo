@@ -362,6 +362,11 @@ d-o4nc1mt2 = New file
 
 d-o4nc1mt2-name = Name
 
+d-eaysxl23 = Import dropped
+    .doc = Writes the files a person dropped on the window into the folder shown, each under its own name; a name the folder already holds is kept both, so nothing is replaced.
+
+d-eaysxl23-files = Files
+
 d-6x2g4o5k = Open drive
     .doc = Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any other folder.
 

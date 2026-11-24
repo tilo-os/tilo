@@ -31,6 +31,7 @@ mod disks;
 mod done_days;
 mod engines;
 mod feedback_picker;
+mod files;
 mod firewall;
 mod fixtures;
 mod foreign;

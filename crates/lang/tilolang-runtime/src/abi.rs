@@ -339,11 +339,12 @@ imports! {
     (SpaceF, "space_f", "i", "f"),
     (RowOpen, "row_open", "", "i"),
 
-    // A file: its name, media type or address (by the part asked), its size, its content read
-    // as text, and the chooser a control runs.
+    // A file: its name, media type or address (by the part asked), its size, its content as text
+    // or as bytes, and the chooser a control runs.
     (FilePart, "file_part", "ii", "i"),
     (FileSize, "file_size", "i", "l"),
     (FileText, "file_text", "i", "i"),
+    (FileData, "file_data", "i", "i"),
     (FileFiles, "file_files", "i", "i"),
     (FileBook, "file_book", "i", "i"),
     (FileBookInfo, "file_book_info", "i", "i"),

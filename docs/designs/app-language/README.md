@@ -196,7 +196,10 @@ they made in an app. A paste reads what is on the clipboard now, as an `Option<T
 pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
 shown.
 
-`file.image_info()` says what an image's own container states: its upright width and height, the
+`file.text()` reads a file's content as text, and `file.bytes()` the bytes it holds: what an
+action writes where it wants a file a person dropped or chose, with `File.write`. A file handed to
+an action has no path of its own, so its content is the only way to place it. `file.image_info()`
+says what an image's own container states: its upright width and height, the
 capture time, the EXIF orientation, and the place the camera recorded. `file.cropped(x, y, width,
 height)`, `file.turned(quarters)`, `file.resized(width, height)` and `file.encoded(format: "png")`
 work on its pixels and answer a new `File` kept in the content store. The decode turns the picture

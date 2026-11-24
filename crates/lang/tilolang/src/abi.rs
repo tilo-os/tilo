@@ -398,6 +398,7 @@ imports! {
     FilePart = "file_part" ([H, I32] -> [H]);
     FileSize = "file_size" ([H] -> [I64]);
     FileText = "file_text" ([H] -> [H]);
+    FileData = "file_data" ([H] -> [H]);
     FileFiles = "file_files" ([H] -> [H]);
     // A book the file is: its chapters, each beginning with its title as a heading; and what its
     // package says about it (title, author, language, subject).

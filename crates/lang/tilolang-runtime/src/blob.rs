@@ -351,6 +351,13 @@ impl Core {
                 };
                 self.result(answer.map(Value::text))
             }
+            Imp::FileData => {
+                let file = self.file_arg(a.h(0)?)?;
+                self.result(
+                    self.file_bytes(&file)
+                        .map(|bytes| Value::Bytes(Rc::new(bytes))),
+                )
+            }
             Imp::SheetFile => {
                 let file = self.file_arg(a.h(0)?)?;
                 self.result(self.sheet_import(&file).map(Value::text))
