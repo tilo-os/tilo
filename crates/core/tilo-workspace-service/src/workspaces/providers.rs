@@ -333,7 +333,7 @@ impl Providers {
             .or_else(|| {
                 let (workspace, app) = tilo_actions::remote::application_provider(provider)?;
                 let token = tilo_actions::remote::application_provider_token(workspace, app);
-                provided.get(token.as_str())
+                served.get(token.as_str())
             })
             .cloned()
     }
