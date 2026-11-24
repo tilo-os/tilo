@@ -25,6 +25,9 @@ fn main() {
         let done = match verb {
             "read" => std::fs::read(path).map(drop),
             "write" => std::fs::write(path, b"written by the host"),
+            // A service socket it was handed no descriptor for: the sandbox grants no path to
+            // one, so connecting to it fails rather than reaching the service.
+            "connect" => std::os::unix::net::UnixStream::connect(path).map(drop),
             other => panic!("no verb {other}"),
         };
         let answer = match done {

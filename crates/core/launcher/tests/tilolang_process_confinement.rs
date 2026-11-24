@@ -66,6 +66,10 @@ fn a_tilolang_process_writes_its_storage_and_is_refused_what_it_was_not_granted(
     let secret = elsewhere.join("secret");
     std::fs::write(&secret, "kept").expect("a file it was not granted");
     let planted = elsewhere.join("planted");
+    // A service socket beside the sandbox's storage, as the daemon's are beside an app's: the
+    // host reaches no socket by path, only the descriptors it was handed.
+    let service = elsewhere.join("native.sock");
+    let listening = std::os::unix::net::UnixListener::bind(&service).expect("the service socket");
 
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("a link");
     let launch = ProcessLaunch {
@@ -105,6 +109,14 @@ fn a_tilolang_process_writes_its_storage_and_is_refused_what_it_was_not_granted(
         wrote.starts_with("ERR"),
         "it writes nothing it was not granted: {wrote}"
     );
+    // A socket it was handed no descriptor for is out of reach: the daemon's own sockets are
+    // reached through the descriptors a launch hands down, never by a path.
+    let connected = ask(format!("connect {}", service.display()));
+    assert!(
+        connected.starts_with("ERR"),
+        "it connects to no service socket it was handed no descriptor for: {connected}"
+    );
+    drop(listening);
     // Closing the link ends the host.
     drop(ask);
 
