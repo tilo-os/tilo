@@ -107,8 +107,8 @@ use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS};
 pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
 mod checkpoints;
-pub use checkpoints::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub(crate) use checkpoints::kept_by as checkpoint_check_kept_by;
+pub use checkpoints::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
@@ -195,6 +195,10 @@ pub struct GovernedAccess {
     /// Its members, by their roots: every person its policy gives a role,
     /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
+    /// The members who administer it, by their roots: its owner and the people its policy makes
+    /// administrators. A server acts in the workspace (enrols a member's further device, signs
+    /// what a member asks of it) only when its own person is one of them.
+    pub administrators: Vec<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(

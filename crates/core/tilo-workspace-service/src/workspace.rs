@@ -48,12 +48,6 @@ pub struct WorkspaceRuntime {
     /// The devices this workspace keeps as keys its person revoked: refused with how to approve
     /// another wherever they ask, until their person's approval admits a new key.
     pub(crate) revoked_keys: HashSet<[u8; 32]>,
-    /// Device pubkeys of the hosts this workspace is attached to: the hosts
-    /// of its person that serve it, recorded as each announces what it
-    /// carries (its hello). A change one of them sent is not carried on to
-    /// another, and it carries its members' changes under the members' own
-    /// keys.
-    pub attached_hosts: HashSet<[u8; 32]>,
     /// What services beside the workspace's own stack keep for it (a
     /// server's compute routing), one value per type.
     pub extensions: Extensions,
@@ -150,24 +144,11 @@ impl WorkspaceRuntime {
             evicted: false,
             members: Arc::default(),
             revoked_keys: HashSet::new(),
-            attached_hosts: HashSet::new(),
             extensions: Extensions::default(),
             followed: false,
             workspace_authority: None,
             device_access: None,
         })
-    }
-
-    /// Note that `device` is a host this workspace is attached to.
-    /// Idempotent; called as a host announces what it carries, and as a
-    /// device hands one of its workspaces to a host to serve.
-    pub fn note_attached_host(&mut self, device: [u8; 32]) {
-        self.attached_hosts.insert(device);
-    }
-
-    /// Whether `device` is a host this workspace is attached to.
-    pub(crate) fn attached(&self, device: &[u8; 32]) -> bool {
-        self.attached_hosts.contains(device)
     }
 
     /// Whether this workspace keeps `device` as a key its person revoked: nothing it asks is

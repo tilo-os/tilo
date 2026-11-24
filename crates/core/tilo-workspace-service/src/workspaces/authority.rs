@@ -358,99 +358,86 @@ fn decide_by_governance(
             "the device's certificate names another person than the workspace admitted",
         ));
     }
-    // Its person decides, whichever key of theirs asks: an agent's own
-    // grants were decided where it asked.
-    let authority = member
-        .policy
-        .person_on_device(person, member.acting.foreign_device);
     let cx = Context::at_time(system_time(now));
-    // No person observed an approval here: an answer that asks first is a
-    // refusal, never a pass.
-    let decided = match op {
+    // A place is a role, or the workspace's administration; a role a member
+    // holds already is set, and anyone else is added with it.
+    let change;
+    let op = match op {
         WorkspaceOp::Host(_) | WorkspaceOp::Enter => {
             return Err(CollaborationError::new(NO_WORKSPACE));
         }
-        WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
-        WorkspaceOp::Admit(role) => member.policy.check_admission(&authority, role, &cx, false),
-        WorkspaceOp::AdmitAdministrator => member
-            .policy
-            .check_administrator_invite(person, &authority, &cx, false),
-        WorkspaceOp::MakeAdministrator => {
-            if member.policy.may_make_administrators(&authority, &cx) {
-                Ok(())
-            } else {
-                Err(tilo_action_policy::Refusal::Administrators {
-                    actor: person.to_owned(),
-                    unmaking: false,
-                })
-            }
-        }
-        // Only the owner hands the workspace to someone else.
-        WorkspaceOp::MakeOwner => {
-            if member.policy.is_owner(person) {
-                Ok(())
-            } else {
-                Err(tilo_action_policy::Refusal::OwnershipByOwner)
-            }
-        }
-        WorkspaceOp::Change(change) => member.policy.check(person, &authority, change, &cx, false),
-        // A place is a role, or the workspace's administration; a role a member
-        // holds already is set, and anyone else is added with it.
-        WorkspaceOp::Place(target, place) => {
-            let target = hex::encode(target);
-            let change;
-            let op = match place {
-                MemberPlace::Owner => WorkspaceOp::MakeOwner,
-                MemberPlace::Administrator => WorkspaceOp::MakeAdministrator,
-                MemberPlace::Role(role) => {
-                    change = if member.policy.is_member(&target) {
-                        Change::SetRole {
-                            person: target,
-                            role,
-                        }
-                    } else {
-                        Change::AddMember {
-                            person: target,
-                            role,
-                        }
-                    };
-                    WorkspaceOp::Change(&change)
-                }
-            };
-            return decide_by_governance(workspace, device, op, now, host);
-        }
         // Who the place belongs to was checked before: one the workspace has is
-        // moved as [`Self::Place`] moves one.
-        WorkspaceOp::Role(target, place) => {
-            return decide_by_governance(
-                workspace,
-                device,
-                WorkspaceOp::Place(target, place),
-                now,
-                host,
-            );
+        // moved as a place is given.
+        WorkspaceOp::Place(target, place) | WorkspaceOp::Role(target, place) => match place {
+            MemberPlace::Owner => WorkspaceOp::MakeOwner,
+            MemberPlace::Administrator => WorkspaceOp::MakeAdministrator,
+            MemberPlace::Role(role) => {
+                let person = hex::encode(target);
+                change = if member.policy.is_member(&person) {
+                    Change::SetRole { person, role }
+                } else {
+                    Change::AddMember { person, role }
+                };
+                WorkspaceOp::Change(&change)
+            }
+        },
+        op => op,
+    };
+    // What the member list lets `who` do, on a device of theirs (`foreign` when it is no device
+    // of their own). No person observed an approval here: an answer that asks first is a
+    // refusal, never a pass.
+    let permits = |who: &str, foreign: bool| -> Result<(), tilo_action_policy::Refusal> {
+        let authority = member.policy.person_on_device(who, foreign);
+        match op {
+            WorkspaceOp::Govern(action) => {
+                member.policy.check_action(&authority, action, &cx, false)
+            }
+            WorkspaceOp::Admit(role) => member.policy.check_admission(&authority, role, &cx, false),
+            WorkspaceOp::AdmitAdministrator => member
+                .policy
+                .check_administrator_invite(who, &authority, &cx, false),
+            WorkspaceOp::MakeAdministrator => {
+                if member.policy.may_make_administrators(&authority, &cx) {
+                    Ok(())
+                } else {
+                    Err(tilo_action_policy::Refusal::Administrators {
+                        actor: who.to_owned(),
+                        unmaking: false,
+                    })
+                }
+            }
+            // Only the owner hands the workspace to someone else.
+            WorkspaceOp::MakeOwner => {
+                if member.policy.is_owner(who) {
+                    Ok(())
+                } else {
+                    Err(tilo_action_policy::Refusal::OwnershipByOwner)
+                }
+            }
+            WorkspaceOp::Change(change) => member.policy.check(who, &authority, change, &cx, false),
+            WorkspaceOp::Host(_)
+            | WorkspaceOp::Enter
+            | WorkspaceOp::Place(..)
+            | WorkspaceOp::Role(..) => Err(tilo_action_policy::Refusal::NotAMember(who.to_owned())),
         }
     };
-    decided.map_err(|refusal| refused(op, &refusal))?;
+    // Its person decides, whichever key of theirs asks: an agent's own
+    // grants were decided where it asked.
+    permits(person, member.acting.foreign_device).map_err(|refusal| refused(op, &refusal))?;
     let Some(host) = host else {
         return Ok(person.to_owned());
     };
-    let host = hex::encode(host);
-    let signs = member.policy.person_on_device(&host, false);
-    let relayed = match op {
-        WorkspaceOp::Change(change) => member.policy.check(&host, &signs, change, &cx, false),
-        WorkspaceOp::MakeOwner if !member.policy.is_owner(&host) => {
-            Err(tilo_action_policy::Refusal::OwnershipByOwner)
-        }
-        _ => Ok(()),
-    };
-    relayed.map_err(|refusal| CollaborationError::new(format!("{OWNER_SIGNS}: {refusal}")))?;
+    // This host signs what it carries out, so its own person's row on the member list must let
+    // it do the same: a server acts in a workspace only through its row there, and in one whose
+    // list does not have its person it carries out nothing.
+    permits(&hex::encode(host), false)
+        .map_err(|refusal| CollaborationError::new(format!("{OWNER_SIGNS}: {refusal}")))?;
     Ok(person.to_owned())
 }
 
 /// Why this host does not carry out a change the workspace lets its caller
-/// make: the host signs what it carries out, and the change is one only the
-/// workspace's owner makes.
+/// make: the host signs what it carries out, and its own row on the member
+/// list does not let it make the change.
 const OWNER_SIGNS: &str = "only the workspace's owner makes this change, and from a device of their own: \
      this host serves the workspace as one of its administrators and may not sign it for them";
 

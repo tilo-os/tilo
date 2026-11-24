@@ -242,18 +242,6 @@ impl PeerGovernance<'_> {
             member_user_roots.push(*root);
             member_devices.extend(member.devices.iter().copied());
         }
-        // A host the governance names holds the workspace: its device is let
-        // in wherever the workspace is held, and its person, whose host holds
-        // all of it already, is let reach the hosts holding it.
-        for hint in self.keeping_devices() {
-            let cert = &hint.host;
-            if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                && !self.peer.core.revocations.refuses(cert)
-            {
-                member_devices.push(cert.device_public_key);
-                member_user_roots.push(cert.user_public_key);
-            }
-        }
         // A key its person revoked is let in nowhere: its device leaves the workspace's access,
         // and a session of it that is open is told so and let go.
         member_devices.retain(|device| !self.revoked_key(device));
@@ -261,9 +249,15 @@ impl PeerGovernance<'_> {
         member_devices.dedup();
         member_user_roots.sort_unstable();
         member_user_roots.dedup();
+        let administrators = member_user_roots
+            .iter()
+            .copied()
+            .filter(|root| self.peer.governs_history(root))
+            .collect();
         Ok(GovernedAccess {
             member_devices,
             member_user_roots,
+            administrators,
         })
     }
 
@@ -337,14 +331,24 @@ impl PeerGovernance<'_> {
     /// leaves the group, and the commit that removes it rotates the keys.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
         let access = self.peer.governance().governed_access(now)?;
-        let stores: BTreeSet<[u8; 32]> = self
-            .keeping_devices()
-            .iter()
-            .filter(|hint| super::holder_role(hint) == super::CopyRole::Store)
-            .map(|hint| hint.host.device_public_key)
-            .collect();
-        Ok(access
-            .member_devices
+        let mut holders: BTreeSet<[u8; 32]> = BTreeSet::new();
+        let mut stores: BTreeSet<[u8; 32]> = BTreeSet::new();
+        // A holder the member list names keeps the workspace: a key holder among them takes the
+        // keys beside the members' devices, while it stays certified and unrevoked. Being named
+        // a holder lets it keep and carry the workspace; it makes nobody a member.
+        for hint in self.keeping_devices() {
+            let cert = &hint.host;
+            if super::holder_role(&hint) == super::CopyRole::Store {
+                stores.insert(cert.device_public_key);
+            } else if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                && !self.peer.core.revocations.refuses(cert)
+                && !self.revoked_key(&cert.device_public_key)
+            {
+                holders.insert(cert.device_public_key);
+            }
+        }
+        holders.extend(access.member_devices);
+        Ok(holders
             .into_iter()
             .filter(|device| !stores.contains(device))
             .collect())

@@ -371,7 +371,7 @@ impl TerminalService {
     }
 
     /// Run the app's `action` on the workspace's machine secrets document, founded when no
-    /// window made it, and publish what it changed as the governor's.
+    /// window made it, and publish what it changed as this device's.
     async fn declared(
         &self,
         caller: &Caller,
@@ -392,7 +392,7 @@ impl TerminalService {
         self.copies
             .apply_app_action(
                 workspace,
-                self.copies.governor(),
+                self.copies.device_cert(),
                 &self.catalogue,
                 &invoker,
                 asked,
@@ -430,7 +430,7 @@ impl TerminalService {
             .copies
             .prepare_application(
                 workspace,
-                self.copies.governor(),
+                self.copies.device_cert(),
                 &self.catalogue,
                 TERMINAL_APP,
                 record,
@@ -465,7 +465,7 @@ impl TerminalService {
         let copies = self.copies.clone();
         let catalogue = self.catalogue.clone();
         let keep = self.keep.clone();
-        let governor = copies.governor().clone();
+        let device = copies.device_cert().clone();
         let (workspace, record) = (workspace.to_owned(), record.to_owned());
         let invoker = tilo_actions::ActionInvoker::admitted(caller.acting());
         self.runtime.spawn(async move {
@@ -498,7 +498,7 @@ impl TerminalService {
                 arguments: finished,
             };
             if let Err(error) = copies
-                .apply_app_action(&workspace, &governor, &catalogue, &invoker, asked)
+                .apply_app_action(&workspace, &device, &catalogue, &invoker, asked)
                 .await
             {
                 tracing::warn!(%workspace, %record, %error, "a Terminal command was not recorded");

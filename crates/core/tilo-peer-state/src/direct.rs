@@ -1487,16 +1487,11 @@ impl DirectSync {
     }
 
     /// Make this device the workspace's host on its links: what they bring in
-    /// it sends on to its other links, and what its admission takes is the
-    /// workspace's history, so a sealed change it opens and finds refused is
-    /// refused outright ([`crate::owner::NativeWorkspaceOwner::define_history`]).
+    /// it sends on to its other links.
     fn host(&self) {
         self.0
             .fan_out
             .store(true, std::sync::atomic::Ordering::Release);
-        if let Some(admission) = &self.0.admission {
-            admission.owner.define_history(admission.workspace);
-        }
     }
 
     /// Whether this device is the workspace's host on its links
@@ -2572,8 +2567,8 @@ impl DirectSync {
                                 .as_deref()
                                 .is_none_or(|readers| reads_named(&replica, readers, device))
                                 && replica
-                                .check_document_read(device, &app, &document, now)
-                                .is_ok()
+                                    .check_document_read(device, &app, &document, now)
+                                    .is_ok()
                         }
                         _ => true,
                     }

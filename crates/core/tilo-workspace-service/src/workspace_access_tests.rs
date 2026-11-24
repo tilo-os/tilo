@@ -206,9 +206,23 @@ fn list_person(runtime: &mut WorkspaceRuntime, user: [u8; 32]) {
     members.member_user_roots.sort_unstable();
 }
 
-/// The workspace served here, as its binding names it.
-fn served() -> crate::workspaces::WorkspaceAuthority {
-    crate::workspaces::WorkspaceAuthority::unattached(WORKSPACE)
+/// Give the person whose root is `user` an administrator's row on the workspace's member list.
+fn administer(runtime: &mut WorkspaceRuntime, user: [u8; 32]) {
+    list_person(runtime, user);
+    let members = Arc::make_mut(&mut runtime.members);
+    members.administrators.push(user);
+    members.administrators.sort_unstable();
+}
+
+/// [`super::decide_in`] over what the host's runtime for the workspace holds.
+fn decide_in(
+    runtime: &WorkspaceRuntime,
+    trust: &ServerTrust<'_>,
+    peer: &AuthenticatedPeer,
+    op: WorkspaceOperation,
+    now_ns: u64,
+) -> Decision {
+    super::decide_in(WorkspaceFacts::current(runtime), trust, peer, op, now_ns)
 }
 
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
@@ -335,15 +349,8 @@ fn decide_matrix() {
             expected: "AAAAAAAAdAA",
         },
         Case {
-            name: "same-user host this workspace is attached to",
-            peer: peer(owner, [30; 32], true, None),
-            setup: Box::new(|runtime, _| {
-                runtime.attached_hosts.insert([30; 32]);
-            }),
-            expected: "AAANNNNNdAA",
-        },
-        Case {
-            name: "same-user host this workspace is not attached to",
+            // Holding the workspace, or being the server it lives on, makes nobody a member.
+            name: "same-user host the member list does not have",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
             expected: "NNNNNNNNdNN",
@@ -391,50 +398,79 @@ fn decide_matrix() {
             expected: "ooooooooooo",
         },
         Case {
-            name: "this server's own device, in a workspace served here",
+            // Its person administers, so is a member: an unlisted device of theirs is enrolled
+            // through that row, as any member's is.
+            name: "an unlisted device of this server's person, who administers the workspace",
             peer: peer(owner, [70; 32], true, None),
-            setup: Box::new(|runtime, _| {
-                runtime.workspace_authority = Some(served());
-            }),
-            expected: "NNNNNNNNdNN",
+            setup: Box::new(move |runtime, _| administer(runtime, owner)),
+            expected: "ENNNNNNNdNN",
         },
         Case {
-            name: "another listed device of the owner, in a workspace served here",
+            name: "another listed device of the owner, in a workspace its person administers",
             peer: peer(owner, [71; 32], false, None),
-            setup: Box::new(|runtime, _| {
+            setup: Box::new(move |runtime, _| {
                 list_device(runtime, [71; 32]);
-                runtime.workspace_authority = Some(served());
+                administer(runtime, owner);
             }),
             expected: "AAAAAAAAdAA",
         },
         Case {
-            name: "agent delegated this workspace, in a workspace served here",
+            name: "agent delegated this workspace, where this server's person administers",
             peer: peer(owner, [44; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                runtime.workspace_authority = Some(served());
+            setup: Box::new(move |runtime, server| {
+                administer(runtime, owner);
                 server.delegate(server.owner, [44; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: "NNNNNNNNANN",
+            expected: "ENNNNNNNANN",
         },
         Case {
             // The agent's approver is a device of the person it acts for, Bob
             // here, and the host's own person is no special case.
-            name: "another person's agent, in a workspace served here",
+            name: "another person's agent, where this server's person administers",
             peer: peer(bob, [45; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                runtime.workspace_authority = Some(served());
+            setup: Box::new(move |runtime, server| {
+                administer(runtime, owner);
                 server.delegate(server.bob, [45; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: "NNNNNNNNANN",
         },
         Case {
-            name: "a further device of a member, in a workspace served here",
+            // A server whose person has no administrator's row takes no agent in.
+            name: "agent delegated this workspace, where this server's person is a plain member",
+            peer: peer(bob, [47; 32], false, None),
+            setup: Box::new(move |runtime, server| {
+                list_person(runtime, owner);
+                server.delegate(server.bob, [47; 32], Some((NOW + 1, WORKSPACE)));
+            }),
+            expected: "NNNNNNNNdNN",
+        },
+        Case {
+            name: "a further device of a member, where this server's person administers",
             peer: peer(bob, [46; 32], false, None),
             setup: Box::new(move |runtime, _| {
                 list_person(runtime, bob);
-                runtime.workspace_authority = Some(served());
+                administer(runtime, owner);
             }),
             expected: "ENNNNNNNdNN",
+        },
+        Case {
+            // A server without an administrator's row on the list enrols nobody: a member's new
+            // device comes in through a device of a member, never through the server holding it.
+            name: "a further device of a member, where this server's person administers nothing",
+            peer: peer(bob, [48; 32], false, None),
+            setup: Box::new(move |runtime, _| {
+                list_person(runtime, bob);
+                list_person(runtime, owner);
+            }),
+            expected: "NNNNNNNNdNN",
+        },
+        Case {
+            // A person the list removed is no member: none of their devices is admitted or
+            // enrolled, wherever the server holding the workspace stands.
+            name: "a device of a person the list removed",
+            peer: peer(bob, [49; 32], false, None),
+            setup: Box::new(move |runtime, _| administer(runtime, owner)),
+            expected: "NNNNNNNNdNN",
         },
         Case {
             name: "member device whose certificate expired",
@@ -463,8 +499,6 @@ fn decide_matrix() {
     let mut failures = Vec::new();
     for case in &cases {
         runtime.members = Arc::default();
-        runtime.attached_hosts.clear();
-        runtime.workspace_authority = None;
         (case.setup)(&mut runtime, &server);
         let actual: String = OPS
             .iter()
@@ -538,7 +572,7 @@ fn an_agent_joins_the_member_list_only_inside_its_live_delegation() {
     let server = Server::new();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
-    runtime.workspace_authority = Some(served());
+    administer(&mut runtime, server.owner);
     let agent = peer(server.owner, [90; 32], false, None);
     let decide = |runtime: &WorkspaceRuntime, now: u64| {
         decide_in(
@@ -566,15 +600,15 @@ fn an_agent_joins_the_member_list_only_inside_its_live_delegation() {
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::AgentWithdrawn)
     );
-    // A workspace not served here takes no agent in.
+    // A workspace this server's person does not administer takes no agent in.
     server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
-    runtime.workspace_authority = None;
+    let administered = std::mem::take(&mut runtime.members);
     assert_eq!(
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
     // Its certificate must still be current.
-    runtime.workspace_authority = Some(served());
+    runtime.members = administered;
     server.revoke([90; 32]);
     assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
 }
@@ -760,7 +794,6 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     // and its refusal alone would not keep the device out of a workspace its
     // membership holds.
     let mut runtime = workspace(dir.path());
-    runtime.workspace_authority = Some(served());
     list_person(&mut runtime, guest);
     list_device(&mut runtime, device);
     let peer = peer(guest, device, true, None);
@@ -784,7 +817,6 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     // The person's key refuses every device of theirs, listed or not.
     let other_dir = tempfile::tempdir().unwrap();
     let mut other = workspace(other_dir.path());
-    other.workspace_authority = Some(served());
     let second = [0x4c; 32];
     list_person(&mut other, guest);
     list_device(&mut other, second);
@@ -804,9 +836,7 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
 
     assert_eq!(
         DenyReason::Blocked.refusal(),
-        tilo_server_protocol::refusal::Refusal::NotAllowed(
-            "this host refuses this device".into()
-        )
+        tilo_server_protocol::refusal::Refusal::NotAllowed("this host refuses this device".into())
     );
 }
 

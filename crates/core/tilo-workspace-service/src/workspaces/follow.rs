@@ -789,22 +789,12 @@ impl Workspaces {
             agents: &host.agents,
             environments: &host.environments,
         };
-        // A workspace of this host's own is kept for its person: a device of
-        // theirs reaches it before any of theirs has entered it.
-        let person = peer.user_public_key;
-        let kept_for = self.keeps_workspace_for(&person, &workspace_id);
-        let keeps_for = move |candidate: &[u8; 32]| *candidate == person && kept_for;
         let now = tilo_clock::unix_now_ns();
         let at = tilo_clock::wall();
         let (decision, key_access) = state.read(|facts| {
             let decide = |op| {
                 crate::workspace_access::decide_in(
-                    crate::workspace_access::WorkspaceFacts::of_link(
-                        facts,
-                        workspace_id,
-                        &keeps_for,
-                        at,
-                    ),
+                    crate::workspace_access::WorkspaceFacts::of_link(facts, workspace_id, at),
                     &trust,
                     &peer,
                     op,
@@ -867,17 +857,6 @@ impl Workspaces {
             own_frames_only: !keeps_workspace,
             key_access,
         })
-    }
-
-    /// Whether this host keeps `workspace` for `person`, one of their own.
-    fn keeps_workspace_for(
-        &self,
-        person: &[u8; 32],
-        workspace: &tilo_server_protocol::WorkspaceId,
-    ) -> bool {
-        self.own()
-            .and_then(|own| own.owner_of(&workspace.to_string()))
-            == Some(*person)
     }
 
     /// Enrol `cert`'s device in `workspace`, one of a member's: the device's

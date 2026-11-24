@@ -1266,15 +1266,6 @@ impl WorkspaceAuthority {
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
-
-    /// An authority over `workspace` with no workspaces behind it, for a test of the decision.
-    #[cfg(test)]
-    pub(crate) fn unattached(workspace: &str) -> Self {
-        Self {
-            workspaces: std::sync::Weak::new(),
-            workspace: workspace.to_owned(),
-        }
-    }
 }
 
 impl std::fmt::Debug for Workspaces {

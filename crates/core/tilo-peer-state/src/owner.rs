@@ -219,10 +219,6 @@ pub(crate) struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
-    /// The workspaces whose history this device's admission defines: it hosts them, and what it
-    /// admits is what its members take. A sealed change it opens and finds refused is refused
-    /// here outright ([`NativeWorkspaceOwner::define_history`]).
-    defines_history: Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
 #[derive(Default)]
 pub(crate) struct Current {
@@ -542,7 +538,6 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            defines_history: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -574,7 +569,6 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            defines_history: Mutex::default(),
         })))
     }
     #[must_use]
@@ -849,11 +843,10 @@ impl NativeWorkspaceOwner {
     }
     /// [`Self::admit_with_keys`], with a sealed change this device holds the keys of opened and
     /// decided on its contents first, by the check every reader of the record runs on it
-    /// ([`StatePeer::check_opened_write`]). Refused where this device's admission defines the
-    /// record's history ([`Self::define_history`]), it is refused outright and never kept;
-    /// elsewhere it is kept, as every device without the keys keeps it, and the report says the
-    /// refusal ([`crate::AdmissionReport::opened_refusal`]), which this device keeps as its
-    /// verdict on the write.
+    /// ([`StatePeer::check_opened_write`]). It is kept, as every device without the keys keeps
+    /// it, and the report says the refusal ([`crate::AdmissionReport::opened_refusal`]), which
+    /// this device keeps as its verdict on the write: no device's admission decides a record's
+    /// history for the others.
     fn admit_opened(
         &self,
         candidate: &NativeCommittedView,
@@ -861,15 +854,7 @@ impl NativeWorkspaceOwner {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::AdmissionError> {
-        let defines = self
-            .0
-            .defines_history
-            .lock()
-            .contains(&candidate.workspace_id());
-        let refused = match self.opened_verdict(candidate, &message) {
-            Some(refused) if defines => return Err(crate::AdmissionError::ChangeRefused(refused)),
-            refused => refused,
-        };
+        let refused = self.opened_verdict(candidate, &message);
         let mut report = Self::admit_with_keys(candidate, origin, message, now)?;
         if matches!(report.primary, crate::InputDisposition::Accepted(_)) {
             report.opened_refusal = refused;
@@ -915,12 +900,6 @@ impl NativeWorkspaceOwner {
             Err(crate::state::OpenedRefusal::Refused(refused)) => Some(refused),
             Ok(()) | Err(crate::state::OpenedRefusal::CannotDecide(_)) => None,
         }
-    }
-    /// Mark `workspace` as one whose history this device's admission defines: this device hosts
-    /// it, and its members take what it admits. A sealed change it holds the keys of and finds
-    /// refused is refused outright from then on, never kept ([`Self::admit_opened`]).
-    pub(crate) fn define_history(&self, workspace: WorkspaceId) {
-        self.0.defines_history.lock().insert(workspace);
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
     ///

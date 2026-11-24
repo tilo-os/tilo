@@ -350,15 +350,14 @@ fn base_of(peer: &crate::StatePeer) -> Vec<u8> {
 }
 
 /// A device holding a sealed record's keys opens a change it receives and decides its contents by
-/// the check every reader of the record runs. A device whose admission does not define the
-/// record's history keeps the change, as every device without the keys does, and keeps its
-/// verdict: the change's author is told, and the record reads without the change. The workspace's
-/// host, whose admission is the history its members take, refuses the change outright.
+/// the check every reader of the record runs. It keeps the change, as every device without the
+/// keys does, and keeps its verdict: the change's author is told, and the record reads without
+/// the change. No device's admission decides the record's history for the others: the server
+/// holding the workspace keeps it as every member's device does.
 #[tokio::test]
 async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_opens_to() {
     let (fixture, host, writer_key) =
         crate::owner::testing::governed_fixture_at(tilo_clock::wall());
-    let hosting = enrolled_with(fixture.clone());
     let joined = enrolled_with(fixture);
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let writer = writer_key.verifying_key().to_bytes();
@@ -389,7 +388,7 @@ async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_o
     );
     let refused = heard
         .as_ref()
-        .expect("a device that does not define the history keeps the change")
+        .expect("a device keeps the change")
         .opened_refusal()
         .expect("the report says the workspace's rules refuse what it opens to")
         .clone();
@@ -444,30 +443,4 @@ async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_o
         Some("forged".to_owned()),
         "nothing of the refused change reads"
     );
-
-    // The host refuses it outright, and keeps nothing of it.
-    hosting
-        .owner
-        .keep_sealed_histories(Arc::new(Held(keys.clone())));
-    hosting.owner.define_history(workspace);
-    let refused = hosting
-        .owner
-        .receive(
-            workspace,
-            TransportOrigin::ServerDelta(writer),
-            message,
-            now,
-        )
-        .expect_err("the host refuses the change");
-    assert!(
-        matches!(&refused, crate::AdmissionError::ChangeRefused(refused) if refused.changes.contains(&forged_change)),
-        "the host's refusal is the change's own: {refused:?}"
-    );
-    let kept = hosting
-        .owner
-        .with_current(workspace, |view| {
-            Ok(view.peer().publication().holds_sealed(APP, "", &envelope))
-        })
-        .unwrap();
-    assert!(!kept, "the host keeps nothing of it");
 }
