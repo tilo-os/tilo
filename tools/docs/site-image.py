@@ -9,8 +9,10 @@ image. Each SOURCE (a file or a directory) is put at PATH in the new layer. OUT 
 layout) and `digest` (the image manifest's digest, what a deployment pins).
 
 It reads and writes files and talks HTTPS to the registry: no container runtime, no root. The new
-layer's entries are sorted, owned by root, readable by all and dated 0, so the same files always
-give the same layer, and a site whose files did not change gives the image it gave before.
+layer's entries are sorted, owned by root and readable by all, so the same files always give the
+same layer, and a site whose files did not change gives the image it gave before. A file is dated
+by its contents, not by when it was built: web servers validate caches by date and size (nginx's
+ETag and Last-Modified), so a file that changes, even to the same size, gets another date.
 """
 
 import gzip
@@ -110,10 +112,15 @@ def base_manifest(registry):
     return doc
 
 
+def dated(data):
+    """A date for a file of `data`: the same contents, the same date; other contents, another."""
+    return 1 + int.from_bytes(hashlib.sha256(data).digest()[:4], "big")
+
+
 def add(tar, source, at):
-    def entry(name, mode, kind):
+    def entry(name, mode, kind, mtime=0):
         info = tarfile.TarInfo(name)
-        info.mode, info.type, info.mtime, info.uid, info.gid, info.uname, info.gname = mode, kind, 0, 0, 0, "", ""
+        info.mode, info.type, info.mtime, info.uid, info.gid, info.uname, info.gname = mode, kind, mtime, 0, 0, "", ""
         return info
 
     parts = at.strip("/").split("/")
@@ -122,7 +129,7 @@ def add(tar, source, at):
     if os.path.isfile(source):
         with open(source, "rb") as f:
             data = f.read()
-        info = entry(at.strip("/"), 0o644, tarfile.REGTYPE)
+        info = entry(at.strip("/"), 0o644, tarfile.REGTYPE, dated(data))
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
         return
@@ -139,7 +146,7 @@ def add(tar, source, at):
                 die(f"{path} is a symlink: a site's files are its own")
             with open(path, "rb") as f:
                 data = f.read()
-            info = entry(f"{name}/{file}", 0o644, tarfile.REGTYPE)
+            info = entry(f"{name}/{file}", 0o644, tarfile.REGTYPE, dated(data))
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
 
