@@ -43,6 +43,7 @@ mod levels;
 mod library;
 mod link_editor;
 mod links;
+mod logs;
 mod mail_recipients;
 mod make_from;
 mod marks;

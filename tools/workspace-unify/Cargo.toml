@@ -573,9 +573,6 @@ doc = false
 "localzone-0_3_1" = { package = "localzone", version = "^0.3.1", default-features = false, features = [] }
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
-"logs" = { path = "../../apps/logs", default-features = false, features = [] }
-"logs-model" = { path = "../../apps/logs-model", default-features = false, features = [] }
-"logs-model-wasm" = { path = "../../apps/logs-model-wasm", default-features = false, features = [] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
@@ -3097,9 +3094,6 @@ doc = false
 "localzone-0_3_1" = { package = "localzone", version = "^0.3.1", default-features = false, features = [] }
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
-"logs" = { path = "../../apps/logs", default-features = false, features = [] }
-"logs-model" = { path = "../../apps/logs-model", default-features = false, features = [] }
-"logs-model-wasm" = { path = "../../apps/logs-model-wasm", default-features = false, features = [] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }

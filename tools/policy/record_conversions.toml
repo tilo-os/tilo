@@ -4,6 +4,12 @@
 # person loses.
 #
 [[change]]
+kind = "logs.journal"
+app = "logs"
+change = "removed"
+lost = "The journal filter a workspace shared with the Rust app. The tilolang app keeps its filter in its own record, but an earlier resource is not converted: a new installation starts with every severity and no facet set."
+
+[[change]]
 kind = "canvas.artwork"
 app = "canvas"
 change = "removed"

@@ -88,3 +88,8 @@ so-tilo-system-disks-eject = Eject the drive
 so-tilo-system-firewall-refresh = Read this computer's firewalld again
 so-tilo-system-firewall-apply = Apply the configuration to this computer's firewalld
 so-tilo-system-firewall-read-blocked = Show what the kernel dropped
+
+# Journal
+so-tilo-system-journal-refresh = Read the journal again
+so-tilo-system-journal-read-after = Read the records after a cursor
+so-tilo-system-journal-set-following = Follow the journal live

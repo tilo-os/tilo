@@ -137,6 +137,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("processes", "Processes", "processes"),
     ("disks", "Drives", "disks"),
     ("firewall", "Firewall", "firewall"),
+    ("journal", "Journal", "journal"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
     // What the machine booted, what update waits, and the zone its clock keeps.

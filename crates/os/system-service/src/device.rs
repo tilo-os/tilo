@@ -379,6 +379,19 @@ pub trait System: Send + Sync {
         Err("this machine has no system journal".to_owned())
     }
 
+    /// The journal's most recent records, or those written after `after`, oldest first, with
+    /// the cursor of the last one. A machine with no journal answers an error.
+    ///
+    /// # Errors
+    /// Why the journal could not be read.
+    fn read_journal(
+        &self,
+        _after: Option<&str>,
+        _limit: u32,
+    ) -> Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String> {
+        Err("this machine has no system journal".to_owned())
+    }
+
     /// What this computer's process table and machine read as now. A machine with no system
     /// information service answers with `serving: false`.
     fn processes(&self) -> tilo_system_resources::processes::Processes {
@@ -764,6 +777,17 @@ impl System for OsSystem {
         String,
     > {
         crate::firewall::blocked(window_minutes)
+    }
+
+    fn read_journal(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String> {
+        match after {
+            Some(cursor) => crate::journal::read_after(cursor, limit),
+            None => crate::journal::read(limit),
+        }
     }
 
     fn processes(&self) -> tilo_system_resources::processes::Processes {

@@ -33,6 +33,7 @@ pub mod drives;
 pub mod firewall;
 pub mod firmware;
 pub mod host_info;
+pub mod journal;
 pub mod storage;
 pub mod windows_compat;
 pub use tilo_system_resources::effects;
@@ -46,8 +47,8 @@ pub mod update;
 pub mod users;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -66,13 +67,16 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO,
+    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO, JOURNAL,
     KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
     USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
 /// enough that a flight's arrival shows the local time within the hour.
+/// The most journal records the reading keeps: older ones leave as new ones arrive.
+const MAX_JOURNAL_ENTRIES: usize = 5000;
+
 pub const LOOK_AGAIN: Duration = Duration::from_secs(30 * 60);
 
 /// Which resource a change belongs to.
@@ -96,6 +100,7 @@ enum Part {
     Processes,
     Disks,
     Firewall,
+    Journal,
 }
 
 /// A change to one of the resources a privileged helper answers for an extension.
@@ -126,6 +131,7 @@ pub struct Readings {
     pub processes: tilo_system_resources::processes::Processes,
     pub disks: tilo_system_resources::disks::Disks,
     pub firewall: tilo_system_resources::firewall::Firewall,
+    pub journal: tilo_system_resources::journal::Journal,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -156,6 +162,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         processes: system.processes(),
         disks: system.disks(),
         firewall: system.firewall(),
+        journal: tilo_system_resources::journal::Journal::default(),
     }
 }
 
@@ -182,6 +189,21 @@ enum Landed {
         read_at_ms: u64,
         result: Result<BlockedReport, String>,
     },
+    /// The journal read, or the records written since a cursor.
+    Journal {
+        action: String,
+        result: Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String>,
+        /// The read replaced the entries, rather than continuing them.
+        replace: bool,
+        read_at_ms: u64,
+    },
+}
+
+/// One window's live follow of the journal, and the cursor its next read starts after.
+struct JournalFollow {
+    following: Arc<AtomicBool>,
+    cursor: Arc<Mutex<String>>,
+    thread: std::thread::Thread,
 }
 
 /// What the kernel dropped in a window: its groups, the packets together, and what the report
@@ -226,6 +248,8 @@ pub struct SystemService {
     container_watch: Option<Box<dyn Send>>,
     /// Keeps the process reading's subscription alive while the service runs.
     process_watch: Option<Box<dyn Send>>,
+    /// Follows the journal while a window asks for it.
+    journal_follow: Option<JournalFollow>,
 }
 
 impl SystemService {
@@ -294,6 +318,7 @@ impl SystemService {
             print_watch: None,
             container_watch: None,
             process_watch: None,
+            journal_follow: None,
         };
         refresh(&service.worker.jobs(), live_active.clone());
         service.follow_printers(watched.as_ref(), wake.clone(), live_active.clone());
@@ -505,6 +530,7 @@ impl SystemService {
                 &mut readings.firewall.pending,
                 &mut readings.firewall.problem,
             ),
+            Part::Journal => (&mut readings.journal.pending, &mut readings.journal.problem),
         }
     }
 
@@ -564,6 +590,15 @@ impl SystemService {
         readings.firewall.blocked_read_at_ms = old.firewall.blocked_read_at_ms;
         readings.firewall.blocked_error = old.firewall.blocked_error.take();
         readings.firewall.blocked_note = old.firewall.blocked_note.take();
+        // The journal is read by its own verbs: a plain read of the machine keeps it.
+        readings.journal.entries = std::mem::take(&mut old.journal.entries);
+        readings.journal.cursor = std::mem::take(&mut old.journal.cursor);
+        readings.journal.serving = old.journal.serving;
+        readings.journal.read_error = old.journal.read_error.take();
+        readings.journal.following = old.journal.following;
+        readings.journal.read_at_ms = old.journal.read_at_ms;
+        readings.journal.pending = std::mem::take(&mut old.journal.pending);
+        readings.journal.problem = old.journal.problem.take();
         // A benchmark stays until the next one: a plain read does not clear it.
         if readings.disks.benchmark.is_none() {
             readings.disks.benchmark = old.disks.benchmark.take();
@@ -594,6 +629,53 @@ impl SystemService {
             .any(|action| action == "update-now");
         self.readings = readings;
         self.sync_power_profiles();
+    }
+
+    /// Take in a journal read: its records, its cursor and why it failed, if it did.
+    fn land_journal(
+        &mut self,
+        action: &str,
+        result: Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String>,
+        replace: bool,
+        read_at_ms: u64,
+    ) {
+        let pending = &mut self.readings.journal.pending;
+        if let Some(at) = pending.iter().position(|id| *id == action) {
+            pending.remove(at);
+        }
+        match result {
+            Ok((entries, cursor)) => {
+                let journal = &mut self.readings.journal;
+                if replace {
+                    journal.entries = entries;
+                } else {
+                    journal.entries.extend(entries);
+                    let too_many = journal.entries.len().saturating_sub(MAX_JOURNAL_ENTRIES);
+                    if too_many > 0 {
+                        journal.entries.drain(..too_many);
+                    }
+                }
+                journal.cursor = cursor;
+                journal.serving = true;
+                journal.read_error = None;
+                journal.read_at_ms = read_at_ms;
+                journal.problem = None;
+            }
+            Err(error) => {
+                let journal = &mut self.readings.journal;
+                journal.problem = Some(error.clone());
+                if replace {
+                    journal.serving = false;
+                    journal.read_error = Some(error);
+                }
+            }
+        }
+        let cursor = self.readings.journal.cursor.clone();
+        if let Some(follow) = &self.journal_follow
+            && let Ok(mut held) = follow.cursor.lock()
+        {
+            *held = cursor;
+        }
     }
 
     fn land(&mut self, landed: Landed) {
@@ -631,6 +713,12 @@ impl SystemService {
                     }
                 }
             }
+            Landed::Journal {
+                action,
+                result,
+                replace,
+                read_at_ms,
+            } => self.land_journal(&action, result, replace, read_at_ms),
             Landed::Blocked {
                 action,
                 window_minutes,
@@ -876,6 +964,85 @@ impl SystemService {
         Started::Accepted
     }
 
+    /// Read the journal, replacing its records or continuing them.
+    fn start_journal(
+        &mut self,
+        action: &str,
+        after: Option<String>,
+        limit: u32,
+        replace: bool,
+    ) -> Started {
+        self.status(Part::Journal).0.push(action.to_owned());
+        let action = action.to_owned();
+        self.worker.run(move |system| {
+            let result = match &after {
+                Some(cursor) => system.read_journal(Some(cursor), limit),
+                None => system.read_journal(None, limit),
+            };
+            Landed::Journal {
+                action,
+                result,
+                replace,
+                read_at_ms: crate::journal::now_ms(),
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Start or stop following the journal as new records arrive.
+    fn start_following(&mut self, on: bool) {
+        self.readings.journal.following = on;
+        if !on {
+            if let Some(follow) = self.journal_follow.take() {
+                follow.following.store(false, Ordering::Release);
+                follow.thread.unpark();
+            }
+            return;
+        }
+        if self.journal_follow.is_some() {
+            return;
+        }
+        let following = Arc::new(AtomicBool::new(true));
+        let cursor = Arc::new(Mutex::new(self.readings.journal.cursor.clone()));
+        let jobs = self.worker.jobs();
+        let flag = Arc::clone(&following);
+        let held = Arc::clone(&cursor);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-journal".into())
+            .spawn(move || {
+                while flag.load(Ordering::Acquire) {
+                    let after = held.lock().map(|c| c.clone()).unwrap_or_default();
+                    jobs.run(move |system| {
+                        let cursor = if after.is_empty() {
+                            None
+                        } else {
+                            Some(after.as_str())
+                        };
+                        Landed::Journal {
+                            action: "read-after".to_owned(),
+                            result: system.read_journal(cursor, 200),
+                            replace: false,
+                            read_at_ms: crate::journal::now_ms(),
+                        }
+                    });
+                    std::thread::park_timeout(Duration::from_secs(1));
+                }
+            });
+        match spawned {
+            Ok(thread) => {
+                self.journal_follow = Some(JournalFollow {
+                    following,
+                    cursor,
+                    thread: thread.thread().clone(),
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the journal is not followed live");
+                self.readings.journal.following = false;
+            }
+        }
+    }
+
     /// Measure the device, landing the answer as the reading's benchmark.
     fn start_benchmark(&mut self, action: &str, device: &str) -> Started {
         self.readings.disks.pending.push(action.to_owned());
@@ -1008,6 +1175,10 @@ impl Drop for SystemService {
         self.stopped.store(true, Ordering::Release);
         if let Some(follower) = &self.follower {
             follower.unpark();
+        }
+        if let Some(follow) = self.journal_follow.take() {
+            follow.following.store(false, Ordering::Release);
+            follow.thread.unpark();
         }
     }
 }
@@ -1190,6 +1361,12 @@ pub fn disks_surface() -> tilo_resource::surface::Surface {
 #[must_use]
 pub fn firewall_surface() -> tilo_resource::surface::Surface {
     firewall::surface()
+}
+
+/// The `journal` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn journal_surface() -> tilo_resource::surface::Surface {
+    journal::surface()
 }
 
 /// The `processes` resource's surface, as a shell reads it over `so.tilo.device`.
@@ -1949,6 +2126,32 @@ impl SystemService {
         }
     }
 
+    /// An action on the `journal` resource.
+    fn invoke_journal(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::journal::JournalAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::journal::JournalAction::Refresh { limit } => {
+                Ok(self.start_journal(id, None, limit, true))
+            }
+            tilo_system_resources::journal::JournalAction::ReadAfter { cursor, limit } => {
+                Ok(self.start_journal(id, Some(cursor), limit, false))
+            }
+            tilo_system_resources::journal::JournalAction::SetFollowing { on } => {
+                self.start_following(on);
+                Ok(Started::Accepted)
+            }
+        }
+    }
+
     /// An action on the `disks` resource.
     fn invoke_disks(
         &mut self,
@@ -2005,6 +2208,7 @@ impl Service for SystemService {
             processes::resource(&self.readings.processes),
             disks::resource(&self.readings.disks),
             firewall::resource(&self.readings.firewall),
+            journal::resource(&self.readings.journal),
         ]
     }
 
@@ -2028,6 +2232,7 @@ impl Service for SystemService {
             PROCESSES => Some(reading(&self.readings.processes)),
             DISKS => Some(reading(&self.readings.disks)),
             FIREWALL => Some(reading(&self.readings.firewall)),
+            JOURNAL => Some(reading(&self.readings.journal)),
             _ => None,
         }
     }
@@ -2060,6 +2265,7 @@ impl Service for SystemService {
             PROCESSES => self.invoke_processes(&published, resource, action, arguments),
             DISKS => self.invoke_disks(&published, resource, action, arguments),
             FIREWALL => self.invoke_firewall(&published, resource, action, arguments),
+            JOURNAL => self.invoke_journal(&published, resource, action, arguments),
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
             ))),

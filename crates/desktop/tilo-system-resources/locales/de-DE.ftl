@@ -88,3 +88,8 @@ so-tilo-system-disks-eject = Das Laufwerk auswerfen
 so-tilo-system-firewall-refresh = Die Firewall dieses Rechners neu lesen
 so-tilo-system-firewall-apply = Die Konfiguration auf die Firewall dieses Rechners anwenden
 so-tilo-system-firewall-read-blocked = Zeigen, was der Kernel verworfen hat
+
+# Journal
+so-tilo-system-journal-refresh = Das Journal neu lesen
+so-tilo-system-journal-read-after = Die Einträge nach einem Cursor lesen
+so-tilo-system-journal-set-following = Dem Journal live folgen

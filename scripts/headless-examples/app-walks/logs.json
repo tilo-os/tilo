@@ -1,0 +1,86 @@
+{
+  "app": "logs",
+  "said": "Logs",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.logs",
+    "package": "logs"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Logs on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "said": "The window shows the filter and this computer's journal, or says its journal cannot be read",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Filter",
+              "The journal is not available"
+            ]
+          },
+          {
+            "offered": [
+              "Refresh journal",
+              "Try again"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "facets",
+      "said": "The severity, the unit and the boot each narrow the records",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Clear filters",
+              "Try again"
+            ]
+          },
+          {
+            "press_any": [
+              "Follow live",
+              "Try again"
+            ]
+          },
+          {
+            "press_any": [
+              "Severity",
+              "Try again"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}
