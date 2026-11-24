@@ -26,9 +26,9 @@ use tilo_app_test_host::TestApp;
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
-use tilo_workspace_service::tl_records::runtime::Actor;
-use tilo_workspace_service::tl_records::runtime::Value as TlValue;
-use tilo_workspace_service::tl_records::{Opened, ResourceStore};
+use tilolang_workspace::records::{Opened, ResourceStore};
+use tilolang_workspace::runtime::Actor;
+use tilolang_workspace::runtime::Value as TlValue;
 use ui::tilo_actions::ActionKey;
 use ui::tilo_actions::params::{ActionParam, ParamType};
 use ui::tilo_actions::remote::CatalogueRow;
@@ -939,13 +939,13 @@ fn program() -> Shortcut {
 /// tl Chat's record with a category, a text channel and a message, a thread and its reply, and a
 /// voice channel: every kind of resource its actions are published on.
 fn chat_record() -> Opened {
-    let packages = tilo_workspace_service::tl_records::built_in(CHAT_APP)
+    let packages = tilolang_workspace::records::built_in(CHAT_APP)
         .unwrap()
         .expect("Chat is built into this build");
     let mut opened = Opened::open(
         ResourceStore::in_memory(),
         &packages,
-        Actor::App(tilo_workspace_service::tl_records::runtime::ids::AppId::from(CHAT_APP)),
+        Actor::App(tilolang_workspace::runtime::ids::AppId::from(CHAT_APP)),
         None,
     )
     .expect("Chat opens on an empty record");
@@ -981,7 +981,7 @@ fn chat_record() -> Opened {
         vec![
             TlValue::resource(&general),
             TlValue::Rich(
-                tilo_workspace_service::tl_records::runtime::rich::RichValue::from_text("hello"),
+                tilolang_workspace::runtime::rich::RichValue::from_text("hello"),
             ),
             TlValue::Opt(None),
         ],

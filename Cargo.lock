@@ -3164,7 +3164,7 @@ dependencies = [
  "tilo-net",
  "tilo-reference",
  "tilo-test-env",
- "tilo-workspace-service",
+ "tilolang-workspace",
  "workspace-hack",
 ]
 
