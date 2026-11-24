@@ -717,6 +717,54 @@ pub fn mail_meta() -> Meta {
     }))
 }
 
+/// The packages Tasks imports, each compiled from its app and loaded into a runtime: Discussion,
+/// Notes and Contacts, and the workspace's own package the platform publishes.
+pub struct TasksImports {
+    pub discussion: App,
+    pub notes: App,
+    pub contacts: App,
+    pub workspace: tilolang::PackageMeta,
+}
+
+impl TasksImports {
+    /// Compile and load each into `rt`, handing `trust` what was loaded (an installed package
+    /// is code the platform trusts).
+    pub fn load(rt: &Runtime, trust: impl Fn(&PackageId)) -> Self {
+        let workspace = tilolang_tilo::platform_apps::platform_package(
+            tilolang_tilo::platform_apps::WORKSPACE_APP,
+        )
+        .expect("the workspace's package");
+        let discussion = App::compile(
+            include_str!("../../../../../apps/tl/discussion/app.tl"),
+            std::slice::from_ref(&workspace),
+        );
+        trust(&discussion.load(rt));
+        let notes = App::compile(
+            include_str!("../../../../../apps/tl/notes/app.tl"),
+            &[discussion.meta().clone()],
+        );
+        trust(&notes.load(rt));
+        let contacts = App::compile(include_str!("../../../../../apps/tl/contacts/app.tl"), &[]);
+        trust(&contacts.load(rt));
+        Self {
+            discussion,
+            notes,
+            contacts,
+            workspace,
+        }
+    }
+
+    /// What Tasks compiles against.
+    pub fn metas(&self) -> Vec<tilolang::PackageMeta> {
+        vec![
+            self.discussion.meta().clone(),
+            self.notes.meta().clone(),
+            self.contacts.meta().clone(),
+            self.workspace.clone(),
+        ]
+    }
+}
+
 /// A package compiled from tilolang source and loaded into a runtime.
 pub struct App {
     pub compiled: tilolang::Compiled,

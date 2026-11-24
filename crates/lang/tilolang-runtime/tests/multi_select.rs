@@ -7,8 +7,6 @@ mod cases {
     use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     const TASKS: &str = crate::common::TASKS_SOURCE;
-    /// What a task's page says about it: tasks are made from discussions of them.
-    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     /// An app installed in a workspace of its own: its actions runnable, its views openable.
     struct Installed {
@@ -23,9 +21,8 @@ mod cases {
         let store = AmStore::new();
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
-        let discussion = App::compile(DISCUSSION, &[]);
-        auth.trust(&discussion.load(&rt));
-        let app = App::compile(TASKS, &[discussion.meta().clone()]);
+        let imports = TasksImports::load(&rt, |loaded| auth.trust(loaded));
+        let app = App::compile(TASKS, &imports.metas());
         auth.trust(&app.load(&rt));
         Installed {
             rt,

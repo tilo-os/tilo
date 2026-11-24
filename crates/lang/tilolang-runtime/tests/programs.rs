@@ -10,8 +10,6 @@ mod cases {
     };
 
     const TODO: &str = crate::common::TASKS_SOURCE;
-    const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
-    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     struct World {
         rt: Runtime,
@@ -27,12 +25,10 @@ mod cases {
     fn world() -> World {
         let auth = SimpleAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
-        let discussion = App::compile(DISCUSSION, &[]);
-        discussion.load(&rt);
-        let todo = App::compile(TODO, &[discussion.meta().clone()]);
-        let notes_app = App::compile(NOTES, &[discussion.meta().clone()]);
+        let imports = TasksImports::load(&rt, |_| {});
+        let todo = App::compile(TODO, &imports.metas());
         todo.load(&rt);
-        notes_app.load(&rt);
+        let notes_app = imports.notes;
         let list = rt.create("Tasks").unwrap();
         let nb = rt.create("Notebook").unwrap();
         let mut notes = Vec::new();
