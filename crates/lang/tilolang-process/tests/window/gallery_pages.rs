@@ -44,8 +44,49 @@ const CHARTS: [(&str, &[&str]); 3] = [
 /// A laptop's window and a phone's.
 const SIZES: [(u32, u32); 2] = [(1280, 800), (390, 844)];
 
-/// Pick `place` in the sidebar, as a press on its row does, and wait for it to show.
+/// The control named `name` that `composition` offers assistive technology, as a widget path and
+/// the target its press goes to.
+fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String, Option<String>)> {
+    fn find(
+        access: &ui::a11y::AccessNode,
+        role: Role,
+        name: &str,
+    ) -> Option<Option<String>> {
+        if access.role == role && access.name.as_deref() == Some(name) && !access.state.hidden {
+            return Some(access.action_target.clone());
+        }
+        access
+            .children
+            .iter()
+            .find_map(|child| find(child, role, name))
+    }
+    nodes(composition).into_iter().find_map(|node| {
+        let target = find(node.semantics.as_ref()?, role, name)?;
+        let widget = node
+            .path
+            .split_once('#')
+            .map_or(node.path.as_str(), |(widget, _)| widget);
+        Some((widget.to_owned(), target))
+    })
+}
+
+/// Press what `composition` offers as `widget` and `target`, as a person's press does.
+fn press(harness: &mut FrameHarness, (widget, target): (String, Option<String>), what: &str) {
+    harness
+        .perform_semantic_named(&widget, target.as_deref(), &Action::Activate)
+        .unwrap_or_else(|refused| panic!("a press on {what} is taken: {refused}"));
+}
+
+/// Pick `place` in the sidebar, as a person does, and wait for it to show: on a phone, where a
+/// page stands over the places, they go Back to them first.
 fn pick(harness: &mut FrameHarness, place: &str) -> Composition {
+    let composition = until(harness, "the sidebar lists its places, or Back to them", |composition| {
+        row(composition, place).is_some() || offered(composition, Role::Button, "Back").is_some()
+    });
+    if row(&composition, place).is_none() {
+        let back = offered(&composition, Role::Button, "Back").expect("Back to the places");
+        press(harness, back, "Back");
+    }
     let composition = until(harness, "the sidebar lists its places", |composition| {
         row(composition, place).is_some()
     });
@@ -59,9 +100,7 @@ fn pick(harness: &mut FrameHarness, place: &str) -> Composition {
         .split_once('#')
         .map_or(picked.path.as_str(), |(widget, _)| widget)
         .to_owned();
-    harness
-        .perform_semantic_named(&widget, target.as_deref(), &Action::Activate)
-        .unwrap_or_else(|refused| panic!("a press on {place}'s row is taken: {refused}"));
+    press(harness, (widget, target), &format!("{place}'s row"));
     until(
         harness,
         &format!("{place} shows once picked"),

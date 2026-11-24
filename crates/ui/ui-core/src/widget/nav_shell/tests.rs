@@ -725,6 +725,42 @@ fn narrowing_keeps_the_keyboard_where_it_was() {
     assert!(h.a11y_node_named("Appearance").is_some());
 }
 
+/// A page the person chose in a wide window is the page a narrow one shows: the focus the
+/// sidebar keeps is the row they pressed, not a wish to go back to the list
+/// (`narrowing_keeps_the_keyboard_where_it_was` keeps a list the keyboard is in).
+#[test]
+fn narrowing_shows_the_page_chosen_in_the_sidebar() {
+    let shell = || {
+        NavShell::new()
+            .sidebar(Box::new(crate::widget::NavList::new(vec![
+                crate::widget::NavSection::untitled(
+                    "pages",
+                    vec![
+                        crate::widget::NavItem::new("general", "General"),
+                        crate::widget::NavItem::new("appearance", "Appearance"),
+                    ],
+                ),
+            ])))
+            .content(Probe::boxed("content").0)
+    };
+    let mut h = harness(shell(), 1280, 700, Theme::dark());
+    settle(&mut h, 1280, 700);
+    // A press on the row: it takes the keyboard, and chooses its page.
+    let row = h.a11y_node_named("Appearance").expect("the sidebar row");
+    h.perform_a11y_action(row, &crate::a11y::Action::Focus)
+        .expect("the row takes the keyboard");
+    let row = h.a11y_node_named("Appearance").expect("the sidebar row");
+    h.perform_a11y_action(row, &crate::a11y::Action::Activate)
+        .expect("the row chooses its page");
+    settle(&mut h, 1280, 700);
+    settle(&mut h, 360, 700);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Content,
+        "the chosen page stays in front"
+    );
+}
+
 tilo_test_env::scenario! {
     fn the_sidebar_toggles_floats_and_resizes_at_its_edge;
 

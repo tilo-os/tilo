@@ -684,6 +684,10 @@ pub struct NavShell {
     /// The content pane the person last worked in; a collapse to narrow
     /// keeps it in front.
     active_hint: Option<NavPane>,
+    /// The list the person last chose a destination in (the sidebar, or the overview and its
+    /// rail), while they have done nothing since: the focus it still holds is the row they
+    /// pressed, so a collapse shows where that row led rather than the list again.
+    chose_in: Option<NavPane>,
 
     inputs: Rc<RefCell<Inputs>>,
     policy: Rc<crate::widget::manual::Policy>,
@@ -838,6 +842,7 @@ impl NavShell {
             inspector_state: None,
             content_back: None,
             active_hint: None,
+            chose_in: None,
             inputs,
             policy,
             invalidation: ManualInvalidation::default(),
@@ -2128,6 +2133,12 @@ impl NavShell {
             .as_deref_mut()
             .is_some_and(|overview| crate::widget::nav_list::take_navigation(overview));
         if from_sidebar {
+            self.chose_in = Some(NavPane::Sidebar);
+            self.active_hint = Some(if self.has_overview() {
+                NavPane::Overview
+            } else {
+                NavPane::Content
+            });
             if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
                 self.toggle_sidebar();
             }
@@ -2139,6 +2150,10 @@ impl NavShell {
                 };
                 self.show(next);
             }
+        }
+        if from_overview || from_rail {
+            self.chose_in = Some(NavPane::Overview);
+            self.active_hint = Some(NavPane::Content);
         }
         if (from_overview || from_rail)
             && !self.geometry.stack.is_empty()
@@ -2266,6 +2281,7 @@ impl NavShell {
                 (None, Some(_)) => self.front_pane(),
                 (Some(_), chosen) => self
                     .focused_pane()
+                    .filter(|pane| self.chose_in != Some(*pane))
                     .or(self.active_hint)
                     .or(chosen)
                     .unwrap_or(NavPane::Content),
@@ -3791,6 +3807,9 @@ impl NavShell {
             self.toggle_sidebar();
             return true;
         }
+        // A press anywhere is the person moving on from the choice they made in a list; the
+        // press on a row that chooses again records it afresh.
+        self.chose_in = None;
         if g.content_column.contains(p) {
             self.active_hint = Some(NavPane::Content);
         } else if g.overview_column.contains(p) || g.rail.contains(p) {
