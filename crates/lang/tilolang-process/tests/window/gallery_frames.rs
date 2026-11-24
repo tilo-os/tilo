@@ -328,6 +328,65 @@ fn scrolls(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     }
 }
 
+/// A scroller the app shows: its `[x, y, width, height]`, offset, content and viewport.
+type Scroller = ([f64; 4], f64, f64, f64);
+
+/// Every scroller the app shows.
+fn scrollers(tile: &mut EmbeddedApp) -> Vec<Scroller> {
+    fn walk(widget: &dyn ui::widget::Widget, out: &mut Vec<Scroller>) {
+        use ui::widget::Widget as _;
+        if let Some(region) = widget.primary_vertical_scroll() {
+            let rect = widget.get_rect();
+            out.push((
+                [rect.x0, rect.y0, rect.width(), rect.height()],
+                region.metrics.offset,
+                region.metrics.content,
+                region.metrics.viewport,
+            ));
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tile.app_mut().root_widget_mut(), &mut out);
+    out
+}
+
+/// The wheel over the page's content moves it here too: the window the shell shows in-process and
+/// the headless harness route it the same way.
+#[test]
+fn the_wheel_over_the_embedded_gallery_scrolls_its_content() {
+    crate::support::installed("gallery");
+    ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
+        let mut text = TextRenderer::new();
+        opened(tile, &mut text);
+        let _ = click(tile, &mut text, (120.0, 132.0));
+        tile.input_for_test(ui::synthetic_input::cursor_moved(1270.0, 400.0));
+        frame(tile, &mut text);
+        let before = scrollers(tile);
+        tile.input_for_test(ui::synthetic_input::mouse_wheel(0.0, -3.0));
+        frame(tile, &mut text);
+        let after = scrollers(tile);
+        let under_pointer = |shown: &[Scroller]| {
+            shown
+                .iter()
+                .find(|(rect, ..)| {
+                    let [x, y, width, height] = *rect;
+                    (x..=x + width).contains(&1270.0) && (y..=y + height).contains(&400.0)
+                })
+                .map(|&(_, offset, content, viewport)| (offset, content, viewport))
+        };
+        assert!(
+            under_pointer(&after).is_some_and(|(offset, content, viewport)| {
+                content > viewport + 1.0 && offset > 0.0
+            }),
+            "the wheel moves the content under the pointer: before {before:?}, after {after:?}"
+        );
+    })
+    .expect("the gallery opens in a window");
+}
+
 /// The window resized, as maximizing it and dragging its edge do: each size is one layout, with no
 /// rebuild and no view evaluated, on every page that switches in place.
 fn resizes(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
