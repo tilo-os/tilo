@@ -133,11 +133,18 @@ fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
 }
 
 pub(super) fn declares(node: &UiNode, pressed: &ui::platform::Shortcut) -> bool {
-    matches!(
+    let one = matches!(
         node.props.get("key"),
         Some(Value::Text(key))
             if ui::platform::Shortcut::from(key.as_str()).same_press(pressed)
-    )
+    );
+    one || match node.props.get("keys") {
+        Some(Value::List(keys)) => keys.iter().any(|key| match key {
+            Value::Text(key) => ui::platform::Shortcut::from(key.as_str()).same_press(pressed),
+            _ => false,
+        }),
+        _ => false,
+    }
 }
 
 fn path_to<'a>(node: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {

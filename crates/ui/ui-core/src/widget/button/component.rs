@@ -48,6 +48,11 @@ pub struct ButtonProps {
     /// control's own event.
     #[component(data)]
     pub key: Option<String>,
+    /// The plain keys that press it while its window has the keyboard, each as the app declared
+    /// it (`keys: ["Right", "Space"]`): every one answers the same press. `key` is the one its
+    /// keys show; a control that names several usually names none.
+    #[component(data)]
+    pub keys: Vec<String>,
     /// How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count
     /// on its icon's top-trailing corner, as an app icon's does, and nothing at 0.
     pub count: Option<i64>,
@@ -79,6 +84,7 @@ impl Default for ButtonProps {
             enabled: true,
             description: None,
             key: None,
+            keys: Vec::new(),
             count: None,
             dot: false,
             alert: false,
@@ -105,6 +111,7 @@ impl Described for Button {
             enabled,
             description,
             key: _,
+            keys: _,
             count,
             dot,
             alert,

@@ -576,6 +576,14 @@
           "data": true
         },
         {
+          "name": "keys",
+          "doc": "The plain keys that press it while its window has the keyboard, each as the app declared it (`keys: [\"Right\", \"Space\"]`): every one answers the same press. `key` is the one its keys show; a control that names several usually names none.",
+          "type": {
+            "list": "text"
+          },
+          "data": true
+        },
+        {
           "name": "count",
           "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
           "type": {

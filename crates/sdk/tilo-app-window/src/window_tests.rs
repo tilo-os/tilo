@@ -749,6 +749,33 @@ fn the_windows_catalogue_keeps_what_an_action_needs() {
     assert_eq!(need("send"), ActionKind::Outside);
 }
 
+fn keys_menu(keys: &[&str]) -> Vec<ToUi> {
+    let mut button = UiNode::empty("ui.Button", "archive");
+    button
+        .props
+        .insert("label".to_owned(), Value::text("Archive"));
+    button.props.insert(
+        "keys".to_owned(),
+        Value::List(keys.iter().map(|key| Value::text(*key)).collect()),
+    );
+    button
+        .events
+        .insert("press".to_owned(), wire::Event::default());
+    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    let mut actions = UiNode::empty("part", "actions");
+    actions
+        .props
+        .insert("name".to_owned(), Value::text("actions"));
+    actions.children.push(button);
+    shell.children.push(actions);
+    vec![ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: shell,
+        front: None,
+    }]
+}
+
 fn keyed_menu(key: &str) -> Vec<ToUi> {
     let mut button = UiNode::empty("ui.Button", "archive");
     button
@@ -823,6 +850,30 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
         fired(&mut app).is_empty(),
         "a modifier the shortcut does not name is another press"
     );
+}
+
+/// A control that names several keys answers each of them, and only them.
+#[test]
+fn a_control_declares_keys_that_all_press_it() {
+    let (mut app, mut window) = window();
+    send(&mut app, &keys_menu(&["Right", "Space"]));
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    for key in ["Right", "Space"] {
+        press(&mut harness, &[], key);
+        let fired: Vec<ToApp> = sent(&mut app)
+            .into_iter()
+            .filter(|message| matches!(message, ToApp::Fire { .. }))
+            .collect();
+        assert_eq!(fired.len(), 1, "{key} presses the control: {fired:?}");
+    }
+    press(&mut harness, &[], "Left");
+    let fired: Vec<ToApp> = sent(&mut app)
+        .into_iter()
+        .filter(|message| matches!(message, ToApp::Fire { .. }))
+        .collect();
+    assert!(fired.is_empty(), "a key it does not name presses nothing: {fired:?}");
 }
 
 /// A plain key is a shortcut too, and a press with any modifier held is another.

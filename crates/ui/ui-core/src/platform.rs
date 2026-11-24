@@ -176,6 +176,9 @@ pub struct Shortcut {
     shift: bool,
     alt: bool,
     system: bool,
+    /// The other chords that press the same thing, when one label names several
+    /// (`Right,Space`): each presses it as the first does.
+    others: Vec<Shortcut>,
 }
 
 impl Shortcut {
@@ -186,6 +189,7 @@ impl Shortcut {
             shift: false,
             alt: false,
             system: false,
+            others: Vec::new(),
         }
     }
 
@@ -198,6 +202,7 @@ impl Shortcut {
             shift: false,
             alt: false,
             system: false,
+            others: Vec::new(),
         }
     }
 
@@ -318,12 +323,19 @@ impl Shortcut {
             alt: modifiers.alt_key(),
             // On a Mac the command modifier is Super, so it is named once.
             system: modifiers.super_key() && !command,
+            others: Vec::new(),
         })
     }
 
-    /// Whether both ask for one press: one key, in one spelling, with the same modifiers.
+    /// Whether both ask for one press: one key, in one spelling, with the same modifiers. A label
+    /// that names several chords matches a press of any of them (`Right,Space`).
     #[must_use]
     pub fn same_press(&self, other: &Self) -> bool {
+        self.same_one(other) || self.others.iter().any(|also| also.same_one(other))
+    }
+
+    /// Whether this chord is exactly `other`.
+    fn same_one(&self, other: &Self) -> bool {
         crate::keys::canonical(&self.key) == crate::keys::canonical(&other.key)
             && self.command == other.command
             && self.shift == other.shift
@@ -572,7 +584,22 @@ mod tests {
 /// table for the modifiers and the key names it parses with ([`tilo_ui_graph::keys::Chord`]), the same
 /// one the compiler checks an app's declared shortcut against.
 impl From<&str> for Shortcut {
+    /// One chord, or several a control answers alike, separated by commas (`Right,Space`): the
+    /// first is the one its keys show.
     fn from(label: &str) -> Self {
+        let mut chords = label
+            .split(',')
+            .map(str::trim)
+            .filter(|chord| !chord.is_empty());
+        let mut shortcut = Self::one(chords.next().unwrap_or(""));
+        shortcut.others = chords.map(Self::one).collect();
+        shortcut
+    }
+}
+
+impl Shortcut {
+    /// The one chord `label` names.
+    fn one(label: &str) -> Self {
         let Ok(chord) = tilo_ui_graph::keys::Chord::parse(label) else {
             return Self::key(label.trim());
         };
@@ -582,6 +609,7 @@ impl From<&str> for Shortcut {
             shift: chord.shift,
             alt: chord.alt,
             system: chord.system,
+            others: Vec::new(),
         }
     }
 }
@@ -589,5 +617,29 @@ impl From<&str> for Shortcut {
 impl From<String> for Shortcut {
     fn from(label: String) -> Self {
         Self::from(label.as_str())
+    }
+}
+
+#[cfg(test)]
+mod more_keys_tests {
+    use super::*;
+
+    /// A label naming several keys presses the same thing as any of them, and shows the first:
+    /// a presentation steps on Right and on Space and names the pair once.
+    #[test]
+    fn a_label_naming_two_keys_matches_either_press() {
+        let both = Shortcut::from("Right,Space");
+        assert!(both.same_press(&Shortcut::key("Right")), "Right presses it");
+        assert!(both.same_press(&Shortcut::key("Space")), "Space presses it");
+        assert!(!both.same_press(&Shortcut::key("Left")), "Left does not");
+        assert!(
+            !both.same_press(&Shortcut::command("Space")),
+            "a modifier the label does not name is another press"
+        );
+        assert_eq!(
+            both.label(PlatformConventions::default()),
+            Shortcut::from("Right").label(PlatformConventions::default()),
+            "its keys show the first chord"
+        );
     }
 }
