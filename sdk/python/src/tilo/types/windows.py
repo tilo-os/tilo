@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Manager` is the app's `windows.manager` at `windows/<resource>`, read with
+`Windows` is the app's `tl.so.tilo.windows.Windows` at `windows/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,31 +20,100 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Route",
-    "Manager",
+    "OpenWith",
+    "Windows",
+    "TiloWindows",
 ]
 
-Route = Literal["wine", "proton", "vm"]
+OpenWith = Literal["wine", "proton", "vm"]
+"""How a program opens: with Wine or Proton in a private capsule, or in the Windows appliance."""
 
-class Manager(Resource):
-    """Windows manager — `windows.manager`."""
-    __surface__ = "so.tilo.windows@2699c73f1ff8837e"
-    routes: dict[str, Route]
+class Windows(Resource):
+    """Windows — `tl.so.tilo.windows.Windows`."""
+    __surface__ = "so.tilo.windows@7a88f357b1ba0b3b"
+    @property
+    def _3bu5zzlt(self) -> dict[str, OpenWith]:
+        """routes (`3bu5zzlt` on the wire)."""
+        return self.fields["3bu5zzlt"]
 
-    def open_file(self,
+    @_3bu5zzlt.setter
+    def _3bu5zzlt(self, value: dict[str, OpenWith]) -> None:
+        self.edit("3bu5zzlt", value=value)
+
+    def set_route(self,
         *,
-        app: str,
-        path: Any | None = None,
+        program: str,
+        route: OpenWith,
     ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["app"] = app
-        if path is not None:
-            args["path"] = path
-        return self.action("open-file", **args)
+        """Choose how a program opens from now on, and carry the choice to this computer."""
+        return self.action("set_route", program=program, route=route)
+
+    def use_recommendation(self, *, program: str) -> None:
+        """Let a program open the way the catalogue recommends, and carry that to this computer."""
+        return self.action("use_recommendation", program=program)
+
+    def installed(self, *, file: Any) -> None:
+        """Install the installer the person chose, or the one a file manager opened here."""
+        return self.action("installed", file=file)
+
+    def opened_file(self,
+        *,
+        program: str,
+        file: Any,
+    ) -> None:
+        """Open the document the person chose in `program`."""
+        return self.action("opened_file", program=program, file=file)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_file"})
+    __actions__ = frozenset({"set_route", "use_recommendation", "installed", "opened_file"})
+
+
+class TiloWindows(Resource):
+    """Windows Apps — `tl.so.tilo.windows`."""
+    __surface__ = "so.tilo.windows@7a88f357b1ba0b3b"
+    def imported_iso(self, *, file: Any) -> None:
+        """Set up the appliance from the Windows ISO the person chose."""
+        return self.action("imported_iso", file=file)
+
+    def recovery_desktop(self) -> None:
+        """Open the appliance's recovery desktop."""
+        return self.action("recovery_desktop")
+
+    def start_windows(self) -> None:
+        """Start the appliance."""
+        return self.action("start_windows")
+
+    def restart_windows(self) -> None:
+        """Restart the appliance."""
+        return self.action("restart_windows")
+
+    def suspend_windows(self) -> None:
+        """Suspend the appliance."""
+        return self.action("suspend_windows")
+
+    def resume_windows(self) -> None:
+        """Resume the appliance."""
+        return self.action("resume_windows")
+
+    def shutdown_windows(self) -> None:
+        """Shut the appliance down."""
+        return self.action("shutdown_windows")
+
+    def temporary_network(self) -> None:
+        """Connect the appliance for activation, for a while."""
+        return self.action("temporary_network")
+
+    def update_network(self) -> None:
+        """Connect the appliance for Windows Update, for a while."""
+        return self.action("update_network")
+
+    def revoke_network(self) -> None:
+        """End the appliance's temporary connection."""
+        return self.action("revoke_network")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"imported_iso", "recovery_desktop", "start_windows", "restart_windows", "suspend_windows", "resume_windows", "shutdown_windows", "temporary_network", "update_network", "revoke_network"})
 
 

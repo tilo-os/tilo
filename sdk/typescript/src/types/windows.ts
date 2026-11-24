@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Manager` is a `Resource` of the app's `windows.manager`, made by its factory with the
+ * `Windows` is a `Resource` of the app's `tl.so.tilo.windows.Windows`, made by its factory with the
  * resource's path (`windows/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,26 +22,75 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.windows@2699c73f1ff8837e";
+export const SURFACE = "so.tilo.windows@7a88f357b1ba0b3b";
 
-/** One of "wine", "proton", "vm". */
-export type Route = "wine" | "proton" | "vm";
+/** How a program opens: with Wine or Proton in a private capsule, or in the Windows appliance. One of "wine", "proton", "vm". */
+export type OpenWith = "wine" | "proton" | "vm";
 
-/** Windows manager — `windows.manager`. */
-export interface Manager extends tilo.Resource {
-  routes: Record<string, Route>;
-  openFile(args: {
-    app: string;
-    path?: unknown;
+/** Windows — `tl.so.tilo.windows.Windows`. */
+export interface Windows extends tilo.Resource {
+  "3bu5zzlt": Record<string, OpenWith>;  // routes
+  /** Choose how a program opens from now on, and carry the choice to this computer. */
+  set_route(args: {
+    program: string;
+    route: OpenWith;
+  }): Promise<void>;
+  /** Let a program open the way the catalogue recommends, and carry that to this computer. */
+  use_recommendation(args: {
+    program: string;
+  }): Promise<void>;
+  /** Install the installer the person chose, or the one a file manager opened here. */
+  installed(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Open the document the person chose in `program`. */
+  opened_file(args: {
+    program: string;
+    file: unknown;
   }): Promise<void>;
 }
 
-/** The actions `Manager` reaches before it is read: `ws` calls them without a
+/** The actions `Windows` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MANAGER_ACTIONS = ["openFile"] as const;
+export const WINDOWS_ACTIONS = ["set_route", "use_recommendation", "installed", "opened_file"] as const;
 
-/** The `windows.manager` kind at `path`. */
-export function manager(ws: tilo.Workspace, path: string): Manager {
-  return resourceProxy(ws, path, SURFACE, MANAGER_ACTIONS) as unknown as Manager;
+/** The `tl.so.tilo.windows.Windows` kind at `path`. */
+export function windows(ws: tilo.Workspace, path: string): Windows {
+  return resourceProxy(ws, path, SURFACE, WINDOWS_ACTIONS) as unknown as Windows;
+}
+
+/** Windows Apps — `tl.so.tilo.windows`. */
+export interface TiloWindows extends tilo.Resource {
+  /** Set up the appliance from the Windows ISO the person chose. */
+  imported_iso(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Open the appliance's recovery desktop. */
+  recovery_desktop(): Promise<void>;
+  /** Start the appliance. */
+  start_windows(): Promise<void>;
+  /** Restart the appliance. */
+  restart_windows(): Promise<void>;
+  /** Suspend the appliance. */
+  suspend_windows(): Promise<void>;
+  /** Resume the appliance. */
+  resume_windows(): Promise<void>;
+  /** Shut the appliance down. */
+  shutdown_windows(): Promise<void>;
+  /** Connect the appliance for activation, for a while. */
+  temporary_network(): Promise<void>;
+  /** Connect the appliance for Windows Update, for a while. */
+  update_network(): Promise<void>;
+  /** End the appliance's temporary connection. */
+  revoke_network(): Promise<void>;
+}
+
+/** The actions `TiloWindows` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TILOWINDOWS_ACTIONS = ["imported_iso", "recovery_desktop", "start_windows", "restart_windows", "suspend_windows", "resume_windows", "shutdown_windows", "temporary_network", "update_network", "revoke_network"] as const;
+
+/** The `tl.so.tilo.windows` kind at `path`. */
+export function tiloWindows(ws: tilo.Workspace, path: string): TiloWindows {
+  return resourceProxy(ws, path, SURFACE, TILOWINDOWS_ACTIONS) as unknown as TiloWindows;
 }
 

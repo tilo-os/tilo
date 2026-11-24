@@ -7883,23 +7883,172 @@
         "required": [],
         "description": ""
       },
-      "windows.manager.open-file.Arguments": {
+      "tl.so.tilo.windows.Windows.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.windows.Windows.edit-text.Arguments": {
         "type": "object",
         "properties": {
-          "app": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
             "type": "string"
           },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "value": {
+            "type": "string"
           }
         },
         "required": [
-          "app"
+          "field"
         ],
-        "description": ""
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.windows.Windows.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.windows.Windows.set_route.Arguments": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string"
+          },
+          "route": {
+            "choice_labels": {
+              "proton": "Proton",
+              "vm": "Vm",
+              "wine": "Wine"
+            },
+            "enum": [
+              "wine",
+              "proton",
+              "vm"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "program",
+          "route"
+        ],
+        "description": "Choose how a program opens from now on, and carry the choice to this computer."
+      },
+      "tl.so.tilo.windows.Windows.use_recommendation.Arguments": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "description": "Let a program open the way the catalogue recommends, and carry that to this computer."
+      },
+      "tl.so.tilo.windows.Windows.installed.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Install the installer the person chose, or the one a file manager opened here."
+      },
+      "tl.so.tilo.windows.Windows.opened_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string"
+          },
+          "file": {}
+        },
+        "required": [
+          "program",
+          "file"
+        ],
+        "description": "Open the document the person chose in `program`."
+      },
+      "tl.so.tilo.windows.imported_iso.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Set up the appliance from the Windows ISO the person chose."
+      },
+      "tl.so.tilo.windows.recovery_desktop.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Open the appliance's recovery desktop."
+      },
+      "tl.so.tilo.windows.start_windows.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Start the appliance."
+      },
+      "tl.so.tilo.windows.restart_windows.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Restart the appliance."
+      },
+      "tl.so.tilo.windows.suspend_windows.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Suspend the appliance."
+      },
+      "tl.so.tilo.windows.resume_windows.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Resume the appliance."
+      },
+      "tl.so.tilo.windows.shutdown_windows.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shut the appliance down."
+      },
+      "tl.so.tilo.windows.temporary_network.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Connect the appliance for activation, for a while."
+      },
+      "tl.so.tilo.windows.update_network.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Connect the appliance for Windows Update, for a while."
+      },
+      "tl.so.tilo.windows.revoke_network.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "End the appliance's temporary connection."
       },
       "tl.so.tilo.activity.Window.$create.Arguments": {
         "type": "object",
@@ -81047,9 +81196,123 @@
     },
     {
       "app": "so.tilo.windows",
-      "resource": "windows.manager",
-      "action": "open-file",
-      "arguments": "#/components/schemas/windows.manager.open-file.Arguments"
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "set_route",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.set_route.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "use_recommendation",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.use_recommendation.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "installed",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.installed.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows.Windows",
+      "action": "opened_file",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.Windows.opened_file.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "imported_iso",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.imported_iso.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "recovery_desktop",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.recovery_desktop.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "start_windows",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.start_windows.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "restart_windows",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.restart_windows.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "suspend_windows",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.suspend_windows.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "resume_windows",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.resume_windows.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "shutdown_windows",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.shutdown_windows.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "temporary_network",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.temporary_network.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "update_network",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.update_network.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "tl.so.tilo.windows",
+      "action": "revoke_network",
+      "arguments": "#/components/schemas/tl.so.tilo.windows.revoke_network.Arguments"
     },
     {
       "app": "so.tilo.activity",
