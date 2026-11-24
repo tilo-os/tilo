@@ -1098,6 +1098,35 @@ fn offers(held: &runtime_collab::ActionCatalogue, resource: &str) -> bool {
         .any(|action| action.resource == resource)
 }
 
+/// An app republishing the surface it already had moves no generation: every listing and open
+/// palette reads it, and every directory page kept for the app is retired when it moves.
+#[cfg(test)]
+#[test]
+fn an_unchanged_surface_republish_moves_no_generation() {
+    let state = AppBrokerState::test_state_only(None, ProcessServices::default());
+    let generation = || *state.publishers.changes.borrow();
+    let surface = catalogue_surface(9, "workspace", "files.entry");
+    state.publish_surface_for_test(surface.clone());
+    let published = generation();
+    state.publish_surface_for_test(surface);
+    assert_eq!(
+        generation(),
+        published,
+        "republishing what the app already published moves nothing"
+    );
+    let mut changed = catalogue_surface(9, "workspace", "files.entry");
+    changed
+        .actions
+        .first_mut()
+        .expect("the fixture publishes one action")
+        .action_label = "Open in a window".into();
+    state.publish_surface_for_test(changed);
+    assert!(
+        generation() > published,
+        "a surface that changed moves the generation"
+    );
+}
+
 #[cfg(test)]
 mod durable_admission_tests;
 
