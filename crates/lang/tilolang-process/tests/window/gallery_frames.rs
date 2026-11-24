@@ -334,7 +334,6 @@ type Scroller = ([f64; 4], f64, f64, f64);
 /// Every scroller the app shows.
 fn scrollers(tile: &mut EmbeddedApp) -> Vec<Scroller> {
     fn walk(widget: &dyn ui::widget::Widget, out: &mut Vec<Scroller>) {
-        use ui::widget::Widget as _;
         if let Some(region) = widget.primary_vertical_scroll() {
             let rect = widget.get_rect();
             out.push((
