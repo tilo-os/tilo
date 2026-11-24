@@ -1,6 +1,7 @@
-//! A member's own agent run by the server that keeps the workspace: Bea lets Ada's server run her
-//! agent, the server takes its turn while none of Bea's devices does, signing as the agent with a
-//! key the server made and Bea's root certified, and it stops once she takes that back.
+//! A member's own agent run by the server that keeps the workspace: the server asks with a ticket
+//! to run Bea's agent, the agent shows it while it waits, and once Bea redeems it with her root
+//! the server takes its turns while none of her devices does, signing as the agent with a key the
+//! server made and her root certified. It stops once she revokes that key.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -11,14 +12,14 @@
     reason = "one scenario, end to end, reads as one test; a fixture failing is its test failing"
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionTarget, TestProvider, WORKSPACE_AGENT_APPROVE,
-    WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_REVOKE,
+    ReceiptStatus, RemoteActionTarget, TestProvider, WORKSPACE_AGENT_CREATE,
+    WORKSPACE_AGENT_UPDATE,
 };
 use tilo_agent_session::model::PlanTurns;
 use tilo_resource::Id;
@@ -26,7 +27,7 @@ use tilo_resource_store::wire::Command;
 use tilo_resource_store::{Cell, Query, Stamp, Value};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
 use super::super::fixtures::{TestGroupKeys, TestHost, device_cert, governor, test_host_holding};
@@ -37,17 +38,16 @@ use super::own_agent_tests::{
 };
 use super::tests::invited;
 use crate::agents::agent_keys::AgentKeys;
-use crate::agents::offered_keys::DeviceAgentKeys;
+use crate::agents::ticketed_keys::{AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys};
 use crate::agents::triggered::{CHAT, MESSAGE};
 use crate::agents::{Model, ServerAgents};
 use crate::apps::triggers::{Runner, StartRun};
 use crate::work::{Actor, Ineligible, NotTaken, Order, Turn};
 
-/// The keys on Bea's device: it holds her root, so it certifies a key another device offered for
-/// her agent, and it takes none of her agent's turns itself.
-struct BeasRoot(SigningKey);
+/// The keys on Bea's device, which takes none of her agent's turns itself.
+struct BeasDevice;
 
-impl AgentKeys for BeasRoot {
+impl AgentKeys for BeasDevice {
     fn grant(&self, _: WorkspaceId, _: &str, _: &str, _: [u8; 32]) -> Result<[u8; 32], String> {
         Err("Bea's device takes no turn of her agent here".to_owned())
     }
@@ -59,34 +59,50 @@ impl AgentKeys for BeasRoot {
     fn made(&self, _: &[u8; 32]) -> Option<(DeviceCert, SigningKey)> {
         None
     }
+}
 
-    fn certify(
-        &self,
-        workspace: WorkspaceId,
-        agent: &str,
-        name: &str,
-        person: [u8; 32],
-        key: [u8; 32],
-    ) -> Result<DeviceCert, String> {
-        if person != self.0.verifying_key().to_bytes() {
-            return Err("this device does not hold that person's root".to_owned());
-        }
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person,
-            device_public_key: key,
-            device_label: name.to_owned(),
-            capabilities: DeviceCapabilities::agent_grant(AgentScope::agent_in(
-                *workspace.as_uuid().as_bytes(),
-                agent,
-            )),
-            issued_at_ns: now,
-            expires_at_ns: Some(now + 30 * 24 * 60 * 60 * 1_000_000_000),
-            signature: [0; 64],
-            issuer: None,
+/// The tickets the server's daemon serves for agents' keys: each one asked, with where its
+/// redemption's certificate goes.
+#[derive(Default)]
+struct Tickets(Mutex<Vec<(AgentKeyAsk, tokio::sync::watch::Sender<Option<DeviceCert>>)>>);
+
+impl AgentKeyTickets for Tickets {
+    fn ask(&self, ask: &AgentKeyAsk) -> Result<AgentKeyTicket, String> {
+        let (sender, certified) = tokio::sync::watch::channel(None);
+        let mut asked = self.0.lock().unwrap();
+        asked.push((ask.clone(), sender));
+        Ok(AgentKeyTicket {
+            ticket: format!("tilo1agentticket{}", asked.len()),
+            certified,
+        })
+    }
+}
+
+impl Tickets {
+    /// How many tickets were asked for.
+    fn asked(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// Redeem the last ticket asked for as a device holding `root` does: it reads what the ticket
+    /// waits for, and the root signs that key's certificate for the agent it names.
+    fn redeem(&self, root: &SigningKey) -> DeviceCert {
+        let asked = self.0.lock().unwrap();
+        let (ask, sender) = asked.last().expect("a ticket was asked for");
+        let tab = tilo_device_identity::login::Tab {
+            device_public_key: hex::encode(ask.key),
+            label: ask.label.clone(),
+            agent: Some(tilo_device_identity::login::AgentAsked {
+                workspace: ask.workspace.to_string(),
+                agent: ask.agent.clone(),
+            }),
         };
-        tilo_user_identity::sign_device_cert(&mut cert, &self.0).map_err(|e| e.to_string())?;
-        Ok(cert)
+        let mut cert = tab
+            .certificate(root.verifying_key().to_bytes(), tilo_clock::unix_now_ns())
+            .unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+        sender.send(Some(cert.clone())).unwrap();
+        cert
     }
 }
 
@@ -204,11 +220,7 @@ async fn hosted() -> Hosted {
     assert_eq!(made["agent"], SCOUT, "{made}");
     // Her device holds her root, and runs an engine that takes none of her agent's turns.
     let idle = Arc::new(TestProvider::new());
-    let _ = ServerAgents::on_device(
-        bea.workspaces().clone(),
-        idle,
-        Arc::new(BeasRoot(bea_root.clone())),
-    );
+    let _ = ServerAgents::on_device(bea.workspaces().clone(), idle, Arc::new(BeasDevice));
     Hosted {
         ada,
         ada_cert,
@@ -238,27 +250,54 @@ fn dispatch_of(workspaces: &Workspaces) -> Arc<TestProvider> {
 }
 
 /// The engine of Ada's server, as its daemon starts it: the keys of a device whose identity store
-/// holds no root, running in the engine's own loop.
-fn server_engine(adas: &Workspaces, dispatch: Arc<TestProvider>) -> Arc<DeviceAgentKeys> {
+/// holds no root, asking with the tickets its daemon serves, running in the engine's own loop.
+fn server_engine(
+    adas: &Workspaces,
+    dispatch: Arc<TestProvider>,
+) -> (Arc<DeviceAgentKeys>, Arc<Tickets>) {
     let keys = Arc::new(DeviceAgentKeys::of(adas, None));
+    let tickets = Arc::new(Tickets::default());
     let model: Model = Arc::new(|| Some(Box::new(Answers) as Box<dyn PlanTurns>));
     let agents = ServerAgents::on_device(
         adas.clone(),
         dispatch,
         Arc::clone(&keys) as Arc<dyn AgentKeys>,
     )
-    .scripted(model);
+    .scripted(model)
+    .asking_with(
+        Arc::clone(&keys),
+        Arc::clone(&tickets) as Arc<dyn AgentKeyTickets>,
+    );
     tokio::spawn(agents.run());
-    keys
+    (keys, tickets)
 }
 
-/// Ada keeps the workspace on her server; Bea lets the server run Scout, her own agent. While
-/// none of her devices takes its turns, she mentions it in Chat: the server's runner fires her
-/// trigger, its engine takes the turn, and Scout answers in that conversation through Chat's
-/// `send`, as Scout acting for Bea, every call signed by the key the server made for Scout and
-/// Bea's root certified. Once she takes that back, the server acts as Scout no more.
+/// Bea's root revokes `key`, announced from her device as every device announces a revocation.
+async fn revoke(hosted: &Hosted, key: [u8; 32]) {
+    let mut entry = RevocationEntry {
+        user_public_key: hosted.bea_root.verifying_key().to_bytes(),
+        revoked_device_public_key: key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &hosted.bea_root).unwrap();
+    hosted
+        .bea
+        .workspaces()
+        .announce_revocations(vec![entry])
+        .await
+        .unwrap();
+}
+
+/// Ada keeps the workspace on her server, which asks with a ticket to run Scout, Bea's own agent;
+/// Scout shows the ticket while it waits, and Bea redeems it with her root. While none of her
+/// devices takes its turns, she mentions it in Chat: the server's runner fires her trigger, its
+/// engine takes the turn, and Scout answers in that conversation through Chat's `send`, as Scout
+/// acting for Bea, every call signed by the key the server made for Scout and Bea's root
+/// certified. Once her root revokes that key, the server signs as Scout no more, and asks no more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_let_it() {
+async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved() {
     let hosted = hosted().await;
     let (adas, beas) = (hosted.ada.workspaces(), hosted.bea.workspaces());
     let workspace = hosted.workspace.clone();
@@ -266,47 +305,38 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_let_it() {
     let bea_person = hex::encode(hosted.bea_cert.user_public_key);
     let ada_device = hex::encode(hosted.ada_cert.device_public_key);
 
-    // The server's engine offers a key of its own for Scout, written into Scout's entry.
+    // The server's engine asks with a ticket to run Scout, naming a key of its own, and Scout
+    // shows that ticket on Bea's device while it waits for her approval.
     let dispatch = dispatch_of(adas);
-    let keys = server_engine(adas, dispatch.clone());
-    let offered = keys
-        .offered(workspace_id, SCOUT)
-        .expect("the server offers a key");
+    let (keys, tickets) = server_engine(adas, dispatch.clone());
     let scout = agent_once(
         beas,
         &workspace,
         SCOUT,
-        "the server never offered",
+        "Scout never showed the server's ticket",
         |agent| agent.runs_on.iter().any(|runs| runs.device == ada_device),
     )
     .await;
     let runs = &scout.runs_on[0];
-    assert_eq!(runs.key, hex::encode(offered), "the key the server made");
-    assert_eq!(runs.certificate, None, "nobody let it run Scout yet");
+    assert!(runs.waits_for_approval(), "{runs:?}");
+    assert_eq!(runs.ticket.as_deref(), Some("tilo1agentticket1"));
+    assert_eq!(tickets.asked(), 1, "one ticket asks for Scout");
 
-    // Not let, the server does not act as Scout.
+    // Not approved, the server does not act as Scout.
     assert_eq!(
         takes_agents_turn(adas, &workspace, SCOUT).await.err(),
         Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
-        "the server takes no turn of an agent nobody let it run"
+        "the server takes no turn of an agent nobody approved it for"
     );
 
-    // Bea lets it, in person, from her own device, as `tilo do --in-person` asks it.
-    let approved = ask_agents(
-        beas,
-        &workspace,
-        &hosted.bea_cert,
-        WORKSPACE_AGENT_APPROVE,
-        json!({ "agent": SCOUT }),
-    )
-    .await
-    .expect("Bea lets the server run her agent");
-    assert_eq!(approved["device"], json!(ada_device), "{approved}");
+    // Bea redeems the ticket on her device, which holds her root.
+    let approved = tickets.redeem(&hosted.bea_root);
+    let key = approved.device_public_key;
     agent_once(
         adas,
         &workspace,
         SCOUT,
-        "the server never read the grant",
+        "the server never kept the certificate",
         |agent| {
             agent
                 .runs_on
@@ -317,7 +347,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_let_it() {
     .await;
     assert!(
         takes_agents_turn(adas, &workspace, SCOUT).await.is_ok(),
-        "the server takes Scout's turn once Bea let it"
+        "the server takes Scout's turn once Bea approved it"
     );
 
     // Chat answers for its record on both devices. Bea makes a channel and mentions Scout there;
@@ -496,7 +526,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_let_it() {
         tilo_clock::unix_now_ns(),
     )
     .expect("the call is signed");
-    assert_eq!(signer.device_public_key, offered, "by the server's key");
+    assert_eq!(signer.device_public_key, key, "by the server's key");
     assert_eq!(
         signer.user_public_key,
         hosted.bea_root.verifying_key().to_bytes(),
@@ -565,99 +595,95 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_let_it() {
         "for Bea"
     );
 
-    // Bea takes it back: the server acts as Scout no more.
-    ask_agents(
-        beas,
-        &workspace,
-        &hosted.bea_cert,
-        WORKSPACE_AGENT_REVOKE,
-        json!({ "agent": SCOUT, "device": ada_device }),
-    )
-    .await
-    .expect("Bea stops the server running her agent");
-    agent_once(
-        adas,
-        &workspace,
-        SCOUT,
-        "the server never read the revocation",
-        |agent| {
-            !agent
-                .runs_on
-                .iter()
-                .any(|runs| runs.device == ada_device && runs.certificate.is_some())
-        },
-    )
-    .await;
+    // Bea's root revokes the key, as it revokes any of her keys: the server signs as Scout no
+    // more, its open connections end, and it asks for that key no more.
+    let ticketed = Arc::clone(&keys) as Arc<dyn AgentKeys>;
+    assert_eq!(
+        ticketed.revocation(&hosted.bea_cert.user_public_key, &key),
+        Ok(None),
+        "the key acts"
+    );
+    revoke(&hosted, key).await;
+    let deadline = tilo_test_env::hang_deadline();
+    while !adas
+        .revocations()
+        .is_revoked(&hosted.bea_cert.user_public_key, &key)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never took Bea's revocation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        ticketed
+            .revocation(&hosted.bea_cert.user_public_key, &key)
+            .unwrap()
+            .is_some(),
+        "a connection the agent has open ends"
+    );
+    let mut probe = request.clone();
+    assert!(
+        ticketed.sign(workspace_id, &key, &mut probe).is_err(),
+        "the server signs nothing more with the revoked key"
+    );
     assert_eq!(
         takes_agents_turn(adas, &workspace, SCOUT).await.err(),
         Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
-        "the server takes no turn of Scout once Bea took it back"
+        "the server takes no turn of Scout once Bea revoked its key"
     );
+    assert_eq!(tickets.asked(), 1, "no ticket asks for a revoked key again");
     hosted.bea.shutdown().await;
     hosted.ada.shutdown().await;
 }
 
-/// Only the person an agent acts for lets a device run it: Ada, who keeps the workspace, cannot
-/// let her own server run Bea's agent, and her server acts as it no more for her asking.
+/// A ticket certifies nothing until the agent's own person redeems it: a certificate Ada's root
+/// signs for the server's key to run Bea's agent is not taken, no change of an agent writes where
+/// it runs past the device that runs it, and the server acts as Scout no more for either.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn only_the_agents_own_person_lets_a_device_run_it() {
+async fn only_the_agents_own_person_approves_a_device_for_it() {
     let hosted = hosted().await;
     let (adas, beas) = (hosted.ada.workspaces(), hosted.bea.workspaces());
     let workspace = hosted.workspace.clone();
     let ada_device = hex::encode(hosted.ada_cert.device_public_key);
-    let _keys = server_engine(adas, dispatch_of(adas));
+    let (_keys, tickets) = server_engine(adas, dispatch_of(adas));
     agent_once(
         adas,
         &workspace,
         SCOUT,
-        "the server never offered",
+        "Scout never showed the server's ticket",
         |agent| agent.runs_on.iter().any(|runs| runs.device == ada_device),
     )
     .await;
 
-    let refused = ask_agents(
-        adas,
-        &workspace,
-        &hosted.ada_cert,
-        WORKSPACE_AGENT_APPROVE,
-        json!({ "agent": SCOUT, "device": ada_device }),
-    )
-    .await
-    .expect_err("Ada may not let a device run Bea's agent");
-    assert!(
-        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("only the person")),
-        "{refused:?}"
-    );
-    let refused = ask_agents(
-        adas,
-        &workspace,
-        &hosted.ada_cert,
-        WORKSPACE_AGENT_REVOKE,
-        json!({ "agent": SCOUT, "device": ada_device }),
-    )
-    .await
-    .expect_err("nor take it back");
-    assert!(
-        matches!(&refused, ActionCallError::Refused { .. }),
-        "{refused:?}"
-    );
-    // Nor does a change of the agent write a grant past the approval.
-    let refused = ask_agents(
-        adas,
-        &workspace,
-        &hosted.ada_cert,
-        tilo_actions::remote::WORKSPACE_AGENT_UPDATE,
-        json!({
-            "action": WorkspaceAgents::APPROVE_AGENT_DEVICE.id,
-            "arguments": { "agent": SCOUT, "device": ada_device, "certificate": "00" },
-        }),
-    )
-    .await
-    .expect_err("no change of an agent approves a device");
-    assert!(
-        matches!(&refused, ActionCallError::InvalidRequest { .. }),
-        "{refused:?}"
-    );
+    // Another person's root redeems it: the certificate is not Bea's grant, and nothing keeps it.
+    let ada_root = SigningKey::from_bytes(&[0xad; 32]);
+    tickets.redeem(&ada_root);
+    // Nor does a change of the agent say where it runs.
+    for (action, arguments) in [
+        (
+            WorkspaceAgents::RUN_AGENT_ON.id,
+            json!({ "agent": SCOUT, "device": ada_device, "certificate": "00" }),
+        ),
+        (
+            WorkspaceAgents::WAIT_TO_RUN_AGENT.id,
+            json!({ "agent": SCOUT, "device": ada_device, "ticket": "tilo1other" }),
+        ),
+    ] {
+        let refused = ask_agents(
+            adas,
+            &workspace,
+            &hosted.ada_cert,
+            WORKSPACE_AGENT_UPDATE,
+            json!({ "action": action, "arguments": arguments }),
+        )
+        .await
+        .expect_err("no change of an agent says where it runs");
+        assert!(
+            matches!(&refused, ActionCallError::InvalidRequest { .. }),
+            "{refused:?}"
+        );
+    }
     assert_eq!(
         takes_agents_turn(adas, &workspace, SCOUT).await.err(),
         Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
@@ -666,7 +692,7 @@ async fn only_the_agents_own_person_lets_a_device_run_it() {
     let scout = agent_once(beas, &workspace, SCOUT, "Bea reads Scout", |_| true).await;
     assert!(
         scout.runs_on.iter().all(|runs| runs.certificate.is_none()),
-        "nobody let any device run Scout: {:?}",
+        "nobody approved any device for Scout: {:?}",
         scout.runs_on
     );
     hosted.bea.shutdown().await;
@@ -680,7 +706,7 @@ async fn an_agent_the_server_adds_is_answered_without_a_restart() {
     let hosted = hosted().await;
     let adas = hosted.ada.workspaces();
     let workspace = hosted.workspace.clone();
-    let _keys = server_engine(adas, dispatch_of(adas));
+    let _engine = server_engine(adas, dispatch_of(adas));
     let engine = adas.agent_keys().expect("the server runs its engine");
     let person = hex::encode(hosted.ada_cert.user_public_key);
     adas.author_agents(&workspace, |doc| {

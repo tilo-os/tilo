@@ -1090,7 +1090,7 @@ impl super::Workspaces {
     /// A key of this device's own for `statement`: its device key signs a digest of the
     /// statement, and the key is made from that signature, so the device makes the same key every
     /// time and nothing secret is written down. The key never leaves the device; what it offers
-    /// of it is its public key.
+    /// of it is its public key, in the ticket that asks for it to be approved.
     pub(crate) fn derived_device_key(&self, statement: &[u8]) -> ed25519_dalek::SigningKey {
         let digest = blake3::hash(statement);
         let signature = ed25519_dalek::Signer::sign(&self.inner.host.key, digest.as_bytes());

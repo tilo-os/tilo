@@ -57,8 +57,7 @@ use tilo_workspace_service::apps::{
     collab_outbound::PeerPublisher,
     services::{
         HostedWorkspaces, LauncherServices, ProcessServices, PublishedResources,
-        ShortcutLibraryServices,
-        WorkspaceAuthority,
+        ShortcutLibraryServices, WorkspaceAuthority,
     },
 };
 use tilo_workspace_service::service::ServiceConfig;
@@ -954,7 +953,7 @@ impl Daemon {
                 &policy_origin,
             )?;
         }
-        start_agents(&broker, &workspaces);
+        start_agents(&broker, &workspaces, &tickets);
         start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
             &TakenFiles {
@@ -3538,7 +3537,9 @@ impl Daemon {
 
 /// Run the agents of the workspaces this device's service holds, in this daemon: the one engine
 /// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are.
-fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
+/// An agent whose person's root is not here is asked for with a ticket `tickets` serves, which
+/// its person redeems to approve this device's key for it.
+fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, tickets: &Arc<Tickets>) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it runs no agents of its workspaces");
         return;
@@ -3548,6 +3549,7 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
         .spawn(tilo_workspace_service::agents::run_on_device(
             workspaces.copies().clone(),
             broker.device_host(),
+            Some(Arc::clone(tickets) as _),
         ));
 }
 

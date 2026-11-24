@@ -70,9 +70,9 @@ pub mod agent_keys;
 pub mod assistant;
 pub mod events;
 pub mod initiative;
-pub mod offered_keys;
 pub mod task_work;
 pub mod telling;
+pub mod ticketed_keys;
 pub mod triggered;
 
 mod across;
@@ -622,11 +622,17 @@ pub async fn on_device(
     actions: Arc<dyn ActionProvider + Send + Sync>,
 ) {
     let workspaces = service.installed().await.workspaces().clone();
-    run_on_device(workspaces, actions).await;
+    run_on_device(workspaces, actions, None).await;
 }
 
-/// [`on_device`] for the service whose `workspaces` the device opened already.
-pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvider + Send + Sync>) {
+/// [`on_device`] for the service whose `workspaces` the device opened already. Where the device
+/// serves tickets (`tickets`), it asks with one to run the agents of other people it may take
+/// turns of, and runs each once its person redeemed the ticket.
+pub async fn run_on_device(
+    workspaces: Workspaces,
+    actions: Arc<dyn ActionProvider + Send + Sync>,
+    tickets: Option<Arc<dyn ticketed_keys::AgentKeyTickets>>,
+) {
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
     workspaces.call_private_model_addresses(true);
@@ -639,7 +645,7 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     crate::tl_records::provided::register(&workspaces);
     // Each agent signs its calls with a key of its own: made here from its person's root, or,
     // on a device without that root (a server that keeps the workspace), the key this device
-    // offered for the agent once its person certified it.
+    // asked to run the agent with once its person approved it.
     let roots = match agent_keys::this_device() {
         Ok(roots) => Some(roots),
         Err(error) => {
@@ -650,7 +656,7 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
             None
         }
     };
-    let keys = Arc::new(offered_keys::DeviceAgentKeys::of(&workspaces, roots));
+    let keys = Arc::new(ticketed_keys::DeviceAgentKeys::of(&workspaces, roots));
     // Every key an agent is given here from a root is kept among its person's keys in their own
     // workspace.
     keys.keep_in(&workspaces);
@@ -658,14 +664,18 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
     // The agents speak the language their person reads this computer in.
-    ServerAgents::on_device(workspaces, actions, keys)
-        .speaking(settings_store::appearance::preferred_language)
-        .run()
-        .await;
+    let agents = ServerAgents::on_device(workspaces, actions, keys.clone())
+        .speaking(settings_store::appearance::preferred_language);
+    match tickets {
+        Some(tickets) => agents.asking_with(keys, tickets),
+        None => agents,
+    }
+    .run()
+    .await;
 }
 
 /// How often a device looks again at where its workspaces' agents run, with nothing written
-/// meanwhile.
+/// meanwhile: a certificate close to running out is asked for again.
 const RUNS_ON_AGAIN: Duration = Duration::from_secs(60 * 60);
 
 /// The language a host's agents speak, asked anew for each turn ([`ServerAgents::speaking`]).
@@ -863,17 +873,6 @@ impl crate::work::AgentEngine for EngineKeys {
         self.answering.lock_recover().clone()
     }
 
-    fn certify(
-        &self,
-        workspace: WorkspaceId,
-        agent: &str,
-        name: &str,
-        person: [u8; 32],
-        key: [u8; 32],
-    ) -> Result<tilo_user_identity::DeviceCert, String> {
-        self.roster.certify(workspace, agent, name, person, key)
-    }
-
     fn answer(
         &self,
         workspace: String,
@@ -939,6 +938,12 @@ pub struct ServerAgents {
     /// machine, per engine. `None` outside tests, where the tools reach the web.
     #[cfg(any(test, feature = "fixture-servers"))]
     web_routes: Option<Vec<(tilo_web_search::Engine, String)>>,
+    /// Where this device asks with a ticket to run other people's agents, with the keys it
+    /// asks for ([`Self::asking_with`]): `None` where it serves no tickets.
+    asking: Option<(
+        Arc<ticketed_keys::DeviceAgentKeys>,
+        Arc<dyn ticketed_keys::AgentKeyTickets>,
+    )>,
 }
 
 impl ServerAgents {
@@ -988,7 +993,21 @@ impl ServerAgents {
             placed: None,
             #[cfg(any(test, feature = "fixture-servers"))]
             web_routes: None,
+            asking: None,
         }
+    }
+
+    /// Ask with a ticket `tickets` serves to run each agent of another person's this device may
+    /// take turns of, for a key of `keys` (the keys these agents sign with), and run it once its
+    /// person redeemed the ticket.
+    #[must_use]
+    pub fn asking_with(
+        mut self,
+        keys: Arc<ticketed_keys::DeviceAgentKeys>,
+        tickets: Arc<dyn ticketed_keys::AgentKeyTickets>,
+    ) -> Self {
+        self.asking = Some((keys, tickets));
+        self
     }
 
     /// Say the agents' own words (why no model answered, what a provider's failure was) in the
@@ -1154,64 +1173,25 @@ impl ServerAgents {
         }
     }
 
-    /// Keep where `workspace`'s `agents` run current for this device: where it offers its
-    /// person's workspaces compute (`offers`), it offers a key of its own for every other
-    /// person's agent that works here and has none of its offer yet; and a certificate this
-    /// device's person issued for one of their agents is certified again before it runs out.
-    async fn tend_runs_on(&self, workspace: &str, agents: &WorkspaceAgents, offers: bool) {
-        let Some(id) = WorkspaceId::parse(workspace) else {
+    /// Ask, where this device offers its person's workspaces compute (`offers`) and serves
+    /// tickets, to run each agent that works in `workspace` whose person's root is not here, its
+    /// own person's included: a ticket shows on the agent until its person redeems it, and one
+    /// close to running out is asked for again.
+    async fn ask_to_run(&self, workspace: &str, agents: &WorkspaceAgents, offers: bool) {
+        let (Some((keys, tickets)), true, Some(id)) =
+            (&self.asking, offers, WorkspaceId::parse(workspace))
+        else {
             return;
-        };
-        let me = self.workspaces.serving_certificate().user_public_key;
-        let device = hex::encode(self.workspaces.serving_certificate().device_public_key);
-        let root = |agent: &Agent| {
-            tilo_failure::ignored!(
-                "an agent that acts for no person is nobody's to offer or renew",
-                tilo_action_policy::PersonId::parse(&agent.acts_for)
-            )
-            .ok()
-            .and_then(|person| person.root())
         };
         for agent in agents
             .agents
             .iter()
             .filter(|agent| agent.is_active() && agent.sub.is_none() && agent.mcp_client.is_none())
         {
-            if offers && root(agent) != Some(me) {
-                let Some(key) = self.roster.offered(id, &agent.id.0) else {
-                    continue;
-                };
-                let offered = agent
-                    .runs_on
-                    .iter()
-                    .any(|runs| runs.device == device && runs.key == hex::encode(key));
-                if !offered
-                    && let Err(error) = self
-                        .workspaces
-                        .offer_agent_key(workspace, &agent.id.0, key)
-                        .await
-                {
-                    tracing::warn!(%workspace, agent = %agent.id.0, %error, "this device's offer to run an agent was not written");
-                }
-            }
-            if root(agent) != Some(me) {
-                continue;
-            }
-            for runs in &agent.runs_on {
-                if !runs
-                    .certificate
-                    .as_deref()
-                    .is_some_and(offered_keys::renews)
-                {
-                    continue;
-                }
-                let renewed = self
-                    .workspaces
-                    .renew_agent_device(workspace, &agent.id.0, &runs.device)
+            if !keys.from_root(id, agent) {
+                keys.ticketed()
+                    .ask_unless_approved(tickets, id, agent)
                     .await;
-                if let Err(error) = renewed {
-                    tracing::warn!(%workspace, agent = %agent.id.0, %error, "the certificate of a device that runs an agent was not renewed");
-                }
             }
         }
     }
@@ -1287,7 +1267,7 @@ impl ServerAgents {
                     }
                 }
             }
-            self.tend_runs_on(&id, &agents, offers).await;
+            self.ask_to_run(&id, &agents, offers).await;
             answering.extend(
                 agents
                     .agents

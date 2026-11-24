@@ -280,15 +280,6 @@ pub const WORKSPACE_AGENT_UPDATE: &str = "agent.update";
 /// Retire one of the workspace's agents (`workspace/agents#delete`): `{agent}`, its id. What it
 /// did stays readable under its name.
 pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
-/// Let a device besides its person's own run one of the workspace's agents
-/// (`workspace/agents#approve`): `{agent, device}`, the agent's id and the device that offered a
-/// key for it, by its public key in hex; `device` may be left out while one device waits. The
-/// agent's person does it in person, on a device that holds their root, which certifies the key
-/// the device offered for that agent alone. Answers `{agent, device}`.
-pub const WORKSPACE_AGENT_APPROVE: &str = "agent.approve";
-/// Stop a device running one of the workspace's agents (`workspace/agents#revoke`): `{agent,
-/// device}`, as [`WORKSPACE_AGENT_APPROVE`] takes them. The agent's person does it in person.
-pub const WORKSPACE_AGENT_REVOKE: &str = "agent.revoke";
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
@@ -297,7 +288,7 @@ pub const WORKSPACE_AGENT_REVOKE: &str = "agent.revoke";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 41] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -351,8 +342,6 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
     (WORKSPACE_AGENT_CREATE, Some(WORKSPACE_AGENTS), "create"),
     (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),
-    (WORKSPACE_AGENT_APPROVE, Some(WORKSPACE_AGENTS), "approve"),
-    (WORKSPACE_AGENT_REVOKE, Some(WORKSPACE_AGENTS), "revoke"),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.

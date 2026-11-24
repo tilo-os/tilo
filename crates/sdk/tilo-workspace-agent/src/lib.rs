@@ -177,26 +177,38 @@ impl Bound {
     }
 }
 
-/// The most devices besides its person's own that one agent may be offered to run on.
+/// The most devices besides its person's own that one agent may wait on or run on.
 pub const MAX_RUNS_ON: usize = 16;
 
 /// The most a certificate of a device's key for an agent holds, in hex characters.
 const MAX_CERTIFICATE: usize = 4096;
 
-/// A device that is not one of its person's own and offered to run an agent: the key it would
-/// sign as the agent with, and, once the agent's person let it, the certificate their root
-/// issued for that key. Only the device makes the key, from its own device key; the person's
-/// root certifies it for this one agent in this one workspace, and nothing else signs as the
-/// agent there.
+/// The most a ticket an agent waits with holds, in characters.
+const MAX_TICKET: usize = 1024;
+
+/// A device besides its person's own where an agent waits for approval or runs. The device asks
+/// with a ticket naming the key it would sign as the agent with, and the agent shows that
+/// ticket while it waits: its person redeems it on a device that holds their root
+/// (`tilo device add <ticket>`), the one way a key is added, and the certificate their root
+/// issued for the key is kept here once it is.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunsOn {
     /// The device, by its public key in hex.
     pub device: String,
-    /// The key it offered for the agent, in hex.
-    pub key: String,
-    /// The certificate the agent's person's root issued for that key, in hex; `None` while
-    /// the person has not let the device run the agent.
+    /// The ticket the agent waits for approval with here; `None` once it was redeemed.
+    pub ticket: Option<String>,
+    /// The certificate the agent's person's root issued for the device's key, in hex; `None`
+    /// while the person has not approved it.
     pub certificate: Option<String>,
+}
+
+impl RunsOn {
+    /// Whether the agent waits for its person's approval here: a ticket shows, and no key is
+    /// approved yet.
+    #[must_use]
+    pub const fn waits_for_approval(&self) -> bool {
+        self.ticket.is_some() && self.certificate.is_none()
+    }
 }
 
 /// Whether an agent works here or was retired: retiring keeps its name and its
@@ -253,8 +265,8 @@ pub struct Agent {
     /// How many sub-agents under it may be at work at once. The workspace's to say; `None`
     /// follows [`sub::DEFAULT_AT_ONCE`].
     pub sub_at_once: Option<u32>,
-    /// The devices besides its person's own that offered to run it, each with the key it would
-    /// sign as the agent with and, once its person let it, that key's certificate.
+    /// The devices besides its person's own where it waits for approval, each with the ticket it
+    /// waits with, or runs, with the certificate its person's root issued there.
     pub runs_on: Vec<RunsOn>,
 }
 
@@ -444,66 +456,37 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Offer to run an agent on a device besides its person's own: the key that device would
-    /// sign as the agent with, which the agent's person lets it use or not. Offered again under
-    /// the same key, nothing changes; a new key takes the old one's place, not yet let.
+    /// Show the ticket a device besides its person's own asks to run an agent with, while the
+    /// agent waits for its person to redeem it. A key their root approved there stays until the
+    /// redeemed ticket replaces it, so a renewal never stops the agent.
     #[action(item = agents)]
-    pub fn offer_agent_key(
+    pub fn wait_to_run_agent(
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("The device that offers, by its public key in hex")] device: String,
-        #[param("The key it would sign as the agent with, in hex")] key: String,
+        #[param("The device that asks, by its public key in hex")] device: String,
+        #[param("The ticket the agent's person redeems to approve it")] ticket: String,
     ) -> Result<(), Refusal> {
-        self.not_by_sub_agent(cx)?;
-        in_person(cx)?;
-        let (device, key) = (hex_key(&device)?, hex_key(&key)?);
-        let found = self
-            .agents
-            .find_mut(&agent)
-            .ok_or_else(|| no_such(&agent))?;
-        if found.is_retired() {
-            return Err(Refusal::new("that agent is retired"));
+        let ticket = ticket.trim().to_owned();
+        if ticket.is_empty() || ticket.len() > MAX_TICKET {
+            return Err(Refusal::new("that is not a ticket"));
         }
-        if found.is_sub() {
-            return Err(Refusal::new(
-                "a sub-agent runs where the agent that started it runs",
-            ));
-        }
-        let offered = found.runs_on.len();
-        match found.runs_on.iter_mut().find(|runs| runs.device == device) {
-            Some(runs) if runs.key == key => {}
-            Some(runs) => {
-                runs.key = key;
-                runs.certificate = None;
-            }
-            None if offered >= MAX_RUNS_ON => {
-                return Err(Refusal::new(format!(
-                    "an agent is offered to at most {MAX_RUNS_ON} devices"
-                )));
-            }
-            None => found.runs_on.push(RunsOn {
-                device,
-                key,
-                certificate: None,
-            }),
-        }
+        let runs = self.runs_on(cx, &agent, &device)?;
+        runs.ticket = Some(ticket);
         Ok(())
     }
 
-    /// Let a device run an agent with the key it offered: `certificate` is the grant the agent's
-    /// person's root issued for that key. Only that person lets a device run their agent.
+    /// Keep the certificate the agent's person's root issued, redeeming the ticket a device
+    /// asked with, for the key that device signs as the agent with: the ticket goes, and the
+    /// device runs the agent while the certificate holds.
     #[action(item = agents)]
-    pub fn approve_agent_device(
+    pub fn run_agent_on(
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("The device that offered, by its public key in hex")] device: String,
-        #[param("The certificate the agent's person's root issued for the key, in hex")]
-        certificate: String,
+        #[param("The device, by its public key in hex")] device: String,
+        #[param("The certificate the agent's person's root issued, in hex")] certificate: String,
     ) -> Result<(), Refusal> {
-        let found = self.its_persons_own(cx, &agent)?;
-        let device = hex_key(&device)?;
         let certificate = certificate.trim().to_ascii_lowercase();
         if certificate.is_empty()
             || certificate.len() > MAX_CERTIFICATE
@@ -511,31 +494,9 @@ impl WorkspaceAgents {
         {
             return Err(Refusal::new("a key's certificate is written in hex"));
         }
-        let runs = found
-            .runs_on
-            .iter_mut()
-            .find(|runs| runs.device == device)
-            .ok_or_else(|| Refusal::new("that device did not offer to run the agent"))?;
+        let runs = self.runs_on(cx, &agent, &device)?;
+        runs.ticket = None;
         runs.certificate = Some(certificate);
-        Ok(())
-    }
-
-    /// Stop a device running an agent: what it offered goes, and with it the certificate its
-    /// person issued. Only that person takes it back; the device may offer again.
-    #[action(item = agents)]
-    pub fn revoke_agent_device(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The agent")] agent: Id,
-        #[param("The device, by its public key in hex")] device: String,
-    ) -> Result<(), Refusal> {
-        let found = self.its_persons_own(cx, &agent)?;
-        let device = hex_key(&device)?;
-        let before = found.runs_on.len();
-        found.runs_on.retain(|runs| runs.device != device);
-        if found.runs_on.len() == before {
-            return Err(Refusal::new("that device does not run the agent"));
-        }
         Ok(())
     }
 
@@ -881,18 +842,42 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// `agent`, changed by its own person in person: only they say where it runs.
-    fn its_persons_own(&mut self, cx: &ActionCx, agent: &Id) -> Result<&mut Agent, Refusal> {
+    /// The entry of `device` where `agent` waits or runs, made when there is none. A member
+    /// writes it in person, as the device they run does: what it says only shows, since the
+    /// device checks the certificate itself and a ticket certifies nothing until the agent's
+    /// person redeems it.
+    fn runs_on(&mut self, cx: &ActionCx, agent: &Id, device: &str) -> Result<&mut RunsOn, Refusal> {
         self.not_by_sub_agent(cx)?;
         in_person(cx)?;
-        let by = person(&author(cx)?)?;
+        let device = hex_key(device)?;
         let found = self.agents.find_mut(agent).ok_or_else(|| no_such(agent))?;
-        if person(&found.acts_for)? != by {
+        if found.is_retired() {
+            return Err(Refusal::new("that agent is retired"));
+        }
+        if found.is_sub() {
             return Err(Refusal::new(
-                "only the person an agent acts for says where it runs",
+                "a sub-agent runs where the agent that started it runs",
             ));
         }
-        Ok(found)
+        let at = match found.runs_on.iter().position(|runs| runs.device == device) {
+            Some(at) => at,
+            None if found.runs_on.len() >= MAX_RUNS_ON => {
+                return Err(Refusal::new(format!(
+                    "an agent waits on or runs on at most {MAX_RUNS_ON} devices"
+                )));
+            }
+            None => {
+                found.runs_on.push(RunsOn {
+                    device,
+                    ..RunsOn::default()
+                });
+                found.runs_on.len().saturating_sub(1)
+            }
+        };
+        found
+            .runs_on
+            .get_mut(at)
+            .ok_or_else(|| Refusal::new("the device's entry went"))
     }
 
     /// How many agents here people made: every agent that is no sub-agent, retired or not.
@@ -933,12 +918,18 @@ impl WorkspaceAgents {
             }
             if agent.runs_on.len() > MAX_RUNS_ON {
                 return Err(Refusal::new(format!(
-                    "an agent is offered to at most {MAX_RUNS_ON} devices"
+                    "an agent waits on or runs on at most {MAX_RUNS_ON} devices"
                 )));
             }
             for runs in &agent.runs_on {
                 hex_key(&runs.device)?;
-                hex_key(&runs.key)?;
+                if runs
+                    .ticket
+                    .as_ref()
+                    .is_some_and(|ticket| ticket.len() > MAX_TICKET)
+                {
+                    return Err(Refusal::new("a ticket is too long"));
+                }
                 if runs
                     .certificate
                     .as_ref()
