@@ -105,7 +105,9 @@ never changes an id that grants and records already name.
   can read it works out the same answer from the same signed list.
 - The rule is enforced three times with the same function: when an action is
   called (one admission, `admit_invocation`; an agent acting for a person
-  gets the narrower of the two), when a change arrives (every receiver drops
+  gets the narrower of the two, and the rights its person signed into its
+  certificate are that person's Allow for what they cover, so those calls don't
+  ask again), when a change arrives (every receiver drops
   a change whose author was not allowed to make it at the time), and through
   the keys (reading means holding the keys of the resource's readers;
   resources with the same readers share one key group, and removing a reader
