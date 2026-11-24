@@ -290,9 +290,15 @@ mod cases {
     const TOUCHING: &[&str] = &[
         "add_account",
         "import_uri",
-        "import_picture",
+        "scan_picture",
+        "add_pending",
+        "drop_pending",
+        "rename_account",
+        "relabel_account",
+        "recolor_account",
+        "recode_account",
         "update_account",
-        "save_form",
+        "save_account",
         "move_up",
         "move_down",
         "delete_account",
@@ -696,9 +702,10 @@ mod cases {
             let s = Desk::new();
             let picture = s.picture(b"not a picture at all");
             s.call(
-                "import_picture",
+                "scan_picture",
                 vec![Value::resource(&s.root), Value::file(picture)],
             );
+            assert_eq!(s.text(&s.root, "pending"), "", "a picture that read nothing keeps none");
             let notice = s.text(&s.root, "notice");
             assert!(
                 notice.to_lowercase().contains("picture")
@@ -709,27 +716,42 @@ mod cases {
             assert!(s.accounts().is_empty());
         }
 
-        phase a_picture_of_a_setup_link_adds_the_account_and_says_so;
+        phase a_picture_fills_the_form_for_review_and_save_adds_the_account;
         {
             let s = Desk::new();
-            let picture = s.picture(&qr_png(
-                "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme",
-            ));
-            let made = s.call(
-                "import_picture",
+            let picture = s.picture(&qr_png(&format!(
+                "otpauth://totp/Acme:bob?secret={VECTOR}&issuer=Acme"
+            )));
+            let read = s.call(
+                "scan_picture",
                 vec![Value::resource(&s.root), Value::file(picture)],
             );
-            assert!(matches!(made, InvokeOutcome::Done(_)), "{made:?}");
+            assert!(matches!(read, InvokeOutcome::Done(_)), "{read:?}");
             assert_eq!(
                 said(&s),
                 [("QR code read".to_owned(), "success".to_owned())],
                 "the person is told the picture's code was read"
             );
+            // What the picture said waits for the form: nothing is an account yet, and the key
+            // it carried waits in the vault, in neither the record nor the window.
+            assert!(s.accounts().is_empty(), "a picture read adds nothing by itself");
+            assert!(s.text(&s.root, "pending").starts_with("vault.item:"));
+            assert_eq!(s.text(&s.root, "pending_issuer"), "Acme");
+            assert_eq!(s.text(&s.root, "pending_label"), "bob");
+            assert_eq!(s.text(&s.root, "notice"), "", "a picture that read says nothing wrong");
+            let made = s.call("add_pending", vec![Value::resource(&s.root)]);
+            assert!(matches!(made, InvokeOutcome::Done(_)), "{made:?}");
             let accounts = s.accounts();
-            assert_eq!(accounts.len(), 1, "the link the picture carried added its account");
+            assert_eq!(accounts.len(), 1, "saving the review adds its account");
             assert_eq!(s.text(&accounts[0], "issuer"), "Acme");
             assert_eq!(s.text(&accounts[0], "label"), "bob");
-            assert_eq!(s.text(&s.root, "notice"), "", "a picture that read says nothing wrong");
+            let reference = s.text(&accounts[0], "item");
+            assert_eq!(
+                s.vault.kept().get(&reference).map(|kept| kept.secret.clone()),
+                Some(VECTOR.to_owned()),
+                "the key the picture read is the one the account runs on"
+            );
+            assert_eq!(s.text(&s.root, "pending"), "", "the review is cleared");
         }
 
         phase an_account_is_changed_and_its_key_kept_when_left_out;
@@ -872,7 +894,7 @@ mod cases {
         {
             let s = Desk::new();
             let saved = s.call(
-                "save_form",
+                "save_account",
                 vec![
                     Value::resource(&s.root),
                     Value::Opt(None),
@@ -893,7 +915,7 @@ mod cases {
             // A key the vault cannot read answers that nothing was saved, and says why where the
             // window shows it: the form stays open on what was typed.
             let kept = s.call(
-                "save_form",
+                "save_account",
                 vec![
                     Value::resource(&s.root),
                     Value::Opt(None),
@@ -1183,6 +1205,165 @@ mod cases {
                     "search finds it by {alias}: {keywords:?}"
                 );
             }
+        }
+
+        phase the_window_names_the_accounts_it_shows;
+        {
+            let s = Desk::new();
+            let title = |s: &Desk| {
+                let window = s.window();
+                let shell = find(&window.tree(), "ui.NavShell").expect("the window's shell stands");
+                shell.props.get("title").cloned().unwrap_or(Value::Bool(false))
+            };
+            assert_eq!(title(&s), Value::text("Authenticator"), "nothing to name yet");
+            s.add("GitHub", "", VECTOR);
+            assert_eq!(title(&s), Value::text("GitHub"), "one account names the window");
+            s.add("Acme", "", VECTOR);
+            assert_eq!(
+                title(&s),
+                Value::text("GitHub and 1 more"),
+                "several accounts still name the window"
+            );
+        }
+
+        phase the_cards_controls_name_the_account_they_act_on;
+        {
+            let s = Desk::new();
+            s.add("GitHub", "", VECTOR);
+            let window = s.window();
+            let reveal = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| node.props.get("label") == Some(&Value::text("Reveal")))
+                .expect("the card offers Reveal");
+            assert_eq!(
+                reveal.props.get("accessible_name"),
+                Some(&Value::text("Reveal code for GitHub")),
+                "the control says which account it shows a code for"
+            );
+            press(&s, "Reveal");
+            let window = s.window();
+            let copy = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| node.props.get("label") == Some(&Value::text("Copy")))
+                .expect("the card offers Copy once the code shows");
+            assert_eq!(
+                copy.props.get("accessible_name"),
+                Some(&Value::text("Copy code for GitHub")),
+                "the copy names the account too"
+            );
+        }
+
+        phase the_form_offers_a_colour_and_a_colour_only_change_says_so;
+        {
+            let s = Desk::new();
+            let a = s.add("GitHub", "", VECTOR);
+            press(&s, "Add account");
+            let window = s.window();
+            let picker =
+                find(&window.tree(), "ui.ColorSwatchPicker").expect("the form offers colours");
+            let swatches = match picker.props.get("swatches") {
+                Some(Value::List(swatches)) => swatches.len(),
+                other => panic!("the palette reads {other:?}"),
+            };
+            assert_eq!(swatches, 8, "the palette is the eight slots the cards paint");
+            press(&s, "Back");
+            // A person recolours the account: only the colour changes, and history says that.
+            let history = s.rt.history(&s.root.doc).expect("the root's history reads");
+            let before = history.len();
+            let saved = s.call(
+                "save_account",
+                vec![
+                    Value::resource(&s.root),
+                    Value::Opt(Some(Box::new(Value::resource(&a)))),
+                    Value::text("GitHub"),
+                    Value::text(""),
+                    Value::text(""),
+                    Value::text("SHA1"),
+                    Value::Int(6),
+                    Value::Int(30),
+                    Value::Int(2),
+                ],
+            );
+            assert!(
+                matches!(saved, InvokeOutcome::Done(Value::Bool(true))),
+                "{saved:?}"
+            );
+            let window = s.window();
+            let avatar = find(&window.tree(), "ui.Avatar").expect("the card wears it");
+            assert_eq!(avatar.props.get("colour"), Some(&Value::text("#b0568f")));
+            let history = s.rt.history(&s.root.doc).expect("the root's history reads");
+            let since: Vec<String> = history
+                .iter()
+                .skip(before)
+                .map(|note| note.action.clone())
+                .collect();
+            assert!(
+                since.contains(&s.app.action("recolor_account").as_str().to_owned()),
+                "history names the recolour: {since:?}"
+            );
+            for other in ["rename_account", "relabel_account", "recode_account"] {
+                assert!(
+                    !since.contains(&s.app.action(other).as_str().to_owned()),
+                    "only the colour changed: {since:?}"
+                );
+            }
+        }
+
+        phase each_field_change_is_the_action_that_names_it;
+        {
+            let s = Desk::new();
+            let a = s.add("GitHub", "", VECTOR);
+            // Each save changes one part of the account, and the change history names is the
+            // action for that part: a person reads what changed, not that something did.
+            let edit = |issuer: &str, label: &str, digits: i64| -> Vec<String> {
+                let history = s.rt.history(&s.root.doc).expect("the root's history reads");
+                let before = history.len();
+                let saved = s.call(
+                    "save_account",
+                    vec![
+                        Value::resource(&s.root),
+                        Value::Opt(Some(Box::new(Value::resource(&a)))),
+                        Value::text(issuer),
+                        Value::text(label),
+                        Value::text(""),
+                        Value::text("SHA1"),
+                        Value::Int(digits),
+                        Value::Int(30),
+                        Value::Int(0),
+                    ],
+                );
+                assert!(matches!(saved, InvokeOutcome::Done(Value::Bool(true))), "{saved:?}");
+                let history = s.rt.history(&s.root.doc).expect("the root's history reads");
+                history
+                    .iter()
+                    .skip(before)
+                    .map(|note| note.action.clone())
+                    .collect()
+            };
+            let renamed = edit("GitHub Corp", "", 6);
+            assert!(renamed.contains(&s.app.action("rename_account").as_str().to_owned()), "{renamed:?}");
+            assert!(
+                !renamed.contains(&s.app.action("relabel_account").as_str().to_owned()),
+                "{renamed:?}"
+            );
+            assert_eq!(s.text(&a, "issuer"), "GitHub Corp");
+            let relabelled = edit("GitHub Corp", "ada@example.com", 6);
+            assert!(
+                relabelled.contains(&s.app.action("relabel_account").as_str().to_owned()),
+                "{relabelled:?}"
+            );
+            assert!(
+                !relabelled.contains(&s.app.action("rename_account").as_str().to_owned()),
+                "{relabelled:?}"
+            );
+            assert_eq!(s.text(&a, "label"), "ada@example.com");
+            let recoded = edit("GitHub Corp", "ada@example.com", 8);
+            assert!(
+                recoded.contains(&s.app.action("recode_account").as_str().to_owned()),
+                "{recoded:?}"
+            );
+            let kept = s.vault.kept().into_values().next().expect("the vault kept it");
+            assert_eq!(kept.digits, 8);
         }
 
         phase every_window_that_shows_a_code_is_left_out_of_captures;

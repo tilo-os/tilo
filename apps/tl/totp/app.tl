@@ -30,11 +30,21 @@ type Account (title: issuer, untitled: "Account") {
     }
 }
 
-/// The workspace's Authenticator: the accounts its members keep, and what the window last said.
+/// The workspace's Authenticator: the accounts its members keep, what the window last said, and
+/// the account a picture read, waiting for a person to save or drop it.
 type Vault {
     accounts: Collection<Account>
     notice: Text = ""
     notice_kind: Text = "info"
+    /// The vault item a picture's key was kept in, until the person saves the account or drops
+    /// it. No key is here: only the item that holds it.
+    pending: Text = ""
+    /// What the picture said the account is, for the form to show and a person to correct.
+    pending_issuer: Text = ""
+    pending_label: Text = ""
+    pending_algorithm: Text = "SHA1"
+    pending_digits: Int = 6
+    pending_period: Int = 30
 }
 
 root vault: Vault
@@ -145,24 +155,146 @@ action import_uri(v: Vault, uri: Text) -> Account (
     )
 }
 
-/// Adds the account a picture's QR code names, and says the code was read: the person picked a
-/// picture and the window shows what came of it.
-action import_picture(v: Vault, file: File) -> Account (
-    icon: .qr_code,
-    label: "Add from a picture",
-    did: "added an account from a picture",
-) {
+/// Reads the account a picture's QR code names, and keeps its key in the vault for the form to
+/// show: nothing is added until the person reads what the picture said and saves it.
+action scan_picture(v: Vault, file: File) (icon: .qr_code, label: "Read a picture") {
+    // A review left over from an earlier picture gives way to this one; nothing pending means
+    // nothing to drop, and no change to say so.
+    if v.pending != "" { drop_pending(v) }
+    v.notice = ""
     match engine.call("scan", json.encode(ScanAsk(address: file.url))) {
         .ok(answer) => match json.decode<ScanAnswer>(answer) {
-            .ok(scan) => {
-                let made = import_uri(v, scan.uri)
-                if made.issuer != "" { notice("QR code read", kind: .success) }
-                made
-            }
+            .ok(scan) => match parse_uri(scan.uri) {
+                .some(setup) => {
+                    v.pending = vault.keep(
+                        item: .none,
+                        issuer: setup.issuer,
+                        label: setup.label,
+                        secret: setup.secret,
+                        algorithm: setup.algorithm,
+                        digits: setup.digits,
+                        period: setup.period,
+                    )
+                    v.pending_issuer = setup.issuer
+                    v.pending_label = setup.label
+                    v.pending_algorithm = setup.algorithm
+                    v.pending_digits = setup.digits
+                    v.pending_period = setup.period
+                    notice("QR code read", kind: .success)
+                }
+                .none => refuse(v, "That is not a setup link this app reads"),
+            },
             .err(why) => refuse(v, why),
         },
         .err(why) => refuse(v, why),
     }
+}
+
+/// Adds the account the picture read, with the key the vault already holds for it.
+action add_pending(v: Vault) -> Account (
+    icon: .plus,
+    label: "Add account",
+    did: "added an account",
+) {
+    require v.pending != "" "There is no account read from a picture to add"
+    let made = Account(issuer: v.pending_issuer, label: v.pending_label, item: v.pending, color: 0)
+    v.accounts.insert(made)
+    v.pending = ""
+    v.pending_issuer = ""
+    v.pending_label = ""
+    made
+}
+
+/// Lets the picture's account go: the key the vault kept for it is forgotten too.
+action drop_pending(v: Vault) (
+    icon: .trash,
+    label: "Drop the picture's account",
+    did: "dropped a picture's account",
+) {
+    if v.pending != "" { vault.forget(item: v.pending) }
+    v.pending = ""
+    v.pending_issuer = ""
+    v.pending_label = ""
+    v.pending_algorithm = "SHA1"
+    v.pending_digits = 6
+    v.pending_period = 30
+}
+
+/// Renames an account's service: what a person changing the name it shows did. The codes'
+/// settings come from the form, which read them when it opened: an action never reads the
+/// vault, so what it keeps is what the window showed the person.
+action rename_account(
+    a: Account,
+    issuer: Text,
+    algorithm: Text,
+    digits: Int,
+    period: Int,
+) uses secret (icon: .pencil, label: "Rename", did: "renamed an account") {
+    require issuer.trim() != "" "The account needs a service name"
+    let reference = vault.keep(
+        item: if a.item == "" { .none } else { .some(a.item) },
+        issuer: issuer.trim(),
+        label: a.label,
+        secret: "",
+        algorithm: algorithm,
+        digits: digits,
+        period: period,
+    )
+    a.issuer = issuer.trim()
+    a.item = reference
+}
+
+/// Changes who an account signs in as: what a person changing its name did. Its codes' settings
+/// come from the form, as a rename's do.
+action relabel_account(
+    a: Account,
+    label: Text,
+    algorithm: Text,
+    digits: Int,
+    period: Int,
+) uses secret (icon: .pencil, label: "Change the account name", did: "changed the account's name") {
+    let reference = vault.keep(
+        item: if a.item == "" { .none } else { .some(a.item) },
+        issuer: a.issuer,
+        label: label.trim(),
+        secret: "",
+        algorithm: algorithm,
+        digits: digits,
+        period: period,
+    )
+    a.label = label.trim()
+    a.item = reference
+}
+
+/// Gives an account a colour of its own: what a person recolouring it did.
+action recolor_account(a: Account, color: Int) (
+    icon: .pencil,
+    label: "Recolour",
+    did: "recoloured an account",
+) {
+    a.color = color
+}
+
+/// Changes how an account makes its codes, and its key with them: what a person changing the
+/// algorithm, the digits, the period or the key did.
+action recode_account(a: Account, algorithm: Text, digits: Int, period: Int, secret: Text = "") (
+    icon: .key,
+    label: "Change how the codes are made",
+    did: "changed how an account makes its codes",
+) {
+    require digits >= 4 and digits <= 10 "A code has 4 to 10 digits"
+    require period >= 5 and period <= 300 "A code changes every 5 to 300 seconds"
+    require secret.trim() == "" or valid_secret(secret) "That key is not base32; copy it from the service again"
+    let reference = vault.keep(
+        item: if a.item == "" { .none } else { .some(a.item) },
+        issuer: a.issuer,
+        label: a.label,
+        secret: secret.trim(),
+        algorithm: algorithm,
+        digits: digits,
+        period: period,
+    )
+    a.item = reference
 }
 
 /// Changes what an account says, and its key and how its codes are made. A key left out keeps
@@ -176,7 +308,6 @@ action update_account(
     algorithm: Text = "SHA1",
     digits: Int = 6,
     period: Int = 30,
-    color: Int = 0,
 ) (icon: .pencil, label: "Save the account", did: "changed an account") {
     require issuer.trim() != "" "The account needs a service name"
     require digits >= 4 and digits <= 10 "A code has 4 to 10 digits"
@@ -192,7 +323,6 @@ action update_account(
     )
     a.issuer = issuer.trim()
     a.label = label.trim()
-    a.color = color
     a.item = reference
 }
 
@@ -282,8 +412,14 @@ view vault_window(v: Vault) {
     state algorithm: Text = "SHA1"
     state digits: Int = 6
     state period: Int = 30
+    state color: Int = 0
+    // What the codes' settings were when the form opened: a save compares them with what the
+    // form holds now to tell a change of how the codes are made from a change of anything else.
+    state was_algorithm: Text = "SHA1"
+    state was_digits: Int = 6
+    state was_period: Int = 30
     state link: Text = ""
-    ui.NavShell(content_kind: .list, title: "Authenticator", count: v.accounts.len()) {
+    ui.NavShell(content_kind: .list, title: window_title(v), count: v.accounts.len()) {
         actions: {
             row(gap: .related, align: .center) {
                 if screen == "list" {
@@ -295,6 +431,10 @@ view vault_window(v: Vault) {
                             .then(set(algorithm, "SHA1"))
                             .then(set(digits, 6))
                             .then(set(period, 30))
+                            .then(set(color, 0))
+                            .then(set(was_algorithm, "SHA1"))
+                            .then(set(was_digits, 6))
+                            .then(set(was_period, 30))
                             .then(set(advanced, false))
                             .then(set(screen, "form"))
                     }
@@ -303,14 +443,18 @@ view vault_window(v: Vault) {
                         on press: set(screen, "list")
                     }
                     ui.Button("Scan a QR image", icon: .qr_code) {
-                        on press: file.choose(import_picture(v), accept: ["image/*"])
+                        // The picture is read into the form: the person sees what it said and
+                        // saves it, so a picture that names the wrong service can be corrected.
+                        on press: file.choose(scan_picture(v), accept: ["image/*"])
                     }
                     ui.Button("Save", icon: .check, role: .primary) {
                         // The list is where a person goes once the account is saved, and nowhere
                         // else: a form that keeps what was typed open is what a refusal leaves.
                         // A number out of range is what sends them to the options it is under.
                         on press: {
-                            let saved = save_form(
+                            // A picture that was read is what Save saves: the person corrected
+                            // its words above, and the vault already holds its key.
+                            let saved = save_account(
                                 v,
                                 editing,
                                 issuer,
@@ -319,12 +463,16 @@ view vault_window(v: Vault) {
                                 algorithm,
                                 digits,
                                 period,
+                                color,
+                                was_algorithm,
+                                was_digits,
+                                was_period,
                             )
                             if saved {
                                 set(screen, "list").then(set(advanced, false))
                             } else {
-                                // Nothing moves: the form stays as it was, with its refusal said
-                                // in the bar. An action either way, so the press is one.
+                                // Nothing moves: the form stays as it was, with its refusal
+                                // said in the bar. An action either way, so the press is one.
                                 set(advanced, advanced)
                             }
                         }
@@ -343,6 +491,7 @@ view vault_window(v: Vault) {
                     algorithm,
                     digits,
                     period,
+                    color,
                     link,
                     advanced,
                 )
@@ -360,6 +509,9 @@ view vault_window(v: Vault) {
                         .then(set(algorithm, "SHA1"))
                         .then(set(digits, 6))
                         .then(set(period, 30))
+                        .then(set(was_algorithm, "SHA1"))
+                        .then(set(was_digits, 6))
+                        .then(set(was_period, 30))
                         .then(set(advanced, false))
                         .then(set(screen, "form"))
                 }
@@ -376,9 +528,13 @@ view vault_window(v: Vault) {
                             .then(set(issuer, a.issuer))
                             .then(set(label, a.label))
                             .then(set(secret, ""))
-                            .then(set(algorithm, "SHA1"))
-                            .then(set(digits, 6))
-                            .then(set(period, 30))
+                            .then(set(algorithm, algorithm_of(a)))
+                            .then(set(digits, digits_of(a)))
+                            .then(set(period, period_of(a)))
+                            .then(set(was_algorithm, algorithm_of(a)))
+                            .then(set(was_digits, digits_of(a)))
+                            .then(set(was_period, period_of(a)))
+                            .then(set(color, a.color))
                             .then(set(advanced, false))
                             .then(set(screen, "form"))
                         on delete(a: Account): delete_account(v, a)
@@ -397,7 +553,11 @@ view vault_window(v: Vault) {
                                 algorithm,
                                 digits,
                                 period,
+                                color,
                                 advanced,
+                                was_algorithm,
+                                was_digits,
+                                was_period,
                             )
                         }
                     }
@@ -413,7 +573,7 @@ view vault_window(v: Vault) {
 /// Saves the form: starts the account, or changes the one it was opened over, answering whether
 /// it saved. A refusal says why in the bar and leaves the form open with what was typed, so a
 /// window only leaves the form when this answered that it saved.
-action save_form(
+action save_account(
     v: Vault,
     editing: Option<Account>,
     issuer: Text,
@@ -422,7 +582,17 @@ action save_form(
     algorithm: Text,
     digits: Int,
     period: Int,
-) -> Bool {
+    color: Int = 0,
+    was_algorithm: Text = "SHA1",
+    was_digits: Int = 6,
+    was_period: Int = 30,
+) -> Bool uses secret {
+    // A picture that was read is what this saves: the person corrected its words in the form,
+    // and the vault already holds its key.
+    if v.pending != "" {
+        add_pending(v)
+        return true
+    }
     if issuer.trim() == "" {
         v.notice = "The account needs a service name"
         v.notice_kind = "warning"
@@ -449,13 +619,55 @@ action save_form(
         return false
     }
     if let a = editing {
-        update_account(a, issuer, label, secret, algorithm, digits, period, a.color)
+        // Only what the person changed is an action, so history says which part of the account
+        // it was: a rename is a rename, not "changed an account". The codes' previous settings
+        // come from the form, which read them when it opened: an action never reads the vault.
+        if a.issuer != issuer.trim() {
+            rename_account(a, issuer, algorithm, digits, period)
+        }
+        if a.label != label.trim() {
+            relabel_account(a, label, algorithm, digits, period)
+        }
+        if a.color != color { recolor_account(a, color) }
+        // The key, the algorithm and how long a code lasts are one action: they are how the
+        // account makes its codes, and history says so in one sentence.
+        let recoded = secret.trim() != ""
+            or was_algorithm != algorithm
+            or was_digits != digits
+            or was_period != period
+        if recoded {
+            recode_account(a, algorithm, digits, period, secret)
+        }
     } else {
-        add_account(v, issuer, label, secret, algorithm, digits, period)
+        add_account(v, issuer, label, secret, algorithm, digits, period, color)
     }
     v.notice = ""
     v.notice_kind = "info"
     true
+}
+
+/// The algorithm an account's codes are made with, as the vault keeps it.
+fn algorithm_of(a: Account) -> Text {
+    match vault_code(a.item) {
+        .some(made) => made.algorithm,
+        .none => "SHA1",
+    }
+}
+
+/// How many digits an account's codes have, as the vault keeps them.
+fn digits_of(a: Account) -> Int {
+    match vault_code(a.item) {
+        .some(made) => made.digits,
+        .none => 6,
+    }
+}
+
+/// How long an account's code lasts, as the vault keeps it.
+fn period_of(a: Account) -> Int {
+    match vault_code(a.item) {
+        .some(made) => made.period,
+        .none => 30,
+    }
 }
 
 /// One account's card: its code as the vault makes it now, how long that code lasts, and what a
@@ -476,7 +688,11 @@ view account_card(
     algorithm: State<Text>,
     digits: State<Int>,
     period: State<Int>,
+    color: State<Int>,
     advanced: State<Bool>,
+    was_algorithm: State<Text>,
+    was_digits: State<Int>,
+    was_period: State<Int>,
 ) {
     let made = vault_code(a.item)
     let unveiled = shown == a.id and second < shown_until
@@ -533,9 +749,13 @@ view account_card(
                         .then(set(issuer, a.issuer))
                         .then(set(label, a.label))
                         .then(set(secret, ""))
-                        .then(set(algorithm, made?.algorithm ?? "SHA1"))
-                        .then(set(digits, made?.digits ?? 6))
-                        .then(set(period, made?.period ?? 30))
+                        .then(set(algorithm, algorithm_of(a)))
+                        .then(set(digits, digits_of(a)))
+                        .then(set(period, period_of(a)))
+                        .then(set(was_algorithm, algorithm_of(a)))
+                        .then(set(was_digits, digits_of(a)))
+                        .then(set(was_period, period_of(a)))
+                        .then(set(color, a.color))
                         .then(set(advanced, false))
                         .then(set(screen, "form"))
                 }
@@ -659,81 +879,122 @@ view account_form(
     algorithm: State<Text>,
     digits: State<Int>,
     period: State<Int>,
+    color: State<Int>,
     link: State<Text>,
     advanced: State<Bool>,
 ) {
-    stack(gap: .related, padding: .group, max: 40rem) {
+    stack(gap: .section, padding: .group, max: 40rem) {
         ui.Text(if editing == .none { "Add account" } else { "Edit account" }, role: .title)
-        ui.Text(
-            "Scan a QR code, paste a setup link, or type the details the service gave.",
-            role: .caption,
-            secondary: true,
-        )
-        row(gap: .related, align: .center) {
-            ui.TextInput(bind: link, placeholder: "Setup link", entry: true, fill: 1.0) {
-                on submit(uri): set(link, uri)
-            }
-            ui.Button("Fill from the link", icon: .link) {
-                on press: if parse_uri(link) == .none {
-                    refuse(v, "That is not a setup link this app reads")
-                } else {
-                    set(issuer, (parse_uri(link) ?? ParsedAnswer()).issuer)
-                        .then(
-                            set(label, (parse_uri(link) ?? ParsedAnswer()).label),
-                        )
-                        .then(
-                            set(secret, (parse_uri(link) ?? ParsedAnswer()).secret),
-                        )
-                        .then(
-                            set(algorithm, (parse_uri(link) ?? ParsedAnswer()).algorithm),
-                        )
-                        .then(
-                            set(digits, (parse_uri(link) ?? ParsedAnswer()).digits),
-                        )
-                        .then(
-                            set(period, (parse_uri(link) ?? ParsedAnswer()).period),
-                        )
-                        .then(set(link, ""))
-                        .then(set(advanced, false))
-                }
-            }
-        }
-        ui.SectionDivider()
-        ui.TextInput(bind: issuer, placeholder: "Service name", title: true)
-        ui.TextInput(bind: label, placeholder: "Email or username")
-        ui.TextInput(
-            bind: secret,
-            placeholder: if editing == .none {
-                "Key from the service"
-            } else {
-                "New key, or leave empty to keep the one the vault holds"
-            },
-            secret: true,
-        )
-        // A number out of range is under these options: they stay open while it is, so the
-        // field that refused the save is the one in front of the person.
-        ui.DisclosureRow(
-            title: "Advanced options",
-            expanded: advanced or period < 5 or period > 300 or digits < 4 or digits > 10,
-        ) {
-            on toggle: set(advanced, not advanced)
-            stack(gap: .related) {
-                ui.ToggleGroup(
-                    selected: if algorithm == "SHA256" {
-                        1
-                    } else if algorithm == "SHA512" { 2 } else { 0 },
-                    caption: "Algorithm",
-                ) {
-                    ui.Segment("SHA1")
-                    ui.Segment("SHA256")
-                    ui.Segment("SHA512")
-                    on change(i): set(
-                        algorithm,
-                        if i == 1 { "SHA256" } else if i == 2 { "SHA512" } else { "SHA1" },
+        // A picture that was read fills this form: what it said stands here to be corrected,
+        // and Save adds it. Nothing else is offered until it is saved or dropped.
+        if v.pending != "" {
+            ui.Section("Read from a picture") {
+                ui.TextInput(bind: v.pending_issuer, placeholder: "Service name", title: true)
+                ui.TextInput(bind: v.pending_label, placeholder: "Email or username")
+                row(gap: .related, align: .center) {
+                    ui.Text(
+                        "The key it read is kept in the vault until you save it.",
+                        role: .caption,
+                        secondary: true,
+                        fill: 1.0,
                     )
+                    ui.Button("Drop", icon: .trash, role: .plain) {
+                        on press: drop_pending(v)
+                    }
                 }
-                ui.NumberInput(bind: digits, label: "Digits", min: 4, max: 10)
-                ui.NumberInput(bind: period, label: "Period in seconds", min: 5, max: 300)
+            }
+        } else {
+            ui.Text(
+                "Scan a QR code, paste a setup link, or type the details the service gave.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.Section("Read a code") {
+                row(gap: .related, align: .center) {
+                    ui.TextInput(bind: link, placeholder: "Setup link", entry: true, fill: 1.0) {
+                        on submit(uri): set(link, uri)
+                    }
+                    ui.Button("Fill from the link", icon: .link) {
+                        on press: if parse_uri(link) == .none {
+                            refuse(v, "That is not a setup link this app reads")
+                        } else {
+                            set(issuer, (parse_uri(link) ?? ParsedAnswer()).issuer)
+                                .then(
+                                    set(label, (parse_uri(link) ?? ParsedAnswer()).label),
+                                )
+                                .then(
+                                    set(secret, (parse_uri(link) ?? ParsedAnswer()).secret),
+                                )
+                                .then(
+                                    set(algorithm, (parse_uri(link) ?? ParsedAnswer()).algorithm),
+                                )
+                                .then(
+                                    set(digits, (parse_uri(link) ?? ParsedAnswer()).digits),
+                                )
+                                .then(
+                                    set(period, (parse_uri(link) ?? ParsedAnswer()).period),
+                                )
+                                .then(set(link, ""))
+                                .then(set(advanced, false))
+                        }
+                    }
+                }
+            }
+            ui.Section("Details") {
+                ui.TextInput(bind: issuer, placeholder: "Service name", title: true)
+                ui.TextInput(bind: label, placeholder: "Email or username")
+                ui.TextInput(
+                    bind: secret,
+                    placeholder: if editing == .none {
+                        "Key from the service"
+                    } else {
+                        "New key, or leave empty to keep the one the vault holds"
+                    },
+                    secret: true,
+                )
+                ui.ColorSwatchPicker(
+                    swatches: [
+                        "#3f7fbf",
+                        "#7a5cc4",
+                        "#b0568f",
+                        "#bf5b45",
+                        "#a8792a",
+                        "#4f8f4a",
+                        "#2f8f88",
+                        "#6b7280",
+                    ],
+                    columns: 8,
+                    selected: .some(color),
+                    label: "Colour",
+                ) {
+                    on change(i): set(color, i)
+                }
+            }
+            // A number out of range is under these options: they stay open while it is, so the
+            // field that refused the save is the one in front of the person.
+            ui.DisclosureRow(
+                title: "Advanced options",
+                expanded: advanced or period < 5 or period > 300 or digits < 4 or digits > 10,
+            ) {
+                on toggle: set(advanced, not advanced)
+                stack(gap: .related) {
+                    ui.ToggleGroup(
+                        selected: if algorithm == "SHA256" {
+                            1
+                        } else if algorithm == "SHA512" { 2 } else { 0 },
+                        caption: "Algorithm",
+                    ) {
+                        ui.Segment("SHA1")
+                        ui.Segment("SHA256")
+                        ui.Segment("SHA512")
+                        on change(i): set(
+                            algorithm,
+                            if i == 1 { "SHA256" } else if i == 2 { "SHA512" } else { "SHA1" },
+                        )
+                    }
+                    ui.NumberInput(bind: digits, label: "Digits", min: 4, max: 10)
+                    ui.NumberInput(bind: period, label: "Period in seconds", min: 5, max: 300)
+                }
             }
         }
         if v.notice != "" {
@@ -747,6 +1008,23 @@ view account_form(
             }
         }
     }
+}
+
+/// The window's title: the accounts it shows, named. A title that said only how many there are
+/// would leave a person with several windows unable to tell them apart.
+fn window_title(v: Vault) -> Text {
+    if v.accounts.is_empty() {
+        "Authenticator"
+    } else if v.accounts.len() == 1 {
+        name_of(v.accounts.first() ?? Account())
+    } else {
+        "{name_of(v.accounts.first() ?? Account())} and {v.accounts.len() - 1} more"
+    }
+}
+
+/// An account's name in the words a window says it in.
+fn name_of(a: Account) -> Text {
+    if a.issuer == "" { "Account" } else { a.issuer }
 }
 
 action clear_notice(v: Vault) {
