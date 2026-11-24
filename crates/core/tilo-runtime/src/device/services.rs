@@ -1905,18 +1905,32 @@ impl PersonDispatch {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            let key = tilo_api::grant_key::GrantKey::held(
-                key.clone(),
-                cert.clone(),
-                tilo_clock::unix_now_ns(),
-            )
-            .map_err(|refused| io::Error::other(refused.to_string()))?;
-            let provider = daemon.provider_for_key(&daemon.workspace()?, &key)?;
-            let caller = provider
-                .admission_caller()
-                .ok_or_else(|| io::Error::other("the key's run was not admitted"))?;
+            let (provider, caller) = daemon.key_tree(&key, &cert)?;
             tilo_mcp::McpServer::admitted(provider, caller)
         })
+    }
+
+    /// A run of `key` (certified by `cert`) in the device's workspace, and the caller its calls
+    /// go as: the key itself ([`Self::provider_for_key`]).
+    ///
+    /// # Errors
+    /// The certificate does not hold, or the workspace does not admit the key.
+    pub(crate) fn key_tree(
+        &self,
+        key: &SigningKey,
+        cert: &DeviceCert,
+    ) -> io::Result<(RuntimeActionProvider, Caller)> {
+        let key = tilo_api::grant_key::GrantKey::held(
+            key.clone(),
+            cert.clone(),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|refused| io::Error::other(refused.to_string()))?;
+        let provider = self.provider_for_key(&self.workspace()?, &key)?;
+        let caller = provider
+            .admission_caller()
+            .ok_or_else(|| io::Error::other("the key's run was not admitted"))?;
+        Ok((provider, caller))
     }
 }
 
@@ -4242,3 +4256,7 @@ impl crate::other_devices::Whereabouts for Known {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "second_person_tests.rs"]
+mod second_person_tests;

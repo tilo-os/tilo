@@ -1,5 +1,6 @@
 //! What this computer's daemon says about the device it is, at its native endpoint: who an
-//! account is to it (`account#who`), and logging the device in with a ticket (`devices#logIn`).
+//! account is to it (`account#who`), logging the device in with a ticket (`devices#logIn`), and
+//! certifying the key another person signed in on the computer acts as (`seats#certified`).
 //!
 //! The device and its person are its certificates'; the server it enters its person's workspaces
 //! through is the daemon's to know, from its copy of the person's own workspace. Nothing of either
@@ -241,10 +242,84 @@ fn logging_in(args: &Value) -> Result<Who, String> {
     }
 }
 
+/// Certify the key this computer's daemon made for this account, when the account signed in as
+/// another person than the device's: their identity `signer` certifies it as a member's device,
+/// and the account acts as that key from then on. Answers whether there was a key to certify;
+/// the device's own person has none.
+///
+/// # Errors
+/// No daemon answers, the key is to be another person's than `signer`'s, or the daemon refused
+/// the certificate.
+pub fn certify_my_key(signer: &dyn tilo_user_identity::StatementSigner) -> Result<bool, String> {
+    certify_key_at(&super::this_computer()?.native(), signer)
+}
+
+/// [`certify_my_key`], at the daemon whose native endpoint is `socket`.
+///
+/// # Errors
+/// As [`certify_my_key`].
+pub fn certify_key_at(
+    socket: &std::path::Path,
+    signer: &dyn tilo_user_identity::StatementSigner,
+) -> Result<bool, String> {
+    let asked = ask_at(socket, &json!({"native": WHO}))?;
+    let Some(certify) = asked.get("certify") else {
+        return Ok(false);
+    };
+    let key = |name: &str| -> Option<[u8; 32]> {
+        hex::decode(certify.get(name)?.as_str()?)
+            .ok()?
+            .try_into()
+            .ok()
+    };
+    let (Some(person), Some(device)) = (key("person"), key("key")) else {
+        return Err("the daemon named no key to certify".to_owned());
+    };
+    if person != signer.public_key() {
+        return Err(
+            "this computer signed this account in as another person than its identity".to_owned(),
+        );
+    }
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: person,
+        device_public_key: device,
+        device_label: tilo_user_identity::UNNAMED_SHARED_DEVICE.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, signer).map_err(|error| error.to_string())?;
+    let cert = canonical_hex(&cert).ok_or("the certificate could not be encoded")?;
+    let answer = ask_at(
+        socket,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "tilo_do",
+            "arguments": {"path": "seats#certified", "args": {"cert": cert}},
+        }}),
+    )?;
+    if let Some(error) = answer.pointer("/error/message").and_then(Value::as_str) {
+        return Err(error.to_owned());
+    }
+    if answer.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
+        let said = answer
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("the daemon refused the certificate");
+        return Err(said.to_owned());
+    }
+    Ok(true)
+}
+
 /// Ask `request` at this computer's native endpoint, one line each way.
 fn ask(request: &Value) -> Result<Value, String> {
-    let place = super::this_computer()?;
-    let mut stream = connect(&place, ASKING)?;
+    ask_at(&super::this_computer()?.native(), request)
+}
+
+/// Ask `request` at the native endpoint `socket`, one line each way.
+fn ask_at(socket: &std::path::Path, request: &Value) -> Result<Value, String> {
+    let mut stream = connect_to(socket, ASKING)?;
     writeln!(stream, "{request}").map_err(|error| error.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.take(ANSWER_MAX))
@@ -258,10 +333,18 @@ fn connect(
     place: &super::DaemonPlace,
     within: Duration,
 ) -> Result<std::os::unix::net::UnixStream, String> {
-    let stream = tilo_files::native::socket::connect(&place.native()).map_err(|error| {
+    connect_to(&place.native(), within)
+}
+
+/// A connection to the native endpoint `socket`, answering within `within`.
+fn connect_to(
+    socket: &std::path::Path,
+    within: Duration,
+) -> Result<std::os::unix::net::UnixStream, String> {
+    let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
         format!(
             "Tilo isn't running on this computer ({}: {error})",
-            place.native().display(),
+            socket.display(),
         )
     })?;
     stream

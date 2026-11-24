@@ -58,6 +58,23 @@ impl Frames {
         })
     }
 
+    /// The device's workspace as the key `key` (certified by `cert`) reaches it: what another
+    /// person signed in on the computer calls actions in ([`Daemon::key_tree`]).
+    pub(crate) fn of_a_key(
+        daemon: &Arc<Daemon>,
+        key: ed25519_dalek::SigningKey,
+        cert: tilo_user_identity::DeviceCert,
+    ) -> Self {
+        let daemon = Arc::downgrade(daemon);
+        Self::new(move || {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            let (tree, caller) = daemon.key_tree(&key, &cert)?;
+            Ok((Arc::new(tree) as Tree, caller))
+        })
+    }
+
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
     /// ([`remote::serve_lines`]).
     pub(crate) fn serve(&self, mut stream: UnixStream, first: &[u8], input: impl BufRead) {

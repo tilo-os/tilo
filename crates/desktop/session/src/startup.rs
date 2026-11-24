@@ -204,7 +204,10 @@ pub fn identity() -> Identity {
     };
     match verify_now(identity_dir) {
         Ok(()) => match settle(identity_dir) {
-            Ok(()) => Identity::Shell,
+            Ok(()) => {
+                certify_this_computers_key(&identity_path);
+                Identity::Shell
+            }
             Err(said) => Identity::Refused(said),
         },
         Err(error) => match failure(&error) {
@@ -321,6 +324,27 @@ fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
                 attempt = attempt.saturating_add(1);
             }
             result => return result.map(|_| ()),
+        }
+    }
+}
+
+/// Certify the key this computer's daemon made for this account when another person than the
+/// device's signed in on it, with the identity at `identity_path`: the account acts as that key
+/// from then on. The device's own person has no key to certify; a daemon that is not running, or
+/// refuses, leaves the account served the device's own actions, and is logged.
+fn certify_this_computers_key(identity_path: &Path) {
+    let signer = match tilo_identity::store::load_from_path(identity_path.to_path_buf()) {
+        Ok(signer) => signer,
+        Err(error) => {
+            tracing::warn!(%error, "this account's identity cannot certify its key on this computer");
+            return;
+        }
+    };
+    match tilo_api::daemon::who::certify_my_key(&signer) {
+        Ok(true) => tracing::info!("this account acts on this computer as its own certified key"),
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(%error, "this account's key on this computer is not certified")
         }
     }
 }

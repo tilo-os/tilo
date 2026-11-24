@@ -470,7 +470,7 @@ fn serve_device(
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
         native.serve_the_person(the_persons(&session, search));
-        native.serve_keys(key_endpoint(&session, native.answers.clone()));
+        native.serve_keys(key_endpoint(&session));
         person.set(Some(&session));
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
@@ -642,6 +642,7 @@ pub(crate) fn serve_for_test(
 ) -> io::Result<()> {
     let native = Arc::new(Native::new(device, uid_of, admission));
     native.serve_the_person(the_persons(session, Arc::new(OnceLock::new())));
+    native.serve_keys(key_endpoint(session));
     let listener = tilo_files::native::private::bind_socket(socket)?;
     std::thread::Builder::new()
         .name("tilo-native-test".into())
@@ -892,22 +893,22 @@ pub(crate) fn agents_endpoint(
 }
 
 /// How the native endpoint serves a connection of another person than the device's: each as a
-/// run of the key of theirs it acts as, in `session`'s workspace. Its action frames reach the
-/// device's own actions (`answers`) alone, never the person's tree.
-fn key_endpoint(session: &Arc<Daemon>, answers: crate::device::unclaimed::DeviceOnly) -> KeyTake {
+/// run of the key of theirs it acts as, in `session`'s workspace, over MCP and action frames
+/// alike.
+fn key_endpoint(session: &Arc<Daemon>) -> KeyTake {
     let session = Arc::downgrade(session);
     Box::new(move |stream, slot, seated, key, cert| {
         let daemon = session
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
         Endpoint {
+            frames: Frames::of_a_key(&daemon, key.clone(), cert.clone()),
             session_factory: daemon.key_sessions(key, cert),
             status: status_of(&daemon),
             search: Arc::new(OnceLock::new()),
             media: None,
             other_devices: None,
             agents: None,
-            frames: Frames::of_the_device(answers.seated(seated.clone())),
             to_agents: None,
         }
         .take(stream, slot, Some(seated))
