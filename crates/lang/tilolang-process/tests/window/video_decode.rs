@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+// The tools these tests start inherit the test's environment: they run one at a time.
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use ui::widget::Widget as _;
 use ui::widget::video_player::{DeclaredVideo, VideoPlayerProps};
 
@@ -56,7 +59,7 @@ fn make_clip(path: &Path) -> Result<(), String> {
             "!",
             "mux.audio_0",
         ])
-        .status();
+        .status_locked();
     if gst.is_ok_and(|status| status.success()) && path.is_file() {
         return Ok(());
     }
@@ -82,7 +85,7 @@ fn make_clip(path: &Path) -> Result<(), String> {
             "aac",
             &path.display().to_string(),
         ])
-        .status();
+        .status_locked();
     if ffmpeg.is_ok_and(|status| status.success()) && path.is_file() {
         return Ok(());
     }
@@ -149,7 +152,7 @@ fn make_hls(dir: &Path) -> Result<PathBuf, String> {
             &format!("playlist-location={}", playlist.display()),
             "target-duration=1",
         ])
-        .status();
+        .status_locked();
     if gst.is_ok_and(|status| status.success()) && playlist.is_file() {
         return Ok(playlist);
     }
@@ -176,7 +179,7 @@ fn make_hls(dir: &Path) -> Result<PathBuf, String> {
             "0",
             &playlist.display().to_string(),
         ])
-        .status();
+        .status_locked();
     if ffmpeg.is_ok_and(|status| status.success()) && playlist.is_file() {
         return Ok(playlist);
     }
