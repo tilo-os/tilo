@@ -287,6 +287,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "TappArtifact.tapp_blake3_hex" = "String"
 "TappArtifact.tapp_root_hash_hex" = "String"
 "TappArtifact.tapp_size_bytes" = "u64"
+"TappArtifact.tapp_surface_hex" = "String"
 "TappArtifact.tapp_url" = "String"
 "TappArtifact.target" = "RegistryTarget"
 "Target" = "struct"
