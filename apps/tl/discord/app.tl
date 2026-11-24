@@ -1153,7 +1153,8 @@ action start_sign_in(d: Discord, ask: Text, url: Text, sha256: Text) uses time {
 }
 
 /// Offers a Discord account for linking, from the server: `/link` answered with a one-time
-/// token, whose check this is.
+/// token, whose check this is. The offer stands ten minutes, replacing any run out and any
+/// other offer kept under the same check.
 action offer_link(
     d: Discord,
     check: Text,
@@ -1165,8 +1166,10 @@ action offer_link(
 ) uses time {
     require may_configure(invoker) "Only the bridge offers a link"
     require is_digest(check) "A digest is 64 hex digits"
-    keep_offer(
-        d,
+    for o in offers_replaced(d, check, now) {
+        d.link_offers.remove(o)
+    }
+    d.link_offers.insert(
         LinkOffer(
             check: check,
             discord_user: discord_user,
@@ -1174,6 +1177,7 @@ action offer_link(
             display_name: display_name,
             avatar: avatar,
             interaction: interaction,
+            expires: "{now + 10m}",
         ),
     )
 }
@@ -1194,54 +1198,39 @@ action offer_sign_in(
     require d.connects.any(c -> c.state_sha256 == state_sha256 and stands(c.expires, now)) "That sign-in with Discord was not started here, or took too long"
     let started = d.connects.find(c -> c.state_sha256 == state_sha256 and stands(c.expires, now))
     if let start = started {
-        for c in d.connects.filter(c -> c.person == start.person) {
+        let person = start.person
+        for c in d.connects.filter(c -> c.person == person) {
             d.connects.remove(c)
         }
-        keep_offer(
-            d,
+        for o in offers_replaced(d, check, now) {
+            d.link_offers.remove(o)
+        }
+        d.link_offers.insert(
             LinkOffer(
                 check: check,
                 discord_user: discord_user,
                 user_name: user_name,
                 display_name: display_name,
                 avatar: avatar,
-                person: start.person,
+                person: person,
+                expires: "{now + 10m}",
             ),
         )
     }
 }
 
-/// Keeps an offer for ten minutes, dropping those run out.
-action keep_offer(d: Discord, offered: LinkOffer) uses time {
-    require may_configure(invoker) "Only the bridge keeps an offer"
-    for o in d.link_offers.filter(o -> not stands(o.expires, now) or o.check == offered.check) {
-        d.link_offers.remove(o)
-    }
-    d.link_offers.insert(
-        LinkOffer(
-            check: offered.check,
-            discord_user: offered.discord_user,
-            user_name: offered.user_name,
-            display_name: offered.display_name,
-            avatar: offered.avatar,
-            person: offered.person,
-            interaction: offered.interaction,
-            expires: "{now + 10m}",
-        ),
-    )
+/// The offers a new one replaces: those run out at `at`, and the one kept under `check`.
+fn offers_replaced(d: Discord, check: Text, at: Time) -> List<LinkOffer> {
+    d.link_offers.filter(o -> not stands(o.expires, at) or o.check == check)
 }
 
 /// Links the Discord account a one-time token offers to the person looking. The offer is used
 /// up, and a link the person had before is replaced.
 action complete_link(d: Discord, proof: Text) uses time {
-    require check_of(proof) != "" "This link was not started here"
     require offered_to(d, proof) != .none "This link was already used or has run out. Start again from Discord with /link"
     require offer_current(offered_to(d, proof), now) "This link ran out after ten minutes. Start again with /link"
     require offer_mine(offered_to(d, proof), invoker) "This link was started by another account. Sign in as that account, or start again"
     if let offered = offered_to(d, proof) {
-        for o in d.link_offers.filter(o -> o.check == offered.check) {
-            d.link_offers.remove(o)
-        }
         for l in d.links.filter(l -> l.person == invoker.id()) {
             d.links.remove(l)
         }
@@ -1256,15 +1245,17 @@ action complete_link(d: Discord, proof: Text) uses time {
                 interaction: offered.interaction,
             ),
         )
+        // The offer goes last: what this link took from it is read while it still stands.
+        for o in d.link_offers.filter(o -> o.check == offered.check) {
+            d.link_offers.remove(o)
+        }
     }
 }
 
-/// The check a link proof stands for, or empty when it opens nothing.
+/// The check a link proof stands for: its digest, which is what an offer is kept under, so the
+/// proof itself never rests in a record.
 fn check_of(proof: Text) -> Text {
-    match engine.call("link-check", proof) {
-        .err(_) => "",
-        .ok(check) => check,
-    }
+    std.sha256(proof)
 }
 
 /// The offer a link proof opens, if one is still there.

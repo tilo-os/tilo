@@ -70,24 +70,20 @@ fn workspace() -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     ada.host.runtime().set_members(
         vec![
-            tilolang_runtime::members::Member::person(
-                "ada",
-                tilo_actions::policy::Role::Owner,
-            ),
-            tilolang_runtime::members::Member::person(
-                "bo",
-                tilo_actions::policy::Role::Editor,
-            ),
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
         ],
         None,
     );
     let _ = ada.view(APP);
-    let root = ada
-        .host
-        .root_of(APP)
-        .expect("the app's own root");
+    let root = ada.host.root_of(APP).expect("the app's own root");
     ada.commit();
-    match run(&ada, &person("ada"), "begin_setup", vec![Value::resource(&root)]) {
+    match run(
+        &ada,
+        &person("ada"),
+        "begin_setup",
+        vec![Value::resource(&root)],
+    ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("the setup starts: {other:?}"),
     }
@@ -111,7 +107,12 @@ fn workspace() -> (Replica, ResourceRef) {
 fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
     let (ada, account) = workspace();
     // The token is the vault's first: nothing finds servers without it.
-    let refused = run(&ada, &person("ada"), "find_servers", vec![Value::resource(&account)]);
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "find_servers",
+        vec![Value::resource(&account)],
+    );
     assert!(
         matches!(&refused, Err(why) if why.contains("Add the bot's token first")),
         "{refused:?}"
@@ -119,7 +120,12 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
 
     // Ada asks for the token: the person types it into their vault, and the program answers
     // where it was kept.
-    match run(&ada, &person("ada"), "ask_token", vec![Value::resource(&account)]) {
+    match run(
+        &ada,
+        &person("ada"),
+        "ask_token",
+        vec![Value::resource(&account)],
+    ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ada asks for the token: {other:?}"),
     }
@@ -153,10 +159,19 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         matches!(&refused, Err(why) if why.contains("Only the bridge keeps the bot's token")),
         "{refused:?}"
     );
-    assert_eq!(text(&ada.host, &account, "token_item"), ITEM, "the item kept");
+    assert_eq!(
+        text(&ada.host, &account, "token_item"),
+        ITEM,
+        "the item kept"
+    );
 
     // Ada presses: the record names the step and the press, and waits.
-    match run(&ada, &person("ada"), "find_servers", vec![Value::resource(&account)]) {
+    match run(
+        &ada,
+        &person("ada"),
+        "find_servers",
+        vec![Value::resource(&account)],
+    ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ada finds the servers: {other:?}"),
     }
@@ -204,7 +219,11 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         &ada,
         &bridge(),
         "found_servers",
-        vec![Value::resource(&account), Value::text(press.as_str()), Value::List(vec![])],
+        vec![
+            Value::resource(&account),
+            Value::text(press.as_str()),
+            Value::List(vec![]),
+        ],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("the bridge answers the press: {other:?}"),
@@ -214,7 +233,11 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         text(&ada.host, &account, "setup_problem"),
         "The bot is in no server. Add it to one in Discord first."
     );
-    assert_eq!(text(&ada.host, &account, "setup_wants"), "", "nothing waits");
+    assert_eq!(
+        text(&ada.host, &account, "setup_wants"),
+        "",
+        "nothing waits"
+    );
 }
 
 /// A member who does not moderate the workspace is refused every step of the setup, with the
@@ -222,7 +245,12 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
 #[test]
 fn only_the_workspaces_moderators_set_a_server_up() {
     let (ada, account) = workspace();
-    for step in ["ask_token", "find_servers", "bridge_server", "back_to_servers"] {
+    for step in [
+        "ask_token",
+        "find_servers",
+        "bridge_server",
+        "back_to_servers",
+    ] {
         let refused = run(&ada, &person("bo"), step, vec![Value::resource(&account)]);
         assert!(
             matches!(
@@ -234,10 +262,19 @@ fn only_the_workspaces_moderators_set_a_server_up() {
     }
     refused_bridge_steps(&ada, &account);
     assert_eq!(text(&ada.host, &account, "token_item"), "", "nothing kept");
-    assert_eq!(text(&ada.host, &account, "setup_wants"), "", "nothing asked");
+    assert_eq!(
+        text(&ada.host, &account, "setup_wants"),
+        "",
+        "nothing asked"
+    );
 
     // The owner's press asks, and the program it waits on is the only one that answers it.
-    match run(&ada, &person("ada"), "ask_token", vec![Value::resource(&account)]) {
+    match run(
+        &ada,
+        &person("ada"),
+        "ask_token",
+        vec![Value::resource(&account)],
+    ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("the owner asks for the token: {other:?}"),
     }
@@ -269,7 +306,10 @@ fn refused_bridge_steps(ada: &Replica, account: &ResourceRef) {
         ("keep_token", vec![Value::text(ITEM)]),
         ("found_servers", vec![Value::List(vec![])]),
         ("found_channels", vec![Value::List(vec![])]),
-        ("setup_failed", vec![Value::text("Discord could not be reached.")]),
+        (
+            "setup_failed",
+            vec![Value::text("Discord could not be reached.")],
+        ),
         (
             "start_sign_in",
             vec![
@@ -287,4 +327,202 @@ fn refused_bridge_steps(ada: &Replica, account: &ResourceRef) {
             "{step}: {refused:?}"
         );
     }
+}
+
+/// The SHA-256 of `text` in lowercase hex, as the bridge and the person's own side make it.
+fn digest(text: &str) -> String {
+    tilolang::sha256_hex(text.as_bytes())
+}
+
+/// The records a collection field holds.
+fn records(host: &tilolang_tilo::host::Host, at: &ResourceRef, name: &str) -> Vec<ResourceRef> {
+    match read(host, at, name) {
+        Value::List(items) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::Ref(reference) => (*reference.target).clone(),
+                other => panic!("{name} holds records: {other:?}"),
+            })
+            .collect(),
+        other => panic!("{name} is a collection: {other:?}"),
+    }
+}
+
+/// The bridge offers `/link`'s account, keeping only the digest of the proof it handed out.
+fn offer(ada: &Replica, account: &ResourceRef, proof: &str, user: &str, name: &str) {
+    match run(
+        ada,
+        &bridge(),
+        "offer_link",
+        vec![
+            Value::resource(account),
+            Value::text(digest(proof).as_str()),
+            Value::text(user),
+            Value::text(name),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge offers the link: {other:?}"),
+    }
+    ada.commit();
+}
+
+/// A `/link` offer opens for the person holding its code, once, until it runs out; the record
+/// keeps the code's digest and never the code, and an offer started by one person is no other's
+/// to take.
+#[test]
+fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
+    let (ada, account) = workspace();
+    ada.host.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
+
+    // `/link` answered with a one-time code; the person's side hands over its digest, which is
+    // all the bridge keeps.
+    let code = "the-one-time-code";
+    let proof = digest(code);
+    offer(&ada, &account, &proof, "1000", "ada_on_discord");
+    let offers = records(&ada.host, &account, "link_offers");
+    assert_eq!(offers.len(), 1, "the offer is kept");
+    let kept = offers.first().expect("the offer");
+    assert_eq!(
+        text(&ada.host, kept, "discord_user"),
+        "1000",
+        "the offer keeps the account it is for"
+    );
+
+    // A code nobody offered opens nothing.
+    let stray = digest(&digest("another code"));
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(&account), Value::text(stray.as_str())],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("was already used or has run out")),
+        "{refused:?}"
+    );
+
+    // The holder links: the Discord account is theirs here, and the code and its proof are not
+    // written anywhere.
+    match run(
+        &ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(&account), Value::text(proof.as_str())],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada links: {other:?}"),
+    }
+    ada.commit();
+    let links = records(&ada.host, &account, "links");
+    assert_eq!(links.len(), 1, "one account linked");
+    let link = links.first().expect("the link");
+    assert_eq!(text(&ada.host, link, "discord_user"), "1000");
+    assert!(
+        text(&ada.host, link, "person").contains("ada"),
+        "linked to ada"
+    );
+    let package = ada.host.package(APP).expect("the package");
+    let declared = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == link.ty)
+        .expect("the link type");
+    for field in &declared.fields {
+        if let Value::Text(said) = read(&ada.host, link, &field.name) {
+            assert_ne!(said, code, "the code is never kept");
+            assert_ne!(
+                said, proof,
+                "nor is its proof: only the digest of the proof"
+            );
+        }
+    }
+    assert!(
+        records(&ada.host, &account, "link_offers").is_empty(),
+        "the offer is used up"
+    );
+
+    // The same code again opens nothing.
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(&account), Value::text(proof.as_str())],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("was already used or has run out")),
+        "{refused:?}"
+    );
+
+    // An offer is good for ten minutes: a later code has run out.
+    let late = digest("a later code");
+    offer(&ada, &account, &late, "1001", "bo_on_discord");
+    ada.host.set_clock(|| "2026-11-24T09:11:00Z".to_owned());
+    let refused = run(
+        &ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(&account), Value::text(late.as_str())],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("ran out after ten minutes")),
+        "{refused:?}"
+    );
+
+    // An offer that started in Tilo belongs to whoever started it: another member is refused.
+    ada.host.set_clock(|| "2026-11-24T09:20:00Z".to_owned());
+    match run(
+        &ada,
+        &person("ada"),
+        "ask_token",
+        vec![Value::resource(&account)],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada asks for the token: {other:?}"),
+    }
+    ada.commit();
+    let press = text(&ada.host, &account, "setup_ask");
+    let state = digest("the consent page's state");
+    match run(
+        &ada,
+        &bridge(),
+        "start_sign_in",
+        vec![
+            Value::resource(&account),
+            Value::text(press.as_str()),
+            Value::text("https://discord.com/oauth2/authorize?client_id=1&state=x"),
+            Value::text(state.as_str()),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge starts the sign-in: {other:?}"),
+    }
+    let theirs = digest("ada's consent code");
+    match run(
+        &ada,
+        &bridge(),
+        "offer_sign_in",
+        vec![
+            Value::resource(&account),
+            Value::text(digest(&theirs).as_str()),
+            Value::text("2000"),
+            Value::text("ada_on_discord"),
+            Value::text(state.as_str()),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge offers the signed-in account: {other:?}"),
+    }
+    ada.commit();
+    let refused = run(
+        &ada,
+        &person("bo"),
+        "complete_link",
+        vec![Value::resource(&account), Value::text(theirs.as_str())],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("started by another account")),
+        "{refused:?}"
+    );
 }
