@@ -146,14 +146,18 @@ async fn write_naming(
         envelope: Box::new(envelope),
         readers: None,
     };
-    workspaces
-        .absorb(
-            workspace,
-            member.verifying_key().to_bytes(),
-            &postcard::to_stdvec(&message).unwrap(),
-        )
-        .await
-        .unwrap();
+    let body = postcard::to_stdvec(&message).unwrap();
+    let author = member.verifying_key().to_bytes();
+    assert!(
+        crate::surfaces::holds(&hex::encode(surface)),
+        "the update keeps the earlier build's surface"
+    );
+    let refusal = workspaces.refuses_write(workspace, author, &body).await;
+    assert!(
+        refusal.is_none(),
+        "the update admits a change naming the earlier build's surface: {refusal:?}"
+    );
+    workspaces.absorb(workspace, author, &body).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
