@@ -19,173 +19,135 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the version before, which it
 /// brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 13;
+pub const DURABLE_VERSION: u32 = 14;
 
-/// The newest version before [`DURABLE_VERSION`] that this build brings up ([`brought_up`]): a
-/// state kept while a document named the member's own record it was. Version 12, which comes
-/// after it, is refused by name.
-pub(super) const BROUGHT_UP: u32 = 11;
+/// The version before [`DURABLE_VERSION`] that this build brings up ([`brought_up`]).
+pub(super) const BROUGHT_UP: u32 = 13;
 
 /// Whether this build brings up a state of durable layout `version` ([`brought_up`]).
-///
-/// Version 10 was written in two layouts: the later one, whose document writes name a reader
-/// set, is version 11's, and comes up as it does; in the earlier one a waiting document write
-/// names none, which it comes up as.
 fn brings_up(version: u32) -> bool {
-    version == BROUGHT_UP || version == BROUGHT_UP - 1
+    version == BROUGHT_UP
 }
 
-/// `bytes`, a durable state, in this build's layout: version 11 (or 10, [`brings_up`]) brought
-/// up to 13, any other as it is, for [`Durable::read`] to read or refuse.
+/// `bytes`, a durable state, in this build's layout: version 13 ([`brings_up`]) brought up to 14,
+/// any other as it is, for [`Durable::read`] to read or refuse.
 ///
-/// Version 11 kept with each document, and with each document write waiting to be sent, the
-/// member's own record it was, if any. Nothing reads that any more: it is dropped, and the bytes
-/// the waiting writes take are counted as this build writes them.
+/// Version 13 kept the writes it held for a prerequisite and each encrypted record's sealed
+/// writes as signed ops whose claims name no call. This build's claims write the call, which the
+/// op's signature covers, so those ops cannot be written again with a signature that still
+/// verifies: they are dropped as the state comes up, and their workspace's host serves them
+/// again when the device subscribes, as it does after any restart. What the state holds besides
+/// them comes up as it was.
 pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     let version = postcard::take_from_bytes::<u32>(bytes).map_err(err)?.0;
     if !brings_up(version) {
         return Ok(bytes.into());
     }
-    let durable = before_own_removal(bytes, true)
-        .or_else(|error| {
-            if version == BROUGHT_UP {
-                Err(error)
-            } else {
-                before_own_removal(bytes, false)
-            }
-        })
-        .map_err(|error| {
-            format!(
-                "this state is of durable layout {version} and does not read as it: {error}. Move \
+    let durable = before_call(bytes).map_err(|error| {
+        format!(
+            "this state is of durable layout {version} and does not read as it: {error}. Move \
              the state directory aside, or start with an empty one"
-            )
-        })?;
-    postcard::to_allocvec(&durable).map(Into::into).map_err(err)
-}
-
-/// `bytes`, a durable state this build wrote, as version 11 kept the same state: each document
-/// and each waiting document write naming no member's own record. What a test of a store that
-/// opens an earlier build's state writes.
-///
-/// # Errors
-/// `bytes` are not a durable state of this build.
-#[doc(hidden)]
-pub fn kept_before_own_removal(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let (durable, rest) = postcard::take_from_bytes::<Durable<'_>>(bytes).map_err(err)?;
-    if durable.version != DURABLE_VERSION || !rest.is_empty() {
-        return Err("not a durable state of this build".into());
-    }
-    let none: Option<(String, [u8; 32])> = None;
-    let documents: Vec<_> = durable
-        .documents
-        .iter()
-        .map(|document| {
-            (
-                &document.route,
-                &document.bytes,
-                &document.watermarks,
-                document.encryption_required,
-                &document.covered,
-                &document.covered_snapshot,
-                &none,
-            )
-        })
-        .collect();
-    let mut kept = postcard::to_allocvec(&(
-        BROUGHT_UP,
-        &durable.workspace,
-        &durable.owner,
-        &durable.workspace_bytes,
-        &documents,
-        &durable.receipts,
-        &durable.certificates,
-        &durable.revocations,
-        durable.pending.len(),
-    ))
-    .map_err(err)?;
-    let mut writes = 0_usize;
-    for (key, message, sent) in &durable.pending {
-        kept.extend_from_slice(key);
-        if let NeighbourMsg::AppDocument {
-            peer,
-            app_id,
-            cluster_id,
-            document_id,
-            envelope,
-            readers,
-        } = message
-        {
-            writes = writes.saturating_add(1);
-            kept.push(NeighbourMsg::APP_DOCUMENT_TAG);
-            kept = postcard::to_extend(
-                &(
-                    peer,
-                    app_id,
-                    cluster_id,
-                    document_id,
-                    envelope,
-                    &none,
-                    readers,
-                ),
-                kept,
-            )
-            .map_err(err)?;
-        } else {
-            kept = postcard::to_extend(message, kept).map_err(err)?;
-        }
-        kept.push(u8::from(*sent));
-    }
-    postcard::to_extend(
-        &(
-            durable.pending_bytes.saturating_add(writes),
-            durable.exact,
-            &durable.sealed,
-        ),
-        kept,
-    )
+        )
+    })?;
+    postcard::to_allocvec(&Durable {
+        version: DURABLE_VERSION,
+        workspace: durable.workspace,
+        owner: durable.owner,
+        workspace_bytes: durable.workspace_bytes,
+        documents: durable.documents,
+        receipts: durable.receipts,
+        certificates: durable.certificates,
+        revocations: durable.revocations,
+        pending: VecDeque::new(),
+        pending_bytes: 0,
+        exact: durable.exact,
+        sealed: Vec::new(),
+    })
+    .map(Into::into)
     .map_err(err)
 }
 
-/// A document as version 11 kept it ([`brought_up`]).
+/// A signed op as version 13 wrote it: its claims name each run's changes, action, units and
+/// invoker text, and no call. What the state held of it that is signed is dropped as it comes up
+/// ([`brought_up`]).
 #[derive(Deserialize)]
-struct DocumentBeforeOwnRemoval {
-    route: Route,
-    bytes: Vec<u8>,
-    watermarks: Vec<([u8; 32], u64)>,
-    encryption_required: bool,
-    covered: BTreeMap<String, u64>,
-    covered_snapshot: Option<Vec<u8>>,
-    /// The own record's kind and its person, which nothing reads.
-    _own: Option<(String, [u8; 32])>,
+#[expect(
+    dead_code,
+    reason = "a version 13 op is read to find where the state's dropped writes end"
+)]
+struct SignedOpBeforeCall {
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+    artifact: collab_types::ArtifactId,
+    author: collab_types::Ed25519PublicKey,
+    attestation_id: collab_types::AttestationId,
+    kind: collab_types::OpKind,
+    timestamp: SystemTime,
+    seq: u64,
+    encryption: Option<collab_types::EncryptionMetadata>,
+    claims: Vec<RunBeforeCall>,
+    surface: Option<[u8; 32]>,
+    governance: Vec<[u8; 4]>,
+    signature: collab_types::Signature,
 }
 
-impl From<DocumentBeforeOwnRemoval> for DurableDocument {
-    fn from(document: DocumentBeforeOwnRemoval) -> Self {
-        Self {
-            route: document.route,
-            bytes: document.bytes,
-            watermarks: document.watermarks,
-            encryption_required: document.encryption_required,
-            covered: document.covered,
-            covered_snapshot: document.covered_snapshot,
-        }
-    }
+#[derive(Deserialize)]
+#[expect(
+    dead_code,
+    reason = "a version 13 claim run is read to find where the state's dropped writes end"
+)]
+struct RunBeforeCall {
+    changes: Vec<[u8; 32]>,
+    action: collab_types::ClaimedAction,
+    units: Vec<collab_types::UnitPath>,
+    invoker: Option<String>,
 }
 
-/// A version 11 state, in this build's layout ([`brought_up`]).
-fn before_own_removal(bytes: &[u8], reader_sets: bool) -> Result<Durable<'_>, postcard::Error> {
+/// One document write held for a prerequisite, as version 13 kept it.
+#[derive(Deserialize)]
+#[expect(
+    dead_code,
+    reason = "a version 13 held write is read to find where the state's dropped writes end"
+)]
+struct DocumentWriteBeforeCall {
+    peer: neighbour_wire::PeerId,
+    app_id: String,
+    cluster_id: String,
+    document_id: String,
+    envelope: SignedOpBeforeCall,
+    readers: Option<String>,
+}
+
+/// A version 13 state, with what this build reads of it and nothing of what it drops
+/// ([`brought_up`]).
+fn before_call(bytes: &[u8]) -> Result<Durable<'_>, postcard::Error> {
     type Head = (u32, String, [u8; 32], Option<Vec<u8>>, usize);
     let ((_, workspace, owner, workspace_bytes, count), mut rest) =
         postcard::take_from_bytes::<Head>(bytes)?;
     let mut documents = Vec::new();
     for _ in 0..count {
-        let (document, after) = postcard::take_from_bytes::<DocumentBeforeOwnRemoval>(rest)?;
-        documents.push(document.into());
+        let (document, after) = postcard::take_from_bytes::<DurableDocument>(rest)?;
+        documents.push(document);
         rest = after;
     }
-    let ((receipts, certificates, revocations, pending, pending_bytes, exact), rest) =
-        take_tail_before_own_removal(rest, reader_sets)?;
-    let (sealed, rest) = postcard::take_from_bytes::<SealedHistory>(rest)?;
+    let ((receipts, certificates, revocations, held), mut rest) =
+        postcard::take_from_bytes::<(
+            BTreeMap<String, Vec<u8>>,
+            Vec<DeviceCert>,
+            Vec<tilo_user_identity::RevocationEntry>,
+            usize,
+        )>(rest)?;
+    // The held writes are read only to find where they end: their signed bytes are dropped.
+    for _ in 0..held {
+        let (_, after) = postcard::take_from_bytes::<[u8; 32]>(rest)?;
+        let after = after_before_call(after)?;
+        let (_, after) = postcard::take_from_bytes::<bool>(after)?;
+        rest = after;
+    }
+    let ((_, exact), rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)?;
+    // Each sealed record's writes: read to find the end of the state, and dropped with the held
+    // writes.
+    let (_, rest) = postcard::take_from_bytes::<Vec<(Route, Vec<SignedOpBeforeCall>)>>(rest)?;
     if !rest.is_empty() {
         return Err(postcard::Error::DeserializeBadEncoding);
     }
@@ -198,55 +160,20 @@ fn before_own_removal(bytes: &[u8], reader_sets: bool) -> Result<Durable<'_>, po
         receipts,
         certificates,
         revocations,
-        pending,
-        pending_bytes,
+        pending: VecDeque::new(),
+        pending_bytes: 0,
         exact,
-        sealed,
+        sealed: Vec::new(),
     })
 }
 
-/// The fields of `Durable` after its documents and before its sealed histories at the start of
-/// `bytes`, as a version 11 state holds them, in this build's layout, and the bytes after them
-/// ([`brought_up`]).
-fn take_tail_before_own_removal(
-    bytes: &[u8],
-    reader_sets: bool,
-) -> Result<(TailFields<'_>, &[u8]), postcard::Error> {
-    type BeforePending = (
-        BTreeMap<String, Vec<u8>>,
-        Vec<DeviceCert>,
-        Vec<tilo_user_identity::RevocationEntry>,
-        usize,
-    );
-    let ((receipts, certificates, revocations, count), mut rest) =
-        postcard::take_from_bytes::<BeforePending>(bytes)?;
-    let mut pending = VecDeque::new();
-    // The bytes the waiting writes took as kept, and take as this build writes them: each
-    // document write's own record is dropped, and one kept before reader sets names none.
-    let (mut kept_bytes, mut today_bytes) = (0_usize, 0_usize);
-    for _ in 0..count {
-        let (key, sent);
-        (key, rest) = postcard::take_from_bytes::<[u8; 32]>(rest)?;
-        let (message, after) = crate::before_own_removal::take(rest, reader_sets)?;
-        kept_bytes = kept_bytes.saturating_add(rest.len().saturating_sub(after.len()));
-        today_bytes = today_bytes.saturating_add(postcard::to_allocvec(&message)?.len());
-        (sent, rest) = postcard::take_from_bytes::<bool>(after)?;
-        pending.push_back((key, message, sent));
-    }
-    let ((pending_bytes, exact), rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)?;
-    Ok((
-        (
-            receipts,
-            certificates,
-            revocations,
-            pending,
-            pending_bytes
-                .saturating_sub(kept_bytes)
-                .saturating_add(today_bytes),
-            exact,
-        ),
-        rest,
-    ))
+/// The bytes after the one message at the start of `bytes` as version 13 kept it: a document
+/// write read in version 13's claim layout, any other message as it is.
+fn after_before_call(bytes: &[u8]) -> Result<&[u8], postcard::Error> {
+    let Some(fields) = bytes.strip_prefix(&[NeighbourMsg::APP_DOCUMENT_TAG]) else {
+        return postcard::take_from_bytes::<NeighbourMsg>(bytes).map(|(_, rest)| rest);
+    };
+    postcard::take_from_bytes::<DocumentWriteBeforeCall>(fields).map(|(_, rest)| rest)
 }
 
 /// A replica's durable state. `exact` is the exact admission index, present
@@ -1180,20 +1107,12 @@ impl DurableParts {
     /// # Errors
     /// The bytes are not a durable encoding this build reads.
     pub(crate) fn read(bytes: &[u8]) -> Result<Self, String> {
-        Self::read_as(bytes, true).or_else(|error| {
-            // A version 10 state kept before reader sets is split as it was written.
-            match postcard::take_from_bytes::<u32>(bytes) {
-                Ok((version, _)) if brings_up(version) && version != BROUGHT_UP => {
-                    Self::read_as(bytes, false)
-                }
-                _ => Err(error),
-            }
-        })
+        let bytes = brought_up(bytes)?;
+        Self::read_today(&bytes)
     }
 
-    /// [`Self::read`], a waiting document write of a state this build brings up naming a reader
-    /// set when `reader_sets`.
-    fn read_as(bytes: &[u8], reader_sets: bool) -> Result<Self, String> {
+    /// [`Self::read`] of a state in this build's layout, as [`brought_up`] left it.
+    fn read_today(bytes: &[u8]) -> Result<Self, String> {
         fn take<'a, T: Deserialize<'a>>(rest: &mut &'a [u8]) -> Result<T, String> {
             let (value, after) = postcard::take_from_bytes(rest).map_err(|error| {
                 format!(
@@ -1211,7 +1130,7 @@ impl DurableParts {
         };
         let mut rest = bytes;
         let version: u32 = take(&mut rest)?;
-        if version != DURABLE_VERSION && !brings_up(version) {
+        if version != DURABLE_VERSION {
             return Err(format!(
                 "this state is of durable layout {version}, and this build reads layout \
                  {DURABLE_VERSION}. Move the state directory aside, or start with an empty one"
@@ -1223,13 +1142,7 @@ impl DurableParts {
         let mut documents = crate::ordered::Ordered::default();
         for _ in 0..count {
             let from = at(rest);
-            // A version 11 state is split as it was written ([`brought_up`]): what a journal
-            // appended to it copies its stretches as they are.
-            let route = if brings_up(version) {
-                take::<DocumentBeforeOwnRemoval>(&mut rest)?.route
-            } else {
-                take::<DurableDocument>(&mut rest)?.route
-            };
+            let route = take::<DurableDocument>(&mut rest)?.route;
             documents.insert(
                 route,
                 DocumentParts {
@@ -1239,18 +1152,7 @@ impl DurableParts {
             );
         }
         let tail_from = at(rest);
-        if brings_up(version) {
-            rest = take_tail_before_own_removal(rest, reader_sets)
-                .map_err(|error| {
-                    format!(
-                        "this state is of durable layout {version} and does not read as it: \
-                         {error}. Move the state directory aside, or start with an empty one"
-                    )
-                })?
-                .1;
-        } else {
-            let _fields: TailFields<'_> = take(&mut rest)?;
-        }
+        let _fields: TailFields<'_> = take(&mut rest)?;
         let sealed: usize = take(&mut rest)?;
         let tail = part(tail_from, at(rest));
         for _ in 0..sealed {

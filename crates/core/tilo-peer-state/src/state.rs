@@ -134,8 +134,8 @@ mod written_under;
 #[cfg(test)]
 pub(crate) use durable::Durable;
 #[cfg(test)]
-use durable::{BROUGHT_UP, brought_up};
-pub use durable::{DURABLE_VERSION, kept_before_own_removal};
+use durable::brought_up;
+pub use durable::DURABLE_VERSION;
 pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;

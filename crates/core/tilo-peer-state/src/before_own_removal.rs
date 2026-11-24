@@ -1,6 +1,5 @@
-//! Messages as stores and replicas kept them while a document write named the member's own
-//! record it was: a store's frames before version 5 ([`crate::store`]), a replica's waiting
-//! writes at durable versions 10 and 11 ([`crate::state`]), and the publications a governed
+//! Messages as stores kept them while a document write named the member's own record it was: a
+//! store's frames before version 5 ([`crate::store`]), and the publications a governed
 //! workspace's host kept ([`kept_message`]). Each reads as the message of today. Nothing
 //! reads which member's own record a write was any more, so that is dropped; the envelope is the
 //! bytes its author signed.
@@ -68,24 +67,4 @@ pub(crate) fn frame(bytes: &[u8]) -> Result<NeighbourMsg, postcard::Error> {
 /// `bytes` are one message in neither layout; the error is the one today's layout gives.
 pub fn kept_message(bytes: &[u8]) -> Result<NeighbourMsg, postcard::Error> {
     NeighbourMsg::decode(bytes).or_else(|today| frame(bytes).map_err(|_| today))
-}
-
-/// The message at the start of `bytes`, and the bytes after it: for a message kept among other
-/// values. A document write kept before reader sets (`reader_sets` false) names none.
-///
-/// # Errors
-/// `bytes` do not start with a message of that layout.
-pub(crate) fn take(
-    bytes: &[u8],
-    reader_sets: bool,
-) -> Result<(NeighbourMsg, &[u8]), postcard::Error> {
-    let Some(fields) = bytes.strip_prefix(&[NeighbourMsg::APP_DOCUMENT_TAG]) else {
-        return postcard::take_from_bytes(bytes);
-    };
-    let (write, rest) = postcard::take_from_bytes::<DocumentWrite>(fields)?;
-    if !reader_sets {
-        return Ok((write.with(None), rest));
-    }
-    let (readers, rest) = postcard::take_from_bytes::<Option<String>>(rest)?;
-    Ok((write.with(readers), rest))
 }
