@@ -127,14 +127,20 @@ view member_row(p: Member) {
         }
 
         fn read(&self, range: &str) -> Vec<String> {
-            let outcome = self.call(
-                "read_cells",
-                vec![
-                    Value::resource(&self.book),
-                    Value::text("Sheet1"),
-                    Value::text(range),
-                ],
-            );
+            self.read_with(range, false)
+        }
+
+        /// What the cells in `range` read, as their inputs when `formulas`.
+        fn read_with(&self, range: &str, formulas: bool) -> Vec<String> {
+            let mut args = vec![
+                Value::resource(&self.book),
+                Value::text("Sheet1"),
+                Value::text(range),
+            ];
+            if formulas {
+                args.push(Value::Bool(true));
+            }
+            let outcome = self.call("read_cells", args);
             let InvokeOutcome::Done(Value::List(items)) = outcome else {
                 panic!("read_cells answers a list: {outcome:?}");
             };
@@ -292,6 +298,108 @@ view member_row(p: Member) {
             Value::Bool(resolved) => assert!(resolved),
             other => panic!("a comment's state reads {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_cell_shows_a_number_as_yes_or_no_when_it_is_formatted_so() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "1"), ("A2", "0")]);
+        assert_eq!(sheets.read("A1:A2"), ["1", "0"], "as the numbers they are");
+        sheets.one(
+            "format_cells",
+            vec![
+                Value::resource(&sheets.book),
+                Value::resource(&sheets.sheet()),
+                Value::text("A1:A2"),
+                Value::text("boolean"),
+            ],
+        );
+        assert_eq!(
+            sheets.read("A1:A2"),
+            ["TRUE", "FALSE"],
+            "the format is the cell's, and the value behind it does not change"
+        );
+        assert_eq!(sheets.read_with("A1:A2", true), ["1", "0"]);
+    }
+
+    #[test]
+    fn the_window_opens_a_reference_entry_from_anywhere() {
+        let sheets = Sheets::new();
+        let mut window = sheets
+            .rt
+            .open_view(
+                &me(),
+                &sheets.app.view("workbook"),
+                vec![Value::resource(&sheets.book)],
+            )
+            .unwrap();
+        let bar_of = |window: &tilolang_runtime::ViewInstance| {
+            let tree = window.tree().clone();
+            let shell = of_kind(&tree, "ui.NavShell")
+                .into_iter()
+                .next()
+                .expect("the workbook's window shell");
+            shell
+                .clone()
+                .children
+                .iter()
+                .find(|child| {
+                    child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+                })
+                .unwrap_or_else(|| panic!("the window's bar:\n{}", dump(&tree)))
+                .clone()
+        };
+        let bar = bar_of(&window);
+        assert!(
+            of_kind(&bar, "ui.TextInput")
+                .iter()
+                .all(|field| !field.props.contains_key("autofocus")),
+            "the bar opens with the name box standing as it is:\n{}",
+            dump(&bar)
+        );
+
+        // The Format menu's Go to a cell, as the window's Ctrl+G presses it.
+        let go = of_kind(&bar, "ui.MenuItem")
+            .into_iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("Go to a cell…")))
+            .unwrap_or_else(|| panic!("the window offers Go to a cell:\n{}", dump(&bar)))
+            .key
+            .clone();
+        window.fire(&go, "choose").unwrap();
+        window.poll_patches().unwrap();
+        let entry = of_kind(&bar_of(&window), "ui.TextInput")
+            .into_iter()
+            .find(|field| field.props.get("autofocus") == Some(&Value::Int(1)))
+            .unwrap_or_else(|| panic!("the entry takes the keyboard:\n{}", dump(&bar)))
+            .key
+            .clone();
+        window
+            .fire_with(&entry, "submit", Some(&Value::text("c7")))
+            .unwrap();
+        window.poll_patches().unwrap();
+        assert!(
+            of_kind(&bar_of(&window), "ui.TextInput")
+                .iter()
+                .all(|field| !field.props.contains_key("autofocus")),
+            "the entry closes once the reference is given:\n{}",
+            dump(&bar_of(&window))
+        );
+        let grid = of_kind(window.tree(), "ui.Sheet")
+            .into_iter()
+            .next()
+            .expect("the grid");
+        let chosen = match grid.props.get("selection") {
+            Some(Value::Text(at)) => at.clone(),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(at) => at.clone(),
+                other => panic!("the grid's selection reads {other:?}"),
+            },
+            other => panic!("the grid's selection reads {other:?}"),
+        };
+        assert_eq!(
+            chosen, "C7",
+            "the grid stands on the reference the person typed"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ view workbook(w: Workbook) {
     state typed: Text = ""
     state formulas: Bool = false
     state panel: Text = ""
-    workbook_page(w, open_sheet, area, typed, formulas, panel)
+    state jumping: Bool = false
+    workbook_page(w, open_sheet, area, typed, formulas, panel, jumping)
 }
 
 /// A sheet's window of its own: the workbook it is in, with that sheet open.
@@ -17,7 +18,8 @@ view sheet_window(s: Sheet) {
     state typed: Text = ""
     state formulas: Bool = false
     state panel: Text = ""
-    workbook_page(root Workbook, open_sheet, area, typed, formulas, panel)
+    state jumping: Bool = false
+    workbook_page(root Workbook, open_sheet, area, typed, formulas, panel, jumping)
 }
 
 /// One sheet as a row: its name and how many cells it holds.
@@ -33,6 +35,7 @@ template view workbook_page(
     typed: State<Text>,
     formulas: State<Bool>,
     panel: State<Text>,
+    jumping: State<Bool>,
 ) {
     state renaming: Bool = false
     state rename_text: Text = ""
@@ -46,7 +49,7 @@ template view workbook_page(
         let cells = shown_cells(rows)
         std.page(w, canvas: true, fill: true) {
             header: {
-                workbook_bar(w, s, area, typed, formulas, panel, settings_open)
+                workbook_bar(w, s, area, typed, formulas, panel, jumping, settings_open)
             }
             ui.Docked {
                 content: {
@@ -79,12 +82,21 @@ template view workbook_bar(
     typed: State<Text>,
     formulas: State<Bool>,
     panel: State<Text>,
+    jumping: State<Bool>,
     settings_open: State<Bool>,
 ) {
     file_menu(w, s, settings_open)
-    format_menu(w, s, area)
-    ui.TextInput(bind: area, placeholder: "A1") {
-        on submit(reference): set(area, reference.trim().upper())
+    format_menu(w, s, area, jumping)
+    // The name box, and the entry the window's Ctrl+G opens to type a reference into from
+    // anywhere: it takes the keyboard as it stands, and closes as the reference is given.
+    if jumping {
+        ui.TextInput(bind: area, placeholder: "A1", entry: true, autofocus: true) {
+            on submit(reference): set(area, reference.trim().upper()).then(set(jumping, false))
+        }
+    } else {
+        ui.TextInput(bind: area, placeholder: "A1") {
+            on submit(reference): set(area, reference.trim().upper())
+        }
     }
     ui.TextInput(bind: typed, placeholder: "Value or formula") {
         on submit: write_cells(w, s.name, [range_start(area)], [typed]).then(set(typed, ""))
@@ -148,8 +160,12 @@ template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
 }
 
 /// The formats a cell shows its value in, and the ways to change the cells themselves.
-template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
+template view format_menu(w: Workbook, s: Sheet, area: State<Text>, jumping: State<Bool>) {
     ui.MenuButton("Format", icon: .paint_bucket) {
+        ui.MenuItem("Go to a cell…", icon: .corner_down_left, key: "Ctrl+G") {
+            on choose: set(jumping, true)
+        }
+        ui.MenuSeparator
         ui.MenuItem("Number", icon: .hash) {
             on choose: format_cells(w, s, area, format: "number")
         }
@@ -167,6 +183,9 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         }
         ui.MenuItem("Text", icon: .type) {
             on choose: format_cells(w, s, area, format: "text")
+        }
+        ui.MenuItem("Yes / no", icon: .check) {
+            on choose: format_cells(w, s, area, format: "boolean")
         }
         ui.MenuItem("General", icon: .eraser) {
             on choose: format_cells(w, s, area, format: "general")

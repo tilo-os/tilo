@@ -676,6 +676,8 @@ d-d3azxjha = Kommentar löschen~present
 d-vodfdztg = Tabelle importieren~present
 
 d-ibft2idy = Arbeitsmappe
+    .w-go-to-a-cell = Zu einer Zelle springen…
+    .w-yes-no = Ja / Nein
     .w-comments = Kommentare
     .w-charts = Diagramme
     .w-close = Schließen
@@ -756,6 +758,8 @@ d-ibft2idy = Arbeitsmappe
     .w-money-2 = Währung: { $currency_name }
 
 d-stzolo66 = Blattfenster
+    .w-go-to-a-cell = Zu einer Zelle springen…
+    .w-yes-no = Ja / Nein
     .w-comments = Kommentare
     .w-charts = Diagramme
     .w-close = Schließen
