@@ -457,6 +457,44 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
                 tilo_actions::remote::ActionCallError::UnknownAction,
             ));
         };
+        // A change to the workspace's people and settings is the device's own, signed with its
+        // key, as the daemon's shell answers it.
+        if request.target.address.action == tilo_peer_state::workspace_view::MEMBERSHIP {
+            let command = match &request.argument {
+                tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
+                    .get("command")
+                    .cloned()
+                    .and_then(|command| serde_json::from_value(command).ok()),
+                _ => None,
+            };
+            let Some(command) = command else {
+                return tilo_actions::remote::Pending::ready(Err(
+                    tilo_actions::remote::ActionCallError::InvalidRequest {
+                        reason: "a change to a workspace's people names its `command`".to_owned(),
+                    },
+                ));
+            };
+            let (answer, pending) = tilo_actions::remote::pending();
+            let workspaces = self.workspaces.clone();
+            drop(tilo_rt::app().spawn(async move {
+                let status = match workspaces
+                    .commit_own_change(&workspace, command, None)
+                    .await
+                {
+                    Ok(()) => tilo_actions::remote::ReceiptStatus::Completed {
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                    Err(reason) => tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionCallError::Refused { reason },
+                    },
+                };
+                answer.complete(Ok(tilo_actions::remote::InvocationReceipt {
+                    invocation: tilo_actions::InvocationId::new(),
+                    status,
+                }));
+            }));
+            return pending;
+        }
         let cert = self.workspaces.device_cert();
         let caller = tilo_actions::remote::Caller::authenticated(
             cert.user_public_key,
