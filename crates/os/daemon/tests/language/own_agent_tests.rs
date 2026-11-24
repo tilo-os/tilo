@@ -749,9 +749,11 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
 /// record's own app must be the one its changes name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_agent_is_made_in_the_record_the_first_founded() {
-    // The daemon's program decides every change it receives against the surface the change's
-    // app publishes, before it opens a workspace.
-    tilo_workspace_service::apps::decide_receipt_against_surfaces(|_, _| None);
+    // A host decides every change it receives against the surface the change's app publishes,
+    // and keeps those surfaces with its workspace's content: the surfaces this process names,
+    // and the files under its content store. Its program sets that before it opens a workspace.
+    let content = tempfile::tempdir().unwrap();
+    tilo_workspace_service::surfaces::decide_receipt(&content.path().join("surfaces"));
     let device = super::Device::start("Team", None).await;
     let workspaces = device.workspaces();
     let workspace = device.workspace.clone();
