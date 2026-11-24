@@ -3,12 +3,35 @@
 view region_pane() {
     let r = settings.locale
     let a = settings.appearance
+    let spoken = settings.languages
     ui.Section("Language") {
-        setting(
-            "The workspace's language",
-            "A language tag such as de-DE; empty follows the device",
+        ui.ListRow(
+            "Follow the device's language",
+            secondary: "The language this computer is set up in",
+            icon: .monitor,
         ) {
-            ui.TextInput(bind: a.language, placeholder: "Follow the device")
+            trailing: {
+                if (a.language ?? "") == "" {
+                    ui.Chip("In use", tone: .success)
+                } else {
+                    ui.Button("Use it", size: .small) {
+                        on press: settings.choose_language(a, language: .none)
+                    }
+                }
+            }
+        }
+        for language in spoken.languages {
+            ui.ListRow(language.name, icon: .globe) {
+                trailing: {
+                    if (a.language ?? "") == language.tag {
+                        ui.Chip("In use", tone: .success)
+                    } else {
+                        ui.Button("Use it", size: .small) {
+                            on press: settings.choose_language(a, language: .some(language.tag))
+                        }
+                    }
+                }
+            }
         }
     }
     ui.Section("Formats") {

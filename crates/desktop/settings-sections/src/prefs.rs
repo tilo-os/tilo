@@ -1921,6 +1921,34 @@ impl AppearancePrefs {
         Ok(())
     }
 
+    /// Show every app and the desktop in one of the languages this desktop speaks, named by the
+    /// tag its settings keep (`de` of `de-DE`), or follow the device's language when given none.
+    /// A language Tilo cannot show is refused, naming it, and the language stays as it was.
+    #[action(id = "choose-language", keywords = "language, region, interface")]
+    pub fn choose_language(
+        &mut self,
+        #[param("A language's tag, such as `de`, or none to follow the device")] language: Option<
+            String,
+        >,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let language = language.filter(|tag| !tag.is_empty());
+        let Some(tag) = language.as_deref() else {
+            self.language = None;
+            return Ok(());
+        };
+        let named = ui::i18n::language_of(tag);
+        if !ui::i18n::spoken_languages()
+            .iter()
+            .any(|(spoken, _)| *spoken == named)
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{tag}` is not a language this desktop speaks"
+            )));
+        }
+        self.language = Some(named);
+        Ok(())
+    }
+
     /// Show a theme in the mode of its polarity: a preset id (`dusk-dark`) or
     /// one of your own themes by its id.
     #[action(id = "use-theme")]
@@ -2815,5 +2843,35 @@ mod audio_theme_tests {
         // A theme is one name in the sound directories, never a path.
         assert!(audio.choose_sound_theme(Some("../../etc".into())).is_err());
         assert!(audio.system_sounds.theme.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::tilo_resource::Replica;
+
+    /// A language is taken by the tag the desktop speaks, refused with the language left as it
+    /// was when it names one it does not, and none follows the device again.
+    #[test]
+    fn a_language_is_one_the_desktop_speaks() {
+        let mut appearance = Replica::<AppearancePrefs>::new();
+        appearance
+            .apply(AppearancePrefs::CHOOSE_LANGUAGE.with(Some("de-DE".to_owned())))
+            .expect("a language the desktop speaks");
+        assert_eq!(appearance.state().unwrap().language.as_deref(), Some("de"));
+        let refused = appearance
+            .apply(AppearancePrefs::CHOOSE_LANGUAGE.with(Some("tlh".to_owned())))
+            .expect_err("a language the desktop does not speak");
+        assert!(format!("{refused:?}").contains("speaks"), "{refused:?}");
+        assert_eq!(
+            appearance.state().unwrap().language.as_deref(),
+            Some("de"),
+            "a refused language changes nothing"
+        );
+        appearance
+            .apply(AppearancePrefs::CHOOSE_LANGUAGE.with(Option::<String>::None))
+            .expect("following the device again");
+        assert_eq!(appearance.state().unwrap().language, None);
     }
 }

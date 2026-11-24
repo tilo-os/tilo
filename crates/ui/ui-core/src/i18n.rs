@@ -1418,6 +1418,23 @@ pub fn language_name(tag: &str) -> String {
     }
 }
 
+/// The languages this desktop speaks, each by the tag a setting names it by
+/// ([`language_of`]) and its own words ([`language_name`]): the toolkit's own languages and the
+/// language packs installed beside them, in the order its catalogue names them. A person picks
+/// their language from these, and nothing outside them is a language the desktop can show.
+#[must_use]
+pub fn spoken_languages() -> Vec<(String, String)> {
+    let mut spoken: Vec<(String, String)> = Vec::new();
+    for tag in WIDGET_CATALOG.languages() {
+        let language = language_of(tag);
+        if !spoken.iter().any(|(held, _)| *held == language) {
+            let name = language_name(&language);
+            spoken.push((language, name));
+        }
+    }
+    spoken
+}
+
 const MAX_LANGUAGE_PACK_BYTES: u64 = 4 << 20;
 
 thread_local! {
@@ -1762,6 +1779,25 @@ mod tests {
                 panic!("the {locale} toolkit catalogue does not parse: {errors:?}");
             }
         }
+    }
+
+    /// The languages the desktop speaks are the ones its own catalogue names, each in its own
+    /// words, so a picker offers exactly what the desktop can show.
+    #[test]
+    fn the_desktop_speaks_the_languages_its_catalogue_names() {
+        let spoken = spoken_languages();
+        assert!(
+            spoken
+                .iter()
+                .any(|(tag, name)| tag == "en" && name == "English"),
+            "{spoken:?}"
+        );
+        assert!(
+            spoken
+                .iter()
+                .any(|(tag, name)| tag == "de" && name == "Deutsch"),
+            "{spoken:?}"
+        );
     }
 
     /// A catalogue embeds only its source; its other languages come from the language packs, here the
