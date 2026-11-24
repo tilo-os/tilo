@@ -21,6 +21,18 @@ pub struct Told {
     pub stop: bool,
 }
 
+/// How the person answers a mail account's asked record: yes, no, or nobody there to answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Answered {
+    /// They say yes, as the terminal's terminal does when they approve it.
+    #[default]
+    Yes,
+    /// They say no, or nobody answers: the account stays unconnected.
+    No,
+    /// Nobody is there to answer: the record waits, and the run gives up on that account.
+    Nobody,
+}
+
 /// A workspace that keeps every action and upload it is asked for, and the person's mail
 /// accounts as the real workspace answers them.
 #[derive(Default)]
@@ -36,11 +48,43 @@ pub struct Recorded {
     pub refuses: Option<String>,
     /// The server answers an account added and then does not list it.
     pub forgets: bool,
+    /// How the person answers each account's asked record.
+    pub answer: Answered,
 }
 
 impl Workspace for Recorded {
     fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        self.actions.push((run.id.clone(), action.to_owned(), args));
+        self.actions
+            .push((run.id.clone(), action.to_owned(), args.clone()));
+        if action == "workspace/mail-accounts#add" {
+            // The call is kept as the asked record its person answers: the fake answers it as
+            // their terminal, their shell or an agent's caller would.
+            self.added.push(args.clone());
+            match self.answer {
+                Answered::Yes => {}
+                Answered::No | Answered::Nobody => {
+                    return Err(Refused::coded(
+                        super::super::mcp::UNANSWERED,
+                        format!("{} waits for your yes", args["address"]),
+                    )
+                    .into());
+                }
+            }
+            if let Some(why) = &self.refuses {
+                return Err(Refused::coded("refused", why.clone()).into());
+            }
+            let account = serde_json::json!({
+                "id": args["address"], "address": args["address"],
+                "displayName": args["displayName"],
+                "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
+                "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
+                "hasSecret": args.get("password").is_some(),
+            });
+            if !self.forgets {
+                self.kept.push(account.clone());
+            }
+            return Ok(Answer::of(Some(account)));
+        }
         Ok(Answer::of(None))
     }
 
@@ -49,27 +93,10 @@ impl Workspace for Recorded {
         Ok(Answer::of(None))
     }
 
-    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+    fn person(&mut self, path: &str, action: &str, _args: Value) -> Result<Value> {
         anyhow::ensure!(path == thunderbird::MAIL_ACCOUNTS, "asked {path}");
         match action {
             "list" => Ok(serde_json::json!({"accounts": self.kept})),
-            "add" => {
-                self.added.push(args.clone());
-                if let Some(why) = &self.refuses {
-                    return Err(Refused::coded("refused", why.clone()).into());
-                }
-                let account = serde_json::json!({
-                    "id": args["address"], "address": args["address"],
-                    "displayName": args["displayName"],
-                    "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
-                    "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
-                    "hasSecret": args.get("password").is_some(),
-                });
-                if !self.forgets {
-                    self.kept.push(account.clone());
-                }
-                Ok(account)
-            }
             other => anyhow::bail!("no workspace/mail-accounts#{other}"),
         }
     }

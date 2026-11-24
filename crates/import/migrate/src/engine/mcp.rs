@@ -16,8 +16,13 @@ use super::writer::{
 
 /// How long one action may take before the run gives up on it.
 const ACTION_WAIT: Duration = Duration::from_secs(120);
+/// How long one ask of a step the person answers is held before it is read again: the record it
+/// waits in says so until they answer it, which the step then reads.
+const ASK_WAIT: Duration = Duration::from_secs(1);
 /// How long a step waits for its person to allow it.
 const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
+/// What a step that nobody answered says: the account it would connect is left unconnected.
+pub const UNANSWERED: &str = "unanswered";
 /// The largest piece of an upload one call carries (the session's own bound).
 const PUT_CHUNK: usize = 512 * 1024;
 
@@ -181,25 +186,32 @@ impl Workspace for Mcp {
             .checked_add(PERSON_WAIT)
             .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
         loop {
-            let call = self.session.call(&call, Some(run.meta()))?;
-            match call.status {
-                Status::Ok => return Ok(call.answer()),
-                // An action the person allows first is pending while they are asked: the same
-                // call under the same id waits for it to move, until their answer.
-                Status::Pending => {
+            let typed = self.session.tool("tilo_do", &call, Some(run.meta()))?;
+            match typed.get("status").and_then(Value::as_str) {
+                Some("ok") => {
+                    return Ok(Answer::of(
+                        typed
+                            .get("result")
+                            .filter(|value| !value.is_null())
+                            .cloned(),
+                    ));
+                }
+                // An action the person allows first is kept as its asked record: the same call
+                // under the same id waits for it to move, until their answer.
+                Some("asked" | "pending") => {
                     if std::time::Instant::now() >= until {
-                        bail!(
-                            "{action} is waiting for the person to allow it. Allow it, then start \
-                             the migration again; what it did so far is kept."
-                        );
+                        return Err(Refused::coded(
+                            UNANSWERED,
+                            format!(
+                                "{action} is waiting for the person to allow it. Allow it, then \
+                                 start the migration again; what it did so far is kept."
+                            ),
+                        )
+                        .into());
                     }
                 }
-                Status::Failed => {
-                    let error = call.error.unwrap_or_else(|| Refused {
-                        code: String::from("failed"),
-                        message: String::new(),
-                        retry_after_ms: None,
-                    });
+                Some("failed") => {
+                    let error = refused_of(&typed);
                     // A save its host did not confirm in time may or may not be kept: asked again
                     // under its same id, it runs once.
                     let again = error.asks_again() || error.code() == SAVE_UNCONFIRMED;
@@ -210,6 +222,7 @@ impl Workspace for Mcp {
                     }
                     return Err(error.with_action(action).into());
                 }
+                other => bail!("the workspace answered no status: {other:?}"),
             }
         }
     }
@@ -226,9 +239,52 @@ impl Workspace for Mcp {
             .person
             .as_mut()
             .ok_or_else(|| anyhow!("the person's own session did not open"))?;
-        // Asked once: a sign-in the workspace refused is not tried again unasked.
-        let answer = person.once(&format!("{path}#{action}"), &args)?;
-        Ok(answer.result().cloned().unwrap_or(Value::Null))
+        let action = format!("{path}#{action}");
+        // The same step asked again is the same invocation, which the workspace runs once: a
+        // call that waits in its asked record keeps that record, and its answer is read from it.
+        let invocation = step_id("person", &action, &args);
+        let wait = u64::try_from(ASK_WAIT.as_millis()).unwrap_or(u64::MAX);
+        let call = json!({"path": action, "args": args, "wait_ms": wait, "invocation_id": invocation});
+        let until = std::time::Instant::now()
+            .checked_add(PERSON_WAIT)
+            .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
+        loop {
+            let typed = person.tool("tilo_do", &call, None)?;
+            // A call the person's grants leave to them is kept as its asked record until they
+            // answer it: this reads the record the workspace says it waits in, and asks again
+            // under the same invocation id until the answer moves it on.
+            match typed.get("status").and_then(Value::as_str) {
+                Some("ok") => {
+                    return Ok(typed
+                        .get("result")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        .unwrap_or(Value::Null));
+                }
+                Some("asked" | "pending") => {
+                    if std::time::Instant::now() >= until {
+                        return Err(Refused::coded(
+                            UNANSWERED,
+                            format!(
+                                "{action} waits for your yes: answer it, then start the migration \
+                                 again; what it did so far is kept"
+                            ),
+                        )
+                        .into());
+                    }
+                }
+                Some("failed") => {
+                    let error = refused_of(&typed);
+                    if matches!(error.code(), "cancelled" | "declined") {
+                        // The person said no, or stopped waiting: the account is not connected,
+                        // and the step says so rather than failing the run.
+                        return Err(Refused::coded(UNANSWERED, error.message).into());
+                    }
+                    return Err(error.with_action(&action).into());
+                }
+                other => bail!("the workspace answered no status: {other:?}"),
+            }
+        }
     }
 
     fn read(&mut self, path: &str) -> Result<Value> {
@@ -310,11 +366,92 @@ mod tests {
         (mcp, calls)
     }
 
+    /// The workspace reached through a session the test answers, whose person's own session is
+    /// `own`: what only the person may do reaches it, and its calls are kept.
+    fn reached_as_the_person(
+        answers: Vec<Value>,
+        own: Vec<Value>,
+    ) -> (Mcp, Arc<Mutex<Vec<Value>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let rpc = Scripted {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            answers: answers.into_iter(),
+        };
+        let own_calls = Arc::clone(&calls);
+        let own = Scripted {
+            calls: Arc::clone(&calls),
+            answers: own.into_iter(),
+        };
+        let mcp = Mcp::open(
+            Box::new(rpc),
+            Box::new(move || Ok(Box::new(own) as Box<dyn Rpc>)),
+        )
+        .expect("the sessions");
+        (mcp, own_calls)
+    }
+
     fn run() -> Invocation {
         Invocation {
             id: "run-1".into(),
             title: "From Thunderbird".into(),
         }
+    }
+
+    /// A person's call that waits in its asked record is read again under its same id until it
+    /// runs: the record is the one ask, and its answer moves the call on.
+    #[test]
+    fn a_persons_call_waits_in_its_asked_record_and_runs_once_it_is_answered() {
+        let (mut workspace, calls) = reached_as_the_person(
+            Vec::new(),
+            vec![
+                json!({"content": [], "isError": false, "structuredContent": {
+                    "status": "asked", "record": "acme/invocations/7",
+                }}),
+                json!({"content": [], "isError": false, "structuredContent": {
+                    "status": "ok", "result": {"address": "ada@example.com"},
+                }}),
+            ],
+        );
+        let added = workspace
+            .person(
+                "workspace/mail-accounts",
+                "add",
+                json!({"address": "ada@example.com"}),
+            )
+            .expect("it ran once answered");
+        assert_eq!(added["address"], "ada@example.com");
+        let calls = calls.lock().expect("the calls");
+        assert_eq!(calls.len(), 2, "read again while it waited");
+        let ids: Vec<Value> = calls
+            .iter()
+            .filter_map(|call| call.pointer("/params/arguments/invocation_id").cloned())
+            .collect();
+        assert_eq!(ids[0], ids[1], "the same call, which the workspace runs once");
+    }
+
+    /// A person who says no ends the call declined: the step reads that as the account being
+    /// left unconnected, never as a failure of the run.
+    #[test]
+    fn a_person_saying_no_leaves_the_call_unanswered() {
+        let (mut workspace, _) = reached_as_the_person(
+            Vec::new(),
+            vec![json!({"content": [], "isError": true, "structuredContent": {
+                "status": "failed",
+                "error": {"code": "cancelled", "message": "declined"},
+            }})],
+        );
+        let error = workspace
+            .person(
+                "workspace/mail-accounts",
+                "add",
+                json!({"address": "ada@example.com"}),
+            )
+            .expect_err("they said no");
+        assert_eq!(
+            Refused::of(&error).expect("a refusal").code(),
+            UNANSWERED,
+            "{error:#}"
+        );
     }
 
     #[test]

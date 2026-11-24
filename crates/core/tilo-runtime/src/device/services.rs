@@ -2922,6 +2922,41 @@ fn whichever_first(
     waited
 }
 
+/// The answer to `tilo.asking/waiting#list`: every question that waits for `caller`'s person,
+/// oldest first, from the records the calls are kept as.
+fn asking(
+    request: &InvokeRequest,
+    caller: &Caller,
+    asked: &super::asked::DeviceAsked,
+) -> Result<InvocationReceipt, ActionCallError> {
+    use tilo_actions::remote::asked as one_ask;
+    let address = &request.target.address;
+    if (address.resource.as_str(), address.action.as_str())
+        != (one_ask::WAITING, one_ask::LIST)
+    {
+        return Err(ActionCallError::UnknownAction);
+    }
+    let person = one_ask::asked_person(caller).ok_or(ActionCallError::NotPermitted)?;
+    let person: [u8; 32] = hex::decode(&person)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(ActionCallError::NotPermitted)?;
+    let questions = asked.asked_of(&person);
+    let value = serde_json::to_value(one_ask::AskedList { questions })
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: error.to_string(),
+        })?;
+    Ok(InvocationReceipt {
+        invocation: request.invocation,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            },
+        },
+    })
+}
+
 /// The answer to the person stopping the agent session `request` names in `workspace`, when
 /// this device serves it: `None` for a session it does not serve, whose stop is somebody
 /// else's to answer.
@@ -3106,6 +3141,13 @@ impl ActionProvider for RuntimeActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
+        }
+        // What waits for the person's yes, listed from the records the calls are kept as: a
+        // terminal answers them with their own `resolve`, as their shell does.
+        if request.target.provider == tilo_actions::remote::asked::PROVIDER
+            && let Some(asked) = &self.asked
+        {
+            return Pending::ready(asking(&request, caller, asked));
         }
         // The device's own actions: what it is, to the person and the agents acting for them;
         // what lets another device in, to the person alone.

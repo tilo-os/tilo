@@ -13,7 +13,7 @@ use super::writer::{Call, Invocation, Status, Workspace};
 
 pub(crate) mod test_env;
 
-use self::test_env::{Recorded, Told, land_as};
+use self::test_env::{Answered, Recorded, Told, land_as};
 
 fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result<Journal> {
     migrate_saying(home, place, workspace, true, &mut Told::default())
@@ -127,17 +127,32 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
         added.get("identities").is_none(),
         "the work account sends as itself only"
     );
-    assert!(workspace.actions.is_empty(), "{:?}", workspace.actions);
+    // Keeping the account is this run's own step, and no app is asked anything.
+    assert_eq!(
+        workspace.of("workspace/mail-accounts#add").len(),
+        1,
+        "{:?}",
+        workspace.actions
+    );
+    assert!(
+        workspace
+            .actions
+            .iter()
+            .all(|(_, action, _)| action == "workspace/mail-accounts#add"),
+        "no app is asked anything: {:?}",
+        workspace.actions
+    );
     assert_eq!(journal.brought.get("accounts"), Some(&1));
     assert_eq!(journal.brought.get("messages"), None);
 
-    // The person was shown the account and its servers before it was connected, and told when
-    // it was; never its password.
-    assert_eq!(told.asked.len(), 1, "{:?}", told.asked);
+    // The person was asked to connect the account before it was, and told when it was; never its
+    // password.
     assert!(
-        told.asked[0].contains("imap.example.com:993"),
+        told.lines
+            .iter()
+            .any(|line| line.contains("connecting ada@example.com asks you first")),
         "{:?}",
-        told.asked
+        told.lines
     );
     assert!(
         told.lines.iter().any(|line| line.contains("is connected")),
@@ -145,7 +160,7 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
         told.lines
     );
     let secret = crate::thunderbird::fixture::WORK_PASSWORD;
-    for said in told.asked.iter().chain(&told.lines) {
+    for said in &told.lines {
         assert!(!said.contains(secret), "{said}");
     }
     // Nor does anything this computer keeps of the migration.
@@ -272,14 +287,58 @@ fn a_connection_the_server_did_not_keep_is_not_claimed() {
 }
 
 #[test]
-fn an_account_the_person_says_no_to_is_not_connected() {
+fn an_account_the_person_says_no_to_is_left_unconnected() {
     let dir = tempfile::tempdir().unwrap();
     let (home, place) = work_account_chosen(dir.path());
-    let mut workspace = Recorded::default();
-    let error =
-        migrate_saying(&home, &place, &mut workspace, false, &mut Told::default()).unwrap_err();
-    assert!(format!("{error:#}").contains("you said no"), "{error:#}");
-    assert!(workspace.added.is_empty());
+    let mut workspace = Recorded {
+        answer: Answered::No,
+        ..Recorded::default()
+    };
+    let mut told = Told::default();
+    let journal = migrate_saying(&home, &place, &mut workspace, false, &mut told).unwrap();
+    // The account was asked for once, and left unconnected: the run goes on and is not a failure.
+    assert_eq!(workspace.added.len(), 1, "asked once");
+    assert!(workspace.kept.is_empty());
+    assert_eq!(journal.brought.get("accounts"), None);
+    assert!(
+        told.lines.iter().any(|line| line
+            .contains("left unconnected")
+            && line.contains("ada@example.com")),
+        "{:?}",
+        told.lines
+    );
+}
+
+#[test]
+fn each_chosen_account_is_asked_once_and_nobody_answering_leaves_it_unconnected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, place, mut review) = sample(dir.path());
+    // Both accounts are chosen: each is a decision of its own.
+    let accounts: Vec<String> = review
+        .items
+        .iter()
+        .filter(|item| item.kind == "account")
+        .map(|item| item.key.clone())
+        .collect();
+    assert_eq!(accounts.len(), 2, "{review:#?}");
+    review.choose(&accounts, true, false).unwrap();
+    place.keep_review(&review).unwrap();
+    let mut workspace = Recorded {
+        answer: Answered::Nobody,
+        ..Recorded::default()
+    };
+    let mut told = Told::default();
+    let journal = migrate_saying(&home, &place, &mut workspace, false, &mut told).unwrap();
+    // One ask per account, and each is left unconnected.
+    assert_eq!(workspace.added.len(), 2, "one ask per account");
+    assert!(workspace.kept.is_empty());
+    assert_eq!(journal.brought.get("accounts"), None);
+    let left: Vec<&String> = told
+        .lines
+        .iter()
+        .filter(|line| line.contains("left unconnected"))
+        .collect();
+    assert_eq!(left.len(), 2, "{:?}", told.lines);
 }
 
 #[test]

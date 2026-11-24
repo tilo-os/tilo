@@ -426,10 +426,15 @@ fn signs_in_with(account: &crate::thunderbird::ThunderbirdAccount) -> Option<&'s
 }
 
 /// Connect the mail account `adding` describes (as `workspace/mail-accounts#add` takes it), once
-/// the person says yes, and only say so once the server lists it.
+/// the person answers the ask its record puts to them, and only say so once the server lists it.
+///
+/// Connecting an account is the person's decision, so the call to add it is kept as the asked
+/// record its grants leave to them: whoever answers (their terminal, their shell, an agent's
+/// caller) runs it, and the run waits for that answer. Nobody answering leaves the account
+/// unconnected, which the run says.
 ///
 /// # Errors
-/// The person said no, or the server refused, in its words.
+/// The server refused, in its words.
 pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
     let address = text(&adding, "address").to_owned();
     let key = format!("connected:{address}");
@@ -439,13 +444,21 @@ pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
         return lander.noted(&key, "accounts", &Landed::Already);
     }
     let saved = adding.get("password").is_some();
-    let question = connect_question(&adding, saved);
-    if !lander.confirm(&question)? {
-        bail!("{address} was not connected: you said no");
-    }
-    let added = lander
-        .person(MAIL_ACCOUNTS, "add", adding)
-        .map_err(|error| error.context(format!("{address} was not connected")))?;
+    lander.say(&format!("connecting {address} asks you first"));
+    // The account is kept through the workspace's own governance action, as this run's step:
+    // the policy asks its person first, so the call waits in their asked record, and the answer
+    // (here, in their shell, an agent's caller) is what adds it.
+    let added = match lander.act(MAIL_ACCOUNTS, "add", adding) {
+        Ok(answer) => answer.result().cloned().unwrap_or(Value::Null),
+        Err(error) if is_unanswered(&error) => {
+            lander.say(&format!(
+                "{address} is left unconnected: connecting it waits for your yes. Answer it, or \
+                 run `tilo migrate start thunderbird --yes` to say yes beforehand."
+            ));
+            return Ok(());
+        }
+        Err(error) => return Err(error.context(format!("{address} was not connected"))),
+    };
     // What the server answers is the account it keeps: anything else is not one.
     if !keeps(&json!({"accounts": [added]}), &address) {
         bail!("{address} was not connected: the server answered no account for it");
@@ -465,6 +478,14 @@ pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
     lander.noted(&key, "accounts", &Landed::One)
 }
 
+/// Whether `error` says nobody answered the account's asked record: it waits for its person, or
+/// they said no, so the account stays unconnected while the rest of the run goes on.
+fn is_unanswered(error: &anyhow::Error) -> bool {
+    super::writer::Refused::of(error).is_some_and(|refused| {
+        matches!(refused.code(), super::mcp::UNANSWERED | "cancelled" | "declined")
+    })
+}
+
 /// Whether the server's `listing` of the person's mail accounts holds `address`.
 fn keeps(listing: &Value, address: &str) -> bool {
     listing
@@ -478,32 +499,6 @@ fn keeps(listing: &Value, address: &str) -> bool {
                     .is_some_and(|kept| kept.eq_ignore_ascii_case(address))
             })
         })
-}
-
-/// What the person is asked before `adding` is connected: the account, its servers, the
-/// addresses it sends as, and whether its saved password goes with it. Never the password.
-fn connect_question(adding: &Value, saved: bool) -> String {
-    let mut question = format!(
-        "Connect {} to Mail: receives from {}:{}, sends by {}:{}",
-        text(adding, "address"),
-        text(adding, "incomingHost"),
-        adding["incomingPort"],
-        text(adding, "outgoingHost"),
-        adding["outgoingPort"],
-    );
-    if let Some(identities) = adding.get("identities").and_then(Value::as_array) {
-        let names: Vec<&str> = identities.iter().filter_map(Value::as_str).collect();
-        if !names.is_empty() {
-            question.push_str(", also sends as ");
-            question.push_str(&names.join(", "));
-        }
-    }
-    question.push_str(if saved {
-        ", with the password Thunderbird saved, sealed in your vault?"
-    } else {
-        "? Thunderbird saved no password: Mail asks for it once."
-    });
-    question
 }
 
 /// An account's incoming and outgoing servers, as Mail would reach them.

@@ -188,6 +188,12 @@ impl DeviceAsked {
         &self.store
     }
 
+    /// The questions that wait for the person whose root key is `person`, oldest first: what
+    /// `tilo.asking/waiting#list` answers, so a terminal answers them as any other client does.
+    pub(crate) fn asked_of(&self, person: &[u8; 32]) -> Vec<asked::Asked> {
+        self.records.asked_of(person)
+    }
+
     /// Send the call `request` that `caller` made in `run` to `route`: one refused there for
     /// want of the person's yes is kept as its asked record, and waits there under way; anything
     /// else is answered as `route` answers it. The device's record of the invocation is

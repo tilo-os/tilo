@@ -392,7 +392,8 @@ enum Cmd {
                       Keys and passwords are never arguments: `connect` asks the person for a key.\n\n\
                       This computer's device runs the migration and lands it in the workspace it is in, \
                       as the Migrations window and your agents do: each sees what the others chose \
-                      and started."
+                      and started. `-w <workspace>` names that workspace; a workspace this device is \
+                      not in is refused, naming `tilo login`."
     )]
     Migrate {
         /// The answer as JSON.
@@ -1165,11 +1166,11 @@ fn run_hosted(
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
         // A migration runs on the device that holds the data and lands in the workspace that
-        // device is in.
-        Cmd::Migrate { .. } if workspace.is_some() => Err(anyhow::anyhow!(
-            "a migration lands in the workspace this computer's device is in, which -w does not \
-             change: leave -w out"
-        )),
+        // device is in: `-w` names that workspace, and a workspace it is not in is refused there,
+        // naming `tilo login`.
+        Cmd::Migrate { json, cmd } if workspace.is_some() => {
+            migrate::run(cmd, json, workspace.as_deref())
+        }
         other => return Err(other),
     })
 }
@@ -1389,7 +1390,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::HelpMarkdown => help_markdown(),
         Cmd::Agent { cmd } => agent::run(cmd),
-        Cmd::Migrate { json, cmd } => migrate::run(cmd, json),
+        Cmd::Migrate { json, cmd } => migrate::run(cmd, json, None),
         Cmd::Login {
             new_identity: true,
             name,

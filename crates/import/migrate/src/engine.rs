@@ -62,7 +62,7 @@ use zeroize::Zeroizing;
 
 use registry::{Engine, Row};
 use state::{Journal, Place, Review, RunState};
-use writer::{Invocation, Workspace};
+use writer::{Answer, Invocation, Workspace};
 
 pub use text::sentences;
 
@@ -957,6 +957,18 @@ impl Lander<'_> {
     pub fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
         self.stop_asked()?;
         self.workspace.person(path, action, args)
+    }
+
+    /// Ask `action` of `path` (`workspace/mail-accounts#add`) as the run's own agent, a step of
+    /// this run: the workspace's policy asks its person where it says so, so the call waits in
+    /// their asked record until they answer it.
+    ///
+    /// # Errors
+    /// The migration was stopped, or the server refused or could not be reached.
+    pub fn act(&mut self, path: &str, action: &str, args: Value) -> Result<Answer> {
+        self.stop_asked()?;
+        self.workspace
+            .act(self.invocation, &format!("{path}#{action}"), args)
     }
 
     /// Note that the workspace has `key` now (`count` more of `kind`), or had it already.
