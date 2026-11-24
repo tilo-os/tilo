@@ -1239,6 +1239,14 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testin
 /// field they type the item's title into. `None` while no row stands open.
 fn opened_title_field(session: &mut Session) -> Option<String> {
     let view = session.hosted().view()?;
+    let edits_a_field = |node: &tilo_app_window::UiNode| {
+        node.kind == "ui.TextInput" && node.binding.as_ref().is_some_and(|b| b.field().is_some())
+    };
+    // The opened task's page stands in the shell's content column, beside the list.
+    // What the window composed carries the keys its widgets are laid out under.
+    if let Some(field) = view.composed().and_then(|tree| find(tree, &edits_a_field)) {
+        return Some(field.key.clone());
+    }
     let mut found = None;
     for list in view.lists() {
         if list.starts_with(tilo_app_window::shell::DETAIL) {
