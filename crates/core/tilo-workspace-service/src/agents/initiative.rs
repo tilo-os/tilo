@@ -53,7 +53,7 @@ use super::engine_actions::EngineActions;
 use super::events::WorkspaceEvents;
 use crate::service::WorkspacesAt;
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::{Interaction, Spender};
+use crate::workspaces::model_answers::{Interaction, Spender};
 use crate::workspaces::providers::{Providers, Reach};
 
 mod look;

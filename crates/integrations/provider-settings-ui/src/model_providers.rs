@@ -2,7 +2,7 @@
 //! providers they linked, the key the host keeps for each, and the model
 //! each kind of their work runs on.
 //!
-//! The host keeps all of it ([`person_models`]): a page holds no key and
+//! The host keeps all of it ([`model_providers`]): a page holds no key and
 //! asks no provider. Here is the one piece every window shows it with:
 //! Settings' page, the Model Providers window, and the first minute of an
 //! assistant ([`first_model`]), where nothing can answer before a provider
@@ -29,7 +29,7 @@ use ui::LocalState;
 use ui::framework::{ActionControl, Actions};
 use ui::lock::MutexRecover as _;
 use ui::tilo_actions::InvocationUpdate;
-use ui::tilo_actions::remote::person_models::{
+use ui::tilo_actions::remote::model_providers::{
     self, AccountUse, AddModel, AddPreset, AddProvider, BeginSignIn, ListedModels, ListingProblem,
     ModelProviders, Protocol, ProviderView, SetAssignments, SetDefault, SetKey, SignInStarted,
     SignInState, WaitSignIn,
@@ -103,7 +103,7 @@ impl Work {
 /// What a window asks about a person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
-pub enum PersonModelsEffect {
+pub enum ModelAnswerersEffect {
     /// Read the model providers again.
     #[effect(kind = "outside")]
     #[effect(job)]
@@ -197,14 +197,14 @@ pub enum PersonModelsEffect {
 /// How a window binds this piece's controls to the effects it offers.
 pub trait ModelBindings {
     /// `control` (a button), bound to `effect`.
-    fn invoking<C: ActionControl<()>>(&self, control: C, effect: PersonModelsEffect) -> C;
+    fn invoking<C: ActionControl<()>>(&self, control: C, effect: ModelAnswerersEffect) -> C;
     /// `control` (a chooser), each choice of its invoking what `choice`
     /// makes of it.
     fn choosing<C: ActionControl<String>>(&self, control: C, choice: ModelChoice) -> C;
 }
 
 impl<R: Resource> ModelBindings for Actions<R> {
-    fn invoking<C: ActionControl<()>>(&self, control: C, effect: PersonModelsEffect) -> C {
+    fn invoking<C: ActionControl<()>>(&self, control: C, effect: ModelAnswerersEffect) -> C {
         self.bind_effect_invocation(control, &effect)
     }
 
@@ -218,15 +218,15 @@ impl<R: Resource> ModelBindings for Actions<R> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelChoice(pub Option<Work>);
 
-impl Binds<PersonModelsEffect, String> for ModelChoice {
+impl Binds<ModelAnswerersEffect, String> for ModelChoice {
     fn action_id(&self) -> &'static str {
         match self.0 {
-            None => PersonModelsEffect::ChooseDefaultModel {
+            None => ModelAnswerersEffect::ChooseDefaultModel {
                 provider: String::new(),
                 model: String::new(),
             }
             .id(),
-            Some(_) => PersonModelsEffect::ChooseWorkModel {
+            Some(_) => ModelAnswerersEffect::ChooseWorkModel {
                 work: String::new(),
                 provider: None,
                 model: None,
@@ -241,12 +241,12 @@ impl Binds<PersonModelsEffect, String> for ModelChoice {
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let chosen = input.split_once(CHOICE);
         let effect = match (self.0, chosen) {
-            (None, Some((provider, model))) => PersonModelsEffect::ChooseDefaultModel {
+            (None, Some((provider, model))) => ModelAnswerersEffect::ChooseDefaultModel {
                 provider: provider.to_owned(),
                 model: model.to_owned(),
             },
             (None, None) => return Err(t("models-choice-incomplete")),
-            (Some(work), chosen) => PersonModelsEffect::ChooseWorkModel {
+            (Some(work), chosen) => ModelAnswerersEffect::ChooseWorkModel {
                 work: work.id().to_owned(),
                 provider: chosen.map(|(provider, _)| provider.to_owned()),
                 model: chosen.map(|(_, model)| model.to_owned()),
@@ -329,7 +329,7 @@ impl KeyEntry {
 
 /// A person's model providers as the host answered them, and the requests
 /// that change them.
-pub struct PersonModels {
+pub struct ModelAnswerers {
     remote: ui::RemoteActions,
     listing: Option<ui::InvocationCall>,
     seen: u64,
@@ -349,7 +349,7 @@ pub struct PersonModels {
     model_names: RefCell<HashMap<String, LocalState<String>>>,
 }
 
-impl PersonModels {
+impl ModelAnswerers {
     /// The person's providers, asked of the host `remote` reaches.
     #[must_use]
     pub fn new(remote: ui::RemoteActions) -> Self {
@@ -390,7 +390,7 @@ impl PersonModels {
 
     fn read(&mut self) {
         self.listing = Some(self.remote.invoke(
-            person_models::target(person_models::LIST),
+            model_providers::target(model_providers::LIST),
             InvokeArgument::None,
             None,
         ));
@@ -510,24 +510,24 @@ impl PersonModels {
     ///
     /// # Errors
     /// When the effect names nothing the host could be asked for.
-    pub fn apply(&mut self, effect: PersonModelsEffect) -> Result<(), String> {
+    pub fn apply(&mut self, effect: ModelAnswerersEffect) -> Result<(), String> {
         let named = |provider: &str| serde_json::json!({ "provider": provider });
         match effect {
-            PersonModelsEffect::ReadProviders => {
+            ModelAnswerersEffect::ReadProviders => {
                 self.error = None;
                 self.read();
                 Ok(())
             }
-            PersonModelsEffect::LinkProvider { preset } => self.ask(
+            ModelAnswerersEffect::LinkProvider { preset } => self.ask(
                 Asked::Linked,
-                person_models::ADD_PRESET,
+                model_providers::ADD_PRESET,
                 &AddPreset { preset },
             ),
-            PersonModelsEffect::NameOtherProvider => {
+            ModelAnswerersEffect::NameOtherProvider => {
                 self.naming_other = true;
                 Ok(())
             }
-            PersonModelsEffect::LinkOtherProvider => {
+            ModelAnswerersEffect::LinkOtherProvider => {
                 let adding = AddProvider {
                     name: self.form_name.get(),
                     protocol: match self.form_protocol.get().as_str() {
@@ -537,58 +537,58 @@ impl PersonModels {
                     endpoint: self.form_endpoint.get(),
                     headers: Vec::new(),
                 };
-                self.ask(Asked::Linked, person_models::ADD_PROVIDER, &adding)
+                self.ask(Asked::Linked, model_providers::ADD_PROVIDER, &adding)
             }
-            PersonModelsEffect::EnterProviderKey { provider } => {
+            ModelAnswerersEffect::EnterProviderKey { provider } => {
                 if !self.providers().iter().any(|kept| kept.id == provider) {
                     return Err(t("models-provider-unknown"));
                 }
                 self.key.open(provider);
                 Ok(())
             }
-            PersonModelsEffect::ForgetProviderKey { provider } => self.ask(
+            ModelAnswerersEffect::ForgetProviderKey { provider } => self.ask(
                 Asked::Provider,
-                person_models::REMOVE_KEY,
+                model_providers::REMOVE_KEY,
                 &named(&provider),
             ),
-            PersonModelsEffect::UnlinkProvider { provider } => {
+            ModelAnswerersEffect::UnlinkProvider { provider } => {
                 if self.key.provider.as_deref() == Some(provider.as_str()) {
                     self.key.close();
                 }
                 self.problems.remove(&provider);
                 self.ask(
                     Asked::Everything,
-                    person_models::REMOVE_PROVIDER,
+                    model_providers::REMOVE_PROVIDER,
                     &named(&provider),
                 )
             }
-            PersonModelsEffect::AskProviderModels { provider } => {
+            ModelAnswerersEffect::AskProviderModels { provider } => {
                 let asking = named(&provider);
                 self.ask(
                     Asked::Listing(provider),
-                    person_models::REFRESH_MODELS,
+                    model_providers::REFRESH_MODELS,
                     &asking,
                 )
             }
-            PersonModelsEffect::NameProviderModel { provider } => {
+            ModelAnswerersEffect::NameProviderModel { provider } => {
                 let model = self.model_name(&provider).get();
                 let adding = AddModel {
                     provider: provider.clone(),
                     model,
                 };
-                self.ask(Asked::Named(provider), person_models::ADD_MODEL, &adding)
+                self.ask(Asked::Named(provider), model_providers::ADD_MODEL, &adding)
             }
-            PersonModelsEffect::SignInToOpenAi { using } => self.begin_sign_in(using.as_deref()),
-            PersonModelsEffect::CancelOpenAiSignIn => {
+            ModelAnswerersEffect::SignInToOpenAi { using } => self.begin_sign_in(using.as_deref()),
+            ModelAnswerersEffect::CancelOpenAiSignIn => {
                 self.cancel_sign_in();
                 Ok(())
             }
-            PersonModelsEffect::ChooseDefaultModel { provider, model } => self.ask(
+            ModelAnswerersEffect::ChooseDefaultModel { provider, model } => self.ask(
                 Asked::Everything,
-                person_models::SET_DEFAULT,
+                model_providers::SET_DEFAULT,
                 &SetDefault { provider, model },
             ),
-            PersonModelsEffect::ChooseWorkModel {
+            ModelAnswerersEffect::ChooseWorkModel {
                 work,
                 provider,
                 model,
@@ -603,7 +603,7 @@ impl PersonModels {
                     provider,
                     model,
                 };
-                self.ask(Asked::Everything, person_models::SET_ASSIGNMENTS, &choosing)
+                self.ask(Asked::Everything, model_providers::SET_ASSIGNMENTS, &choosing)
             }
         }
     }
@@ -618,7 +618,7 @@ impl PersonModels {
         };
         self.cancel_sign_in();
         let call = self.remote.invoke(
-            person_models::target(person_models::BEGIN_SIGN_IN),
+            model_providers::target(model_providers::BEGIN_SIGN_IN),
             json_argument(&BeginSignIn { using })?,
             None,
         );
@@ -635,7 +635,7 @@ impl PersonModels {
         {
             // Nothing waits for the answer: the sign-in is let go here either way.
             let _ = self.remote.invoke(
-                person_models::target(person_models::CANCEL_SIGN_IN),
+                model_providers::target(model_providers::CANCEL_SIGN_IN),
                 argument,
                 None,
             );
@@ -646,7 +646,7 @@ impl PersonModels {
     /// Ask the server how the sign-in `started` goes.
     fn wait_sign_in(&self, started: &SignInStarted) -> Result<ui::InvocationCall, String> {
         Ok(self.remote.invoke(
-            person_models::target(person_models::WAIT_SIGN_IN),
+            model_providers::target(model_providers::WAIT_SIGN_IN),
             json_argument(&WaitSignIn {
                 sign_in: started.sign_in.clone(),
             })?,
@@ -714,7 +714,7 @@ impl PersonModels {
         let argument = json_argument(argument)?;
         let call = self
             .remote
-            .invoke(person_models::target(action), argument, None);
+            .invoke(model_providers::target(action), argument, None);
         self.asked.push((what, call));
         Ok(())
     }
@@ -736,7 +736,7 @@ impl PersonModels {
             self.key.refused = None;
             self.key.sending = true;
             if let Err(reason) =
-                self.ask(Asked::KeyKept(provider), person_models::SET_KEY, &setting)
+                self.ask(Asked::KeyKept(provider), model_providers::SET_KEY, &setting)
             {
                 self.key.sending = false;
                 self.key.refused = Some(reason);
@@ -811,7 +811,7 @@ impl PersonModels {
                 let asking = serde_json::json!({ "provider": provider });
                 if let Err(reason) = self.ask(
                     Asked::Listing(provider),
-                    person_models::REFRESH_MODELS,
+                    model_providers::REFRESH_MODELS,
                     &asking,
                 ) {
                     self.error = Some(reason);

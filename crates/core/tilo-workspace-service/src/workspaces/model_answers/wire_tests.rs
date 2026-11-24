@@ -237,7 +237,7 @@ async fn the_asks_of_one_piece_of_work_take_the_key_once() {
 #[tokio::test]
 async fn a_key_replaced_or_removed_between_two_asks_is_not_used_by_the_next() {
     use crate::workspaces::person_settings::{ProviderKeys, remove_key, set_key};
-    use tilo_actions::remote::person_models::SetKey;
+    use tilo_actions::remote::model_providers::SetKey;
 
     let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
     let workspaces = server.workspaces();

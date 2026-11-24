@@ -48,7 +48,7 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
-    formats, mcp_server, pending, person_accounts, person_models, person_telling, person_vault,
+    formats, mcp_server, pending, person_accounts, model_providers, person_telling, person_vault,
     provider_workspace, server_account, session_actions, workspace_activity as wire,
 };
 
@@ -224,7 +224,7 @@ pub const PERSON_PROVIDERS: [&str; 1] = [mcp_server::PROVIDER];
 /// devices online.
 pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
     person_accounts::PROVIDER,
-    person_models::PROVIDER,
+    model_providers::PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
     server_account::PROVIDER,

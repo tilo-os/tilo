@@ -21,7 +21,7 @@ use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::remote::{person_accounts, person_models, person_vault};
+use tilo_actions::remote::{person_accounts, model_providers, person_vault};
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, governed};
@@ -909,7 +909,7 @@ async fn a_use_the_vault_refuses_asks_nobody() {
         );
     }
     let as_key = request(
-        person_models::target(person_models::SET_KEY_FROM_ITEM),
+        model_providers::target(model_providers::SET_KEY_FROM_ITEM),
         json!({"provider": provider, "key": login}),
     );
     let wrong_kind = dispatched(workspaces, &turn, &as_key).await;
@@ -963,7 +963,7 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     };
     let keeping = || {
         request(
-            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
             json!({"provider": provider, "key": api_key}),
         )
     };

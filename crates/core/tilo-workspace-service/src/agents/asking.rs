@@ -31,7 +31,7 @@ use tilo_model_gateway::host_backend::protocol::Content;
 use super::{
     Message, ModelAnswered, ModelError, ModelRequest, ModelResponse, PlanTurns, StreamEvent,
 };
-use crate::workspaces::person_model::protocol::Recovery;
+use crate::workspaces::model_answers::protocol::Recovery;
 
 /// How long a turn waits before each further ask of a call that failed: three more asks, one,
 /// two and four seconds apart. Short, so a refusal that passes at once costs its person a
@@ -262,7 +262,7 @@ mod tests {
     use tilo_lock::MutexRecover as _;
 
     use super::*;
-    use crate::workspaces::person_model::protocol::{
+    use crate::workspaces::model_answers::protocol::{
         ErrorKind, Role, StopReason, ToolCall, ToolChoice, ToolResult, Usage,
     };
 

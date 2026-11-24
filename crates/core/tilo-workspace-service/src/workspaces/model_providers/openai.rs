@@ -27,7 +27,7 @@ use std::time::Duration;
 use agent_provider_config::presets::{CHATGPT_ENDPOINT, Preset};
 use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, transform};
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_models::{
+use tilo_actions::remote::model_providers::{
     AccountUse, BeginSignIn, ProviderView, SignInStarted, SignInState, WaitSignIn,
 };
 use tilo_lock::MutexRecover as _;
@@ -35,7 +35,7 @@ use tilo_net::proxy::host::guarded_client;
 use zeroize::Zeroizing;
 
 use super::super::Workspaces;
-use super::super::person_model::{ModelRefusal, Models};
+use super::super::model_answers::{ModelRefusal, Models};
 use super::super::person_settings::{
     ProviderKeys, key_kept, provider_config, save_named_key, save_provider_config, view_of,
 };
@@ -234,7 +234,7 @@ impl Workspaces {
     /// and keep the grant in the workspace's vault. A person signs in once
     /// at a time: one begun before is let go.
     ///
-    /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_models::BEGIN_SIGN_IN
+    /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::model_providers::BEGIN_SIGN_IN
     pub(super) async fn begin_openai_sign_in(
         &self,
         (person, workspace): ([u8; 32], &str),
@@ -310,7 +310,7 @@ impl Workspaces {
     /// it changed, or after a while as still waiting. A sign-in that ended
     /// is answered once and then forgotten.
     ///
-    /// [`WAIT_SIGN_IN`]: tilo_actions::remote::person_models::WAIT_SIGN_IN
+    /// [`WAIT_SIGN_IN`]: tilo_actions::remote::model_providers::WAIT_SIGN_IN
     pub(super) async fn wait_openai_sign_in(
         &self,
         person: [u8; 32],
@@ -343,7 +343,7 @@ impl Workspaces {
 
     /// Let go of `person`'s sign-in ([`CANCEL_SIGN_IN`]).
     ///
-    /// [`CANCEL_SIGN_IN`]: tilo_actions::remote::person_models::CANCEL_SIGN_IN
+    /// [`CANCEL_SIGN_IN`]: tilo_actions::remote::model_providers::CANCEL_SIGN_IN
     pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], cancelling: &WaitSignIn) {
         let mut pending = self.inner.models.sign_ins.pending.lock_recover();
         if pending

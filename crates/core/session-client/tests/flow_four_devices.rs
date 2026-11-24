@@ -18,7 +18,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::{person_models, person_vault};
+use tilo_actions::remote::{model_providers, person_vault};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
@@ -550,25 +550,25 @@ async fn flow_five_model_providers_each_answer_a_turn() {
     for (name, protocol, endpoint, model) in [
         (
             "Anthropic",
-            person_models::Protocol::Anthropic,
+            model_providers::Protocol::Anthropic,
             fake.anthropic_api_url(),
             "claude-sonnet-5-5",
         ),
         (
             "Google Vertex",
-            person_models::Protocol::OpenAiCompatible,
+            model_providers::Protocol::OpenAiCompatible,
             fake.openai_api_url(),
             "vertex-model",
         ),
         (
             "Gemini",
-            person_models::Protocol::OpenAiCompatible,
+            model_providers::Protocol::OpenAiCompatible,
             fake.openai_api_url(),
             "gemini-model",
         ),
         (
             "Custom OpenAI-compatible",
-            person_models::Protocol::OpenAiCompatible,
+            model_providers::Protocol::OpenAiCompatible,
             fake.openai_api_url(),
             "custom-model",
         ),
@@ -577,7 +577,7 @@ async fn flow_five_model_providers_each_answer_a_turn() {
     }
 
     // OpenAI, signed in with OAuth as the person's plan.
-    let started = ask_models(&laptop, work, person_models::BEGIN_SIGN_IN, json!({}))
+    let started = ask_models(&laptop, work, model_providers::BEGIN_SIGN_IN, json!({}))
         .await
         .unwrap_or_else(|error| panic!("the OpenAI sign-in begins: {error:?}"));
     let code = started["code"].as_str().unwrap_or_default().to_owned();
@@ -588,7 +588,7 @@ async fn flow_five_model_providers_each_answer_a_turn() {
         ask_models(
             &laptop,
             work,
-            person_models::WAIT_SIGN_IN,
+            model_providers::WAIT_SIGN_IN,
             json!({"signIn": sign_in}),
         ),
     )
@@ -615,7 +615,7 @@ async fn flow_five_model_providers_each_answer_a_turn() {
     ask_models(
         &laptop,
         work,
-        person_models::SET_ASSIGNMENT,
+        model_providers::SET_ASSIGNMENT,
         json!({"kind": "request", "provider": provider, "model": model}),
     )
     .await
@@ -627,7 +627,7 @@ async fn flow_five_model_providers_each_answer_a_turn() {
         let answered = ask_models(
             &laptop,
             work,
-            person_models::ASK,
+            model_providers::ASK,
             json!({
                 "messages": [{"role": "user", "content": [{"type": "text", "text": "Good morning"}]}],
                 "tools": [],
@@ -656,8 +656,8 @@ async fn ask_models(
     flow::ask(
         device,
         workspace,
-        person_models::PROVIDER,
-        person_models::RESOURCE,
+        model_providers::PROVIDER,
+        model_providers::RESOURCE,
         action,
         arguments,
     )
@@ -670,14 +670,14 @@ async fn link_provider(
     device: &tilo_session_client::device::Device,
     workspace: ServerWorkspaceId,
     name: &str,
-    protocol: person_models::Protocol,
+    protocol: model_providers::Protocol,
     endpoint: String,
     model: &str,
 ) -> (String, String) {
     let added = ask_models(
         device,
         workspace,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         json!({"name": name, "protocol": protocol, "endpoint": endpoint}),
     )
     .await
@@ -686,7 +686,7 @@ async fn link_provider(
     ask_models(
         device,
         workspace,
-        person_models::ADD_MODEL,
+        model_providers::ADD_MODEL,
         json!({"provider": id, "model": model}),
     )
     .await
@@ -694,7 +694,7 @@ async fn link_provider(
     ask_models(
         device,
         workspace,
-        person_models::SET_ASSIGNMENT,
+        model_providers::SET_ASSIGNMENT,
         json!({"kind": "request", "provider": id, "model": model}),
     )
     .await

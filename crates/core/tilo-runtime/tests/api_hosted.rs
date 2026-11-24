@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{
-    ActionProvider, ResourceAddress, ResourceCopy, person_models, person_vault,
+    ActionProvider, ResourceAddress, ResourceCopy, model_providers, person_vault,
 };
 
 use crate::host;
@@ -487,7 +487,7 @@ fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_agent() 
             ),
             (
                 "sets a model key",
-                person_models::target(person_models::SET_KEY),
+                model_providers::target(model_providers::SET_KEY),
                 json!({"provider": "a-provider", "key": "sk-test-not-a-key"}),
             ),
         ] {

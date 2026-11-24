@@ -21,8 +21,8 @@ use tilo_actions::remote::person_telling::{
 use super::*;
 use crate::workspaces::ToTell;
 use crate::workspaces::fixtures::{TestHost, governor, test_host};
-use crate::workspaces::person_model::ProviderProtocol;
-use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+use crate::workspaces::model_answers::ProviderProtocol;
+use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 
 /// A person this host keeps a log for. No device of theirs is on.
 const ADA: [u8; 32] = [8; 32];

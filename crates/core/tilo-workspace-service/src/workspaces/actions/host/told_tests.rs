@@ -32,8 +32,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{caller, settled};
 use super::telling_tests::{ASSISTANT, Setup, agent_of, nobody};
-use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
-use crate::workspaces::person_model::{ProviderProtocol, Spender};
+use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
+use crate::workspaces::model_answers::{ProviderProtocol, Spender};
 use crate::workspaces::tests::guest_device;
 use crate::workspaces::{Spenders, ToTell};
 

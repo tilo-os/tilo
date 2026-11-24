@@ -33,8 +33,8 @@ use tilo_actions::remote::person_telling::{
 use super::*;
 use crate::workspaces::ToTell;
 use crate::workspaces::fixtures::{governor, test_host};
-use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
-use crate::workspaces::person_model::{ProviderProtocol, Spender};
+use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
+use crate::workspaces::model_answers::{ProviderProtocol, Spender};
 use crate::workspaces::push_addresses::{PushKey, Register};
 use tilo_workspace_service::agents::telling::Teller;
 

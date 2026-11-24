@@ -56,7 +56,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING,
-    formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
+    formats, mcp_server, person_accounts, person_connections, model_providers, person_telling,
     person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
@@ -2077,7 +2077,7 @@ impl Workspaces {
                     (
                         person_accounts::PROVIDER,
                         person_accounts::ADD_MAIL_WITH_ITEM
-                    ) | (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM)
+                    ) | (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM)
                         | (person_vault::PROVIDER, person_vault::ASK)
                 ) =>
             {
@@ -2093,8 +2093,8 @@ impl Workspaces {
                     .await
             }
             #[cfg(not(target_arch = "wasm32"))]
-            (person_models::PROVIDER, _) => {
-                self.person_models_invoke(workspace_id, caller, certificate, request)
+            (model_providers::PROVIDER, _) => {
+                self.model_providers_invoke(workspace_id, caller, certificate, request)
                     .await
             }
             // What the person keeps to sign in with, in that same vault:
@@ -4159,7 +4159,7 @@ const PROVIDERS: [&str; 10] = [
     // The person's own mail accounts and model providers: a page asks here
     // because it has no mail connection and no vault of its own.
     person_accounts::PROVIDER,
-    person_models::PROVIDER,
+    model_providers::PROVIDER,
     // What the person keeps to sign in with, in the same vault.
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
@@ -4437,7 +4437,7 @@ mod openai_sign_in_tests;
 #[cfg(test)]
 mod person_learned_tests;
 #[cfg(test)]
-mod person_model_tests;
+mod model_answers_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

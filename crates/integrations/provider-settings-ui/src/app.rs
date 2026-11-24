@@ -55,7 +55,7 @@ impl ResourceApp for ProviderSettingsApp {
             // open. Where no host answers, it says who sets providers up.
             // A window that only describes itself keeps describing the
             // panel, whose requests are the ones this app records.
-            return crate::person_models::everything_or(cx, administered_elsewhere);
+            return crate::model_providers::everything_or(cx, administered_elsewhere);
         }
         let window = ProviderSurface::attached(cx, administration);
         let rows = Rc::clone(&window.rows);

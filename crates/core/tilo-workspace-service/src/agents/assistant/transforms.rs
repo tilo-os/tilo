@@ -21,7 +21,7 @@ use ui::time::Duration;
 use super::{assistant_of, person_of};
 use crate::service::ServiceSlot;
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::Spender;
+use crate::workspaces::model_answers::Spender;
 use crate::workspaces::providers::{Providers, Reach};
 
 /// The provider the transforms are answered under.

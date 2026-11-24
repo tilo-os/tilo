@@ -58,7 +58,7 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
+use crate::workspaces::model_answers::{ModelRefusal, ModelAnswerer, Spender};
 use agent_keys::AgentKeys as _;
 use turn_provider::TurnProvider;
 
@@ -1532,7 +1532,7 @@ impl ServerAgents {
             // one agent going at once cannot each spend the day's whole limit.
             let named_model = turn.agent.model.as_deref().or_else(|| {
                 turn.agent.sub.as_ref().and_then(|sub| {
-                    crate::workspaces::person_model::Interaction::from_id(&sub.kind)
+                    crate::workspaces::model_answers::Interaction::from_id(&sub.kind)
                         .is_none()
                         .then_some(sub.kind.as_str())
                 })
@@ -1650,7 +1650,7 @@ pub async fn count_spend(
 
 /// A turn's model calls, asked of the model the workspace linked, with its own key.
 struct WorkspaceTurns {
-    model: PersonModel,
+    model: ModelAnswerer,
     /// The model's name, for the usage log.
     name: String,
     /// Set when the turn's person stopped it: a call under way ends on it.

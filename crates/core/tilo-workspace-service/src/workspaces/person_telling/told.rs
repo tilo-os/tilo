@@ -29,7 +29,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::super::Workspaces;
-use super::super::person_model::Spender;
+use super::super::model_answers::Spender;
 use super::judge::{self, Matter};
 use super::{clipped, read_rule};
 

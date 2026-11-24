@@ -11,7 +11,7 @@ use ui::framework::ActionControl;
 use ui::framework::testing::TestApp;
 use ui::lock::MutexRecover as _;
 use ui::tilo_actions::ActionOutput;
-use ui::tilo_actions::remote::person_models::{Assignment, OfferedModel};
+use ui::tilo_actions::remote::model_providers::{Assignment, OfferedModel};
 use ui::tilo_actions::remote::{
     ActionProvider, Caller, InvocationReceipt, Pending, ReceiptStatus, TestProvider,
 };
@@ -35,7 +35,7 @@ fn en() {
 struct Unbound;
 
 impl ModelBindings for Unbound {
-    fn invoking<C: ActionControl<()>>(&self, control: C, _: PersonModelsEffect) -> C {
+    fn invoking<C: ActionControl<()>>(&self, control: C, _: ModelAnswerersEffect) -> C {
         control
     }
 
@@ -69,10 +69,10 @@ impl Kept {
         argument: &serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
         match action {
-            person_models::LIST => {}
-            person_models::REMOVE_PROVIDER
-            | person_models::SET_DEFAULT
-            | person_models::SET_ASSIGNMENTS => self.choose(action, argument)?,
+            model_providers::LIST => {}
+            model_providers::REMOVE_PROVIDER
+            | model_providers::SET_DEFAULT
+            | model_providers::SET_ASSIGNMENTS => self.choose(action, argument)?,
             _ => return self.change(action, argument),
         }
         Ok(serde_json::to_value(&self.providers).unwrap())
@@ -87,7 +87,7 @@ impl Kept {
         let text = |name: &str| argument[name].as_str().unwrap_or_default().to_owned();
         let id = text("provider");
         match action {
-            person_models::REMOVE_PROVIDER => {
+            model_providers::REMOVE_PROVIDER => {
                 self.provider(&id)?;
                 self.providers.providers.retain(|kept| kept.id != id);
                 self.providers
@@ -97,7 +97,7 @@ impl Kept {
                     self.providers.default_provider = None;
                 }
             }
-            person_models::SET_DEFAULT => {
+            model_providers::SET_DEFAULT => {
                 self.provider(&id)?.default_model = Some(text("model"));
                 self.providers.default_provider = Some(id);
             }
@@ -131,7 +131,7 @@ impl Kept {
     /// was entered, then signed in.
     fn sign_in(&mut self, action: &str) -> serde_json::Value {
         match action {
-            person_models::BEGIN_SIGN_IN => serde_json::to_value(SignInStarted {
+            model_providers::BEGIN_SIGN_IN => serde_json::to_value(SignInStarted {
                 sign_in: "sign-in-1".into(),
                 code: "WXYZ-4821".into(),
                 page: "https://auth.example/codex/device".into(),
@@ -171,7 +171,7 @@ impl Kept {
         let view = |provider: &ProviderView| serde_json::to_value(provider).unwrap();
         let id = text("provider");
         match action {
-            person_models::ADD_PRESET => {
+            model_providers::ADD_PRESET => {
                 let preset = Preset::from_slug(&text("preset")).ok_or_else(|| {
                     ActionCallError::refused("That provider is not one this provider adds by name")
                 })?;
@@ -184,7 +184,7 @@ impl Kept {
                 self.providers.providers.push(added.clone());
                 Ok(view(&added))
             }
-            person_models::ADD_PROVIDER => {
+            model_providers::ADD_PROVIDER => {
                 if text("name").trim().is_empty() {
                     return Err(ActionCallError::refused("A provider needs a name"));
                 }
@@ -197,7 +197,7 @@ impl Kept {
                 self.providers.providers.push(added.clone());
                 Ok(view(&added))
             }
-            person_models::SET_KEY => {
+            model_providers::SET_KEY => {
                 // As the server does: a key the provider turns away is not kept.
                 let key = text("key");
                 if ![GOOD_KEY, LISTLESS_KEY].contains(&key.as_str()) {
@@ -211,13 +211,13 @@ impl Kept {
                 provider.configured = true;
                 Ok(view(provider))
             }
-            person_models::REMOVE_KEY => {
+            model_providers::REMOVE_KEY => {
                 self.keys.remove(&id);
                 let provider = self.provider(&id)?;
                 provider.configured = false;
                 Ok(view(provider))
             }
-            person_models::REFRESH_MODELS => {
+            model_providers::REFRESH_MODELS => {
                 let key = self.keys.get(&id).cloned();
                 let provider = self.provider(&id)?;
                 let problem = match key.as_deref() {
@@ -240,8 +240,8 @@ impl Kept {
                 })
                 .unwrap())
             }
-            person_models::BEGIN_SIGN_IN | person_models::WAIT_SIGN_IN => Ok(self.sign_in(action)),
-            person_models::ADD_MODEL => {
+            model_providers::BEGIN_SIGN_IN | model_providers::WAIT_SIGN_IN => Ok(self.sign_in(action)),
+            model_providers::ADD_MODEL => {
                 let provider = self.provider(&id)?;
                 provider.models.push(OfferedModel {
                     id: text("model"),
@@ -286,7 +286,7 @@ fn remote(provider: &Arc<TestProvider>) -> ui::RemoteActions {
 }
 
 /// Take every answer the host has for `models`.
-fn settle(models: &mut PersonModels) {
+fn settle(models: &mut ModelAnswerers) {
     while models.poll() {}
 }
 
@@ -295,7 +295,7 @@ fn said(sections: Vec<widgets::SettingsSection>) -> String {
     widgets::announced_text(widgets::page(sections).as_ref()).join("\n")
 }
 
-fn type_key(models: &PersonModels, provider: &str, key: &str) {
+fn type_key(models: &ModelAnswerers, provider: &str, key: &str) {
     models
         .key
         .answers
@@ -312,11 +312,11 @@ fn asked(provider: &TestProvider) -> Vec<String> {
 }
 
 /// A person with one provider linked, its key kept and its models listed.
-fn linked_provider(provider: &Arc<TestProvider>) -> PersonModels {
-    let mut models = PersonModels::new(remote(provider));
+fn linked_provider(provider: &Arc<TestProvider>) -> ModelAnswerers {
+    let mut models = ModelAnswerers::new(remote(provider));
     settle(&mut models);
     models
-        .apply(PersonModelsEffect::LinkProvider {
+        .apply(ModelAnswerersEffect::LinkProvider {
             preset: "gemini".into(),
         })
         .unwrap();
@@ -334,7 +334,7 @@ fn linked_provider(provider: &Arc<TestProvider>) -> PersonModels {
 fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     en();
     let (provider, kept) = provider();
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     assert_eq!(models.served(), Some(true));
     assert_eq!(models.linked(), Some(false));
@@ -351,7 +351,7 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     }
 
     models
-        .apply(PersonModelsEffect::LinkProvider {
+        .apply(ModelAnswerersEffect::LinkProvider {
             preset: "gemini".into(),
         })
         .unwrap();
@@ -371,15 +371,15 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     assert_eq!(
         asked(&provider),
         [
-            person_models::LIST,
-            person_models::ADD_PRESET,
-            person_models::SET_KEY,
-            person_models::REFRESH_MODELS,
+            model_providers::LIST,
+            model_providers::ADD_PRESET,
+            model_providers::SET_KEY,
+            model_providers::REFRESH_MODELS,
         ]
     );
     assert_eq!(kept.lock_recover().keys["gemini"], GOOD_KEY);
     for request in provider.asked() {
-        if request.target.address.action != person_models::SET_KEY {
+        if request.target.address.action != model_providers::SET_KEY {
             let carried = format!("{:?}", request.argument);
             assert!(!carried.contains(GOOD_KEY), "{carried}");
         }
@@ -389,7 +389,7 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     assert!(choosing.contains("Choose a model"), "{choosing}");
     assert!(!choosing.contains(GOOD_KEY), "{choosing}");
     assert_eq!(
-        PersonModels::offered_by(&models.providers()[0])
+        ModelAnswerers::offered_by(&models.providers()[0])
             .map(|(value, _)| value)
             .collect::<Vec<_>>(),
         ["gemini\u{1}large", "gemini\u{1}small"]
@@ -397,7 +397,7 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     assert_eq!(models.linked(), Some(false));
 
     models
-        .apply(PersonModelsEffect::ChooseDefaultModel {
+        .apply(ModelAnswerersEffect::ChooseDefaultModel {
             provider: "gemini".into(),
             model: "large".into(),
         })
@@ -414,10 +414,10 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
 fn a_key_the_provider_refuses_is_asked_for_again() {
     en();
     let (provider, _) = provider();
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     models
-        .apply(PersonModelsEffect::LinkProvider {
+        .apply(ModelAnswerersEffect::LinkProvider {
             preset: "anthropic".into(),
         })
         .unwrap();
@@ -469,7 +469,7 @@ fn a_kept_key_the_provider_turns_away_later_is_not_shown_as_added() {
         .keys
         .insert("gemini".into(), "sk-taken-back-there".into());
     models
-        .apply(PersonModelsEffect::AskProviderModels {
+        .apply(ModelAnswerersEffect::AskProviderModels {
             provider: "gemini".into(),
         })
         .unwrap();
@@ -493,13 +493,13 @@ fn a_kept_key_the_provider_turns_away_later_is_not_shown_as_added() {
 fn a_provider_with_no_list_takes_a_model_by_name() {
     en();
     let (provider, _) = provider();
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     models.form_name.set("Our server".into());
     models.form_endpoint.set("https://models.example/v1".into());
-    models.apply(PersonModelsEffect::NameOtherProvider).unwrap();
+    models.apply(ModelAnswerersEffect::NameOtherProvider).unwrap();
     assert!(said(models.first_model_sections(&Unbound)).contains("Address"));
-    models.apply(PersonModelsEffect::LinkOtherProvider).unwrap();
+    models.apply(ModelAnswerersEffect::LinkOtherProvider).unwrap();
     settle(&mut models);
     type_key(&models, "other", LISTLESS_KEY);
     settle(&mut models);
@@ -511,7 +511,7 @@ fn a_provider_with_no_list_takes_a_model_by_name() {
 
     models.model_name("other").set("typed-model".into());
     models
-        .apply(PersonModelsEffect::NameProviderModel {
+        .apply(ModelAnswerersEffect::NameProviderModel {
             provider: "other".into(),
         })
         .unwrap();
@@ -521,7 +521,7 @@ fn a_provider_with_no_list_takes_a_model_by_name() {
     let named = provider
         .asked()
         .into_iter()
-        .find(|request| request.target.address.action == person_models::ADD_MODEL)
+        .find(|request| request.target.address.action == model_providers::ADD_MODEL)
         .expect("the provider was asked to add the model");
     let InvokeArgument::Json(argument) = named.argument else {
         panic!("a model is named as JSON");
@@ -531,7 +531,7 @@ fn a_provider_with_no_list_takes_a_model_by_name() {
     // A provider with no name is the host's to refuse, said where the
     // person reads it.
     models.form_name.set(String::new());
-    models.apply(PersonModelsEffect::LinkOtherProvider).unwrap();
+    models.apply(ModelAnswerersEffect::LinkOtherProvider).unwrap();
     settle(&mut models);
     assert_eq!(models.error.as_deref(), Some("A provider needs a name"));
 }
@@ -544,9 +544,9 @@ fn each_kind_of_work_takes_a_model_in_a_persons_words() {
     en();
     let (provider, kept) = provider();
     let mut models = linked_provider(&provider);
-    let choose = |models: &mut PersonModels, work: Work, model: Option<&str>| {
+    let choose = |models: &mut ModelAnswerers, work: Work, model: Option<&str>| {
         models
-            .apply(PersonModelsEffect::ChooseWorkModel {
+            .apply(ModelAnswerersEffect::ChooseWorkModel {
                 work: work.id().into(),
                 provider: model.map(|_| "gemini".into()),
                 model: model.map(str::to_owned),
@@ -555,7 +555,7 @@ fn each_kind_of_work_takes_a_model_in_a_persons_words() {
         settle(models);
     };
     models
-        .apply(PersonModelsEffect::ChooseDefaultModel {
+        .apply(ModelAnswerersEffect::ChooseDefaultModel {
             provider: "gemini".into(),
             model: "small".into(),
         })
@@ -602,7 +602,7 @@ fn each_kind_of_work_takes_a_model_in_a_persons_words() {
     let together = provider
         .asked()
         .into_iter()
-        .rfind(|request| request.target.address.action == person_models::SET_ASSIGNMENTS)
+        .rfind(|request| request.target.address.action == model_providers::SET_ASSIGNMENTS)
         .expect("the choice went to the provider");
     let InvokeArgument::Json(argument) = together.argument else {
         panic!("a choice travels as JSON");
@@ -611,7 +611,7 @@ fn each_kind_of_work_takes_a_model_in_a_persons_words() {
 
     assert!(
         models
-            .apply(PersonModelsEffect::ChooseWorkModel {
+            .apply(ModelAnswerersEffect::ChooseWorkModel {
                 work: "errands".into(),
                 provider: None,
                 model: None,
@@ -627,12 +627,12 @@ fn a_choosers_choice_is_the_effect_that_records_it() {
     en();
     let read = |choice: ModelChoice, input: &str| {
         let arguments = choice.arguments(input.to_owned())?;
-        PersonModelsEffect::decode(choice.action_id(), &arguments)
+        ModelAnswerersEffect::decode(choice.action_id(), &arguments)
             .map_err(|error| error.to_string())
     };
     assert_eq!(
         read(ModelChoice(None), "gemini\u{1}large"),
-        Ok(PersonModelsEffect::ChooseDefaultModel {
+        Ok(ModelAnswerersEffect::ChooseDefaultModel {
             provider: "gemini".into(),
             model: "large".into(),
         })
@@ -640,7 +640,7 @@ fn a_choosers_choice_is_the_effect_that_records_it() {
     assert!(read(ModelChoice(None), "").is_err());
     assert_eq!(
         read(ModelChoice(Some(Work::SubAgents)), "anthropic\u{1}sonnet"),
-        Ok(PersonModelsEffect::ChooseWorkModel {
+        Ok(ModelAnswerersEffect::ChooseWorkModel {
             work: "sub-agents".into(),
             provider: Some("anthropic".into()),
             model: Some("sonnet".into()),
@@ -648,7 +648,7 @@ fn a_choosers_choice_is_the_effect_that_records_it() {
     );
     assert_eq!(
         read(ModelChoice(Some(Work::QuickJudgments)), ""),
-        Ok(PersonModelsEffect::ChooseWorkModel {
+        Ok(ModelAnswerersEffect::ChooseWorkModel {
             work: "quick-judgments".into(),
             provider: None,
             model: None,
@@ -667,19 +667,19 @@ fn a_provider_removed_is_gone_with_its_key_field() {
     let (provider, kept) = provider();
     let mut models = linked_provider(&provider);
     models
-        .apply(PersonModelsEffect::EnterProviderKey {
+        .apply(ModelAnswerersEffect::EnterProviderKey {
             provider: "gemini".into(),
         })
         .unwrap();
     assert!(
         models
-            .apply(PersonModelsEffect::EnterProviderKey {
+            .apply(ModelAnswerersEffect::EnterProviderKey {
                 provider: "nobody's".into(),
             })
             .is_err()
     );
     models
-        .apply(PersonModelsEffect::UnlinkProvider {
+        .apply(ModelAnswerersEffect::UnlinkProvider {
             provider: "gemini".into(),
         })
         .unwrap();
@@ -699,7 +699,7 @@ fn where_no_host_is_in_reach_the_piece_says_so() {
             reason: "The workspace's server can't be reached from here right now".into(),
         }))
     }));
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     assert_eq!(models.served(), Some(false));
     assert_eq!(models.linked(), None);
@@ -708,7 +708,7 @@ fn where_no_host_is_in_reach_the_piece_says_so() {
     assert!(page.contains("can't be reached"), "{page}");
     assert!(page.contains("Try again"), "{page}");
 
-    models.apply(PersonModelsEffect::ReadProviders).unwrap();
+    models.apply(ModelAnswerersEffect::ReadProviders).unwrap();
     settle(&mut models);
     assert_eq!(provider.asked().len(), 2);
 }
@@ -733,7 +733,7 @@ fn the_window_links_a_provider_through_its_own_controls() {
     app.settle();
     assert_eq!(
         asked(&provider),
-        [person_models::LIST, person_models::ADD_PRESET]
+        [model_providers::LIST, model_providers::ADD_PRESET]
     );
     let asking = app.harness().inspection_json().unwrap();
     assert!(asking.contains("sent to Anthropic"), "{asking}");
@@ -751,7 +751,7 @@ fn the_window_links_a_provider_through_its_own_controls() {
     assert!(!choosing.contains(GOOD_KEY), "{choosing}");
     assert!(!format!("{:?}", app.history()).contains(GOOD_KEY));
 
-    app.effect(&PersonModelsEffect::ChooseDefaultModel {
+    app.effect(&ModelAnswerersEffect::ChooseDefaultModel {
         provider: "anthropic".into(),
         model: "large".into(),
     })
@@ -781,14 +781,14 @@ fn the_window_links_a_provider_through_its_own_controls() {
 fn a_page_signs_in_to_chatgpt_with_a_code_and_uses_the_plan() {
     en();
     let (provider, kept) = provider();
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     let offered = said(models.first_model_sections(&Unbound));
     assert!(offered.contains("ChatGPT"), "{offered}");
     assert!(offered.contains("no API key needed"), "{offered}");
 
     models
-        .apply(PersonModelsEffect::SignInToOpenAi { using: None })
+        .apply(ModelAnswerersEffect::SignInToOpenAi { using: None })
         .unwrap();
     // The server answers each wait at once here: a few passes are a few waits.
     for _ in 0..4 {
@@ -812,13 +812,13 @@ fn a_page_signs_in_to_chatgpt_with_a_code_and_uses_the_plan() {
     assert!(signed_in.contains("Signed in"), "{signed_in}");
     assert!(!signed_in.contains("Add key"), "{signed_in}");
     let asked = asked(&provider);
-    assert_eq!(asked.first().map(String::as_str), Some(person_models::LIST));
+    assert_eq!(asked.first().map(String::as_str), Some(model_providers::LIST));
     assert!(
-        asked.contains(&person_models::BEGIN_SIGN_IN.to_owned()),
+        asked.contains(&model_providers::BEGIN_SIGN_IN.to_owned()),
         "{asked:?}"
     );
     assert!(
-        !asked.contains(&person_models::SET_KEY.to_owned()),
+        !asked.contains(&model_providers::SET_KEY.to_owned()),
         "{asked:?}"
     );
 }
@@ -828,10 +828,10 @@ fn a_page_signs_in_to_chatgpt_with_a_code_and_uses_the_plan() {
 fn a_sign_in_is_cancelled_on_the_server_too() {
     en();
     let (provider, _kept) = provider();
-    let mut models = PersonModels::new(remote(&provider));
+    let mut models = ModelAnswerers::new(remote(&provider));
     settle(&mut models);
     models
-        .apply(PersonModelsEffect::SignInToOpenAi {
+        .apply(ModelAnswerersEffect::SignInToOpenAi {
             using: Some("api-usage".into()),
         })
         .unwrap();
@@ -840,9 +840,9 @@ fn a_sign_in_is_cancelled_on_the_server_too() {
     }
     assert!(said(models.sections(&Unbound)).contains("API usage"));
     models
-        .apply(PersonModelsEffect::CancelOpenAiSignIn)
+        .apply(ModelAnswerersEffect::CancelOpenAiSignIn)
         .unwrap();
     assert!(!models.busy());
-    assert!(asked(&provider).contains(&person_models::CANCEL_SIGN_IN.to_owned()));
+    assert!(asked(&provider).contains(&model_providers::CANCEL_SIGN_IN.to_owned()));
     assert!(said(models.sections(&Unbound)).contains("Choose a model provider"));
 }

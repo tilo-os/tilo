@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, CatalogueRow, RemoteActionTarget, person_accounts, person_models};
+use super::{ActionAddress, CatalogueRow, RemoteActionTarget, person_accounts, model_providers};
 
 /// The provider that answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
@@ -590,12 +590,12 @@ pub fn use_rows() -> Vec<CatalogueRow> {
         ),
         use_row(
             (
-                person_models::PROVIDER,
-                person_models::RESOURCE,
+                model_providers::PROVIDER,
+                model_providers::RESOURCE,
                 "Model providers",
             ),
             (
-                person_models::SET_KEY_FROM_ITEM,
+                model_providers::SET_KEY_FROM_ITEM,
                 "Keep provider key from vault",
             ),
             format!(
@@ -1200,7 +1200,7 @@ mod tests {
         }
         assert!(use_of(&target(LIST)).is_none());
         assert!(use_of(&person_accounts::target(person_accounts::ADD_MAIL)).is_none());
-        assert!(use_of(&person_models::target(person_models::SET_KEY)).is_none());
+        assert!(use_of(&model_providers::target(model_providers::SET_KEY)).is_none());
 
         // A review of a use shows the reference withheld, as it shows a secret.
         let mail = use_of(&person_accounts::target(

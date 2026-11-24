@@ -5,7 +5,7 @@
 //! providers as any call of it is; a key travels in and is never read back.
 
 use tilo_actions::remote::{
-    CatalogueRow, WORKSPACE_MODELS, person_models, workspace_governance_child,
+    CatalogueRow, WORKSPACE_MODELS, model_providers, workspace_governance_child,
     workspace_governance_resource,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
@@ -17,105 +17,105 @@ use crate::workspaces::workspace_stores::Store;
 /// catalogue order.
 const VERBS: [Verb; 15] = [
     Verb {
-        id: person_models::LIST,
+        id: model_providers::LIST,
         label: "List model providers",
         check: "",
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
-        id: person_models::ADD_PROVIDER,
+        id: model_providers::ADD_PROVIDER,
         label: "Add a model provider",
         check: "",
         kind: ActionKind::Undoable,
         params: add_provider_params,
     },
     Verb {
-        id: person_models::SET_KEY,
+        id: model_providers::SET_KEY,
         label: "Keep a provider's key",
         check: "",
         kind: ActionKind::Undoable,
         params: set_key_params,
     },
     Verb {
-        id: person_models::REMOVE_KEY,
+        id: model_providers::REMOVE_KEY,
         label: "Remove a provider's key",
         check: "",
         kind: ActionKind::Undoable,
         params: provider_params,
     },
     Verb {
-        id: person_models::REMOVE_PROVIDER,
+        id: model_providers::REMOVE_PROVIDER,
         label: "Remove a model provider",
         check: "",
         kind: ActionKind::Undoable,
         params: provider_params,
     },
     Verb {
-        id: person_models::ADD_PRESET,
+        id: model_providers::ADD_PRESET,
         label: "Add a ready-made provider",
         check: "",
         kind: ActionKind::Undoable,
         params: add_preset_params,
     },
     Verb {
-        id: person_models::REFRESH_MODELS,
+        id: model_providers::REFRESH_MODELS,
         label: "Ask a provider for its models",
         check: "",
         kind: ActionKind::Undoable,
         params: provider_params,
     },
     Verb {
-        id: person_models::ADD_MODEL,
+        id: model_providers::ADD_MODEL,
         label: "Add a model a provider lists nowhere",
         check: "",
         kind: ActionKind::Undoable,
         params: add_model_params,
     },
     Verb {
-        id: person_models::SET_DEFAULT,
+        id: model_providers::SET_DEFAULT,
         label: "Choose the model work runs on",
         check: "",
         kind: ActionKind::Undoable,
         params: set_default_params,
     },
     Verb {
-        id: person_models::SET_ASSIGNMENT,
+        id: model_providers::SET_ASSIGNMENT,
         label: "Choose the model one kind of work runs on",
         check: "",
         kind: ActionKind::Undoable,
         params: set_assignment_params,
     },
     Verb {
-        id: person_models::SET_ASSIGNMENTS,
+        id: model_providers::SET_ASSIGNMENTS,
         label: "Choose one model for several kinds of work",
         check: "",
         kind: ActionKind::Undoable,
         params: set_assignments_params,
     },
     Verb {
-        id: person_models::SET_REASONING,
+        id: model_providers::SET_REASONING,
         label: "Choose how hard a provider's models think",
         check: "",
         kind: ActionKind::Undoable,
         params: set_reasoning_params,
     },
     Verb {
-        id: person_models::BEGIN_SIGN_IN,
+        id: model_providers::BEGIN_SIGN_IN,
         label: "Begin signing in to a provider",
         check: "",
         kind: ActionKind::Undoable,
         params: begin_sign_in_params,
     },
     Verb {
-        id: person_models::WAIT_SIGN_IN,
+        id: model_providers::WAIT_SIGN_IN,
         label: "Wait for a provider sign-in",
         check: "",
         kind: ActionKind::Read,
         params: sign_in_params,
     },
     Verb {
-        id: person_models::CANCEL_SIGN_IN,
+        id: model_providers::CANCEL_SIGN_IN,
         label: "Stop waiting for a provider sign-in",
         check: "",
         kind: ActionKind::Undoable,
@@ -125,21 +125,21 @@ const VERBS: [Verb; 15] = [
 
 /// Each verb and the `tilo.models` action it is.
 const MODEL_VERBS: [(&Verb, &str); 15] = [
-    (&VERBS[0], person_models::LIST),
-    (&VERBS[1], person_models::ADD_PROVIDER),
-    (&VERBS[2], person_models::SET_KEY),
-    (&VERBS[3], person_models::REMOVE_KEY),
-    (&VERBS[4], person_models::REMOVE_PROVIDER),
-    (&VERBS[5], person_models::ADD_PRESET),
-    (&VERBS[6], person_models::REFRESH_MODELS),
-    (&VERBS[7], person_models::ADD_MODEL),
-    (&VERBS[8], person_models::SET_DEFAULT),
-    (&VERBS[9], person_models::SET_ASSIGNMENT),
-    (&VERBS[10], person_models::SET_ASSIGNMENTS),
-    (&VERBS[11], person_models::SET_REASONING),
-    (&VERBS[12], person_models::BEGIN_SIGN_IN),
-    (&VERBS[13], person_models::WAIT_SIGN_IN),
-    (&VERBS[14], person_models::CANCEL_SIGN_IN),
+    (&VERBS[0], model_providers::LIST),
+    (&VERBS[1], model_providers::ADD_PROVIDER),
+    (&VERBS[2], model_providers::SET_KEY),
+    (&VERBS[3], model_providers::REMOVE_KEY),
+    (&VERBS[4], model_providers::REMOVE_PROVIDER),
+    (&VERBS[5], model_providers::ADD_PRESET),
+    (&VERBS[6], model_providers::REFRESH_MODELS),
+    (&VERBS[7], model_providers::ADD_MODEL),
+    (&VERBS[8], model_providers::SET_DEFAULT),
+    (&VERBS[9], model_providers::SET_ASSIGNMENT),
+    (&VERBS[10], model_providers::SET_ASSIGNMENTS),
+    (&VERBS[11], model_providers::SET_REASONING),
+    (&VERBS[12], model_providers::BEGIN_SIGN_IN),
+    (&VERBS[13], model_providers::WAIT_SIGN_IN),
+    (&VERBS[14], model_providers::CANCEL_SIGN_IN),
 ];
 
 fn provider_params() -> Vec<ActionParam> {
@@ -305,7 +305,7 @@ impl crate::workspaces::Workspaces {
                 let mut row = verb.row(super::GOVERNANCE, &resource, "Model providers");
                 row.parent_resource.clone_from(&root);
                 // Reading `workspace/models` lists the providers.
-                if action == person_models::LIST
+                if action == model_providers::LIST
                     && let Some(listing) = row.action.as_mut()
                 {
                     listing
@@ -337,8 +337,8 @@ impl crate::workspaces::Workspaces {
             return Err(tilo_actions::remote::ActionCallError::UnknownAction);
         }
         let mut asking = request.clone();
-        asking.target = person_models::target(action);
-        self.person_models_invoke(workspace_id, caller, certificate, &asking)
+        asking.target = model_providers::target(action);
+        self.model_providers_invoke(workspace_id, caller, certificate, &asking)
             .await
     }
 }

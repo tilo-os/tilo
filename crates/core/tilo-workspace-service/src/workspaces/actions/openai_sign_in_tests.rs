@@ -16,8 +16,8 @@ use agent_provider_config::protocol::{
 };
 use fake_model_providers::FakeProviders;
 use serde_json::{Value, json};
-use tilo_actions::remote::person_models::{SignInStarted, SignInState};
-use tilo_actions::remote::{ActionCallError, Caller, person_models};
+use tilo_actions::remote::model_providers::{SignInStarted, SignInState};
+use tilo_actions::remote::{ActionCallError, Caller, model_providers};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -47,7 +47,7 @@ async fn answer(
         actions,
         workspace_id,
         person,
-        person_models::ASK,
+        model_providers::ASK,
         asking(text),
     )
     .await
@@ -77,7 +77,7 @@ async fn signs_in(
         actions,
         workspace_id,
         person,
-        person_models::BEGIN_SIGN_IN,
+        model_providers::BEGIN_SIGN_IN,
         using,
     )
     .await
@@ -94,7 +94,7 @@ async fn signs_in(
             actions,
             workspace_id,
             person,
-            person_models::WAIT_SIGN_IN,
+            model_providers::WAIT_SIGN_IN,
             json!({"signIn": started.sign_in}),
         )
         .await
@@ -125,7 +125,7 @@ async fn a_sign_in_asked_by(
     verb: &str,
 ) -> Result<(), ActionCallError> {
     let mut asking = request("", "", json!({"signIn": "any"}));
-    asking.target = person_models::target(verb);
+    asking.target = model_providers::target(verb);
     let first = settled(tilo_actions::remote::ActionProvider::invoke(
         &actions.in_workspace_as(workspace_id, member),
         caller,
@@ -153,7 +153,7 @@ async fn no_agent_signs_in_on_its_own(
     ada: &DeviceCert,
 ) {
     let assistant = super::tests::caller(ada).delegated_to("assistant");
-    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+    for verb in [model_providers::BEGIN_SIGN_IN, model_providers::CANCEL_SIGN_IN] {
         let unasked = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
             matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
@@ -161,7 +161,7 @@ async fn no_agent_signs_in_on_its_own(
         );
     }
     let refusing = Answering::declining();
-    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+    for verb in [model_providers::BEGIN_SIGN_IN, model_providers::CANCEL_SIGN_IN] {
         let refused = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
             matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
@@ -176,9 +176,9 @@ async fn no_agent_signs_in_on_its_own(
     ];
     for nobody in &nobodies {
         for verb in [
-            person_models::BEGIN_SIGN_IN,
-            person_models::WAIT_SIGN_IN,
-            person_models::CANCEL_SIGN_IN,
+            model_providers::BEGIN_SIGN_IN,
+            model_providers::WAIT_SIGN_IN,
+            model_providers::CANCEL_SIGN_IN,
         ] {
             let refused = a_sign_in_asked_by(actions, workspace_id, ada, nobody, verb).await;
             assert!(
@@ -221,7 +221,7 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
         provider.models.iter().any(|model| model.id == "gpt-5.5"),
         "{provider:?}"
     );
-    let listed = ask_own(&actions, workspace_id, &ada, person_models::LIST, json!({}))
+    let listed = ask_own(&actions, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(listed["defaultProvider"], json!(provider.id), "{listed}");
@@ -242,7 +242,7 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
         &actions,
         workspace_id,
         &ada,
-        person_models::SET_KEY,
+        model_providers::SET_KEY,
         json!({"provider": provider.id, "key": "sk-typed"}),
     )
     .await;
@@ -259,7 +259,7 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
         &actions,
         workspace_id,
         &ada,
-        person_models::REMOVE_KEY,
+        model_providers::REMOVE_KEY,
         json!({"provider": provider.id}),
     )
     .await
@@ -331,7 +331,7 @@ async fn settled_own(
     argument: Value,
 ) -> Result<Value, ActionCallError> {
     let mut asking = request("", "", argument);
-    asking.target = person_models::target(verb);
+    asking.target = model_providers::target(verb);
     let receipt = settled(tilo_actions::remote::ActionProvider::invoke(
         &actions.in_workspace_as(workspace_id, person),
         &super::tests::caller(person),

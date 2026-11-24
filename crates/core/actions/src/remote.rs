@@ -67,7 +67,7 @@ pub mod own_device;
 mod pending;
 pub mod person_accounts;
 pub mod person_connections;
-pub mod person_models;
+pub mod model_providers;
 pub mod person_telling;
 pub mod person_vault;
 mod providers;

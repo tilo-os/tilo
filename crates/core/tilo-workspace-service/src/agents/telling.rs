@@ -26,7 +26,7 @@ use tilo_actions::remote::person_telling::{Kind, Told};
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use crate::workspaces::person_model::Spender;
+use crate::workspaces::model_answers::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
 
 /// The longest the teller sleeps when nothing is due: what it would miss is

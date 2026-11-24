@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_actions::remote::{person_accounts, person_models, person_vault};
+use tilo_actions::remote::{person_accounts, model_providers, person_vault};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -709,7 +709,7 @@ pub(super) async fn a_provider(
         service,
         workspace_id,
         who,
-        person_models::target(person_models::ADD_PROVIDER),
+        model_providers::target(model_providers::ADD_PROVIDER),
         json!({"name": "Models", "protocol": "open-ai-compatible", "endpoint": "https://models.example/v1"}),
     )
     .await
@@ -790,7 +790,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         &service,
         workspace_id,
         (&ada, &helper),
-        person_models::target(person_models::SET_KEY_FROM_ITEM),
+        model_providers::target(model_providers::SET_KEY_FROM_ITEM),
         keeping.clone(),
     )
     .await;
@@ -804,7 +804,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         workspace_id,
         (&ada, &helper),
         (
-            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
             keeping,
         ),
     )
@@ -909,7 +909,7 @@ async fn nothing_was_used(
         service,
         workspace_id,
         who,
-        person_models::target(person_models::LIST),
+        model_providers::target(model_providers::LIST),
         json!({}),
     )
     .await
@@ -977,7 +977,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
             &service,
             workspace,
             who,
-            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
             json!({"provider": provider, "key": item}),
         )
         .await;
@@ -1005,7 +1005,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
     let hers = (&ada, &as_ada);
     let (provider, items) = a_provider_and_items(&service, workspace_id, hers).await;
     let [_, _, right] = &items;
-    let from_item = person_models::target(person_models::SET_KEY_FROM_ITEM);
+    let from_item = model_providers::target(model_providers::SET_KEY_FROM_ITEM);
     let person = hex::encode(ada.user_public_key);
 
     for (other, target, key) in [
@@ -1042,7 +1042,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
         &service,
         workspace_id,
         (&ada, &helper),
-        person_models::target(person_models::SET_KEY),
+        model_providers::target(model_providers::SET_KEY),
         json!({"provider": provider, "key": KEY}),
     )
     .await;

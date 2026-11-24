@@ -24,8 +24,8 @@ use tilo_actions::remote::person_telling::{
 use tilo_server_protocol::WorkspaceId;
 
 use super::super::Workspaces;
-use super::super::person_model::protocol::{Message, ModelRequest, Role, ToolChoice};
-use super::super::person_model::{Interaction, Spender};
+use super::super::model_answers::protocol::{Message, ModelRequest, Role, ToolChoice};
+use super::super::model_answers::{Interaction, Spender};
 use super::clipped;
 
 /// The most a judgement answers, in tokens: one small object.

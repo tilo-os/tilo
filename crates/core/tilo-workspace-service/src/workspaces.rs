@@ -118,8 +118,8 @@ mod writes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_learned;
 #[cfg(not(target_arch = "wasm32"))]
-mod person_models;
-pub use person_models::OpenAiSignIn;
+mod model_providers;
+pub use model_providers::OpenAiSignIn;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
 #[cfg(not(target_arch = "wasm32"))]
@@ -134,7 +134,7 @@ pub use mail_watch::MailListening;
 pub(crate) use mail_watch::testing as mail_testing;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod person_model;
+pub mod model_answers;
 // What the person calls important, what may interrupt them, and what
 // they were told.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1182,9 +1182,9 @@ struct WorkspacesInner {
     /// ([`person_settings`]).
     person_settings_moved: tokio::sync::watch::Sender<u64>,
     /// What answers people's model calls, each with that person's own
-    /// provider, model and key ([`person_model`]).
+    /// provider, model and key ([`model_answers`]).
     #[cfg(not(target_arch = "wasm32"))]
-    models: Arc<person_model::Models>,
+    models: Arc<model_answers::Models>,
     /// The sessions this host holds with the mail servers of the accounts
     /// its people keep ([`Workspaces::mail_session`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1513,7 +1513,7 @@ impl Workspaces {
             host.key.clone(),
         );
         #[cfg(not(target_arch = "wasm32"))]
-        let models = Arc::new(person_model::Models::new());
+        let models = Arc::new(model_answers::Models::new());
         let memberships = host.access.memberships();
         let this = Self {
             inner: Arc::new(WorkspacesInner {

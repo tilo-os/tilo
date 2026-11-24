@@ -39,7 +39,7 @@ use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
-use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
+use tilo_actions::remote::model_providers::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, AskForItem, Asked, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
     ItemUses, ItemView, KeepConnectorSecret, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
@@ -381,7 +381,7 @@ impl Workspaces {
 
     /// Answer a request that uses a vault item by its reference:
     /// [`person_accounts::ADD_MAIL_WITH_ITEM`] or
-    /// [`person_models::SET_KEY_FROM_ITEM`].
+    /// [`model_providers::SET_KEY_FROM_ITEM`].
     pub(super) async fn vault_use_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -428,7 +428,7 @@ impl Workspaces {
                 }
                 said(kept)
             }
-            (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM) => {
+            (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM) => {
                 let setting: SetKeyFromItem = argument(
                     request,
                     "a key to keep names its provider and the vault item that is the key",
@@ -626,7 +626,7 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
         (
             person_accounts::PROVIDER,
             person_accounts::ADD_MAIL_WITH_ITEM
-        ) | (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM)
+        ) | (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM)
             | (person_vault::PROVIDER, person_vault::FILL_PAGE)
     ) {
         return None;
@@ -754,7 +754,7 @@ impl Workspaces {
     /// Name the key the vault item `setting` names as its provider's API key. The item must be
     /// a key that belongs to the provider's endpoint, as the person set it: a key is never sent
     /// to an endpoint it does not belong to. Where the provider names a key already, the item
-    /// takes its place only once the provider took it ([`super::person_models::take_key`]); the
+    /// takes its place only once the provider took it ([`super::model_providers::take_key`]); the
     /// provider names the item from then on, and nothing copies the key.
     pub(super) async fn key_from_item(
         &self,
@@ -786,7 +786,7 @@ impl Workspaces {
             key: key.secret.to_string(),
         };
         let keys = super::person_settings::ProviderKeys::of(self.vault_for(workspace, asker), by);
-        super::person_models::take_key(
+        super::model_providers::take_key(
             (keys, root),
             keeping,
             Some(&setting.key),

@@ -16,7 +16,7 @@ use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, Tool
 use serde_json::{Value, json};
 use test_http::Responder;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, person_models,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, model_providers,
     person_vault,
 };
 use tilo_server_protocol::WorkspaceId;
@@ -26,8 +26,8 @@ use super::ServiceWorkspaceActions;
 use super::tests::{Answering, admit, answered, ask_own, caller, governed, request, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host;
-use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
-use crate::workspaces::person_model::{Interaction, ModelRefusal};
+use crate::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
+use crate::workspaces::model_answers::{Interaction, ModelRefusal};
 use crate::workspaces::tests::governor;
 
 const ADA_KEY: &str = "sk-ada-linked-through-settings";
@@ -190,7 +190,7 @@ async fn linked_at_stand_in(
         service,
         workspace_id,
         person,
-        person_models::REFRESH_MODELS,
+        model_providers::REFRESH_MODELS,
         json!({"provider": provider}),
     )
     .await
@@ -200,7 +200,7 @@ async fn linked_at_stand_in(
         service,
         workspace_id,
         person,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         json!({"provider": provider, "model": LISTED}),
     )
     .await
@@ -220,7 +220,7 @@ async fn link(
         host,
         workspace_id,
         device,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         json!({"name": name, "protocol": "open-ai-compatible", "endpoint": endpoint}),
     )
     .await
@@ -230,7 +230,7 @@ async fn link(
         host,
         workspace_id,
         device,
-        person_models::SET_KEY,
+        model_providers::SET_KEY,
         json!({"provider": provider, "key": key}),
     )
     .await
@@ -247,7 +247,7 @@ async fn ask_as(
     (verb, argument): (&str, Value),
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
-    request.target = person_models::target(verb);
+    request.target = model_providers::target(verb);
     let provider = host.in_workspace_as(workspace_id, device);
     let invocation = request.invocation;
     let first = settled(provider.invoke(caller, request.clone())).await;
@@ -300,7 +300,7 @@ async fn another_workspace_links_its_own(
         host,
         elsewhere_id,
         cy,
-        person_models::SET_ASSIGNMENT,
+        model_providers::SET_ASSIGNMENT,
         json!({"kind": "request", "provider": theirs, "model": "open-model"}),
     )
     .await
@@ -352,7 +352,7 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
         &host,
         workspace_id,
         &ada,
-        person_models::SET_ASSIGNMENT,
+        model_providers::SET_ASSIGNMENT,
         json!({"kind": "request", "provider": provider, "model": "gemini-main"}),
     )
     .await
@@ -364,7 +364,7 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
 
     // The other member of the one workspace reads what it keeps, and one
     // model answers work there for both.
-    let his = ask_own(&host, workspace_id, &bo, person_models::LIST, json!({}))
+    let his = ask_own(&host, workspace_id, &bo, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(his["providers"][0]["id"], json!(provider), "{his}");
@@ -429,7 +429,7 @@ async fn her_yes_replaces_the_key(
         ada,
         agent,
         (
-            person_models::SET_KEY,
+            model_providers::SET_KEY,
             json!({"provider": provider, "key": REPLACED_KEY}),
         ),
     )
@@ -457,9 +457,9 @@ async fn nobody_else_is_answered(
     ];
     for nobody in &nobodies {
         for asking in [
-            (person_models::LIST, json!({})),
+            (model_providers::LIST, json!({})),
             (
-                person_models::ASK,
+                model_providers::ASK,
                 serde_json::to_value(asking("Spend her key")).unwrap(),
             ),
         ]
@@ -480,7 +480,7 @@ async fn nobody_else_is_answered(
         ("a member of another workspace", other_member),
         ("a device of nobody", nobodys_device),
     ] {
-        for asking in [(person_models::LIST, json!({}))]
+        for asking in [(model_providers::LIST, json!({}))]
             .into_iter()
             .chain(changes.iter().cloned())
         {
@@ -521,16 +521,16 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     let changes = || {
         [
             (
-                person_models::SET_KEY,
+                model_providers::SET_KEY,
                 json!({"provider": provider, "key": REPLACED_KEY}),
             ),
-            (person_models::REMOVE_KEY, json!({"provider": provider})),
+            (model_providers::REMOVE_KEY, json!({"provider": provider})),
             (
-                person_models::SET_ASSIGNMENT,
+                model_providers::SET_ASSIGNMENT,
                 json!({"kind": "task", "provider": provider, "model": "gemini-main"}),
             ),
             (
-                person_models::REMOVE_PROVIDER,
+                model_providers::REMOVE_PROVIDER,
                 json!({"provider": provider}),
             ),
         ]
@@ -544,7 +544,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
         workspace_id,
         &ada,
         &agent,
-        (person_models::LIST, json!({})),
+        (model_providers::LIST, json!({})),
     )
     .await
     .unwrap();
@@ -577,7 +577,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
         changes().len(),
         "each change asked her"
     );
-    let hers = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+    let hers = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
@@ -655,14 +655,14 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
         &host,
         workspace_id,
         &ada,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         json!({"provider": provider, "model": "gemini-main"}),
     )
     .await
     .unwrap();
 
     let turn = serde_json::to_value(asking("Summarise my day")).unwrap();
-    let hers = ask_own(&host, workspace_id, &ada, person_models::ASK, turn.clone())
+    let hers = ask_own(&host, workspace_id, &ada, model_providers::ASK, turn.clone())
         .await
         .unwrap();
     let hers: Result<ModelResponse, ModelError> = serde_json::from_value(hers).unwrap();
@@ -676,7 +676,7 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
     assert_eq!(asked[0].key.as_deref(), Some(ADA_KEY));
 
     // The other member's page is answered by the same model.
-    let his = ask_own(&host, workspace_id, &bo, person_models::ASK, turn.clone())
+    let his = ask_own(&host, workspace_id, &bo, model_providers::ASK, turn.clone())
         .await
         .unwrap();
     let his: Result<ModelResponse, ModelError> = serde_json::from_value(his).unwrap();
@@ -691,7 +691,7 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
     );
 
     // A page in another workspace is answered by none.
-    let theirs = ask_own(&host, elsewhere_id, &cy, person_models::ASK, turn)
+    let theirs = ask_own(&host, elsewhere_id, &cy, model_providers::ASK, turn)
         .await
         .unwrap();
     let theirs: Result<ModelResponse, ModelError> = serde_json::from_value(theirs).unwrap();
@@ -733,7 +733,7 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
         &actions_here,
         workspace_id,
         &ada,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         json!({"provider": provider, "model": "gemini-main"}),
     )
     .await
@@ -746,7 +746,7 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
         "",
         serde_json::to_value(asking("Count to eight")).unwrap(),
     );
-    request.target = person_models::target(person_models::ASK);
+    request.target = model_providers::target(model_providers::ASK);
     let invocation = request.invocation;
     let receipt = super::tests::settled(actions.invoke(&her, request))
         .await
@@ -827,7 +827,7 @@ async fn no_log_line_carries_a_key() {
         &host,
         workspace_id,
         &ada,
-        person_models::SET_KEY,
+        model_providers::SET_KEY,
         json!({"provider": provider, "key": BO_KEY}),
     )
     .await
@@ -836,7 +836,7 @@ async fn no_log_line_carries_a_key() {
         &host,
         workspace_id,
         &ada,
-        person_models::REMOVE_KEY,
+        model_providers::REMOVE_KEY,
         json!({"provider": provider}),
     )
     .await
@@ -917,7 +917,7 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
             &service,
             workspace_id,
             &ada,
-            person_models::SET_KEY,
+            model_providers::SET_KEY,
             json!({"provider": provider, "key": typed}),
         )
         .await;
@@ -930,7 +930,7 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
             "{which}"
         );
         said.push(reason.clone());
-        let hers = ask_own(&service, workspace_id, &ada, person_models::LIST, json!({}))
+        let hers = ask_own(&service, workspace_id, &ada, model_providers::LIST, json!({}))
             .await
             .unwrap();
         assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
@@ -950,7 +950,7 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
         &service,
         workspace_id,
         &ada,
-        person_models::REFRESH_MODELS,
+        model_providers::REFRESH_MODELS,
         json!({"provider": provider}),
     )
     .await
@@ -992,7 +992,7 @@ async fn a_first_key_the_provider_turns_away_is_not_kept() {
         &service,
         workspace_id,
         &ada,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         json!({"name": "Stand-in", "protocol": "open-ai-compatible", "endpoint": endpoint}),
     )
     .await
@@ -1003,12 +1003,12 @@ async fn a_first_key_the_provider_turns_away_is_not_kept() {
             &service,
             workspace_id,
             &ada,
-            person_models::SET_KEY,
+            model_providers::SET_KEY,
             json!({"provider": provider, "key": key}),
         )
     };
     let configured = || async {
-        let hers = ask_own(&service, workspace_id, &ada, person_models::LIST, json!({}))
+        let hers = ask_own(&service, workspace_id, &ada, model_providers::LIST, json!({}))
             .await
             .unwrap();
         hers["providers"][0]["configured"].clone()
@@ -1056,7 +1056,7 @@ async fn a_key_the_provider_takes_is_asked_about_once_and_replaces_the_kept_key(
             &service,
             workspace_id,
             &ada,
-            person_models::SET_KEY,
+            model_providers::SET_KEY,
             json!({"provider": provider, "key": NEXT_KEY}),
         )
     };
@@ -1128,7 +1128,7 @@ async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use
             &service,
             workspace_id,
             &ada,
-            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
             json!({"provider": provider, "key": item}),
         )
     };
@@ -1195,7 +1195,7 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
         &host,
         workspace_id,
         &ada,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         json!({"provider": provider, "model": "gemini-main"}),
     )
     .await
@@ -1215,7 +1215,7 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
             workspace_id,
             &ada,
             &asking,
-            (person_models::ASK, turn.clone()),
+            (model_providers::ASK, turn.clone()),
         )
         .await
         .unwrap_or_else(|refused| panic!("{who} asks it: {refused:?}"));
@@ -1263,8 +1263,8 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
         ),
         ("an agent whose device is no member's", &stranger, outside),
     ] {
-        for verb in [person_models::ASK, person_models::LIST] {
-            let argument = if verb == person_models::ASK {
+        for verb in [model_providers::ASK, model_providers::LIST] {
+            let argument = if verb == model_providers::ASK {
                 asked.clone()
             } else {
                 json!({})
@@ -1342,7 +1342,7 @@ async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
         &actions_here,
         workspace_id,
         &ada,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         json!({"provider": provider, "model": "judge-small"}),
     )
     .await
@@ -1357,7 +1357,7 @@ async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
         "",
         serde_json::to_value(asking("what is this")).unwrap(),
     );
-    request.target = person_models::target(person_models::ASK);
+    request.target = model_providers::target(model_providers::ASK);
     let invocation = request.invocation;
     records.record(
         &her,

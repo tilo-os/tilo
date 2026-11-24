@@ -15,7 +15,7 @@ use agent_provider_config::protocol::{
     StreamEvent, ToolCall, Usage,
 };
 use agent_provider_config::{AgentModel, ModelDescriptor, ProviderProfile, ProviderProtocol};
-use tilo_actions::remote::person_models::SetKey;
+use tilo_actions::remote::model_providers::SetKey;
 use tilo_lock::MutexRecover as _;
 
 use super::{Events, Interaction, ModelProvider, ProviderCall, ProviderFuture};

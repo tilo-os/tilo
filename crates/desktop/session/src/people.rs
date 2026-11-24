@@ -777,7 +777,7 @@ impl Panel {
             .card_open
             .clone()
             .filter(|who| who != SELF_CARD)
-            .and_then(|who| self.person_model(&who, &shown.rows));
+            .and_then(|who| self.model_answers(&who, &shown.rows));
         if let Some(model) = card {
             self.profile.updated(&model);
         }
@@ -789,7 +789,7 @@ impl Panel {
             shown.card_opening.take()
         } else {
             shown.card_of.clone().and_then(|who| {
-                self.person_model(&who, &shown.rows)
+                self.model_answers(&who, &shown.rows)
                     .map(|model| (who, model))
             })
         };
@@ -833,7 +833,7 @@ impl Panel {
     /// The card of the person `who`, as this roster knows them: who they are,
     /// what they are doing, and what this person can do with them. `None` for
     /// someone the roster no longer lists.
-    fn person_model(&self, who: &str, rows: &[RosterRow]) -> Option<ProfileModel> {
+    fn model_answers(&self, who: &str, rows: &[RosterRow]) -> Option<ProfileModel> {
         let sync = self.sync.as_ref()?;
         let row = rows.iter().find(|row| row.id == who)?;
         let here = sync.here();
@@ -1161,7 +1161,7 @@ impl Panel {
         // Widgets are never built while the frame draws ([`Self::settle_card`]).
         if let Some(who) = shown.card_open.clone().filter(|who| who != SELF_CARD)
             && self.profile.is_open()
-            && let Some(model) = self.person_model(&who, &shown.rows)
+            && let Some(model) = self.model_answers(&who, &shown.rows)
             && !self.profile.shows(&model)
         {
             self.live_card.set(true);
@@ -1172,7 +1172,7 @@ impl Panel {
         // has read and does not list has no row to open under, and the ask goes rather than
         // waiting on them.
         if let Some(who) = shown.card_of.clone() {
-            match self.person_model(&who, &shown.rows) {
+            match self.model_answers(&who, &shown.rows) {
                 Some(model) => shown.card_opening = Some((who, model)),
                 None => shown.card_of = None,
             }

@@ -28,7 +28,7 @@ use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use crate::work::AgentEngine;
 use crate::workspaces::fixtures::{governor, test_host};
 use crate::workspaces::governed;
-use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 
 /// An agent engine that acts as every agent: what makes this device one that answers its
 /// workspaces' agents, and so runs their transforms.

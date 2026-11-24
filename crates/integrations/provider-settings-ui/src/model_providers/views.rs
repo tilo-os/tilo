@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ui::LocalState;
-use ui::tilo_actions::remote::person_models::{AccountUse, ListingProblem, ProviderView};
+use ui::tilo_actions::remote::model_providers::{AccountUse, ListingProblem, ProviderView};
 use ui::tokens::TextRole;
 use ui::widget::{
     Button, ButtonRole, Dropdown, FieldRole, Link, Presentation, Row, SecretKind, SecretPrompt,
@@ -12,7 +12,7 @@ use ui::widget::{
 
 use super::key_field::KeyField;
 use super::{
-    ModelBindings, ModelChoice, PersonModels, PersonModelsEffect, READY_MADE, SignIn, Work,
+    ModelBindings, ModelChoice, ModelAnswerers, ModelAnswerersEffect, READY_MADE, SignIn, Work,
 };
 use crate::i18n::{t, t_args};
 use crate::widgets::{
@@ -20,7 +20,7 @@ use crate::widgets::{
     thing_row,
 };
 
-impl PersonModels {
+impl ModelAnswerers {
     /// Everything about the person's providers: the providers, linking
     /// another, and the model each kind of work runs on. Before a model is
     /// linked it is the first minute alone.
@@ -77,7 +77,7 @@ impl PersonModels {
         if !items.is_empty() {
             let again = Button::new("models.retry", &t("models-try-again"));
             items.push(buttons(vec![
-                bind.invoking(again, PersonModelsEffect::ReadProviders),
+                bind.invoking(again, ModelAnswerersEffect::ReadProviders),
             ]));
         }
         section(&t("models-setup-title"), rows(items))
@@ -143,11 +143,11 @@ impl PersonModels {
         let plan = Button::new("models.sign-in.chatgpt", &t("models-sign-in"))
             .role(ButtonRole::Primary)
             .with_accessible_name(&t("models-sign-in-chatgpt"));
-        let plan = bind.invoking(plan, PersonModelsEffect::SignInToOpenAi { using: None });
+        let plan = bind.invoking(plan, ModelAnswerersEffect::SignInToOpenAi { using: None });
         let usage = Button::new("models.sign-in.api-usage", &t("models-sign-in-api-usage"));
         let usage = bind.invoking(
             usage,
-            PersonModelsEffect::SignInToOpenAi {
+            ModelAnswerersEffect::SignInToOpenAi {
                 using: Some("api-usage".to_owned()),
             },
         );
@@ -170,7 +170,7 @@ impl PersonModels {
         let cancel = || {
             buttons(vec![bind.invoking(
                 Button::new("models.sign-in.cancel", &t("models-sign-in-cancel")),
-                PersonModelsEffect::CancelOpenAiSignIn,
+                ModelAnswerersEffect::CancelOpenAiSignIn,
             )])
         };
         let title = |using: &AccountUse| match using {
@@ -266,26 +266,26 @@ impl PersonModels {
                     &format!("models.sign-in.again.{id}"),
                     &t("models-sign-in-again"),
                 ),
-                PersonModelsEffect::SignInToOpenAi { using: None },
+                ModelAnswerersEffect::SignInToOpenAi { using: None },
             )
         } else if provider.signs_in {
             bind.invoking(
                 Button::new(&format!("models.sign-out.{id}"), &t("models-sign-out")),
-                PersonModelsEffect::ForgetProviderKey {
+                ModelAnswerersEffect::ForgetProviderKey {
                     provider: id.to_owned(),
                 },
             )
         } else if provider.configured {
             bind.invoking(
                 Button::new(&format!("models.key.remove.{id}"), &t("models-key-remove")),
-                PersonModelsEffect::ForgetProviderKey {
+                ModelAnswerersEffect::ForgetProviderKey {
                     provider: id.to_owned(),
                 },
             )
         } else {
             bind.invoking(
                 Button::new(&format!("models.key.add.{id}"), &t("models-key-add")),
-                PersonModelsEffect::EnterProviderKey {
+                ModelAnswerersEffect::EnterProviderKey {
                     provider: id.to_owned(),
                 },
             )
@@ -297,7 +297,7 @@ impl PersonModels {
             ));
         let unlink = bind.invoking(
             unlink,
-            PersonModelsEffect::UnlinkProvider {
+            ModelAnswerersEffect::UnlinkProvider {
                 provider: id.to_owned(),
             },
         );
@@ -334,7 +334,7 @@ impl PersonModels {
         let ask = |label: &str| {
             buttons(vec![bind.invoking(
                 Button::new(&format!("models.ask.{id}"), &t(label)),
-                PersonModelsEffect::AskProviderModels {
+                ModelAnswerersEffect::AskProviderModels {
                     provider: id.to_owned(),
                 },
             )])
@@ -361,7 +361,7 @@ impl PersonModels {
                     field_row(&label, Box::new(name)),
                     buttons(vec![bind.invoking(
                         add,
-                        PersonModelsEffect::NameProviderModel {
+                        ModelAnswerersEffect::NameProviderModel {
                             provider: id.to_owned(),
                         },
                     )]),
@@ -398,7 +398,7 @@ impl PersonModels {
                         ));
                 let link = bind.invoking(
                     link,
-                    PersonModelsEffect::LinkProvider {
+                    ModelAnswerersEffect::LinkProvider {
                         preset: preset.slug().to_owned(),
                     },
                 );
@@ -417,7 +417,7 @@ impl PersonModels {
             &t("models-other"),
             &[t("models-other-description")],
             Some(Box::new(
-                bind.invoking(other, PersonModelsEffect::NameOtherProvider),
+                bind.invoking(other, ModelAnswerersEffect::NameOtherProvider),
             )),
         ))));
         if self.naming_other {
@@ -461,7 +461,7 @@ impl PersonModels {
             ),
             field_row(&protocol, Box::new(speaks)),
             buttons(vec![
-                bind.invoking(link, PersonModelsEffect::LinkOtherProvider),
+                bind.invoking(link, ModelAnswerersEffect::LinkOtherProvider),
             ]),
         ]
     }

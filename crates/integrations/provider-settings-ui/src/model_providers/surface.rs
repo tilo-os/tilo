@@ -8,7 +8,7 @@ use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_resource::Resource;
 use ui::widget::{AppModel, Composed, Element, ModelPath, TaffyTreeExt, Widget};
 
-use super::{PersonModels, PersonModelsEffect};
+use super::{ModelAnswerers, ModelAnswerersEffect};
 
 /// The first minute, where a window has nothing to show before a model is
 /// linked: choose a provider, type its key into the protected field, pick a
@@ -50,7 +50,7 @@ pub fn everything_or<R: Resource>(
 
 /// The person's model providers in a window whose resource is `R`.
 pub struct ModelsSurface<R: Resource> {
-    model: PersonModels,
+    model: ModelAnswerers,
     actions: Actions<R>,
     composed: Composed,
     /// Where the first minute says whether a model is linked; `None` for
@@ -68,9 +68,9 @@ impl<R: Resource> ModelsSurface<R> {
             // A window that only describes itself (a capture, History) asks
             // no host anything.
             model: if cx.mode().is_live() {
-                PersonModels::new(remote)
+                ModelAnswerers::new(remote)
             } else {
-                PersonModels::unasked(remote)
+                ModelAnswerers::unasked(remote)
             },
             actions: cx.actions(),
             composed: Composed::default(),
@@ -79,7 +79,7 @@ impl<R: Resource> ModelsSurface<R> {
         }
     }
 
-    fn effect(&mut self, effect: PersonModelsEffect, _cx: &mut EffectCx<R>) -> EffectAnswer {
+    fn effect(&mut self, effect: ModelAnswerersEffect, _cx: &mut EffectCx<R>) -> EffectAnswer {
         self.model.apply(effect)?;
         self.composed.invalidate();
         Ok(Effected::done())
@@ -87,7 +87,7 @@ impl<R: Resource> ModelsSurface<R> {
 
     /// What the host answered.
     #[must_use]
-    pub fn model(&self) -> &PersonModels {
+    pub fn model(&self) -> &ModelAnswerers {
         &self.model
     }
 }
@@ -164,6 +164,6 @@ impl<R: Resource> Widget for ModelsSurface<R> {
     }
 
     fn name(&self) -> &'static str {
-        "PersonModels"
+        "ModelAnswerers"
     }
 }

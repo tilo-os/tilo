@@ -1,6 +1,6 @@
 //! The model a computer's Agent models pane chose, linked as the workspace's.
 //!
-//! A workspace's agents answer on the one model configuration it keeps ([`super::person_model`]).
+//! A workspace's agents answer on the one model configuration it keeps ([`super::model_answers`]).
 //! On a person's computer that configuration is also where the computer's own Agent models pane
 //! puts its choice: a model this computer runs itself (Ollama, llama.cpp, a server on its
 //! network) joins the workspace's providers, and the workspace's work runs on it. Nothing reads
@@ -10,7 +10,7 @@
 //! links it once into each workspace it keeps, filling only what the workspace has not chosen
 //! itself. Afterwards a new choice in the pane follows into the workspaces that still run on
 //! this computer's last one. And a person who wants their computer's choice in a workspace that
-//! chose another says so ([`tilo_actions::remote::person_models::LINK_THIS_COMPUTER`]).
+//! chose another says so ([`tilo_actions::remote::model_providers::LINK_THIS_COMPUTER`]).
 //!
 //! Only a provider that is asked without a key is linked: a computer keeps no provider keys, and a
 //! sign-in made on it stays on it. A choice of anything else is left where it is.

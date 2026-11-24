@@ -353,7 +353,7 @@ pub struct Answer {
     pub linked: Linked,
     /// What the agent the call was for has spent today, this answer
     /// included, in millionths of the currency; none for a call that
-    /// spends no agent's day ([`PersonModel::spending_as`]). Of a call that
+    /// spends no agent's day ([`ModelAnswerer::spending_as`]). Of a call that
     /// spends more than one day, the first.
     pub spent_today_micros: Option<u64>,
 }
@@ -459,9 +459,9 @@ impl ModelProvider for NoProvider {
 pub(super) struct Models {
     provider: std::sync::RwLock<Arc<dyn ModelProvider>>,
     /// Where people sign in to `OpenAI` and reach their plan.
-    pub(super) openai: std::sync::RwLock<super::person_models::OpenAiSignIn>,
+    pub(super) openai: std::sync::RwLock<super::model_providers::OpenAiSignIn>,
     /// The sign-ins people are in the middle of.
-    pub(super) sign_ins: super::person_models::SignIns,
+    pub(super) sign_ins: super::model_providers::SignIns,
     private_addresses: AtomicBool,
     /// Whether this service runs on a person's own computer, whose Agent models pane links its
     /// choice into the workspaces it keeps ([`Workspaces::on_a_computer`]).
@@ -469,7 +469,7 @@ pub(super) struct Models {
     /// What each person's agents spent today.
     spend: spend::Log,
     /// The runtime a caller that cannot wait asynchronously is answered on
-    /// ([`PersonModel::answer_blocking`]).
+    /// ([`ModelAnswerer::answer_blocking`]).
     runtime: Option<tokio::runtime::Handle>,
 }
 
@@ -505,7 +505,7 @@ impl Models {
         Self {
             provider: std::sync::RwLock::new(host_provider()),
             openai: std::sync::RwLock::default(),
-            sign_ins: super::person_models::SignIns::default(),
+            sign_ins: super::model_providers::SignIns::default(),
             private_addresses: AtomicBool::new(false),
             on_a_computer: AtomicBool::new(false),
             spend: spend::Log::default(),
@@ -535,8 +535,8 @@ impl Workspaces {
     /// key again whenever its vault was written since, so it may be kept: a
     /// model a member changes in Settings answers the next call.
     #[must_use]
-    pub fn workspace_model(&self, workspace: WorkspaceId, kind: Interaction) -> PersonModel {
-        PersonModel {
+    pub fn workspace_model(&self, workspace: WorkspaceId, kind: Interaction) -> ModelAnswerer {
+        ModelAnswerer {
             models: Arc::clone(&self.inner.models),
             workspaces: Arc::downgrade(&self.inner),
             root: self.workspace_root(&workspace.to_string()),
@@ -550,7 +550,7 @@ impl Workspaces {
     }
 
     /// Whether `workspace`'s settings on this server hold what `named` names
-    /// as provider/model ([`PersonModel::naming`]): what a skill may name as
+    /// as provider/model ([`ModelAnswerer::naming`]): what a skill may name as
     /// the model its work is done with. It reads the settings from disk, so
     /// an asynchronous caller asks it off the runtime's workers.
     ///
@@ -636,13 +636,13 @@ impl Workspaces {
 
 /// One kind of one person's work, answered by the model they chose for it.
 #[derive(Clone)]
-pub struct PersonModel {
+pub struct ModelAnswerer {
     models: Arc<Models>,
     /// The workspaces this host keeps, whose vault the key is read from at each call.
     workspaces: std::sync::Weak<super::WorkspacesInner>,
     /// The workspace's store on this host.
     root: PathBuf,
-    /// The key this work last took from the workspace's vault (`person_model/kept.rs`).
+    /// The key this work last took from the workspace's vault (`model_answers/kept.rs`).
     kept: Arc<kept::Key>,
     kind: Interaction,
     /// The model its caller names in place of the person's choice for the
@@ -658,15 +658,15 @@ pub struct PersonModel {
     quiet: Option<(Quiet, Arc<AtomicBool>)>,
 }
 
-impl std::fmt::Debug for PersonModel {
+impl std::fmt::Debug for ModelAnswerer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PersonModel")
+        f.debug_struct("ModelAnswerer")
             .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
 
-impl PersonModel {
+impl ModelAnswerer {
     /// The kind of work this answers.
     #[must_use]
     pub const fn kind(&self) -> Interaction {
@@ -1090,7 +1090,7 @@ const fn beside_in_main_thread(kind: Interaction) -> Option<Interaction> {
 
 /// What the person whose store is `root` chose for `kind`, with its key:
 /// the model `named` names where their settings hold it
-/// ([`PersonModel::naming`]), else the model chosen for the kind, else their
+/// ([`ModelAnswerer::naming`]), else the model chosen for the kind, else their
 /// default provider's default model, else for a kind of their main thread
 /// the model they chose for its other kind ([`beside_in_main_thread`]): a
 /// device that chooses the two with two asks leaves one of them unnamed for
@@ -1158,7 +1158,7 @@ fn resolve(
         return Err(ModelRefusal::NoKey { provider: named() });
     }
     // The key itself is read from the workspace's vault for the call
-    // ([`PersonModel::answer`]).
+    // ([`ModelAnswerer::answer`]).
     Ok(Resolved {
         profile: profile.clone(),
         model: model.clone(),

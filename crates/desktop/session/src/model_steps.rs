@@ -1,5 +1,5 @@
 //! The models a workspace's work runs on, answered by this session's broker for the person at
-//! this device ([`tilo_actions::remote::person_models`]).
+//! this device ([`tilo_actions::remote::model_providers`]).
 //!
 //! A workspace keeps its model providers and the model each kind of its work runs on itself,
 //! wherever it is held: a host keeps them for a page, and a person's computer keeps them for
@@ -10,14 +10,14 @@
 //! agents of the workspace answer on what is chosen here.
 //!
 //! A key is never typed through here: it is kept by the vault the workspace has, and only its
-//! item is named ([`person_models::SET_KEY_FROM_ITEM`]).
+//! item is named ([`model_providers::SET_KEY_FROM_ITEM`]).
 
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, person_models,
+    Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, model_providers,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
@@ -32,70 +32,70 @@ use crate::workspace_view::WorkspaceView;
 /// Each step, with what it is called and whether it only reads.
 const STEPS: [(&str, &str, bool); 16] = [
     (
-        person_models::LIST,
+        model_providers::LIST,
         "List the workspace's model providers",
         true,
     ),
-    (person_models::ADD_PROVIDER, "Add a model provider", false),
+    (model_providers::ADD_PROVIDER, "Add a model provider", false),
     (
-        person_models::ADD_PRESET,
+        model_providers::ADD_PRESET,
         "Add a known model provider",
         false,
     ),
     (
-        person_models::SET_KEY_FROM_ITEM,
+        model_providers::SET_KEY_FROM_ITEM,
         "Use a key the vault keeps for a provider",
         false,
     ),
-    (person_models::REMOVE_KEY, "Forget a provider's key", false),
+    (model_providers::REMOVE_KEY, "Forget a provider's key", false),
     (
-        person_models::REMOVE_PROVIDER,
+        model_providers::REMOVE_PROVIDER,
         "Remove a model provider",
         false,
     ),
     (
-        person_models::REFRESH_MODELS,
+        model_providers::REFRESH_MODELS,
         "Read a provider's models again",
         false,
     ),
-    (person_models::ADD_MODEL, "Add a model to a provider", false),
+    (model_providers::ADD_MODEL, "Add a model to a provider", false),
     (
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         "Choose the workspace's model",
         false,
     ),
     (
-        person_models::SET_ASSIGNMENT,
+        model_providers::SET_ASSIGNMENT,
         "Choose the model for a kind of work",
         false,
     ),
     (
-        person_models::SET_ASSIGNMENTS,
+        model_providers::SET_ASSIGNMENTS,
         "Choose the models for each kind of work",
         false,
     ),
     (
-        person_models::SET_REASONING,
+        model_providers::SET_REASONING,
         "Choose how long a model thinks",
         false,
     ),
     (
-        person_models::LINK_THIS_COMPUTER,
+        model_providers::LINK_THIS_COMPUTER,
         "Run the workspace on this computer's model",
         false,
     ),
     (
-        person_models::BEGIN_SIGN_IN,
+        model_providers::BEGIN_SIGN_IN,
         "Sign in to a model provider",
         false,
     ),
     (
-        person_models::WAIT_SIGN_IN,
+        model_providers::WAIT_SIGN_IN,
         "Wait for a sign-in to a model provider",
         true,
     ),
     (
-        person_models::CANCEL_SIGN_IN,
+        model_providers::CANCEL_SIGN_IN,
         "Stop signing in to a model provider",
         false,
     ),
@@ -117,7 +117,7 @@ impl ModelSteps {
     /// for the person at this device alone.
     pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
         providers.provide(
-            person_models::PROVIDER,
+            model_providers::PROVIDER,
             settings_sections::APP_ID,
             Reach::ThisDevice,
             self,
@@ -136,8 +136,8 @@ fn descriptor((action, label, reads): (&str, &str, bool)) -> ActionDescriptor {
         did: None,
         state: ActionState::default(),
         semantic_identity: None,
-        address: ActionAddress::new(person_models::RESOURCE, action),
-        resource_kind: person_models::RESOURCE.into(),
+        address: ActionAddress::new(model_providers::RESOURCE, action),
+        resource_kind: model_providers::RESOURCE.into(),
         resource_label: "Agent models".into(),
         action_label: label.into(),
         keywords: Vec::new(),
@@ -179,7 +179,7 @@ fn outcome(asked: Result<Value, String>) -> Outcome {
 }
 
 impl tilo_actions::remote::Admits for ModelSteps {
-    const PROVIDER: &'static str = person_models::PROVIDER;
+    const PROVIDER: &'static str = model_providers::PROVIDER;
     const APP: &'static str = settings_sections::APP_ID;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
@@ -196,7 +196,7 @@ impl tilo_actions::remote::Admits for ModelSteps {
         let (action, _, _) = STEPS
             .into_iter()
             .find(|(action, _, _)| {
-                request.target.address.resource == person_models::RESOURCE
+                request.target.address.resource == model_providers::RESOURCE
                     && request.target.address.action == *action
             })
             .ok_or("unknown model step")?;
@@ -216,7 +216,7 @@ impl tilo_actions::remote::Admits for ModelSteps {
             .as_ref()
             .ok_or("this session reaches no device daemon, so it reaches no workspace's models")?;
         let arguments = arguments(&request.argument)?;
-        let target = person_models::target(action);
+        let target = model_providers::target(action);
         Ok(crate::landing::off_loop(view.ask_in(workspace, target, arguments)).map(outcome))
     }
 }

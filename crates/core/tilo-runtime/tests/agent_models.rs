@@ -4,7 +4,7 @@
 //! nothing linked, the agent says so in Chat, in the person's own language, and where to choose one.
 
 use serde_json::json;
-use tilo_workspace_service::workspaces::person_model::{
+use tilo_workspace_service::workspaces::model_answers::{
     ModelDescriptor, ProviderProfile, ProviderProtocol,
 };
 use tilo_workspace_service::workspaces::this_computer::Linking;

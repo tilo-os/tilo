@@ -38,17 +38,17 @@ use tilo_actions::remote::person_accounts::{
 // this file's tests still name one.
 #[cfg(test)]
 use tilo_actions::remote::person_accounts::SendMail;
-use tilo_actions::remote::person_models::{
+use tilo_actions::remote::model_providers::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts, model_providers,
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
-use super::person_models::kept_location;
+use super::model_providers::kept_location;
 use super::vault::VaultAt;
 use super::workspace_stores::Store;
 use super::{Workspaces, system_time};
@@ -1280,10 +1280,10 @@ pub(super) fn view_of(profile: &agent_provider_config::ProviderProfile) -> Provi
         name: profile.label.clone(),
         protocol: match profile.protocol {
             agent_provider_config::ProviderProtocol::OpenAiCompatible => {
-                person_models::Protocol::OpenAiCompatible
+                model_providers::Protocol::OpenAiCompatible
             }
             agent_provider_config::ProviderProtocol::Anthropic => {
-                person_models::Protocol::Anthropic
+                model_providers::Protocol::Anthropic
             }
         },
         endpoint: profile.endpoint.clone(),
@@ -1306,7 +1306,7 @@ pub(super) fn view_of(profile: &agent_provider_config::ProviderProfile) -> Provi
         headers: profile
             .headers
             .iter()
-            .map(|header| person_models::RequestHeader {
+            .map(|header| model_providers::RequestHeader {
                 name: header.name.clone(),
                 value: header.value.clone(),
             })
@@ -1484,7 +1484,7 @@ const PROVIDER_CALL: accounts::vault_items::UsedFor<'static> = accounts::vault_i
 /// (`destinations`, [`kept_location`]).
 pub(super) fn add_provider(
     root: &Path,
-    adding: &person_models::AddProvider,
+    adding: &model_providers::AddProvider,
     destinations: Destinations,
 ) -> Result<ProviderView, String> {
     let name = adding.name.trim();
@@ -1495,10 +1495,10 @@ pub(super) fn add_provider(
     let location = kept_location(endpoint, destinations)?;
     let mut config = provider_config(root);
     let protocol = match adding.protocol {
-        person_models::Protocol::OpenAiCompatible => {
+        model_providers::Protocol::OpenAiCompatible => {
             agent_provider_config::ProviderProtocol::OpenAiCompatible
         }
-        person_models::Protocol::Anthropic => agent_provider_config::ProviderProtocol::Anthropic,
+        model_providers::Protocol::Anthropic => agent_provider_config::ProviderProtocol::Anthropic,
     };
     let headers = adding
         .headers
@@ -1746,9 +1746,9 @@ mod tests {
         let keys = ProviderKeys::of(VaultAt::Held(vault), "");
         let added = add_provider(
             root.path(),
-            &person_models::AddProvider {
+            &model_providers::AddProvider {
                 name: "OpenAI".into(),
-                protocol: person_models::Protocol::OpenAiCompatible,
+                protocol: model_providers::Protocol::OpenAiCompatible,
                 endpoint: "https://api.openai.com/v1".into(),
                 headers: Vec::new(),
             },
@@ -1801,9 +1801,9 @@ mod tests {
         let keys = ProviderKeys::of(VaultAt::Held(vault), "");
         let added = add_provider(
             root.path(),
-            &person_models::AddProvider {
+            &model_providers::AddProvider {
                 name: "Anthropic".into(),
-                protocol: person_models::Protocol::Anthropic,
+                protocol: model_providers::Protocol::Anthropic,
                 endpoint: "https://api.anthropic.com".into(),
                 headers: Vec::new(),
             },
@@ -1837,9 +1837,9 @@ mod tests {
         let keys = ProviderKeys::of(VaultAt::Held(held()), "");
         let added = add_provider(
             root.path(),
-            &person_models::AddProvider {
+            &model_providers::AddProvider {
                 name: "Mine".into(),
-                protocol: person_models::Protocol::OpenAiCompatible,
+                protocol: model_providers::Protocol::OpenAiCompatible,
                 endpoint: "https://models.example.com/v1".into(),
                 headers: Vec::new(),
             },
@@ -1882,9 +1882,9 @@ mod tests {
         for (name, endpoint) in [("  ", "https://x.test"), ("Mine", "api.x.test")] {
             let refused = add_provider(
                 root.path(),
-                &person_models::AddProvider {
+                &model_providers::AddProvider {
                     name: name.into(),
-                    protocol: person_models::Protocol::OpenAiCompatible,
+                    protocol: model_providers::Protocol::OpenAiCompatible,
                     endpoint: endpoint.into(),
                     headers: Vec::new(),
                 },

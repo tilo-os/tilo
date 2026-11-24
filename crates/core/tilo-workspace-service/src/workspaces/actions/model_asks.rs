@@ -1,4 +1,4 @@
-//! A workspace's model asked from a device ([`person_models::ASK`]), as the
+//! A workspace's model asked from a device ([`model_providers::ASK`]), as the
 //! workspace's policy lets the caller, answered as it is written.
 //!
 //! The ask is admitted at once and answered on the server's runtime. While the model
@@ -11,7 +11,7 @@
 use serde_json::json;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    person_models,
+    model_providers,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -33,7 +33,7 @@ struct Written {
 /// Whether `request` is an ask of the workspace's model, which
 /// [`Actions::ask_model`] answers.
 pub(super) fn is_model_ask(request: &InvokeRequest) -> bool {
-    request.target == person_models::target(person_models::ASK)
+    request.target == model_providers::target(model_providers::ASK)
 }
 
 impl super::InWorkspace {
@@ -56,7 +56,7 @@ impl super::InWorkspace {
                 .reaching_allowed(
                     (workspace_id, &caller, certificate.as_ref()),
                     Store::MODELS,
-                    person_models::ASK,
+                    model_providers::ASK,
                     tilo_action_policy::ActionKind::Read,
                     &request,
                 )
@@ -75,7 +75,7 @@ impl super::InWorkspace {
 impl Actions {
     /// Admit `request`, an ask of `caller`'s own model, and answer it: the
     /// receipt says it is accepted, its items carry the answer so far, and its output
-    /// is the turn ([`person_models::ASK`]).
+    /// is the turn ([`model_providers::ASK`]).
     pub(super) fn ask_model(
         &self,
         workspaces: &Workspaces,

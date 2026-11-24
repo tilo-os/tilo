@@ -9,7 +9,7 @@
 //! it is this device's turn, runs it through the [`HostJobs`] its embedder
 //! installed, and answers with what it produced. And a workspace's governance
 //! actions (inviting someone, listing and cancelling invitations) and the
-//! models its work runs on ([`tilo_actions::remote::person_models`]) are
+//! models its work runs on ([`tilo_actions::remote::model_providers`]) are
 //! decided as the workspace's governance decides them for the asking device's
 //! certificate, and so are the host's own operations (`account/…`: the person's
 //! workspace list, making and deleting workspaces) for a device that asks them
@@ -670,7 +670,7 @@ fn not_served() -> ActionCallError {
 /// as a host keeps them for a page.
 fn governed(provider: &str) -> bool {
     provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-        || provider == tilo_actions::remote::person_models::PROVIDER
+        || provider == tilo_actions::remote::model_providers::PROVIDER
 }
 
 impl ActionProvider for Answers {

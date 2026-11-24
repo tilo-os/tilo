@@ -552,7 +552,7 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
 #[tokio::test]
 async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     use tilo_actions::remote::{
-        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, person_models,
+        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, model_providers,
         person_vault,
     };
 
@@ -597,10 +597,10 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         super::vault::vault_action(&entries),
         Some((workspace.as_str(), person_vault::ENTRIES))
     );
-    let add_provider = published(WORKSPACE_MODELS, person_models::ADD_PROVIDER, 4);
+    let add_provider = published(WORKSPACE_MODELS, model_providers::ADD_PROVIDER, 4);
     assert_eq!(
         super::models::models_action(&add_provider),
-        Some((workspace.as_str(), person_models::ADD_PROVIDER))
+        Some((workspace.as_str(), model_providers::ADD_PROVIDER))
     );
     let fetch = published(WORKSPACE_MAIL_ACCOUNTS, person_accounts::FETCH, 5);
     assert_eq!(
@@ -1669,7 +1669,7 @@ pub(super) async fn ask_own(
     argument: Value,
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
-    request.target = tilo_actions::remote::person_models::target(verb);
+    request.target = tilo_actions::remote::model_providers::target(verb);
     let provider = host.in_workspace_as(workspace_id, device);
     let asking = caller(device);
     let invocation = request.invocation;
@@ -1717,43 +1717,43 @@ fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf
 /// Every request of a person's model providers, the ones that name a
 /// provider naming `provider`.
 fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     vec![
-        (person_models::LIST, json!({})),
+        (model_providers::LIST, json!({})),
         (
-            person_models::ADD_PROVIDER,
+            model_providers::ADD_PROVIDER,
             json!({"name": "Another", "protocol": "open-ai-compatible", "endpoint": "https://other.example/v1"}),
         ),
-        (person_models::ADD_PRESET, json!({"preset": "anthropic"})),
+        (model_providers::ADD_PRESET, json!({"preset": "anthropic"})),
         (
-            person_models::SET_KEY,
+            model_providers::SET_KEY,
             json!({"provider": provider, "key": "sk-replaced"}),
         ),
-        (person_models::REMOVE_KEY, json!({"provider": provider})),
+        (model_providers::REMOVE_KEY, json!({"provider": provider})),
         (
-            person_models::REMOVE_PROVIDER,
+            model_providers::REMOVE_PROVIDER,
             json!({"provider": provider}),
         ),
-        (person_models::REFRESH_MODELS, json!({"provider": provider})),
+        (model_providers::REFRESH_MODELS, json!({"provider": provider})),
         (
-            person_models::ADD_MODEL,
+            model_providers::ADD_MODEL,
             json!({"provider": provider, "model": "typed"}),
         ),
         (
-            person_models::SET_DEFAULT,
+            model_providers::SET_DEFAULT,
             json!({"provider": provider, "model": "typed"}),
         ),
         (
-            person_models::SET_ASSIGNMENT,
+            model_providers::SET_ASSIGNMENT,
             json!({"kind": "task", "provider": provider, "model": "typed"}),
         ),
         (
-            person_models::SET_ASSIGNMENTS,
+            model_providers::SET_ASSIGNMENTS,
             json!({"kinds": ["request", "task"], "provider": provider, "model": "typed"}),
         ),
         (
-            person_models::SET_REASONING,
+            model_providers::SET_REASONING,
             json!({"provider": provider, "effort": "low"}),
         ),
     ]
@@ -1767,9 +1767,9 @@ async fn reaches_none_of_it(
     other: &DeviceCert,
     provider: &str,
 ) {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
-    let listed = ask_own(host, workspace_id, other, person_models::LIST, json!({}))
+    let listed = ask_own(host, workspace_id, other, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(listed["providers"], json!([]), "{listed}");
@@ -1777,9 +1777,9 @@ async fn reaches_none_of_it(
     // other workspace's own to make, of its own store.
     let naming = model_requests(provider).into_iter().filter(|(verb, _)| {
         ![
-            person_models::LIST,
-            person_models::ADD_PROVIDER,
-            person_models::ADD_PRESET,
+            model_providers::LIST,
+            model_providers::ADD_PROVIDER,
+            model_providers::ADD_PRESET,
         ]
         .contains(verb)
     });
@@ -1799,7 +1799,7 @@ async fn reaches_none_of_it(
 /// it through any request, nor finds its key in a store of its own.
 #[tokio::test]
 async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
     const SECRET: &str = "sk-ada-own-secret";
 
     let dir = tempfile::tempdir().unwrap();
@@ -1826,24 +1826,24 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
         &host,
         workspace_id,
         &ada,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         json!({"name": "Ada's provider", "protocol": "open-ai-compatible", "endpoint": "https://models.example/v1"}),
     )
     .await
     .expect("Ada adds a provider");
     let provider = added["id"].as_str().expect("the provider's id").to_owned();
     let keeping = json!({"provider": provider, "key": SECRET});
-    ask_own(&host, workspace_id, &ada, person_models::SET_KEY, keeping)
+    ask_own(&host, workspace_id, &ada, model_providers::SET_KEY, keeping)
         .await
         .expect("Ada keeps her key");
-    let hers = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+    let hers = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
 
     // Bo, another member of the workspace, reads the provider the workspace
     // keeps, and what he reads back says only that a key is kept.
-    let his = ask_own(&host, workspace_id, &bo, person_models::LIST, json!({}))
+    let his = ask_own(&host, workspace_id, &bo, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(his["providers"][0]["configured"], json!(true), "{his}");
@@ -1892,7 +1892,7 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
 #[tokio::test]
 async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
     use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -1904,7 +1904,7 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
         &host,
         workspace_id,
         &ada,
-        person_models::ADD_PRESET,
+        model_providers::ADD_PRESET,
         json!({"preset": "openrouter"}),
     )
     .await
@@ -1914,12 +1914,12 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
         &host,
         workspace_id,
         &ada,
-        person_models::SET_KEY,
+        model_providers::SET_KEY,
         json!({"provider": provider, "key": "sk-ada-own-secret"}),
     )
     .await
     .expect("Ada keeps her key");
-    let before = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+    let before = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
 
@@ -1932,7 +1932,7 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
     for agent in &agents {
         let mut asks = model_requests(&provider);
         asks.push((
-            person_models::ASK,
+            model_providers::ASK,
             serde_json::to_value(ModelRequest {
                 messages: vec![Message::text(Role::User, "Spend the workspace's key")],
                 tools: Vec::new(),
@@ -1943,7 +1943,7 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
         ));
         for (verb, argument) in asks {
             let mut asking = request("", "", argument);
-            asking.target = person_models::target(verb);
+            asking.target = model_providers::target(verb);
             let refused = settled(
                 host.in_workspace_as(workspace_id, &ada)
                     .invoke(agent, asking),
@@ -1956,7 +1956,7 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
             );
         }
     }
-    let after = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+    let after = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(after, before);
@@ -2021,7 +2021,7 @@ async fn asks_for_level(
         actions,
         workspace_id,
         person,
-        tilo_actions::remote::person_models::SET_REASONING,
+        tilo_actions::remote::model_providers::SET_REASONING,
         setting,
     )
     .await
@@ -2053,7 +2053,7 @@ async fn ready_made(
         actions,
         workspace_id,
         person,
-        tilo_actions::remote::person_models::ADD_PRESET,
+        tilo_actions::remote::model_providers::ADD_PRESET,
         json!({"preset": name}),
     )
     .await
@@ -2073,7 +2073,7 @@ async fn ready_made(
 async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
     use agent_provider_config::{ReasoningParam, ReasoningSetting};
     use test_http::{Reply, Responder};
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -2104,7 +2104,7 @@ async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
         &actions,
         workspace_id,
         &ada,
-        person_models::SET_DEFAULT,
+        model_providers::SET_DEFAULT,
         choosing,
     )
     .await
@@ -2121,7 +2121,7 @@ async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
     let chosen = asks_for_level(&actions, workspace_id, &ada, &provider, Some("low")).await;
     assert!(chosen.is_ok(), "a member's own choice is taken: {chosen:?}");
     assert_eq!(chosen.unwrap()["reasoning"], json!("low"));
-    let listed = ask_own(&actions, workspace_id, &ada, person_models::LIST, json!({}))
+    let listed = ask_own(&actions, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(
@@ -2185,13 +2185,13 @@ async fn links_a_provider(
     adding: &Value,
     key: &str,
 ) -> String {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     let added = ask_own(
         host,
         workspace_id,
         person,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         adding.clone(),
     )
     .await
@@ -2201,7 +2201,7 @@ async fn links_a_provider(
         host,
         workspace_id,
         person,
-        person_models::SET_KEY,
+        model_providers::SET_KEY,
         json!({"provider": provider, "key": key}),
     )
     .await
@@ -2210,7 +2210,7 @@ async fn links_a_provider(
         host,
         workspace_id,
         person,
-        person_models::REFRESH_MODELS,
+        model_providers::REFRESH_MODELS,
         json!({"provider": provider}),
     )
     .await
@@ -2255,7 +2255,7 @@ fn model_for(reads: &Value, kind: &str) -> Option<Value> {
 /// other's or chooses from them.
 #[tokio::test]
 async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -2276,25 +2276,25 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
         (
             workspace_id,
             &ada,
-            person_models::SET_DEFAULT,
+            model_providers::SET_DEFAULT,
             json!({"provider": hers, "model": "ada-small"}),
         ),
         (
             workspace_id,
             &ada,
-            person_models::SET_ASSIGNMENTS,
+            model_providers::SET_ASSIGNMENTS,
             json!({"kinds": ["request", "task"], "provider": hers, "model": "ada-large"}),
         ),
         (
             workspace_id,
             &ada,
-            person_models::SET_ASSIGNMENT,
+            model_providers::SET_ASSIGNMENT,
             json!({"kind": "subtask", "provider": hers, "model": "ada-small"}),
         ),
         (
             elsewhere_id,
             &bo,
-            person_models::SET_DEFAULT,
+            model_providers::SET_DEFAULT,
             json!({"provider": his, "model": "bo-only"}),
         ),
     ] {
@@ -2303,7 +2303,7 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
             .expect("a model is chosen");
     }
 
-    let ada_reads = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+    let ada_reads = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(ada_reads["defaultProvider"], json!(hers), "{ada_reads}");
@@ -2323,7 +2323,7 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
     assert_eq!(model_for(&ada_reads, "subtask"), Some(json!("ada-small")));
     assert_eq!(model_for(&ada_reads, "classifier"), None);
 
-    let bo_reads = ask_own(&host, elsewhere_id, &bo, person_models::LIST, json!({}))
+    let bo_reads = ask_own(&host, elsewhere_id, &bo, model_providers::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(bo_reads["defaultProvider"], json!(his), "{bo_reads}");
@@ -2337,7 +2337,7 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
             &host,
             elsewhere_id,
             &bo,
-            person_models::SET_DEFAULT,
+            model_providers::SET_DEFAULT,
             json!({"provider": provider, "model": "ada-large"}),
         )
         .await;
@@ -2354,7 +2354,7 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
 /// the leave is no longer asked.
 #[tokio::test]
 async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
-    use tilo_actions::remote::person_models;
+    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -2368,7 +2368,7 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
         &host,
         workspace_id,
         &ada,
-        person_models::ADD_PROVIDER,
+        model_providers::ADD_PROVIDER,
         adding.clone(),
     )
     .await;
@@ -2389,7 +2389,7 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
         &host,
         workspace_id,
         &ada,
-        person_models::REFRESH_MODELS,
+        model_providers::REFRESH_MODELS,
         json!({"provider": hers}),
     )
     .await
