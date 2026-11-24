@@ -112,16 +112,16 @@ impl RichTextView {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.draw_with_presence(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, PresenceCtx::empty().draw_env()));
+        self.draw_with_presence(&mut ui::DrawCtx::new(scene, transform, text, theme, PresenceCtx::empty().draw_env()));
     }
 
     /// [`Self::draw`] with members' carets and selections in the
     /// words, where `presence` places them by paragraph id: text shown,
     /// not edited, here while someone else edits it.
-    pub fn draw_with_presence(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub fn draw_with_presence(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.host.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.host.draw(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 }
 

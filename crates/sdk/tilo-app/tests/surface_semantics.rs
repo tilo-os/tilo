@@ -266,7 +266,7 @@ impl Widget for WritesWhilePainting {
         "WritesWhilePainting"
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         if let Some(dispatch) = &self.dispatch {

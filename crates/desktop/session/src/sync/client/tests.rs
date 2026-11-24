@@ -685,7 +685,7 @@ fn tile(tab: u64) -> tilo_live::presence::Tile {
 fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
     let mut chats = ui::presence::CursorChats::default();
     let pointers = tilo_session_core::presence::pointers(
-        &mut tilo_ui::DrawCtx::new(
+        &mut ui::DrawCtx::new(
             &sync.members(WORKSPACE),
             &std::collections::HashMap::new(),
             tiles,

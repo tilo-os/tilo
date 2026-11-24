@@ -811,7 +811,7 @@ impl Panel {
     }
 
     /// Draw the card in the roster's place. Answers whether one stands there.
-    fn draw_card(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) -> bool {
+    fn draw_card(&mut self, ctx: &mut ui::DrawCtx<'_>) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -819,7 +819,7 @@ impl Panel {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.profile.is_open() {
-            self.profile.draw_overlay(&mut tilo_ui::DrawCtx::new(
+            self.profile.draw_overlay(&mut ui::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -1294,7 +1294,7 @@ impl Panel {
     /// Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
     /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
     /// with what they say beside it. What each tab is called names where they are.
-    fn draw_pointers(&self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
+    fn draw_pointers(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1333,7 +1333,7 @@ impl Panel {
                     &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
-                    &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                    &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),
@@ -1441,7 +1441,7 @@ impl Panel {
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
-    fn draw_roster(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
+    fn draw_roster(&mut self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1458,7 +1458,7 @@ impl Panel {
         // The bar's faces open the roster where they stand, kept on screen or not.
         if self.open.get() {
             self.draw_one_roster(
-                &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
                 shown,
                 None,
             );
@@ -1530,7 +1530,7 @@ impl Panel {
             &slot.inflate(32.0, 32.0),
         );
         self.draw_one_roster(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
             shown,
             Some(slot),
         );
@@ -1550,7 +1550,7 @@ impl Panel {
     /// The roster's one painting, with the model this session builds of who is here.
     fn draw_one_roster(
         &mut self,
-        ctx: &mut tilo_ui::DrawCtx<'_>,
+        ctx: &mut ui::DrawCtx<'_>,
         shown: &mut Shown,
         panel: Option<Rect>,
     ) {
@@ -1560,7 +1560,7 @@ impl Panel {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let card_stands = self.draw_card(&mut tilo_ui::DrawCtx::new(
+        let card_stands = self.draw_card(&mut ui::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1935,7 +1935,7 @@ impl Widget for Panel {
             || self.live_card.replace(false)
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1952,11 +1952,11 @@ impl Widget for Panel {
             self.profile.close();
         }
         self.draw_pointers(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
             &mut shown,
         );
         self.draw_roster(
-            &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
             &mut shown,
         );
         self.draw_follow(scene, transform, text, theme, &shown);

@@ -150,7 +150,7 @@ impl Mounted {
         }
     }
 
-    pub(super) fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub(super) fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.node.is_none() {

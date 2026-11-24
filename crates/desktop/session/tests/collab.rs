@@ -196,7 +196,7 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
 )]
 fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
     let mut chats = ui::presence::CursorChats::default();
-    let pointers = tilo_session_core::presence::pointers(&mut tilo_ui::DrawCtx::new(&sync.members(WORKSPACE), &std::collections::HashMap::new(), tiles, &mut chats, ui::presence::PresenceCtx::empty().draw_env()), ui::time::Instant::now(), ui::time::unix_now_ms() as f64, ui::tokens::EffectiveMotion::default());
+    let pointers = tilo_session_core::presence::pointers(&mut ui::DrawCtx::new(&sync.members(WORKSPACE), &std::collections::HashMap::new(), tiles, &mut chats, ui::presence::PresenceCtx::empty().draw_env()), ui::time::Instant::now(), ui::time::unix_now_ms() as f64, ui::tokens::EffectiveMotion::default());
     pointers
         .drawn
         .iter()
