@@ -394,9 +394,13 @@ fn append<K: Ord>(
     offset: u64,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let held = parts.entry(name).or_default();
     let at = usize::try_from(offset).map_err(|error| error.to_string())?;
-    if at != held.len() {
+    let held = parts.entry(name).or_default();
+    // The same content may be put again: a piece at zero starts it over, which is the same
+    // bytes for the same hash. Any other piece must follow where the file so far ends.
+    if at == 0 {
+        held.clear();
+    } else if at != held.len() {
         return Err(format!(
             "a piece starts at {at}, not where {} ends",
             held.len()
