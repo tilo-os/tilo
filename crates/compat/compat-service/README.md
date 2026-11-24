@@ -15,10 +15,9 @@ boundary contracts. It currently provides:
 - an authenticated, bounded session protocol with server-owned entry IDs; and
 - descriptor-anchored, no-follow capsule storage.
 
-The compositor binds the live session service and authenticates the launcher
-with a one-use PID/start-time/app/workspace registry before passing its
-connected descriptor into `apps/windows`. Requests contain only opaque managed
-entry IDs. The compositor reloads current `CapOverride` records for every
+The session's compatibility service fills the device's `windows-apps` reading
+and answers its actions; the session's system service serves both. Requests
+contain only opaque managed entry IDs. The compositor reloads current `CapOverride` records for every
 launch; the client cannot supply grants, executable or host paths, runner
 settings, or VM intent. The manager uses an empty unavailable state when the
 optional service is absent, while sample applications remain screenshot-only.
