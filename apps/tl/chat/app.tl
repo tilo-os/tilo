@@ -9,6 +9,7 @@ app so.tilo.chat "Chat" (
 
 use tilo.workspace as workspace
 use so.tilo.settings.sections as settings
+use so.tilo.device as device
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
@@ -95,6 +96,27 @@ type OutsideAuthor {
     member: Option<Actor> = .none
 }
 
+/// A window shared live into a conversation, as a message refers to it. The share is the shell's:
+/// the session shares the window with the workspace (`device.shares`), every member's shell shows
+/// it as the window it is, and this names it so the conversation shows it again where it was
+/// posted. What the window was called and whose app it is are kept as it was shared, so a share
+/// that ended still says what it was.
+type LiveShare {
+    /// The shared window, by the key the shell's windows and shares name it with.
+    window: Text
+    /// The workspace it is shared in, by its key.
+    workspace: Text = ""
+    /// What the window was called when it was shared.
+    title: Text = ""
+    /// The app whose window it is, as people know it, and its mark.
+    app_name: Text = ""
+    icon: Text = ""
+    /// Whether the members viewing it may control it, as its sharer set the share.
+    can_edit: Bool = false
+    /// Whether its sharer stopped sharing it.
+    ended: Bool = false
+}
+
 /// A picture a message from outside carries in its words: a custom emoji of that service.
 type OutsideEmoji {
     name: Text
@@ -128,6 +150,9 @@ type Message {
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
     sent_view: Text
+    /// A window its sender shares live: the shell's own share of it, which the conversation shows
+    /// where the message stands. None for a message that shares no window.
+    live_share: Option<LiveShare> = .none
     /// Who wrote it, when it was written somewhere else: as that place shows them, with the
     /// picture they wear there and the service's name. None for a message written here.
     outside: Option<OutsideAuthor> = .none
@@ -1095,6 +1120,87 @@ action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Tex
         t: Thread => t.messages.insert(m),
         d: Direct => d.messages.insert(m),
     }
+}
+
+/// Shares one of the person's windows live into a conversation: the shell shares the window with
+/// the workspace, as its own window bar does, and the message refers to that share, so the
+/// conversation shows the window live where the message stands. Its sharer chooses whether the
+/// members viewing it may control it.
+action share_window(
+    to: TextChannel | Thread | Direct,
+    window: Text (label: "Window"),
+    can_edit: Bool = false,
+) -> Message (icon: .screen_share, label: "Share a window", did: "shared a window") {
+    require device.windows.all.any(w -> w.key == window and not w.elsewhere) "Only a window open on this device can be shared from here"
+    let share = if let w = device.windows.all.find(w -> w.key == window) {
+        LiveShare(
+            window: window,
+            workspace: w.workspace_key,
+            title: w.title,
+            app_name: w.origin_app,
+            icon: w.icon,
+            can_edit: can_edit,
+        )
+    } else {
+        LiveShare(window: window, can_edit: can_edit)
+    }
+    if not device.shares.sharing.any(x -> x.tab == window) {
+        device.share(device.shares, tab: window)
+    }
+    device.allow_remote_input(device.shares, tab: window, on: can_edit)
+    let m = Message(body: RichText(share.title), live_share: .some(share))
+    match to {
+        c: TextChannel => c.messages.insert(m),
+        t: Thread => t.messages.insert(m),
+        d: Direct => d.messages.insert(m),
+    }
+}
+
+/// Lets the members viewing a window shared into a conversation control it, or only view it: the
+/// shell's share changes, and the message says so.
+action set_share_access(m: Message, can_edit: Bool) (
+    icon: .mouse_pointer_2,
+    label: "Change what others may do",
+) {
+    require created(m)?.who == invoker "Only whoever shared the window can change what others may do there"
+    require still_shared(m) "The window is no longer shared"
+    if let s = m.live_share {
+        device.allow_remote_input(device.shares, tab: s.window, on: can_edit)
+        m.live_share = .some(shared_as(s, can_edit: can_edit, ended: false))
+    }
+}
+
+/// Stops sharing a window shared into a conversation: the shell's share ends, and the message
+/// says the window is no longer shared in its place.
+action stop_sharing(m: Message) (
+    icon: .eye_off,
+    label: "Stop sharing",
+    did: "stopped sharing a window",
+) {
+    require created(m)?.who == invoker "Only whoever shared the window can stop sharing it"
+    require still_shared(m) "The window is no longer shared"
+    if let s = m.live_share {
+        device.stop(device.shares, tab: s.window)
+        m.live_share = .some(shared_as(s, can_edit: s.can_edit, ended: true))
+    }
+}
+
+/// Whether `m` shares a window its sharer has not stopped sharing.
+fn still_shared(m: Message) -> Bool {
+    if let s = m.live_share { not s.ended } else { false }
+}
+
+/// `s` as it stands after a change of what others may do there, or its end.
+fn shared_as(s: LiveShare, can_edit: Bool, ended: Bool) -> LiveShare {
+    LiveShare(
+        window: s.window,
+        workspace: s.workspace,
+        title: s.title,
+        app_name: s.app_name,
+        icon: s.icon,
+        can_edit: can_edit,
+        ended: ended,
+    )
 }
 
 /// Posts a message written on another service, as it was written there: who wrote it, as that
@@ -2527,6 +2633,7 @@ view composer(
     let stop: Option<Action> = if let t = working_turn(said) {
         .some(host.cancel(t.record))
     } else { .none }
+    share_menu(to)
     std.composer_draft(
         draft,
         placeholder,
@@ -2908,7 +3015,9 @@ view reasoning(m: Message) {
 
 /// What a message says, and that it was edited when its history holds an edit.
 view said(m: Message) {
-    if not m.body.is_empty() {
+    if let s = m.live_share {
+        live_share(m, s)
+    } else if not m.body.is_empty() {
         rich_text(m.body)
     }
     for p in m.parts {
@@ -2923,6 +3032,107 @@ view said(m: Message) {
     }
     if history(m).any(v -> v.is(edit)) {
         edit_history(m)
+    }
+}
+
+/// A window shared live into the conversation: the window itself, as the shell pictures it live,
+/// under its title, its app and what the others may do there. The sharer switches that and stops
+/// the share here; a share that ended says so in the window's place. The window stands as this
+/// device's shell holds it: the sharer's own window, or the place another member's share shows in.
+view live_share(m: Message, s: LiveShare) {
+    let mine = created(m)?.who == invoker
+    let held = device.shares.sharing.find(x -> x.tab == s.window)
+    let watched = device.shares.watching.find(x -> x.tab == s.window)
+    // The sharer's own device knows the share ended when the shell no longer shares the window,
+    // however it was stopped: from here, from the window's bar, or by closing it.
+    let here = device.windows.all.any(w -> w.key == s.window and not w.elsewhere)
+    let ended = s.ended or here and held == .none
+    let can_edit = if let h = held { h.input_allowed } else { s.can_edit }
+    ui.Card {
+        stack(gap: .tight) {
+            row(gap: .tight, align: .center) {
+                ui.Icon(.screen_share, secondary: true)
+                ui.Text(
+                    if s.title != "" { s.title } else { s.app_name },
+                    role: .label,
+                    lines: 1,
+                    truncate,
+                    fill,
+                )
+                if ended {
+                    ui.Badge("No longer shared", tone: .neutral)
+                } else {
+                    ui.Badge("Live", tone: .info)
+                }
+            }
+            if ended {
+                ui.Text(
+                    if s.app_name != "" {
+                        "{s.app_name} is no longer shared"
+                    } else { "No longer shared" },
+                    role: .caption,
+                    secondary: true,
+                )
+            } else {
+                layers(aspect: 1.6) {
+                    if let h = held {
+                        ui.WindowPreview(s.window)
+                    } else if let w = watched {
+                        ui.WindowPreview(w.shown_in)
+                    }
+                    if held == .none and watched == .none {
+                        row(fill, align: .center, distribute: .center) {
+                            ui.Button("Show it live", icon: .eye) {
+                                on press: device.watch(
+                                    device.shares,
+                                    tab: s.window,
+                                    workspace: s.workspace,
+                                )
+                            }
+                        }
+                    }
+                }
+                row(gap: .tight, align: .center) {
+                    ui.Text(
+                        if s.app_name != "" {
+                            "{s.app_name} · {if can_edit { "Can edit" } else { "View only" }}"
+                        } else if can_edit { "Can edit" } else { "View only" },
+                        role: .caption,
+                        secondary: true,
+                        fill,
+                    )
+                    if mine {
+                        ui.ToggleGroup(caption: "What others may do") {
+                            ui.Segment("View only", chosen: not can_edit) {
+                                on press: set_share_access(m, can_edit: false)
+                            }
+                            ui.Segment("Can edit", chosen: can_edit) {
+                                on press: set_share_access(m, can_edit: true)
+                            }
+                        }
+                        ui.Button("Stop sharing", icon: .eye_off, role: .destructive) {
+                            on press: stop_sharing(m)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The windows of this device a person may share into `to`, each through the shell's own share,
+/// the one they used last first.
+view share_menu(to: TextChannel | Thread | Direct) {
+    let mine = device.windows.all.filter(w -> not w.elsewhere).sort_by(w -> w.recency)
+    ui.MenuButton("Share a window", icon: .screen_share, icon_only: true) {
+        if mine.is_empty() {
+            ui.MenuItem("Open the window you want to share, then come back here.", disabled: true)
+        }
+        for w in mine {
+            ui.MenuItem(std.say("Share {w.title}"), icon: .app_window) {
+                on choose: share_window(to, window: w.key)
+            }
+        }
     }
 }
 

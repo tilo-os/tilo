@@ -1025,3 +1025,81 @@ d-m6qu4xya = Unteragenten starten
 
 d-eb6soq5v = Unteragent
     .w-it-cannot-read-the-main-chat = Er kann den Hauptchat nicht lesen. Seine Unterhaltung ist seine eigene, unter Direktnachrichten.
+d-knw6d6s7 = Live-Freigabe
+    .doc = Ein Fenster, das live in eine Unterhaltung geteilt ist, wie eine Nachricht darauf verweist.
+    .noun = { $count ->
+        [one] Live-Freigabe
+       *[other] Live-Freigaben
+    }
+
+d-noscllor = Fenster
+    .doc = Das geteilte Fenster, mit dem Schlüssel, unter dem die Fenster und Freigaben der Shell es nennen.
+
+d-n4s3rmdn = Arbeitsbereich
+    .doc = Der Arbeitsbereich, in dem es geteilt ist, mit seinem Schlüssel.
+
+d-k535m2ok = Titel
+    .doc = Wie das Fenster hieß, als es geteilt wurde.
+
+d-ntg5vyds = App-Name
+    .doc = Die App, deren Fenster es ist, wie man sie kennt, und ihr Zeichen.
+
+d-dzpk5b7g = Symbol
+
+d-a4wmd33j = Darf bearbeiten
+    .doc = Ob die Mitglieder, die es ansehen, es steuern dürfen, wie die teilende Person die Freigabe eingestellt hat.
+
+d-jfgns7zp = Beendet
+    .doc = Ob die teilende Person das Teilen beendet hat.
+
+d-knw6d6s7-filter-can_edit = Darf bearbeiten
+
+d-knw6d6s7-filter-ended = Beendet
+
+d-4upqznm4 = Live-Freigabe
+    .doc = Ein Fenster, das die absendende Person live teilt: die Freigabe der Shell selbst, die die Unterhaltung dort zeigt, wo die Nachricht steht.
+
+d-atwyjl6u = Ein Fenster teilen
+    .doc = Teilt eines der Fenster der Person live in eine Unterhaltung: Die Shell teilt das Fenster mit dem Arbeitsbereich, wie es die eigene Fensterleiste tut, und die Nachricht verweist auf diese Freigabe, sodass die Unterhaltung das Fenster live zeigt, wo die Nachricht steht.
+    .did = hat ein Fenster geteilt
+    .w-only-a-window-open-on-this = Von hier lässt sich nur ein Fenster teilen, das auf diesem Gerät offen ist
+
+d-atwyjl6u-to = An
+
+d-atwyjl6u-window = Fenster
+
+d-atwyjl6u-can_edit = Darf bearbeiten
+
+d-7qn2hklc = Ändern, was andere dürfen
+    .doc = Lässt die Mitglieder, die ein in eine Unterhaltung geteiltes Fenster ansehen, es steuern oder nur ansehen: Die Freigabe der Shell ändert sich, und die Nachricht sagt es.
+    .w-only-whoever-shared-the-window-can = Nur wer das Fenster geteilt hat, kann ändern, was andere dort dürfen
+    .w-the-window-is-no-longer-shared = Das Fenster wird nicht mehr geteilt
+
+d-7qn2hklc-can_edit = Darf bearbeiten
+
+d-vg7v2ukx = Teilen beenden
+    .doc = Beendet das Teilen eines in eine Unterhaltung geteilten Fensters: Die Freigabe der Shell endet, und die Nachricht sagt an seiner Stelle, dass das Fenster nicht mehr geteilt wird.
+    .did = hat das Teilen eines Fensters beendet
+    .w-only-whoever-shared-the-window-can = Nur wer das Fenster geteilt hat, kann das Teilen beenden
+    .w-the-window-is-no-longer-shared = Das Fenster wird nicht mehr geteilt
+
+d-g36lpm6s = Live-Freigabe
+    .w-no-longer-shared = Nicht mehr geteilt
+    .w-live = Live
+    .w-is-no-longer-shared = { $app_name } wird nicht mehr geteilt
+    .w-show-it-live = Live ansehen
+    .w-can-edit = Darf bearbeiten
+    .w-view-only = Nur ansehen
+    .w-what-others-may-do = Was andere dürfen
+    .w-stop-sharing = Teilen beenden
+
+d-zl5zivy3 = Teilen-Menü
+    .w-share-a-window = Ein Fenster teilen
+    .w-open-the-window-you-want-to = Öffne das Fenster, das du teilen möchtest, und komm dann hierher zurück.
+    .w-share = { $title } teilen
+
+d-u7b7ovh5 = Fenster teilen~present
+
+d-obu4vl74 = Freigabezugriff festlegen~present
+
+d-6zxrhnyr = Teilen beenden~present
