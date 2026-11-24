@@ -311,6 +311,47 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "bar-action"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-sidebar"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-back"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-forward"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
 id = "move-strip"
 kind = "outside"
 

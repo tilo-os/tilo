@@ -583,6 +583,46 @@ pub enum ChromeEffect {
         #[param(decimal, "The window, by its tab")]
         tab: String,
     },
+    /// Press one of the window's own bar controls
+    /// A leading control, an action, a menu item, a view, a notice's action or a reaction: the
+    /// id is the app's own, carried back as it is.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarAction {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// The action's id, as the bar lists it.
+        #[param("The action's id, as the bar lists it")]
+        id: String,
+    },
+
+    /// Toggle the sidebar of the window whose bar offers one
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSidebar {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// Go back in what a window showed
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarBack {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// Go forward in what a window showed
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarForward {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
 
     /// Move a strip
     #[effect(kind = "outside")]
@@ -1426,6 +1466,10 @@ fn admit_chrome(
         | ChromeEffect::BarSearch { .. }
         | ChromeEffect::BarSearchStep { .. }
         | ChromeEffect::BarSearchClose { .. }
+        | ChromeEffect::BarAction { .. }
+        | ChromeEffect::BarSidebar { .. }
+        | ChromeEffect::BarBack { .. }
+        | ChromeEffect::BarForward { .. }
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }

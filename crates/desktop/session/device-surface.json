@@ -3129,6 +3129,14 @@
             {
               "name": "bar_typing",
               "type": "bool"
+            },
+            {
+              "name": "bar",
+              "type": {
+                "option": {
+                  "named": "Bar"
+                }
+              }
             }
           ]
         },
@@ -3143,6 +3151,210 @@
             {
               "name": "number",
               "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "Bar",
+          "doc": "The parts an app declares for its window's bar, as the shell's views draw them.",
+          "fields": [
+            {
+              "name": "leading",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            },
+            {
+              "name": "back",
+              "type": "bool"
+            },
+            {
+              "name": "forward",
+              "type": "bool"
+            },
+            {
+              "name": "sidebar",
+              "type": "bool"
+            },
+            {
+              "name": "sidebar_on",
+              "type": "bool"
+            },
+            {
+              "name": "views",
+              "type": {
+                "option": {
+                  "named": "BarViews"
+                }
+              }
+            },
+            {
+              "name": "notice",
+              "type": {
+                "option": {
+                  "named": "BarNotice"
+                }
+              }
+            },
+            {
+              "name": "reactions",
+              "type": {
+                "option": {
+                  "named": "BarReactions"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarAction",
+          "doc": "One control of a window's bar.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "enabled",
+              "type": "bool"
+            },
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "toggles",
+              "type": "bool"
+            },
+            {
+              "name": "menu",
+              "type": "bool"
+            },
+            {
+              "name": "items",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarViews",
+          "doc": "The views a window's bar switches between.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "choices",
+              "type": {
+                "list": {
+                  "named": "BarView"
+                }
+              }
+            },
+            {
+              "name": "chosen",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "BarView",
+          "doc": "One view a window's bar offers.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "BarNotice",
+          "doc": "What a window says in its bar: a line, its tone, and up to two actions beside it.",
+          "fields": [
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "tone",
+              "type": "text"
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "BarAction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarReactions",
+          "doc": "The reactions to what a window shows, as its bar draws them.",
+          "fields": [
+            {
+              "name": "pills",
+              "type": {
+                "list": {
+                  "named": "BarReaction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "BarReaction",
+          "doc": "One emoji's reactions.",
+          "fields": [
+            {
+              "name": "emoji",
+              "type": "text"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "mine",
+              "type": "bool"
+            },
+            {
+              "name": "names",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "action",
+              "type": "text"
             }
           ]
         }

@@ -281,6 +281,18 @@ impl DesktopHandle {
     pub fn bar_takes_typing(&self) -> bool {
         self.shared.borrow().bars.typing
     }
+    /// The parts the window `tab`'s app declared for its bar, as the shell's views draw them:
+    /// its leading controls, actions, views, notice and reactions.
+    #[must_use]
+    pub fn bar_toolbar(&self, tab: TabId) -> Option<WindowToolbar> {
+        self.shared
+            .borrow()
+            .bars
+            .toolbars
+            .get(&tab)
+            .map(|(_, toolbar)| toolbar.clone())
+    }
+
     /// The field the window `tab`'s bar holds open, as the shell's views draw it.
     #[must_use]
     pub fn bar_field(&self, tab: TabId) -> Option<BarField> {
@@ -630,6 +642,68 @@ mod tests {
         handle.edit_bar_location(7);
         handle.follow_bars();
         assert_eq!(handle.bar_field(7), Some(BarField::Location));
+    }
+
+    /// The parts a window's app declares reach the shell as they were declared, and a press on
+    /// one goes back to that app as the action it names — a leading control, an action, a view,
+    /// a notice's button and a reaction alike.
+    #[test]
+    fn a_declared_bar_reaches_the_shell_and_its_presses_go_back() {
+        use ui::window_toolbar::{
+            ToolbarNavigation, ToolbarReaction, ToolbarReactions, ToolbarView, ToolbarViews,
+        };
+        let handle = shell();
+        let toolbar = WindowToolbar {
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: false,
+            }),
+            sidebar: Some(true),
+            leading: vec![ToolbarAction::new("home", "house", "Home")],
+            actions: vec![ToolbarAction::new("save", "check", "Save")],
+            views: Some(ToolbarViews {
+                name: "View".into(),
+                choices: vec![ToolbarView {
+                    id: "list".into(),
+                    label: "List".into(),
+                }],
+                chosen: "list".into(),
+            }),
+            reactions: Some(ToolbarReactions {
+                pills: vec![ToolbarReaction {
+                    emoji: "🎉".into(),
+                    count: 2,
+                    mine: false,
+                    names: vec!["Ada".into()],
+                }],
+                can_react: true,
+            }),
+            ..WindowToolbar::default()
+        };
+        handle.declare_bar(7, 41, Some(toolbar));
+        handle.follow_bars();
+        let held = handle.bar_toolbar(7).expect("the bar is declared");
+        assert!(held.navigation.is_some_and(|navigation| navigation.back));
+        assert_eq!(held.leading.len(), 1);
+        assert_eq!(held.actions.len(), 1);
+        assert_eq!(held.sidebar, Some(true));
+        handle.bar_event(
+            7,
+            ToolbarEvent::Action {
+                id: "save".into(),
+            },
+        );
+        assert_eq!(
+            handle.take_bar_events(),
+            vec![(
+                7,
+                41,
+                ToolbarEvent::Action {
+                    id: "save".into()
+                }
+            )],
+            "a press goes back to the app that declared the bar"
+        );
     }
 
     /// What the person does in a bar field goes to the app that declared the bar, and to no

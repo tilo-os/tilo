@@ -88,6 +88,92 @@ pub struct Window {
     pub bar_field: String,
     /// Whether a field in its bar takes what is typed now, holding the keys off the window.
     pub bar_typing: bool,
+    /// The parts its app declared for its bar, when it declared any.
+    pub bar: Option<Bar>,
+}
+
+/// The parts an app declares for its window's bar, as the shell's views draw them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Bar {
+    /// Its controls before the location: the app's own.
+    pub leading: Vec<BarAction>,
+    /// Its actions, in its own order.
+    pub actions: Vec<BarAction>,
+    /// Whether it can go back, and forward, through what it showed.
+    pub back: bool,
+    pub forward: bool,
+    /// Whether it offers a sidebar toggle, and whether the sidebar shows now.
+    pub sidebar: bool,
+    pub sidebar_on: bool,
+    /// The views it switches between, when it shows more than one.
+    pub views: Option<BarViews>,
+    /// What it says to the person in its bar, when something needs them.
+    pub notice: Option<BarNotice>,
+    /// The reactions to the one thing it shows.
+    pub reactions: Option<BarReactions>,
+}
+
+/// One control of a window's bar.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarAction {
+    /// The action id its app knows it by.
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub enabled: bool,
+    /// Whether it reads on: a toggle that is set.
+    pub on: bool,
+    /// Whether it is a toggle.
+    pub toggles: bool,
+    /// Whether it stands in the bar's overflow menu only.
+    pub menu: bool,
+    /// What a press lists, for a menu button: each chosen by its id.
+    pub items: Vec<BarAction>,
+}
+
+/// The views a window's bar switches between.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarViews {
+    /// What the switch is called.
+    pub name: String,
+    pub choices: Vec<BarView>,
+    /// The view shown, by its id.
+    pub chosen: String,
+}
+
+/// One view a window's bar offers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarView {
+    pub id: String,
+    pub label: String,
+}
+
+/// What a window says in its bar: a line, its tone, and up to two actions beside it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarNotice {
+    pub text: String,
+    /// `info`, `success`, `warning` or `error`, as its colour reads it.
+    pub tone: String,
+    pub actions: Vec<BarAction>,
+}
+
+/// The reactions to what a window shows, as its bar draws them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarReactions {
+    pub pills: Vec<BarReaction>,
+}
+
+/// One emoji's reactions.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct BarReaction {
+    pub emoji: String,
+    pub count: i64,
+    /// Whether the person here is among them.
+    pub mine: bool,
+    /// Who reacted, as their names read.
+    pub names: Vec<String>,
+    /// The action id a press on the pill sends its app.
+    pub action: String,
 }
 
 /// What a window with no title is called.
@@ -215,6 +301,69 @@ fn window_reading(
         bar_location: handle.window_name(tab.id).unwrap_or_default(),
         bar_field: bar_field(handle.bar_field(tab.id)).to_owned(),
         bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
+        bar: handle.bar_toolbar(tab.id).as_ref().map(bar_of),
+    }
+}
+
+/// The parts `toolbar` declares, as the reading spells them: each action with the id its app
+/// knows it by, its menu items under it, and a reaction's press as the action the toolkit names.
+fn bar_of(toolbar: &ui::window_toolbar::WindowToolbar) -> Bar {
+    use ui::window_toolbar::{ToolbarAction, ToolbarViews, reaction_action};
+    fn action(a: &ToolbarAction) -> BarAction {
+        BarAction {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            icon: a.icon.clone(),
+            enabled: a.enabled,
+            on: a.on,
+            toggles: a.toggles,
+            menu: a.menu,
+            items: a.items.iter().map(action).collect(),
+        }
+    }
+    Bar {
+        leading: toolbar.leading.iter().map(action).collect(),
+        actions: toolbar.actions.iter().map(action).collect(),
+        back: toolbar.navigation.is_some_and(|navigation| navigation.back),
+        forward: toolbar.navigation.is_some_and(|navigation| navigation.forward),
+        sidebar: toolbar.sidebar.is_some(),
+        sidebar_on: toolbar.sidebar.is_some_and(|sidebar| sidebar),
+        views: toolbar.views.as_ref().map(|views: &ToolbarViews| BarViews {
+            name: views.name.clone(),
+            choices: views
+                .choices
+                .iter()
+                .map(|view| BarView {
+                    id: view.id.clone(),
+                    label: view.label.clone(),
+                })
+                .collect(),
+            chosen: views.chosen.clone(),
+        }),
+        notice: toolbar.notice.as_ref().map(|notice| BarNotice {
+            text: notice.text.clone(),
+            tone: match notice.kind {
+                ui::widget::toast::ToastKind::Success => "success",
+                ui::widget::toast::ToastKind::Warning => "warning",
+                ui::widget::toast::ToastKind::Error => "error",
+                _ => "info",
+            }
+            .to_owned(),
+            actions: notice.actions.iter().map(action).collect(),
+        }),
+        reactions: toolbar.reactions.as_ref().map(|reactions| BarReactions {
+            pills: reactions
+                .pills
+                .iter()
+                .map(|pill| BarReaction {
+                    emoji: pill.emoji.clone(),
+                    count: i64::from(pill.count),
+                    mine: pill.mine,
+                    names: pill.names.clone(),
+                    action: reaction_action(&pill.emoji),
+                })
+                .collect(),
+        }),
     }
 }
 

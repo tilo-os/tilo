@@ -176,6 +176,25 @@ impl DesktopHandle {
                 self.close_bar_field(win(tab)?);
                 Carried::Done
             }
+            ChromeEffect::BarAction { tab, id } => {
+                self.bar_event(
+                    win(tab)?,
+                    ToolbarEvent::Action { id: id.clone() },
+                );
+                Carried::Done
+            }
+            ChromeEffect::BarSidebar { tab } => {
+                self.bar_event(win(tab)?, ToolbarEvent::ToggleSidebar);
+                Carried::Done
+            }
+            ChromeEffect::BarBack { tab } => {
+                self.bar_event(win(tab)?, ToolbarEvent::Back);
+                Carried::Done
+            }
+            ChromeEffect::BarForward { tab } => {
+                self.bar_event(win(tab)?, ToolbarEvent::Forward);
+                Carried::Done
+            }
             ChromeEffect::NewWorkspace {
                 workspace,
                 name,
