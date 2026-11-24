@@ -71,7 +71,7 @@ mod tests {
     /// address its peers are given names their relay, not number 0's.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_persons_own_relay_carries_the_endpoint() {
-        let relay = tilo_test_env::relay::relay().await;
+        let relay = tilo_test_relay::relay().await;
         let own = relay.relays();
         let url = own.urls::<Vec<_>>().first().cloned().expect("one relay");
         let relays = EndpointRelays::for_choice(&Relays::Own(url.to_string()));

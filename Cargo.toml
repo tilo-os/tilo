@@ -221,6 +221,7 @@ members = [
     "tools/nested-session-bus",
     "crates/ui/headless-schema",
     "tools/test-env",
+    "tools/test-relay",
     "tools/test-app-registry",
     "tools/test-document-app",
     "tools/test-http",

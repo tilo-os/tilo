@@ -16612,6 +16612,7 @@ dependencies = [
  "tilo-seal",
  "tilo-server-protocol",
  "tilo-test-env",
+ "tilo-test-relay",
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tokio",
@@ -17878,6 +17879,7 @@ dependencies = [
  "tilo-lock",
  "tilo-seal",
  "tilo-test-env",
+ "tilo-test-relay",
  "tilo-user-identity",
  "tokio",
  "tracing",
@@ -18145,6 +18147,7 @@ dependencies = [
  "tilo-rt",
  "tilo-server-protocol",
  "tilo-test-env",
+ "tilo-test-relay",
  "tilo-thumbnail",
  "tilo-user-identity",
  "tokio",
@@ -19000,6 +19003,7 @@ dependencies = [
  "tilo-lock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "tilo-test-relay",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
@@ -21251,8 +21255,6 @@ name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
- "iroh",
- "iroh-relay",
  "jiff",
  "libc",
  "serde_json",
@@ -21263,6 +21265,15 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tokio",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-test-relay"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-relay",
  "workspace-hack",
 ]
 
@@ -22265,6 +22276,7 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-session-client",
  "tilo-test-env",
+ "tilo-test-relay",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-web-search",
@@ -27949,6 +27961,7 @@ dependencies = [
  "tilo-system-stats",
  "tilo-taffy",
  "tilo-test-env",
+ "tilo-test-relay",
  "tilo-theme-bauhaus",
  "tilo-theme-painter-wasm",
  "tilo-theme-sdk",

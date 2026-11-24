@@ -216,7 +216,7 @@ pub struct TestHost {
     /// The relay its endpoint took as its home ([`reached_through`]), closed
     /// after the endpoint that reaches it.
     #[cfg(test)]
-    _home: tilo_test_env::relay::Relay,
+    _home: tilo_test_relay::Relay,
 }
 
 impl TestHost {
@@ -580,7 +580,7 @@ async fn host_on(
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     #[cfg(test)]
-    let home = tilo_test_env::relay::relay().await;
+    let home = tilo_test_relay::relay().await;
     #[cfg(test)]
     let endpoint = endpoint.relay_mode(iroh::RelayMode::Custom(home.relays()));
     let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
@@ -639,7 +639,7 @@ async fn host_on(
 /// fixture without that server, which is a development dependency here, and
 /// wait as before.
 #[cfg(test)]
-async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_env::relay::Relay) {
+async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_relay::Relay) {
     use iroh::Watcher as _;
     tilo_test_env::within("the fixture host's endpoint names its relay", async {
         let mut watch = endpoint.watch_addr();

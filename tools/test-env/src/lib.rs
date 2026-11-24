@@ -7,7 +7,7 @@
 //! in parallel. Use the fixtures here only where the environment is the interface under test, such
 //! as the function that resolves `XDG_DATA_HOME` itself. [`ScopedEnv`], [`pin`], [`TestHome`],
 //! [`TestEnv`] and [`lock`] cover the environment; the other modules cover the machine a test used
-//! to reach for: [`net`], [`idle`], [`hang`], [`relay`], [`script`], [`swtpm`], [`capability`] and
+//! to reach for: [`net`], [`idle`], [`hang`], [`script`], [`swtpm`], [`capability`] and
 //! [`desktop`]. The lock only orders code that takes it. Code under test that reads the environment
 //! from a thread of its own is still racing any other test that mutates the variable without this
 //! crate.
@@ -29,8 +29,6 @@ pub mod held;
 pub mod idle;
 pub mod net;
 mod own_process;
-#[cfg(feature = "iroh-relay")]
-pub mod relay;
 pub mod requested_allocations;
 pub mod scenario;
 #[cfg(target_os = "linux")]

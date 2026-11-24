@@ -35,9 +35,16 @@ TARGETS = client_licenses.TARGETS
 UNSHIPPED_FEATURES = frozenset(("test-support",))
 
 
+def published(dependency):
+    """Whether a manifest dependency stays in the published manifest: normal and build ones do,
+    and so does a dev-dependency that carries a version; Cargo drops one without."""
+    return dependency["kind"] != "dev" or dependency["req"] != "*"
+
+
 def manifest_closure(packages, roots):
-    """The workspace crates `roots` reach through their manifests' normal and
-    build dependencies on every target, optional ones included."""
+    """The workspace crates `roots` reach through what their published manifests name on every
+    target: normal and build dependencies, optional ones included, and dev-dependencies that
+    carry a version."""
     local = {package["name"]: package for package in packages if package["source"] is None}
     missing = sorted(set(roots) - set(local))
     if missing:
@@ -50,7 +57,7 @@ def manifest_closure(packages, roots):
             continue
         seen.add(name)
         for dependency in local[name]["dependencies"]:
-            if dependency["kind"] != "dev" and dependency.get("path") and dependency["name"] in local:
+            if published(dependency) and dependency.get("path") and dependency["name"] in local:
                 pending.append(dependency["name"])
     return {name: local[name] for name in seen}
 

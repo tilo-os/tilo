@@ -353,7 +353,7 @@ pub(super) async fn member_session(
     workspace_id: WorkspaceId,
     capacity: usize,
 ) -> Session {
-    let home = tilo_test_env::relay::relay().await;
+    let home = tilo_test_relay::relay().await;
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .relay_mode(iroh::RelayMode::Custom(home.relays()))

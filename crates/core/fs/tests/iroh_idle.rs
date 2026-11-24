@@ -205,7 +205,7 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         .enable_all()
         .build()
         .expect("a runtime for the relay");
-    let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
+    let relay = relay_runtime.block_on(tilo_test_relay::relay());
     let url = relay.url().clone();
 
     let clock = clock::Clock::new();
@@ -299,7 +299,7 @@ fn an_unchanged_net_report_rests_the_next() {
         .enable_all()
         .build()
         .expect("a runtime for the relay");
-    let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
+    let relay = relay_runtime.block_on(tilo_test_relay::relay());
 
     let clock = clock::Clock::new();
     let endpoint = clock.block_on(async {

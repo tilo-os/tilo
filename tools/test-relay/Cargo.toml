@@ -1,0 +1,19 @@
+[package]
+name = "tilo-test-relay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "A packet relay on this machine's loopback, for tests whose iroh endpoint needs a home relay and no internet."
+
+# Test support only: name it by path from [dev-dependencies], so no published manifest keeps it.
+
+[dependencies]
+iroh.workspace = true
+iroh-relay = { version = "1.0.3", features = ["server"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -15,8 +15,10 @@ def package(name, license, *dependencies, features=()):
         "license": license,
         "features": {feature: [] for feature in features},
         "dependencies": [
-            {"name": dep, "kind": kind, "path": f"/checkout/{dep}", "optional": optional}
-            for dep, kind, optional in dependencies
+            {"name": dep, "kind": kind, "path": f"/checkout/{dep}", "optional": optional,
+             "req": "^0.1.0" if versioned else "*"}
+            for dep, kind, optional, *rest in dependencies
+            for versioned in [bool(rest and rest[0])]
         ],
     }
 
@@ -35,14 +37,18 @@ class BuilderManifestGraph(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("tilo-shell", findings[0])
 
-    def test_build_dependencies_count_and_dev_dependencies_do_not(self):
+    def test_build_dependencies_count_and_dev_dependencies_count_when_published(self):
+        # Cargo keeps a dev-dependency that carries a version in the published manifest, so
+        # crates.io needs it; one named by path alone is dropped.
         packages = [
-            package("tilolang", "MIT", ("codegen", "build", False), ("tilo-test-env", "dev", False)),
+            package("tilo-ui", "MIT", ("codegen", "build", False), ("tilo-test-env", "dev", False),
+                    ("tilo-theme", "dev", False, True)),
             package("codegen", "AGPL-3.0-only"),
             package("tilo-test-env", "AGPL-3.0-only"),
+            package("tilo-theme", "AGPL-3.0-only"),
         ]
-        reached = builder_licenses.manifest_closure(packages, ["tilolang"])
-        self.assertEqual(sorted(reached), ["codegen", "tilolang"])
+        reached = builder_licenses.manifest_closure(packages, ["tilo-ui"])
+        self.assertEqual(sorted(reached), ["codegen", "tilo-theme", "tilo-ui"])
 
     def test_a_root_outside_the_workspace_is_refused(self):
         with self.assertRaises(ValueError):

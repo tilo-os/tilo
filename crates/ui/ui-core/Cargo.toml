@@ -391,13 +391,13 @@ tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 
 [dev-dependencies]
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
-tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit", features = ["test-support"] }
+tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"
 # The Bauhaus theme's painter, run natively through the host to check its
 # shipped document and how the toolkit draws it.
-tilo-theme-bauhaus = { version = "0.1.0", path = "../themes/bauhaus" }
+tilo-theme-bauhaus = { path = "../themes/bauhaus" }
 # The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.

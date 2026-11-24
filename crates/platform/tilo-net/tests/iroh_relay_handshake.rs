@@ -39,10 +39,10 @@ impl AccessControl for Refusing {
     }
 }
 
-async fn relay(refused: Vec<iroh::PublicKey>) -> tilo_test_env::relay::Relay {
+async fn relay(refused: Vec<iroh::PublicKey>) -> tilo_test_relay::Relay {
     let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
     relay.access = std::sync::Arc::new(Refusing(refused));
-    tilo_test_env::relay::Relay::with(relay).await
+    tilo_test_relay::Relay::with(relay).await
 }
 
 /// A TCP path to `upstream` whose bytes each take [`ONE_WAY`] to arrive.

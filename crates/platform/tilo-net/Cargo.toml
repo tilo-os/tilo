@@ -143,7 +143,9 @@ serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # The relay tests' home relay is a loopback one no test shares.
-tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+# A loopback relay for the endpoints these tests start.
+tilo-test-relay = { path = "../../../tools/test-relay" }
 # The iroh trust test: endpoints and a relay under a locally issued CA.
 iroh.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }

@@ -106,10 +106,7 @@ fn enrolling(certs: &[DeviceCert]) -> Enrolling {
 fn peers(devices: &[DeviceCert], relays: &RelayMap) -> PeerRegistrar {
     PeerRegistrar::new(
         device_key(0x61),
-        devices
-            .iter()
-            .map(|cert| cert.device_public_key)
-            .collect(),
+        devices.iter().map(|cert| cert.device_public_key).collect(),
         Some(relays.clone()),
     )
 }
@@ -214,13 +211,13 @@ struct Devices {
     /// The relay is served on this runtime, which must outlive the exchange, and
     /// the server itself, which closes when dropped.
     _relay: tokio::runtime::Runtime,
-    _relay_server: tilo_test_env::relay::Relay,
+    _relay_server: tilo_test_relay::Relay,
 }
 
 impl Devices {
     fn new(root: &SigningKey, laptop: Answer, phone: Answer) -> Self {
         let relay = tokio::runtime::Runtime::new().expect("a runtime for the relay");
-        let server = relay.block_on(tilo_test_env::relay::relay());
+        let server = relay.block_on(tilo_test_relay::relay());
         let relays = server.relays();
         let person = root.verifying_key().to_bytes();
         let laptop_asked = Arc::new(AtomicUsize::new(0));
@@ -495,7 +492,12 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
     // is one copy, and the daemon that holds it answers here.
     let _enrolled = enrolling(&[laptop.clone(), phone.clone(), server.clone(), me]);
     let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::Enrol);
-    let registrar = || peers(&[laptop.clone(), phone.clone(), server.clone()], &devices.relays);
+    let registrar = || {
+        peers(
+            &[laptop.clone(), phone.clone(), server.clone()],
+            &devices.relays,
+        )
+    };
     // What this machine cannot do is refused before a slot is added.
     for (wrong, why) in [
         (
@@ -527,8 +529,7 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
             "no sibling unlock whose networks could be replaced",
         ),
     ] {
-        let refused =
-            run_with_peers(&wrong, machine, Some(registrar())).expect_err(why);
+        let refused = run_with_peers(&wrong, machine, Some(registrar())).expect_err(why);
         assert!(format!("{refused:#}").contains(why), "{refused:#}");
     }
     assert_eq!(slots(&device), ["0"]);
@@ -561,7 +562,7 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
             "{:#}",
             run_with_peers(&args(&devices.relays), machine, Some(registrar())).unwrap_err()
         )
-            .contains("already has a sibling unlock")
+        .contains("already has a sibling unlock")
     );
     let status = enrol::status(&runner, &device).unwrap();
     assert_eq!(

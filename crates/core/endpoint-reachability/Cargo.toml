@@ -51,7 +51,9 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 # The tests' home relay is a loopback one no test shares.
-tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+# A loopback relay for the endpoints these tests start.
+tilo-test-relay = { path = "../../../tools/test-relay" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]

@@ -83,13 +83,13 @@ impl LocalCa {
 
 async fn relay_under(
     tls: rustls::ServerConfig,
-) -> (tilo_test_env::relay::Relay, iroh::RelayUrl, iroh::RelayMap) {
+) -> (tilo_test_relay::Relay, iroh::RelayUrl, iroh::RelayMap) {
     let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
     relay.tls = Some(TlsConfig::new(
         (Ipv4Addr::LOCALHOST, 0),
         CertConfig::Manual { server_config: tls },
     ));
-    let served = tilo_test_env::relay::Relay::with(relay).await;
+    let served = tilo_test_relay::Relay::with(relay).await;
     let url = served.url().clone();
     let relays = served.relays();
     (served, url, relays)

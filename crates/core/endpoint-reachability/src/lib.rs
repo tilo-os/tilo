@@ -585,7 +585,7 @@ mod tests {
     /// so the address stops naming it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_woken_endpoint_names_its_home_relay_within_the_wait() {
-        let relay = tilo_test_env::relay::relay().await;
+        let relay = tilo_test_relay::relay().await;
         let own = relay.relays();
         let relays = RelayMap::empty();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)

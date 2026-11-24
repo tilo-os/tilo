@@ -181,8 +181,8 @@ mod tests {
     /// the switch, its relays held back until woken. The relay handed back is
     /// the test's own, a loopback server that answers a home relay
     /// connection the moment the switch lets one through.
-    async fn session() -> (PublishSwitch, Reachability, tilo_test_env::relay::Relay) {
-        let relay = tilo_test_env::relay::relay().await;
+    async fn session() -> (PublishSwitch, Reachability, tilo_test_relay::Relay) {
+        let relay = tilo_test_relay::relay().await;
         let relays = relay.relays();
         let switch = collaborating();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)

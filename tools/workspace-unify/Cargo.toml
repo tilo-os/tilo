@@ -1300,7 +1300,8 @@ doc = false
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
 "tilo-taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
-"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
+"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "tokio"] }
+"tilo-test-relay" = { path = "../../tools/test-relay", default-features = false, features = [] }
 "tilo-theme-bauhaus" = { path = "../../crates/ui/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-painter-wasm" = { path = "../../crates/ui/theme-painter-wasm", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../crates/ui/theme-sdk", default-features = false, features = [] }
@@ -2585,7 +2586,8 @@ doc = false
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
 "tilo-taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
-"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
+"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "tokio"] }
+"tilo-test-relay" = { path = "../../tools/test-relay", default-features = false, features = [] }
 "tilo-theme-painter-wasm" = { path = "../../crates/ui/theme-painter-wasm", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../crates/ui/theme-sdk", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../crates/engines/thumbnail", default-features = false, features = [] }
@@ -4075,7 +4077,8 @@ doc = false
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
-"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
+"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "tokio"] }
+"tilo-test-relay" = { path = "../../tools/test-relay", default-features = false, features = [] }
 "tilo-theme-bauhaus" = { path = "../../crates/ui/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-painter-wasm" = { path = "../../crates/ui/theme-painter-wasm", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../crates/ui/theme-sdk", default-features = false, features = [] }
@@ -5204,7 +5207,8 @@ doc = false
 "tilo-sort" = { path = "../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
-"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
+"tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "tokio"] }
+"tilo-test-relay" = { path = "../../tools/test-relay", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../crates/engines/thumbnail", default-features = false, features = [] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-macros" = { path = "../../crates/ui/ui-macros", default-features = false, features = [] }

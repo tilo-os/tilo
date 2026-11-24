@@ -141,7 +141,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waiting_names_the_relay_the_endpoint_reached() {
-        let relay = tilo_test_env::relay::relay().await;
+        let relay = tilo_test_relay::relay().await;
         let own = relay.relays();
         let endpoint = endpoint_without_relays().await;
         let reachability =
@@ -160,7 +160,7 @@ mod tests {
     /// changing who reaches it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn following_names_each_relay_change_and_nothing_else() {
-        let relay = tilo_test_env::relay::relay().await;
+        let relay = tilo_test_relay::relay().await;
         let own = relay.relays();
         let endpoint = endpoint_without_relays().await;
         let reachability = Reachability::defer(&endpoint, &own, Handle::current(), None);
