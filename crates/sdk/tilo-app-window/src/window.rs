@@ -39,7 +39,18 @@ use crate::pane::Pane;
 use crate::reconcile::{EventSink, Reconciler, UiEvent};
 use crate::rows::{BoundValues, RemoteRows};
 use crate::shell::{DETAIL, NOTHING_LISTED};
+use ui::call_pictures::CallPictures;
+use ui::widget::{CallSource, call_slot};
+
 use crate::{ResourceRef, UiNode, Value};
+
+/// The tile's own name for a picture's source, as the protocol carries it.
+fn tile_source(source: wire::CallPictureSource) -> CallSource {
+    match source {
+        wire::CallPictureSource::Camera => CallSource::Camera,
+        wire::CallPictureSource::Screen => CallSource::Screen,
+    }
+}
 
 /// Every virtual list of the window's views, by the key of its node in the window's tree.
 pub type Registry = Rc<RefCell<HashMap<String, Rc<RefCell<RemoteRows>>>>>;
@@ -367,6 +378,16 @@ pub struct AppWindow {
     /// Whether the window shows the history of what it shows, as the app last said
     /// ([`ToUi::History`]): the window bar's History control stands open while it does.
     history: ui::widget::HistoryControl,
+    /// The system's call pictures this window shows, decoded where it draws
+    /// ([`ToUi::CallPictures`]): each kept at the address its tile reads
+    /// ([`ui::live_pictures`]).
+    call_pictures: CallPictures,
+    /// The call tiles this window shows now, by live slot: a slot that leaves is forgotten, so
+    /// a tile whose person stopped showing draws their face again.
+    call_shown: std::collections::BTreeSet<String>,
+    /// Counts the frames published for the call's slots: a frame newer than the one a tile kept
+    /// is decoded afresh.
+    call_generation: u64,
 }
 
 impl AppWindow {
@@ -484,6 +505,9 @@ impl AppWindow {
             save: ui::SaveStatusSurface::new(),
             heard: Vec::new(),
             history: ui::widget::HistoryControl::Closed,
+            call_pictures: CallPictures::detached(),
+            call_shown: std::collections::BTreeSet::new(),
+            call_generation: 0,
         }
     }
 
@@ -509,6 +533,56 @@ impl AppWindow {
     /// choose there, and a window given none answers a chooser with nothing.
     pub fn set_page_picker(&mut self, picker: std::sync::Arc<dyn PagePicker>) {
         self.page_picker = Some(picker);
+    }
+
+    /// The system's call pictures reached this window: decode them where it draws, and keep each
+    /// newest frame at the address its tile reads ([`ui::widget::call_slot`]). A picture whose
+    /// person or source stopped showing is forgotten, so its tile shows their face again. Whether
+    /// the window changed.
+    fn call_pictures_arrived(
+        &mut self,
+        shown: Vec<wire::CallShown>,
+        pictures: Vec<wire::CallPicture>,
+    ) -> bool {
+        let kept: std::collections::BTreeSet<String> = shown
+            .iter()
+            .map(|shown| call_slot(&shown.person, tile_source(shown.source)))
+            .collect();
+        let mut changed = false;
+        for slot in self.call_shown.difference(&kept) {
+            ui::live_pictures::forget(slot);
+            changed = true;
+        }
+        self.call_shown = kept;
+        let coded: Vec<ui::native_media::Picture> = pictures
+            .into_iter()
+            .map(|picture| ui::native_media::Picture {
+                person: picture.person,
+                stream: picture.stream,
+                source: tile_source(picture.source).of_call(),
+                object: picture.object,
+            })
+            .collect();
+        if !self.call_pictures.decode_now(coded) {
+            return changed;
+        }
+        for (person, source, image) in self.call_pictures.pictures() {
+            let slot = call_slot(&person, CallSource::of_picture(source));
+            if !self.call_shown.contains(&slot) {
+                continue;
+            }
+            self.call_generation = self.call_generation.saturating_add(1);
+            let pixels = std::sync::Arc::new(image.data.data().to_vec());
+            ui::live_pictures::publish(
+                &slot,
+                self.call_generation,
+                image.width,
+                image.height,
+                pixels,
+            );
+            changed = true;
+        }
+        changed
     }
 
     /// The places a playback plays, as the app last sent them ([`ToUi::Outputs`]), until the host
@@ -747,6 +821,10 @@ impl AppWindow {
                     Ok(heard) => self.heard.push(heard),
                     Err(error) => tracing::warn!(%error, "what the app heard does not read"),
                 },
+                // The call's newest pictures, decoded where this window draws them.
+                ToUi::CallPictures { shown, pictures } => {
+                    content |= self.call_pictures_arrived(shown, pictures);
+                }
                 ToUi::Open {
                     level,
                     target,

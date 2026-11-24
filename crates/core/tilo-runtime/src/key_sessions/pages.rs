@@ -34,7 +34,7 @@ use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
     CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
 };
-use tilo_workspace_service::app_serving::{AppPages, PageAct};
+use tilo_workspace_service::app_serving::{AppPages, FOLLOW_EVERY, LIVE_FOLLOW_EVERY, PageAct};
 use ui::composition::page::escape;
 
 use super::{SessionHost, Sessions};
@@ -101,6 +101,9 @@ struct CallRoute {
     person: String,
     /// The steps the view asked for and the browser has not been given yet.
     steps: Vec<(u64, Request)>,
+    /// When the view last asked for the call's pictures: while it does, the page follows the
+    /// frames closely instead of every couple of seconds.
+    pictures_at: Option<ui::time::Instant>,
 }
 
 enum Held {
@@ -348,6 +351,7 @@ impl Inner {
                 app: app.to_owned(),
                 person,
                 steps: Vec::new(),
+                pictures_at: None,
             },
         );
     }
@@ -383,7 +387,14 @@ impl Inner {
             .max()?;
         let request_id = calls.next;
         calls.next = calls.next.saturating_add(1);
+        let pictures = matches!(
+            request.command,
+            runtime_collab::native_media::Command::Pictures { .. }
+        );
         if let Some(route) = calls.routes.get_mut(&page) {
+            if pictures {
+                route.pictures_at = Some(ui::time::now());
+            }
             route.steps.push((request_id, request));
         }
         let (done, wait) = tilo_actions::remote::pending();
@@ -408,6 +419,27 @@ impl Inner {
                 CallAnswer::Answered(snapshot) => Ok(snapshot),
                 CallAnswer::Refused(why) => Err(why),
             });
+        }
+    }
+
+    /// How often the stream of `page` asks what changed on it: the frame rate a page drawing a
+    /// call's pictures follows at while its view collects them, and the slower pace otherwise.
+    fn follow_every(&self, page: u64) -> std::time::Duration {
+        /// A view that asked for pictures this long ago stopped drawing them (its call ended, or
+        /// nobody shows a camera any more): the page follows its changes again at its own pace.
+        const WHILE_SHOWING: std::time::Duration = runtime_collab::native_media::PICTURES_LOST;
+        let asked_at = self
+            .calls
+            .lock_recover()
+            .routes
+            .get(&page)
+            .and_then(|route| route.pictures_at);
+        let showing = asked_at
+            .is_some_and(|at| ui::time::now().saturating_duration_since(at) < WHILE_SHOWING);
+        if showing {
+            LIVE_FOLLOW_EVERY
+        } else {
+            FOLLOW_EVERY
         }
     }
 
@@ -560,6 +592,10 @@ impl AppPages for Pages {
 
     fn calls_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
         Some(Arc::clone(&self.0.calls_woken))
+    }
+
+    fn follow_every(&self, page: u64) -> std::time::Duration {
+        self.0.follow_every(page)
     }
 }
 

@@ -589,6 +589,55 @@
       }
     },
     {
+      "name": "CallTile",
+      "doc": "A person in a call at their camera or screen.",
+      "props": [
+        {
+          "name": "who",
+          "doc": "The person the tile shows, and their face until their picture arrives.",
+          "type": {
+            "option": "actor"
+          }
+        },
+        {
+          "name": "source",
+          "doc": "What it shows of them: their camera, or the screen they share.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "CallSource",
+                "cases": [
+                  "camera",
+                  "screen"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "name",
+          "doc": "What it is called where `who` names nobody the workspace knows (someone a bridge carries in).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "speaking",
+          "doc": "They are heard talking now: their face wears the speaking ring.",
+          "type": "bool"
+        },
+        {
+          "name": "muted",
+          "doc": "Their microphone is off.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
+      }
+    },
+    {
       "name": "CandlestickChart",
       "doc": "A price per period as candles: what rose and fell when. Each period is a candle from its open to its close, its wick reaching the period's high and low; a period that closed above its open is drawn in the theme's success ink, one that closed below it in its danger ink, and a flat one dim. The traded volume stands under the prices when shown.",
       "props": [

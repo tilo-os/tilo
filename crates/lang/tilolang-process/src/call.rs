@@ -1,6 +1,9 @@
 //! The system's calls an instance's views take part in: who is in the call held on each resource,
 //! as the shell's call service says on the instance's own connection, and the steps the person
 //! takes in one (join, leave, mute, deafen, camera, screen), carried out through that service.
+//! The pictures of the call's cameras and shared screens are collected here too, for the window
+//! that draws them: the views' tiles ask for them, and the service sends the layers they show and
+//! nothing else.
 //!
 //! The service is the shell's governed voice service (`CollabRequest::NativeMediaCommand`): it
 //! binds every command to the connection's own app, workspace and record, asks for the
@@ -12,11 +15,15 @@
 use std::collections::{BTreeMap, HashMap};
 
 use collaboration::{CollabEvent, CollabRequest};
+use tilo_render_protocol::patch::{CallPicture, CallPictureSource, CallShown, ToUi};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::runtime::{Actor, Bridged, CallMember, CallStep};
-use ui_core::native_media::{Command, Issue, REPLY_LOST, Request, Snapshot, State, WATCH_LOST};
+use ui_core::native_media::{
+    Command, Issue, PICTURES_LOST, PictureLayer, PictureSource, REPLY_LOST, Request, Shown,
+    Snapshot, State, WATCH_LOST,
+};
 use ui_core::permissions::MemberId;
 use ui_core::time::{Duration, Instant};
 
@@ -44,6 +51,18 @@ pub struct Calls {
     refused: Option<String>,
     /// Whether the instance is to be told who is where again.
     changed: bool,
+    /// The pictures this device's view shows, as the call was last told: the people on camera and
+    /// the screens shared in the call this device joined, at the layer their tiles take.
+    shown: Vec<Shown>,
+    /// The pictures the call delivered since the window was last told, oldest first.
+    for_window: Vec<CallPicture>,
+    /// The collection outstanding: its request id and when it was sent. One is outstanding while
+    /// anything is shown, and the next is asked as each answer lands.
+    pictures: Option<(u64, Instant)>,
+    /// Where the next collection starts: past every picture this instance received.
+    cursor: u64,
+    /// What the window was last told the view shows, so it is told only when that changes.
+    window_shown: Option<Vec<CallShown>>,
 }
 
 impl Calls {
@@ -62,6 +81,11 @@ impl Calls {
             queued: Vec::new(),
             refused: None,
             changed: false,
+            shown: Vec::new(),
+            for_window: Vec::new(),
+            pictures: None,
+            cursor: 0,
+            window_shown: Some(Vec::new()),
         }
     }
 
@@ -127,6 +151,19 @@ impl Calls {
         let CollabEvent::NativeMediaCommandResult { request_id, result } = event else {
             return false;
         };
+        if self.pictures.is_some_and(|(id, _)| id == *request_id) {
+            self.pictures = None;
+            if let Ok(snapshot) = result {
+                self.cursor = self.cursor.max(snapshot.pictures_cursor);
+                for picture in &snapshot.pictures {
+                    self.for_window.push(received(picture));
+                }
+                if !snapshot.pictures.is_empty() {
+                    self.changed = true;
+                }
+            }
+            return true;
+        }
         let watched = self.watch.is_some_and(|(id, _)| id == *request_id);
         if watched {
             self.watch = None;
@@ -173,9 +210,13 @@ impl Calls {
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
         let now = ui_core::time::now();
         let lost = self
-            .watch
-            .and_then(|(_, sent)| sent.checked_add(WATCH_LOST))
+            .pictures
+            .and_then(|(_, sent)| sent.checked_add(PICTURES_LOST))
             .into_iter()
+            .chain(
+                self.watch
+                    .and_then(|(_, sent)| sent.checked_add(WATCH_LOST)),
+            )
             .chain(
                 self.pending
                     .values()
@@ -203,6 +244,15 @@ impl Calls {
         {
             self.watch = None;
         }
+        // A collection that never came back is given up on, and asked again: pictures are
+        // drawn from what already arrived, never waited for.
+        if self
+            .pictures
+            .is_some_and(|(_, sent)| now.saturating_duration_since(sent) >= PICTURES_LOST)
+        {
+            self.pictures = None;
+        }
+        self.follow_pictures(now);
         if self.watch.is_none() && self.watch_after.is_none_or(|after| now >= after) {
             self.watch_after = None;
             let request_id = self.request_id();
@@ -231,10 +281,112 @@ impl Calls {
         if let Some(why) = self.refused.take() {
             instance.failed(why);
         }
-        if !std::mem::take(&mut self.changed) {
-            return;
+        let changed = std::mem::take(&mut self.changed);
+        if changed {
+            instance.set_calls(self.members());
         }
-        instance.set_calls(self.members());
+        if let Some(message) = self.take_window_message() {
+            instance.say(message);
+            instance.flush();
+        }
+    }
+
+    /// What the window that draws the call's pictures is to be told, when there is anything: the
+    /// tiles the view shows now, and the pictures the call delivered for them since it was last
+    /// told. `None` when it already knows both.
+    pub fn take_window_message(&mut self) -> Option<ToUi> {
+        let shown: Vec<CallShown> = self.shown.iter().map(shown_of).collect();
+        if self.window_shown.as_ref() == Some(&shown) && self.for_window.is_empty() {
+            return None;
+        }
+        let pictures = std::mem::take(&mut self.for_window);
+        self.window_shown = Some(shown.clone());
+        Some(ToUi::CallPictures { shown, pictures })
+    }
+
+    /// Tell the call which pictures the view shows when that changed, and keep one collection of
+    /// the ones it delivered outstanding while anything is shown.
+    fn follow_pictures(&mut self, now: Instant) {
+        let wanted = self.wanted();
+        if wanted != self.shown {
+            self.shown = wanted;
+            let request_id = self.request_id();
+            self.queued.push(CollabRequest::NativeMediaCommand {
+                request_id,
+                command: Request::new(Command::Show {
+                    pictures: self.shown.clone(),
+                }),
+            });
+            if self.shown.is_empty() {
+                // Nothing is drawn: what was still on its way is nobody's.
+                self.pictures = None;
+            }
+        }
+        if !self.shown.is_empty() && self.pictures.is_none() {
+            let request_id = self.request_id();
+            self.queued.push(CollabRequest::NativeMediaCommand {
+                request_id,
+                command: Request::new(Command::Pictures { after: self.cursor }),
+            });
+            self.pictures = Some((request_id, now));
+        }
+    }
+
+    /// The pictures the view shows of the call this device is in: everyone on camera and every
+    /// screen shared in it, each at the layer a tile takes.
+    fn wanted(&self) -> Vec<Shown> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        if !matches!(
+            snapshot.state,
+            State::Preparing | State::Joining | State::Live | State::Reconnecting
+        ) || self.joined.is_none()
+        {
+            return Vec::new();
+        }
+        let Some(joined) = &self.joined else {
+            return Vec::new();
+        };
+        let mut shown = Vec::new();
+        if let Some(roster) = snapshot
+            .rosters
+            .iter()
+            .find(|roster| roster.channel_id == **joined)
+        {
+            let shown_of = |person: &String, source: PictureSource, layer: PictureLayer| Shown {
+                person: person.clone(),
+                source,
+                layer,
+            };
+            for person in &roster.people {
+                if roster.cameras.contains(person) {
+                    shown.push(shown_of(person, PictureSource::Camera, PictureLayer::Mid));
+                }
+                if roster.screens.contains(person) {
+                    shown.push(shown_of(person, PictureSource::Screen, PictureLayer::High));
+                }
+            }
+        }
+        if self.in_call(joined) {
+            if snapshot.camera {
+                shown.push(Shown {
+                    person: self.me.clone(),
+                    source: PictureSource::Camera,
+                    layer: PictureLayer::Mid,
+                });
+            }
+            if snapshot.screen {
+                shown.push(Shown {
+                    person: self.me.clone(),
+                    source: PictureSource::Screen,
+                    layer: PictureLayer::High,
+                });
+            }
+        }
+        shown.sort();
+        shown.dedup();
+        shown
     }
 
     /// Who is in each call the service told of, by its place, this device's person in the one it
@@ -311,6 +463,32 @@ impl Calls {
     }
 }
 
+/// A picture the call delivered, as the window that draws it takes it.
+fn received(picture: &ui_core::native_media::Picture) -> CallPicture {
+    CallPicture {
+        person: picture.person.clone(),
+        stream: picture.stream.clone(),
+        source: source_of(picture.source),
+        object: picture.object.clone(),
+    }
+}
+
+/// One picture a view's call tiles show, as the window that draws them takes it.
+fn shown_of(shown: &Shown) -> CallShown {
+    CallShown {
+        person: shown.person.clone(),
+        source: source_of(shown.source),
+    }
+}
+
+/// A picture's source, as the window's protocol names it.
+const fn source_of(source: PictureSource) -> CallPictureSource {
+    match source {
+        PictureSource::Camera => CallPictureSource::Camera,
+        PictureSource::Screen => CallPictureSource::Screen,
+    }
+}
+
 /// What the service's `issue` means to the person.
 const fn said(issue: Issue) -> &'static str {
     match issue {
@@ -325,5 +503,200 @@ const fn said(issue: Issue) -> &'static str {
         Issue::ScreenLost => "Sharing your screen stopped.",
         Issue::Unsupported => "This device can't do that in a call.",
         Issue::Unavailable | Issue::Stale => "Calls aren't available on this device right now.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use super::*;
+    use ui_core::native_media::{Picture, Roster};
+
+    const ME: &str = "abababababababababababababababababababababababababababababababab";
+    const ADA: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+    const PLACE: &str = "voice:standup";
+
+    fn snapshot(state: State, roster: Roster) -> Snapshot {
+        Snapshot {
+            version: 1,
+            state,
+            muted: false,
+            capture_active: state == State::Live,
+            input_id: None,
+            inputs: Vec::new(),
+            issue: None,
+            inventory_revision: None,
+            publication: None,
+            publishers: Vec::new(),
+            rosters: vec![roster],
+            speaking: Vec::new(),
+            camera: false,
+            screen: false,
+            deafened: false,
+            revision: 1,
+            pictures: Vec::new(),
+            pictures_cursor: 0,
+        }
+    }
+
+    fn channel_call(cameras: bool, screens: bool) -> Roster {
+        Roster {
+            channel_id: PLACE.to_owned(),
+            people: vec![ADA.to_owned()],
+            cameras: cameras.then(|| ADA.to_owned()).into_iter().collect(),
+            screens: screens.then(|| ADA.to_owned()).into_iter().collect(),
+            muted: Vec::new(),
+            deafened: Vec::new(),
+            bridges: Vec::new(),
+            bridged: Vec::new(),
+        }
+    }
+
+    fn joined(calls: &mut Calls) -> u64 {
+        let target = ResourceRef::root("voice:standup", "call");
+        calls.step(&target, CallStep::Join);
+        // The join's own request id is the first this instance asked.
+        1
+    }
+
+    fn sent(calls: &mut Calls) -> Vec<Request> {
+        let mut requests = Vec::new();
+        calls.say(|request| {
+            if let CollabRequest::NativeMediaCommand { command, .. } = request {
+                requests.push(command);
+            }
+            true
+        });
+        requests
+    }
+
+    fn answer(calls: &mut Calls, request_id: u64, snapshot: Snapshot) {
+        calls.take(&CollabEvent::NativeMediaCommandResult {
+            request_id,
+            result: Ok(snapshot),
+        });
+    }
+
+    fn picture(person: &str, source: PictureSource, byte: u8) -> Picture {
+        use ui_core::native_media::{PictureCodec, PictureLayer, PictureUnit};
+        let object = PictureUnit {
+            keyframe: true,
+            codec: PictureCodec::H264,
+            width: 16,
+            height: 16,
+            payload: &[byte; 8],
+        }
+        .to_object(PictureLayer::Mid, 1, 0);
+        Picture {
+            person: person.to_owned(),
+            stream: format!("{person}/stream"),
+            source,
+            object,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_call_view_shows_the_pictures_of_whoever_is_on_camera;
+
+        phase a_view_in_a_live_call_shows_what_the_call_says_is_shown;
+        {
+            let mut calls = Calls::new(ME);
+            let id = joined(&mut calls);
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
+            let requests = sent(&mut calls);
+            assert!(
+                requests.iter().any(|request| matches!(
+                    &request.command,
+                    Command::Show { pictures }
+                        if pictures == &vec![Shown {
+                            person: ADA.to_owned(),
+                            source: PictureSource::Camera,
+                            layer: PictureLayer::Mid,
+                        }]
+                )),
+                "the call is told which pictures the view draws"
+            );
+            assert!(
+                requests.iter().any(|request| matches!(&request.command, Command::Pictures { after: 0 })),
+                "and collects them"
+            );
+
+            let window = calls.take_window_message().expect("the window is told the tiles");
+            let ToUi::CallPictures { shown, pictures } = window else {
+                panic!("the window takes the call's pictures");
+            };
+            assert_eq!(shown, vec![CallShown {
+                person: ADA.to_owned(),
+                source: CallPictureSource::Camera,
+            }]);
+            assert!(pictures.is_empty(), "nothing arrived yet");
+            assert!(calls.take_window_message().is_none(), "nothing new to say");
+        }
+
+        phase a_picture_the_call_delivered_reaches_the_window_and_is_collected_again;
+        {
+            let mut calls = Calls::new(ME);
+            let id = joined(&mut calls);
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, true)));
+            let requests = sent(&mut calls);
+            let collect = requests
+                .iter()
+                .find(|request| matches!(&request.command, Command::Pictures { .. }))
+                .expect("a collection is outstanding");
+            let (request_id, _) = calls.pictures.expect("the collection is held");
+            assert_eq!(collect.command, Command::Pictures { after: 0 });
+
+            let mut with_pictures = snapshot(State::Live, channel_call(true, true));
+            with_pictures.pictures = vec![picture(ADA, PictureSource::Camera, 7)];
+            with_pictures.pictures_cursor = 1;
+            answer(&mut calls, request_id, with_pictures);
+
+            let window = calls.take_window_message().expect("the picture reaches the window");
+            let ToUi::CallPictures { pictures, .. } = window else {
+                panic!("the window takes the call's pictures");
+            };
+            assert_eq!(pictures.len(), 1);
+            assert_eq!(pictures[0].person, ADA);
+            assert_eq!(pictures[0].source, CallPictureSource::Camera);
+
+            // The next collection starts past what was taken.
+            let requests = sent(&mut calls);
+            assert!(
+                requests
+                    .iter()
+                    .any(|request| matches!(&request.command, Command::Pictures { after: 1 })),
+                "the next collection starts where the last one ended"
+            );
+        }
+
+        phase leaving_the_call_stops_showing_and_collecting;
+        {
+            let mut calls = Calls::new(ME);
+            let id = joined(&mut calls);
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
+            sent(&mut calls);
+            let showing = calls.take_window_message().expect("the window shows the tile");
+            let ToUi::CallPictures { shown, .. } = showing else {
+                panic!("the window takes the call's pictures");
+            };
+            assert_eq!(shown.len(), 1);
+            let target = ResourceRef::root("voice:standup", "call");
+            calls.step(&target, CallStep::Leave);
+            let requests = sent(&mut calls);
+            assert!(
+                requests.iter().any(|request| matches!(
+                    &request.command,
+                    Command::Show { pictures } if pictures.is_empty()
+                )),
+                "the call is told nothing is drawn any more"
+            );
+            assert!(calls.pictures.is_none(), "and no collection is held");
+            let window = calls.take_window_message().expect("the window forgets the tiles");
+            let ToUi::CallPictures { shown, pictures } = window else {
+                panic!("the window takes the call's pictures");
+            };
+            assert!(shown.is_empty() && pictures.is_empty());
+        }
     }
 }

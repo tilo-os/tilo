@@ -1338,3 +1338,9 @@ clock-minutes-behind = { $count ->
     }
 clock-hours-minutes-ahead = { $hours } Std. { $minutes } Min. voraus
 clock-hours-minutes-behind = { $hours } Std. { $minutes } Min. zurück
+
+## A call's picture of one person: the camera they turned on, or the screen they share.
+
+call-tile-someone = Jemand
+call-tile-on-camera = { $name }, mit Kamera
+call-tile-sharing-screen = { $name }, teilt den Bildschirm

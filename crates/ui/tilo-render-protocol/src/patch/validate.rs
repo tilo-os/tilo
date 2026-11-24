@@ -19,7 +19,10 @@
 use tilo_actions::ActionAddress;
 use tilo_ui_graph::component::{Catalogue, Description, Type, companion};
 
-use super::{Binding, Event, Node, Patch, ResourceRef, RowChange, ToApp, ToUi, Value, Words};
+use super::{
+    Binding, Event, MAX_CALL_PICTURE_BYTES, MAX_CALL_PICTURES, Node, Patch, ResourceRef, RowChange,
+    ToApp, ToUi, Value, Words,
+};
 
 /// Why a batch was refused: what was wrong, and where.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -215,6 +218,22 @@ impl<'a> Validator<'a> {
             }
             ToUi::Heard(bytes) | ToUi::Outputs(bytes) => {
                 self.carried(bytes.len(), "over the limit of bytes in a message")
+            }
+            ToUi::CallPictures { shown, pictures } => {
+                if shown.len() > MAX_CALL_PICTURES || pictures.len() > MAX_CALL_PICTURES {
+                    return Err(Refused::invalid("over the limit of pictures in a message"));
+                }
+                for shown in shown {
+                    self.key(&shown.person)?;
+                }
+                for picture in pictures {
+                    self.key(&picture.person)?;
+                    self.key(&picture.stream)?;
+                    if picture.object.is_empty() || picture.object.len() > MAX_CALL_PICTURE_BYTES {
+                        return Err(Refused::invalid("a call picture is not one picture"));
+                    }
+                }
+                Ok(())
             }
             ToUi::Page { request, .. } => {
                 if request.len() > super::MAX_PAGE_BYTES {

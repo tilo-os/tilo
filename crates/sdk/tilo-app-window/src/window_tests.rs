@@ -3115,3 +3115,67 @@ fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_
         "pressing it is the app's undo"
     );
 }
+
+/// One coded picture of a call, as a device's camera sends it: colour at `width` by `height`,
+/// encoded by the real encoder, for the window to decode where it draws.
+#[cfg(not(target_arch = "wasm32"))]
+fn coded_picture(person: &str, source: wire::CallPictureSource) -> wire::CallPicture {
+    let (width, height): (u16, u16) = (32, 32);
+    let mut config = media::EncoderConfig::new(media::StreamCodec::H264, 32, 32, 30);
+    config.bitrate_bps = 500_000;
+    let mut encoder = media::RealtimeEncoder::new(&config).expect("an encoder");
+    let rgba = vec![80_u8; 32 * 32 * 4];
+    let units = encoder
+        .encode(media::InputFrame::Packed(&rgba), std::time::Duration::ZERO)
+        .expect("a frame encodes");
+    let unit = units.first().expect("one picture");
+    let object = ui::native_media::PictureUnit {
+        keyframe: unit.keyframe,
+        codec: ui::native_media::PictureCodec::H264,
+        width,
+        height,
+        payload: &unit.data,
+    }
+    .to_object(ui::native_media::PictureLayer::Mid, 1, 0);
+    wire::CallPicture {
+        person: person.to_owned(),
+        stream: format!("{person}/camera"),
+        source,
+        object,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_call_picture_is_drawn_where_its_tile_reads_and_forgotten_when_it_stops_showing() {
+    let person = "ab".repeat(32);
+    let slot = ui::widget::call_slot(&person, CallSource::Camera);
+    ui::live_pictures::forget(&slot);
+    let (mut app, mut window) = window();
+    send(
+        &mut app,
+        &[ToUi::CallPictures {
+            shown: vec![wire::CallShown {
+                person: person.clone(),
+                source: wire::CallPictureSource::Camera,
+            }],
+            pictures: vec![coded_picture(&person, wire::CallPictureSource::Camera)],
+        }],
+    );
+    assert!(window.receive());
+    let frame = ui::live_pictures::get(&slot).expect("the tile reads the frame it shows");
+    assert_eq!((frame.width, frame.height), (32, 32));
+
+    send(
+        &mut app,
+        &[ToUi::CallPictures {
+            shown: Vec::new(),
+            pictures: Vec::new(),
+        }],
+    );
+    assert!(window.receive());
+    assert!(
+        ui::live_pictures::get(&slot).is_none(),
+        "a tile nobody shows keeps no frame"
+    );
+}

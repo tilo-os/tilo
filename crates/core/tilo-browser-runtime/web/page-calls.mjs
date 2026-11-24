@@ -11,10 +11,21 @@
  * A `watch` is held, as a native call service holds it: until the status it names has moved, or
  * for `WATCH_HOLD_MS`. That is how the view learns who joined, left, talks or mutes the moment
  * it happens, with one question outstanding instead of a poll.
+ *
+ * A `pictures` collection is held the same way (`PICTURES_HOLD_MS`): the pictures the call
+ * delivered since the view last collected them, answered as soon as one arrives, so a call's
+ * tiles move on the frame after a picture did rather than on a poll.
  */
 
 /** The longest a `watch` is held before it is answered unchanged (`WATCH_HOLD`). */
 export const WATCH_HOLD_MS = 20_000;
+
+/** The longest a `pictures` collection is held before it is answered without any
+ * (`PICTURES_HOLD`). */
+export const PICTURES_HOLD_MS = 5_000;
+
+/** The most bytes one `pictures` answer carries (`PICTURES_BUDGET`), at least one picture. */
+export const PICTURES_BUDGET = 1024 * 1024;
 
 /** `phase` as the status names the call's state. */
 export function stateOfPhase(phase) {
@@ -69,6 +80,7 @@ export function createPageCalls({
   peerVoice,
   send,
   holdMs = WATCH_HOLD_MS,
+  picturesHoldMs = PICTURES_HOLD_MS,
   setTimeout: after = (callback, ms) => globalThis.setTimeout(callback, ms),
   clearTimeout: cancel = handle => globalThis.clearTimeout(handle),
 } = {}) {
@@ -81,6 +93,9 @@ export function createPageCalls({
   /** The `watch` the view waits on, if any: the revision it last saw, and the timer that ends
    * its hold. */
   let held = null;
+  /** The `pictures` collection the view waits on, if any: its request, the cursor it collects
+   * from, and the timer that ends its hold. */
+  let heldPictures = null;
   let disposed = false;
 
   const listing = () => {
@@ -152,8 +167,64 @@ export function createPageCalls({
     answered(requestId);
   }
 
+  /** What the call has to draw since `cursor`: its pictures, in base64, and where the next
+   * collection starts. A browser that carries no pictures answers none. */
+  function picturesSince(cursor) {
+    const taken = typeof call.takePictures === 'function'
+      ? call.takePictures(cursor, PICTURES_BUDGET)
+      : null;
+    const pictures = Array.isArray(taken?.pictures) ? taken.pictures : [];
+    const next = Number.isSafeInteger(taken?.cursor) ? taken.cursor : cursor;
+    return {pictures, cursor: next};
+  }
+
+  /** Answer `requestId` with the pictures the call has since `cursor`. */
+  function answerPictures(requestId, cursor) {
+    const {pictures, cursor: next} = picturesSince(cursor);
+    send({
+      request_id: requestId,
+      answer: {answered: {...status(), pictures, pictures_cursor: next}},
+    });
+  }
+
+  /** Hold `requestId` until a picture arrives past `cursor`, or the hold runs out: one
+   * collection outstanding, as a native call service holds one. */
+  function collectPictures(requestId, cursor) {
+    if (typeof call.takePictures !== 'function') {
+      answerPictures(requestId, cursor);
+      return;
+    }
+    const arrived = picturesSince(cursor);
+    if (arrived.pictures.length) {
+      if (heldPictures) clearTimeout(heldPictures.timer);
+      heldPictures = null;
+      answerPictures(requestId, cursor);
+      return;
+    }
+    if (heldPictures) clearTimeout(heldPictures.timer);
+    heldPictures = {
+      requestId,
+      cursor,
+      timer: after(() => {
+        if (heldPictures?.requestId !== requestId) return;
+        heldPictures = null;
+        answerPictures(requestId, cursor);
+      }, picturesHoldMs),
+    };
+  }
+
+  /** Answer the held collection once the call has a picture to draw. */
+  function arrived() {
+    if (!heldPictures) return;
+    const {requestId, cursor, timer} = heldPictures;
+    if (!picturesSince(cursor).pictures.length) return;
+    clearTimeout(timer);
+    heldPictures = null;
+    answerPictures(requestId, cursor);
+  }
+
   const unsubscribe = typeof call.subscribe === 'function'
-    ? call.subscribe(() => { status(); moved(); })
+    ? call.subscribe(() => { status(); moved(); arrived(); })
     : null;
   const unsubscribeCalls = typeof peerVoice.onCalls === 'function'
     ? peerVoice.onCalls(() => { status(); moved(); })
@@ -198,12 +269,7 @@ export function createPageCalls({
           call.showPictures(command.pictures);
           break;
         case 'pictures':
-          // No tile draws the call's pictures in a page yet: the status carries none, and the
-          // cursor stays where the view asked from.
-          send({
-            request_id: requestId,
-            answer: {answered: {...status(), pictures: [], pictures_cursor: command.after}},
-          });
+          collectPictures(requestId, Number(command.after) || 0);
           return;
         case 'watch':
           watch(requestId, Number(command.revision) || 0);
@@ -223,6 +289,8 @@ export function createPageCalls({
       disposed = true;
       if (held) clearTimeout(held.timer);
       held = null;
+      if (heldPictures) clearTimeout(heldPictures.timer);
+      heldPictures = null;
       unsubscribe?.();
       unsubscribeCalls?.();
     },

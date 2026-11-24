@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import {createPageCalls, WATCH_HOLD_MS} from './page-calls.mjs';
+import {createPageCalls, PICTURES_HOLD_MS, WATCH_HOLD_MS} from './page-calls.mjs';
 
 const ADA = 'a'.repeat(63) + '1';
 const BO = 'b'.repeat(63) + '2';
@@ -11,6 +11,10 @@ function voiceOf({members = []} = {}) {
   const listeners = new Set();
   const callListeners = new Set();
   const asked = [];
+  /** The pictures the live session delivered, past every cursor, oldest first: what the inbox
+   * keeps and `takePictures` hands over. */
+  const inbox = [];
+  let pictureCursor = 0;
   const state = {phase: 'idle', call: null, muted: false, camera: false, screen: false, deafened: false, inputId: null};
   const peerVoice = {
     call: {
@@ -26,6 +30,19 @@ function voiceOf({members = []} = {}) {
       selectInput(id) { asked.push(['input', id]); state.inputId = id; emit(); },
       setVolume(member, gain) { asked.push(['volume', member, gain]); },
       showPictures(items) { asked.push(['show', items]); },
+      takePictures(after, budget) {
+        const pictures = [];
+        let cursor = after;
+        let bytes = 0;
+        for (const entry of inbox) {
+          if (entry.cursor <= after) continue;
+          bytes += entry.picture.object.length;
+          if (pictures.length && bytes > budget) break;
+          cursor = entry.cursor;
+          pictures.push(entry.picture);
+        }
+        return {pictures, cursor};
+      },
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     },
     calls: [],
@@ -38,6 +55,12 @@ function voiceOf({members = []} = {}) {
     state,
     /** What the workspace's presence says now, as the next listing. */
     lists(calls) { peerVoice.calls = calls; for (const listener of [...callListeners]) listener(calls); },
+    /** One picture reached the live session for this page, as the browser's call draws it. */
+    picture(person, source, object) {
+      pictureCursor += 1;
+      inbox.push({cursor: pictureCursor, picture: {person, stream: `${person}/${source}`, source, object}});
+      for (const listener of [...listeners]) listener(state);
+    },
     members,
   };
 }
@@ -142,4 +165,46 @@ test('a step the page has no way to carry is refused, in the browser’s words',
   calls.apply(step(3, 'levitate'));
   assert.equal(sent[0].request_id, 3);
   assert.match(sent[0].answer.refused, /levitate/);
+});
+
+test('a pictures collection is held until the call has one, then answers it with the cursor', () => {
+  const {peerVoice, picture} = voiceOf();
+  const sent = [];
+  const calls = createPageCalls({peerVoice, send: answer => sent.push(answer)});
+  calls.apply(step(1, 'join', {channel_id: 'standup'}));
+  sent.length = 0;
+
+  calls.apply(step(5, 'pictures', {after: 0}));
+  assert.equal(sent.length, 0, 'nothing to draw yet, so the collection holds');
+
+  picture(BO, 'camera', 'AAAA');
+  assert.equal(sent.length, 1, 'a picture answers the collection at once');
+  assert.equal(sent[0].request_id, 5);
+  const answer = sent[0].answer.answered;
+  assert.deepEqual(answer.pictures.map(p => [p.person, p.source, p.object]), [[BO, 'camera', 'AAAA']]);
+  assert.equal(answer.pictures_cursor, 1, 'the next collection starts past it');
+
+  calls.apply(step(6, 'pictures', {after: answer.pictures_cursor}));
+  assert.equal(sent.length, 1, 'what was collected is not handed over twice');
+});
+
+test('a pictures collection nothing fills is answered when its hold ends', () => {
+  const {peerVoice} = voiceOf();
+  const timers = [];
+  const sent = [];
+  const calls = createPageCalls({
+    peerVoice,
+    send: answer => sent.push(answer),
+    setTimeout: (callback, ms) => { timers.push({callback, ms}); return timers.length; },
+    clearTimeout: () => {},
+  });
+  calls.apply(step(3, 'pictures', {after: 0}));
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, PICTURES_HOLD_MS);
+  assert.equal(sent.length, 0);
+
+  timers[0].callback();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].request_id, 3);
+  assert.deepEqual(sent[0].answer.answered.pictures, []);
 });

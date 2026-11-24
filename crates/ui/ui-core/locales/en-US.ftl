@@ -1371,3 +1371,9 @@ clock-minutes-behind = { $count ->
     }
 clock-hours-minutes-ahead = { $hours } h { $minutes } min ahead
 clock-hours-minutes-behind = { $hours } h { $minutes } min behind
+
+## A call's picture of one person: the camera they turned on, or the screen they share.
+
+call-tile-someone = Someone
+call-tile-on-camera = { $name }, on camera
+call-tile-sharing-screen = { $name }, sharing their screen

@@ -15,7 +15,6 @@
 //! ciphertext refuses it ([`PageRefusal::StoredCopy`]).
 
 use std::future::Future;
-use std::time::Duration;
 
 use tilo_actions::remote::Caller;
 use tilo_server_client::frame::{read_frame_or_eof, write_frame};
@@ -29,9 +28,10 @@ use crate::WorkspaceId;
 use crate::app_serving::AppPages;
 use crate::service::ServerProtocol;
 
-/// How often an open page asks what others changed while its person does
-/// nothing: their edits reach it within this.
-const FOLLOW_EVERY: Duration = Duration::from_secs(2);
+/// How often an open page asks what changed while its person does nothing: their edits reach it
+/// within this, and a view drawing a call's pictures far sooner
+/// ([`AppPages::follow_every`](crate::app_serving::AppPages::follow_every)).
+use crate::app_serving::FOLLOW_EVERY;
 
 /// The page's script: the handshake, the session and what the person does.
 const SCRIPT: &str = include_str!("page/page.mjs");
@@ -111,12 +111,13 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
         }
     });
     let mut open: Option<(WorkspaceId, u64)> = None;
-    let mut follow = tokio::time::interval(FOLLOW_EVERY);
-    follow.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // What wakes this stream when the page's view asks for a call step: the browser carries
     // the call, and hears of a step the moment the view asks for it.
     let calls = pages.calls_waker();
     loop {
+        // How soon this page is asked what changed: a view drawing a call's pictures is followed
+        // at the speed its frames move, one showing nothing live every couple of seconds.
+        let follow_in = open.map_or(FOLLOW_EVERY, |(_, page)| pages.follow_every(page));
         let asked_for_a_call = async {
             match &calls {
                 Some(calls) => calls.notified().await,
@@ -179,7 +180,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                     }
                 }
             }
-            _ = follow.tick(), if open.is_some() => {
+            () = tokio::time::sleep(follow_in), if open.is_some() => {
                 let Some((workspace_id, page)) = open else { continue };
                 match pages.act(workspace_id, page, None).await {
                     Some(Ok(patches)) if patches.is_empty() => None,

@@ -950,12 +950,16 @@ template view composer_draft<D>(
 
 /// The system's call held on `of`: who is in it, each with their face and what they do there
 /// (talking, muted, deafened, on camera, sharing their screen), and the person's own controls:
-/// Join while they are not in it; mute, deafen, camera, screen and Leave while they are. Who is
-/// in it is the call service's presence, never stored; who may speak or listen is the
-/// workspace's, and the microphone, camera and screen are asked for through the system's prompts.
+/// Join while they are not in it; mute, deafen, camera, screen and Leave while they are. Whoever
+/// is on camera or sharing a screen shows as a tile of the call's own picture; everyone else shows
+/// as their face and a word of what they do. Who is in it is the call service's presence, never
+/// stored; who may speak or listen is the workspace's, and the microphone, camera and screen are
+/// asked for through the system's prompts.
 view call<R>(of: R) {
     let people = call_members(of)
     let mine = people.filter(m -> m.mine)
+    let pictured = people.filter(m -> m.camera or m.screen)
+    let others = people.filter(m -> not m.camera and not m.screen)
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         content: {
             ui.Docked {
@@ -1030,8 +1034,40 @@ view call<R>(of: R) {
                     ui.Scroll {
                         page {
                             stack(gap: .related) {
-                                for m in people {
-                                    call_member(m)
+                                if not pictured.is_empty() {
+                                    grid(
+                                        columns: if pictured.len() == 1 { 1 } else { 2 },
+                                        gap: .group,
+                                    ) {
+                                        for m in pictured {
+                                            if m.screen {
+                                                ui.CallTile(
+                                                    who: m.who,
+                                                    name: m.name,
+                                                    source: .screen,
+                                                    speaking: m.speaking,
+                                                    muted: m.muted,
+                                                    fill,
+                                                )
+                                            } else {
+                                                ui.CallTile(
+                                                    who: m.who,
+                                                    name: m.name,
+                                                    source: .camera,
+                                                    speaking: m.speaking,
+                                                    muted: m.muted,
+                                                    fill,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                if not others.is_empty() {
+                                    stack(gap: .tight) {
+                                        for m in others {
+                                            call_member(m)
+                                        }
+                                    }
                                 }
                             }
                         }

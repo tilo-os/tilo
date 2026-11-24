@@ -63,29 +63,65 @@ impl CallPictures {
         }
     }
 
+    /// A decoder that wakes nobody, for a host that decodes as pictures reach it
+    /// ([`Self::decode_now`]) rather than on a job of its own.
+    #[must_use]
+    pub fn detached() -> Self {
+        Self {
+            decoded: Arc::new(Mutex::new(Decoded::default())),
+            behind: BTreeSet::new(),
+            work: Arc::new(Work::default()),
+            wake: WakeHandle::detached(),
+        }
+    }
+
     /// Hand over the pictures of one `Pictures` answer, oldest first.
     pub fn receive(&mut self, pictures: Vec<Picture>) {
         for picture in pictures {
-            let Some(unit) = picture.unit() else {
-                continue;
-            };
-            let key = (picture.stream.clone(), picture.source);
-            if unit.keyframe {
-                self.behind.remove(&key);
-            } else if self.behind.contains(&key) {
-                continue;
+            if let Some(picture) = self.admit(picture) {
+                self.decoded.lock_recover().pending += 1;
+                self.work.queue.lock_recover().push_back(picture);
             }
-            let mut queue = self.work.queue.lock_recover();
-            if queue.len() >= QUEUED {
-                drop(queue);
-                self.behind.insert(key);
-                continue;
-            }
-            self.decoded.lock_recover().pending += 1;
-            queue.push_back(picture);
-            drop(queue);
         }
         self.start_decoding();
+    }
+
+    /// Decode one answer's pictures now, on the calling thread, and keep them: for the host that
+    /// draws the call (a window of an app whose view shows it), which publishes the frames where
+    /// its tiles read them. Whether any picture changed what it shows.
+    pub fn decode_now(&mut self, pictures: Vec<Picture>) -> bool {
+        let mut changed = false;
+        for picture in pictures {
+            let Some(picture) = self.admit(picture) else {
+                continue;
+            };
+            let decoded = decode_one(&picture, &mut self.work.decoders.lock_recover());
+            let Some(image) = decoded else {
+                continue;
+            };
+            let mut shown = self.decoded.lock_recover();
+            shown.shown.insert((picture.person, picture.source), image);
+            shown.changed = true;
+            changed = true;
+        }
+        changed
+    }
+
+    /// The picture as the stream state lets it in, or `None`: a stream that lost a picture holds
+    /// until its next keyframe, and one too far behind starts over rather than fall further.
+    fn admit(&mut self, picture: Picture) -> Option<Picture> {
+        let unit = picture.unit()?;
+        let key = (picture.stream.clone(), picture.source);
+        if unit.keyframe {
+            self.behind.remove(&key);
+        } else if self.behind.contains(&key) {
+            return None;
+        }
+        if self.work.queue.lock_recover().len() >= QUEUED {
+            self.behind.insert(key);
+            return None;
+        }
+        Some(picture)
     }
 
     /// Collect pictures a decoder finished after the unit that completed

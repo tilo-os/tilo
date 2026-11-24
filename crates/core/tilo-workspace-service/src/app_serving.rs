@@ -174,6 +174,14 @@ pub trait AppActionServer: Send + Sync {
     }
 }
 
+/// How often an open page asks what changed on it while its view shows nothing that moves: the
+/// edits of other people and agents reach it within this.
+pub const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often an open page asks while its view draws a call's pictures: a call's frames move far
+/// faster than a page otherwise follows.
+pub const LIVE_FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A workspace's apps as web pages: each page an app's view of the
 /// workspace's document, as the member who opened it may see it.
 pub trait AppPages: Send + Sync {
@@ -226,6 +234,13 @@ pub trait AppPages: Send + Sync {
     /// the person's asks, so the browser hears of a step at once.
     fn calls_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
         None
+    }
+
+    /// How often the stream of `page` asks what changed on it: [`LIVE_FOLLOW_EVERY`] while its
+    /// view draws a call's pictures, [`FOLLOW_EVERY`] otherwise.
+    fn follow_every(&self, page: u64) -> std::time::Duration {
+        let _ = page;
+        FOLLOW_EVERY
     }
 }
 

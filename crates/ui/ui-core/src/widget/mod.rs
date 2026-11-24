@@ -2671,6 +2671,8 @@ pub use media_card::{
 pub use media_grid_component::{DescribedCards, MediaCardProps, MediaGridProps};
 pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
+pub mod call_tile;
+pub use call_tile::{CallSource, CallTile, CallTileProps, call_address, call_slot};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod media_transport;

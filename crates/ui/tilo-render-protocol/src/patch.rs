@@ -669,7 +669,57 @@ pub enum ToUi {
     /// plays them on the computer's sound devices and casts to a receiver (`tilo-media`'s
     /// playback bridge); it is sent only when the Collection changed.
     Outputs(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// The pictures of the system's call the window shows: every picture the app's view shows now
+    /// as a tile (`shown`, so a tile whose person stopped showing forgets its last frame), and the
+    /// pictures the call delivered since the last message. The window decodes them where it draws
+    /// (`ui::live_pictures`), which is what a call's tile reads.
+    CallPictures {
+        shown: Vec<CallShown>,
+        pictures: Vec<CallPicture>,
+    },
 }
+
+/// Which of a person's pictures a call tile shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallPictureSource {
+    Camera,
+    Screen,
+}
+
+/// One picture a view's call tiles show: a person's camera or the screen they share.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallShown {
+    /// The person, as the workspace names them (their root key, lowercase hex).
+    pub person: String,
+    pub source: CallPictureSource,
+}
+
+/// One picture the call delivered for a tile: the tilo-video/1 object of a person's camera or
+/// screen, as the call received it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallPicture {
+    /// The person it shows.
+    pub person: String,
+    /// The stream it belongs to: one participation's source, for as long as that participation
+    /// lasts. A person on two devices, or back after leaving, is another stream; a decoder starts
+    /// over with each.
+    pub stream: String,
+    pub source: CallPictureSource,
+    /// The tilo-video/1 object: header and access unit.
+    #[serde(with = "serde_bytes")]
+    pub object: Vec<u8>,
+}
+
+/// The most pictures one [`ToUi::CallPictures`] carries, and the most a tile set shows: what a
+/// call view draws at once (`runtime_collab::native_media::MAX_SHOWN`).
+pub const MAX_CALL_PICTURES: usize = 64;
+
+/// The largest a [`CallPicture`]'s object is: one coded picture of a call
+/// (`runtime_collab::native_media::MAX_PICTURE_BYTES`).
+pub const MAX_CALL_PICTURE_BYTES: usize = 512 * 1024;
 
 /// What the person did, as the window tells its app.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
