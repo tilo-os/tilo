@@ -393,7 +393,7 @@ pub(crate) struct GovernedWorkspace {
     /// without taking its lock ([`readings::Invitations`]).
     invitations: readings::Invitations,
     /// Whom moderation removed, and when: the public entry keeps them out for
-    /// the day.
+    /// the day, or until the workspace admits them again.
     removals: removals::Removals,
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the
