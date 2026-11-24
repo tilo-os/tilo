@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 
-use osk::{Candidate, GeometricSwipeModel};
+use tilo_keyboard_engine::{Candidate, GeometricSwipeModel};
 use serde::Serialize;
 
 use super::Gesture;
@@ -18,7 +18,7 @@ fn add(count: &mut u32, amount: u32) -> std::io::Result<()> {
 pub fn lexical(word: &str) -> String {
     word.chars()
         .flat_map(char::to_lowercase)
-        .map(osk::dict::fold_char)
+        .map(tilo_keyboard_engine::dict::fold_char)
         .filter(char::is_ascii_alphabetic)
         .collect()
 }

@@ -32,6 +32,7 @@ runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 
 [dependencies]
 tilo-input-context = { path = "../../crates/desktop/tilo-input-context", features = ["client"] }
+tilo-keyboard-engine = { path = "../../crates/engines/keyboard" }
 tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }

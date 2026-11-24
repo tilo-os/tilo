@@ -12,7 +12,53 @@ use ui::tilo_resource::{self, Counter, JsonSchema, Model, Set, resource};
 
 use crate::autocorrect::MAX_KEPT_WORDS;
 use crate::predict::{MAX_LEARNED_CONTEXTS, MAX_LEARNED_WORDS_PER_CONTEXT};
-use crate::touch_model::{KeyOffset, MAX_LEARNED_KEYS};
+use crate::touch_model::{KeyOffset as EngineOffset, MAX_LEARNED_KEYS};
+
+/// Where one person tends to hit a letter, as the resource keeps it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Model, JsonSchema)]
+pub struct KeyOffset {
+    pub dx: f32,
+    pub dy: f32,
+    pub samples: u32,
+}
+
+impl From<KeyOffset> for EngineOffset {
+    fn from(stored: KeyOffset) -> Self {
+        Self {
+            dx: stored.dx,
+            dy: stored.dy,
+            samples: stored.samples,
+        }
+    }
+}
+
+impl From<EngineOffset> for KeyOffset {
+    fn from(engine: EngineOffset) -> Self {
+        Self {
+            dx: engine.dx,
+            dy: engine.dy,
+            samples: engine.samples,
+        }
+    }
+}
+
+/// The transitions as the predictor counts them, from the resource's counters.
+pub fn counts(
+    transitions: &BTreeMap<String, BTreeMap<String, Counter>>,
+) -> BTreeMap<String, BTreeMap<String, u32>> {
+    transitions
+        .iter()
+        .map(|(context, words)| {
+            (
+                context.clone(),
+                words
+                    .iter()
+                    .map(|(word, count)| (word.clone(), u32::try_from(count.get()).unwrap_or(u32::MAX)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
 
 /// What the keyboard learned from one person's typing. Only its verbs
 /// change it: learning comes from typing, never from an edit of a count.
@@ -125,10 +171,10 @@ impl Learned {
             .map_or(0, |count| u32::try_from(count.get()).unwrap_or(u32::MAX))
     }
 
-    pub fn touch_offsets(&self) -> BTreeMap<char, KeyOffset> {
+    pub fn touch_offsets(&self) -> BTreeMap<char, EngineOffset> {
         self.touch
             .iter()
-            .filter_map(|(key, offset)| Some((key.chars().next()?, *offset)))
+            .filter_map(|(key, offset)| Some((key.chars().next()?, (*offset).into())))
             .collect()
     }
 }
@@ -182,7 +228,7 @@ mod tests {
             assert!(learned.kept.contains(&"teh".to_owned()));
             assert_eq!(
                 learned.touch_offsets()[&'a'],
-                KeyOffset {
+                EngineOffset {
                     dx: 0.25,
                     dy: -0.125,
                     samples: 3

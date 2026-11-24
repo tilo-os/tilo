@@ -100,6 +100,7 @@ members = [
     "apps/console-model",
     "apps/console-model-wasm",
     "apps/api-tester",
+    "apps/osk",
     "apps/api-tester-model",
     "apps/api-tester-model-wasm",
     "apps/assistant",
@@ -154,7 +155,6 @@ members = [
     "apps/monitor",
     "apps/monitor-model",
     "apps/monitor-model-wasm",
-    "apps/osk",
     "apps/passwords",
     "apps/passwords-model",
     "apps/passwords-model-wasm",
@@ -297,6 +297,7 @@ members = [
     "crates/services/vision",
 
     # Media
+    "crates/engines/keyboard",
     "crates/engines/canvas-engine",
     "crates/engines/paint-strokes",
     "crates/engines/ocr",

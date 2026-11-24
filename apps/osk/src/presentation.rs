@@ -116,6 +116,11 @@ pub(crate) struct KeyboardPresentation<'a> {
     pub swipe_path: &'a [Point],
 }
 
+/// The icon a layout key names, when the platform has one.
+fn icon_named(name: &str) -> Option<Icon> {
+    Icon::from_name(name)
+}
+
 fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
     if points.len() < 2 {
         return;
@@ -334,7 +339,7 @@ impl KeyboardPresentation<'_> {
             draw_cell(
                 &mut ctx,
                 *rect,
-                CellFace::new(key.icon, shown),
+                CellFace::new(key.icon.and_then(icon_named), shown),
                 CellState {
                     hovered,
                     pressed,

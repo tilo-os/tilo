@@ -11162,6 +11162,7 @@ dependencies = [
  "tilo-emoji-engine",
  "tilo-history",
  "tilo-input-context",
+ "tilo-keyboard-engine",
  "tilo-keyboard-map",
  "tilo-taffy",
  "tilo-test-env",
@@ -18873,10 +18874,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-keyboard-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swipe",
+ "tilo-emoji",
+ "tilo-spellcheck",
+ "tilo-test-env",
+ "tilo-vello",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
  "tilo-app",
+ "tilo-keyboard-engine",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",

@@ -1,0 +1,578 @@
+//! Next-word / completion prediction (W9b).
+//!
+//! An **offline** n-gram language model: unigram frequency (from the
+//! [`Dictionary`]) + a bigram table (`apps/osk/data/bigrams-<lang>.txt`),
+//! one pair per [`Language`]. It serves
+//! two jobs the suggestion bar needs:
+//!
+//! * **next-word** — after a word commits, what word usually follows?
+//!   (`prev_word = Some("good")`, `prefix = ""` → `morning`, `luck`, …).
+//! * **completion** — as the user types, complete the in-progress word, biased
+//!   by the preceding word when there is one
+//!   (`prev_word = Some("how"), prefix = "ar"` → `are`).
+//!
+//! Both are exposed through one call, [`Predictor::predict_next`], which blends
+//! bigram context, prefix match, and raw frequency.
+//!
+//! A larger neural model (candle / llama.cpp) is a documented future
+//! enhancement; this n-gram baseline ships working and is the boundary everything
+//! else is wired against.
+
+use std::collections::HashMap;
+
+use crate::dict::{Dictionary, Language, fold_char, starts_with_folded, weight_to_count};
+use crate::touch_model::NextKeyDistribution;
+
+/// Bound the local adaptation cache. Prediction is helpful only while it is
+/// cheap and private; it must never turn an unusually long typing session into
+/// an unbounded in-memory profile.
+pub const MAX_LEARNED_CONTEXTS: usize = 512;
+pub const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
+
+const BIGRAM_NEXT_KEY_SHARE: f64 = 0.5;
+
+fn bigrams_table(language: Language) -> &'static str {
+    match language {
+        Language::English => include_str!("../data/bigrams-en.txt"),
+        Language::French => include_str!("../data/bigrams-fr.txt"),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Predictor {
+    dict: Dictionary,
+    /// `prev_word` -> [(`next_word_index_into_dict_or_string`, weight)]. We keep
+    /// the successor strings directly (they are all dictionary words) for a
+    /// simple, allocation-light lookup.
+    bigrams: HashMap<String, Vec<(String, u32)>>,
+    max_bigram_weight: u32,
+    /// On-device adaptation learned from words this user actually commits.
+    /// It is deliberately process-local here; the OSK service owns persistence
+    /// policy so private typing data never enters an app document.
+    learned: HashMap<String, HashMap<String, u32>>,
+}
+
+impl Predictor {
+    pub fn for_language(language: Language) -> Self {
+        Self::from_data(Dictionary::for_language(language), bigrams_table(language))
+    }
+
+    pub fn english() -> Self {
+        Self::for_language(Language::English)
+    }
+
+    pub fn french() -> Self {
+        Self::for_language(Language::French)
+    }
+
+    pub fn from_data(dict: Dictionary, bigram_data: &str) -> Self {
+        let mut bigrams: HashMap<String, Vec<(String, u32)>> = HashMap::new();
+        let mut max_bigram_weight = 1u32;
+        for line in bigram_data.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.split('\t');
+            let (Some(w1), Some(w2), Some(w)) = (it.next(), it.next(), it.next()) else {
+                continue;
+            };
+            let Ok(weight) = w.trim().parse::<u32>() else {
+                continue;
+            };
+            max_bigram_weight = max_bigram_weight.max(weight);
+            bigrams
+                .entry(w1.to_lowercase())
+                .or_default()
+                .push((w2.to_lowercase(), weight));
+        }
+        for v in bigrams.values_mut() {
+            v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        }
+        Self {
+            dict,
+            bigrams,
+            max_bigram_weight,
+            learned: HashMap::new(),
+        }
+    }
+
+    pub fn dictionary(&self) -> &Dictionary {
+        &self.dict
+    }
+
+    pub fn split_elision<'a>(&self, word: &'a str) -> Option<(&'a str, &'a str)> {
+        let at = word.find('\'')? + 1;
+        let (elision, rest) = word.split_at(at);
+        (self.dict.contains(elision)
+            && (rest.is_empty() || self.dict.iter_prefix(word).next().is_none()))
+        .then_some((elision, rest))
+    }
+
+    pub fn bigram_contexts(&self) -> usize {
+        self.bigrams.len()
+    }
+
+    /// The transition a committed `word` after `previous` teaches, as the
+    /// predictor keeps it: the context (empty at a start) and the word, both
+    /// lower case. `None` for a word that is not all letters, apart from
+    /// the apostrophes of an elision (`l'`) or of a word like `aujourd'hui`.
+    pub fn transition(previous: Option<&str>, word: &str) -> Option<(String, String)> {
+        let word = word.trim().to_lowercase();
+        if !word.starts_with(char::is_alphabetic)
+            || !word.chars().all(|c| c.is_alphabetic() || c == '\'')
+        {
+            return None;
+        }
+        Some((previous.map(str::to_lowercase).unwrap_or_default(), word))
+    }
+
+    pub fn learn_transition(
+        &mut self,
+        previous: Option<&str>,
+        word: &str,
+    ) -> Option<(String, String)> {
+        let (context, word) = Self::transition(previous, word)?;
+        let learned = (context.clone(), word.clone());
+        if !self.learned.contains_key(&context) && self.learned.len() >= MAX_LEARNED_CONTEXTS {
+            return None;
+        }
+        if self.learned.get(&context).is_some_and(|words| {
+            !words.contains_key(&word) && words.len() >= MAX_LEARNED_WORDS_PER_CONTEXT
+        }) {
+            return None;
+        }
+        let count = self
+            .learned
+            .entry(context)
+            .or_default()
+            .entry(word)
+            .or_default();
+        *count = count.saturating_add(1);
+        Some(learned)
+    }
+
+    pub fn adopt_learned(
+        &mut self,
+        learned: impl IntoIterator<Item = (String, std::collections::BTreeMap<String, u32>)>,
+    ) {
+        self.learned = learned
+            .into_iter()
+            .take(MAX_LEARNED_CONTEXTS)
+            .map(|(context, words)| {
+                let words = words
+                    .into_iter()
+                    .take(MAX_LEARNED_WORDS_PER_CONTEXT)
+                    .collect();
+                (context, words)
+            })
+            .collect();
+    }
+
+    pub fn has_learned(&self, word: &str) -> bool {
+        let word = word.to_lowercase();
+        self.learned.values().any(|words| words.contains_key(&word))
+    }
+
+    pub fn clear_learned(&mut self) {
+        self.learned.clear();
+    }
+
+    /// Number of retained local adaptation contexts, for settings UIs and
+    /// bounded-resource tests. This intentionally reveals no typed content.
+    pub fn learned_context_count(&self) -> usize {
+        self.learned.len()
+    }
+
+    pub fn next_key_distribution(
+        &self,
+        prev_word: Option<&str>,
+        prefix: &str,
+    ) -> NextKeyDistribution {
+        let prefix = prefix.to_lowercase();
+        if let Some((elision, rest)) = self.split_elision(&prefix) {
+            return self.next_key_distribution(Some(elision), rest);
+        }
+        let lexicon = NextKeyDistribution::from_weights(self.dict.next_char_weights(&prefix));
+        let Some(successors) = prev_word.and_then(|p| self.bigrams.get(&p.to_lowercase())) else {
+            return lexicon;
+        };
+        let skip = prefix.chars().count();
+        let context =
+            NextKeyDistribution::from_weights(successors.iter().filter_map(|(w, weight)| {
+                if !starts_with_folded(w, &prefix) {
+                    return None;
+                }
+                let next = fold_char(w.chars().nth(skip)?);
+                Some((next, weight_to_count(*weight)))
+            }));
+        lexicon.blend(&context, BIGRAM_NEXT_KEY_SHARE)
+    }
+
+    pub fn predict_next(&self, prev_word: Option<&str>, prefix: &str) -> Vec<(String, f32)> {
+        self.predict_next_n(prev_word, prefix, 8)
+    }
+
+    pub fn predict_next_n(
+        &self,
+        prev_word: Option<&str>,
+        prefix: &str,
+        n: usize,
+    ) -> Vec<(String, f32)> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let prefix = prefix.to_lowercase();
+        if let Some((elision, rest)) = self.split_elision(&prefix) {
+            // "l'hom" completes "hom" after "l'" and keeps the elision.
+            return self
+                .predict_next_n(Some(elision), rest, n)
+                .into_iter()
+                .map(|(word, score)| (format!("{elision}{word}"), score))
+                .collect();
+        }
+        let prev = prev_word.map(str::to_lowercase);
+
+        let mut scores: HashMap<String, f32> = HashMap::new();
+
+        // Personal history is the strongest signal after it has repeated, but
+        // starts gently enough that one typo cannot permanently dominate.
+        let learned_context = prev.as_deref().unwrap_or("");
+        if let Some(words) = self.learned.get(learned_context) {
+            for (word, count) in words {
+                if !starts_with_folded(word, &prefix) {
+                    continue;
+                }
+                let confidence = *count as f32 / count.saturating_add(3) as f32;
+                upsert_max(&mut scores, word, 0.85 + 0.15 * confidence);
+            }
+        }
+
+        if let Some(succ) = prev.as_deref().and_then(|p| self.bigrams.get(p)) {
+            for (w2, weight) in succ {
+                if !starts_with_folded(w2, &prefix) {
+                    continue;
+                }
+                let bigram_score = *weight as f32 / self.max_bigram_weight as f32;
+                let freq = self.dict.frequency(w2);
+                let s = 0.7 * bigram_score + 0.3 * freq;
+                upsert_max(&mut scores, w2, s);
+            }
+        }
+
+        // --- prefix completion from the dictionary ----------------------
+        // When there is a prefix, fold in frequency-ranked completions so we
+        // still suggest even without a bigram hit. When there is no prefix and
+        // no bigram context, fall back to the most common words.
+        if !prefix.is_empty() {
+            for entry in self.dict.complete(&prefix, n * 4) {
+                let freq = self.dict.frequency(&entry.word);
+                // Completion-only candidates score below bigram hits.
+                let s = 0.45 * freq;
+                upsert_max(&mut scores, &entry.word, s);
+            }
+        } else if prev.is_none() || !self.bigrams.contains_key(prev.as_deref().unwrap_or("")) {
+            for entry in self.dict.words().iter().take(n * 2) {
+                let freq = self.dict.frequency(&entry.word);
+                upsert_max(&mut scores, &entry.word, 0.3 * freq);
+            }
+        }
+
+        let mut out: Vec<(String, f32)> = scores.into_iter().collect();
+        out.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(n);
+        out
+    }
+}
+
+/// Keep the maximum score seen for a word (a word may be reached via several
+/// signals; we don't want to double-count, we want its best evidence).
+fn upsert_max(scores: &mut HashMap<String, f32>, word: &str, s: f32) {
+    let e = scores.entry(word.to_string()).or_insert(0.0);
+    if s > *e {
+        *e = s;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn small() -> Predictor {
+        let dict = Dictionary::from_str(
+            "the\t100\nmorning\t60\nmore\t70\nmood\t40\ngood\t80\nluck\t50\nare\t90\nart\t30\n",
+        );
+        let bigrams = "good\tmorning\t900\ngood\tluck\t700\nhow\tare\t950\n";
+        Predictor::from_data(dict, bigrams)
+    }
+
+    #[test]
+    fn embedded_bigrams_predict_next_words_sensibly() {
+        // One parse serves the three phases that read the embedded tables:
+        // they only call `&self` methods.
+        let english = Predictor::english();
+
+        eprintln!("phase embedded_predictor_loads_bigrams");
+        {
+            let p = &english;
+            assert!(
+                p.bigram_contexts() > 1000,
+                "want many bigram contexts, got {}",
+                p.bigram_contexts()
+            );
+        }
+
+        eprintln!("phase next_word_uses_bigram_context");
+        {
+            let p = small();
+            let preds = p.predict_next(Some("good"), "");
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert_eq!(words[0], "morning", "got {words:?}");
+            assert!(words.contains(&"luck"));
+        }
+
+        eprintln!("phase embedded_real_bigram_predicts_sensibly");
+        {
+            let p = &english;
+            let preds = p.predict_next(Some("of"), "");
+            assert!(!preds.is_empty());
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert_eq!(words[0], "the", "expected 'the' after 'of', got {words:?}");
+        }
+
+        eprintln!("phase embedded_tables_are_consistent");
+        {
+            let p = &english;
+            let dict = p.dictionary();
+            assert!(
+                dict.words()
+                    .iter()
+                    .all(|e| e.word.bytes().all(|b| b.is_ascii_lowercase())),
+                "the dictionary holds lower-case a-z words only"
+            );
+            for (w1, successors) in &p.bigrams {
+                assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");
+                for (w2, _) in successors {
+                    assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
+                }
+            }
+            let after_thank = p.predict_next(Some("thank"), "");
+            assert_eq!(
+                after_thank.first().map(|(w, _)| w.as_str()),
+                Some("you"),
+                "got {after_thank:?}"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_predictor_completes_adapts_and_learns_only_words;
+
+        phase prefix_completion_filters_context_and_falls_back_to_common_words;
+        {
+            eprintln!("phase prefix_completion_respects_prefix");
+            {
+                let p = small();
+                let preds = p.predict_next(None, "mo");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
+                // Frequency order among "mo*": more(70) > morning(60) > mood(40).
+                assert_eq!(words[0], "more", "got {words:?}");
+            }
+
+            eprintln!("phase bigram_plus_prefix_filters_to_matching_successor");
+            {
+                let p = small();
+                let preds = p.predict_next(Some("good"), "m");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert_eq!(words[0], "morning", "got {words:?}");
+                assert!(!words.contains(&"luck"), "luck doesn't start with m");
+            }
+
+            eprintln!("phase cold_start_returns_common_words");
+            {
+                let p = small();
+                let preds = p.predict_next(None, "");
+                assert!(!preds.is_empty());
+                assert_eq!(preds[0].0, "the");
+                assert_eq!(p.predict_next_n(None, "", 1).len(), 1, "no more than asked");
+                assert!(p.predict_next_n(None, "", 0).is_empty(), "none asked for");
+                assert!(p.predict_next_n(Some("good"), "m", 0).is_empty());
+            }
+
+            eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
+            {
+                let p = small();
+                let preds = p.predict_next(Some("xyzzy"), "ar");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
+                assert!(words.contains(&"are"));
+            }
+
+            eprintln!("phase next_key_distribution_blends_lexicon_with_bigram_context");
+            {
+                let p = small();
+                let plain = p.next_key_distribution(None, "mo");
+                assert!(plain.prob('r') > plain.prob('o'));
+                let ctx = p.next_key_distribution(Some("good"), "mo");
+                assert!(ctx.prob('r') > plain.prob('r'));
+                assert!(p.next_key_distribution(None, "zzq").is_uniform());
+            }
+        }
+
+        phase local_adaptation_learns_commits_within_bounds_and_clears;
+        {
+            eprintln!("phase committed_transitions_adapt_predictions_locally");
+            {
+                let mut p = small();
+                for _ in 0..4 {
+                    p.learn_transition(Some("good"), "mood");
+                }
+                let predictions = p.predict_next(Some("good"), "");
+                assert_eq!(
+                    predictions.first().map(|(word, _)| word.as_str()),
+                    Some("mood"),
+                    "repeated personal usage should outrank the generic corpus"
+                );
+            }
+
+            eprintln!("phase local_adaptation_is_bounded_and_clearable");
+            {
+                let mut predictor = small();
+                for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
+                    predictor.learn_transition(Some(&format!("context-{index}")), "word");
+                }
+                assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
+                predictor.clear_learned();
+                assert_eq!(predictor.learned_context_count(), 0);
+            }
+
+            eprintln!("phase a_full_context_learns_no_new_word_and_still_counts_its_own");
+            {
+                let mut predictor = small();
+                // Distinct words of letters only: "wa", "waa", "waaa", ...
+                let words: Vec<String> = (1..=MAX_LEARNED_WORDS_PER_CONTEXT + 3)
+                    .map(|letters| format!("w{}", "a".repeat(letters)))
+                    .collect();
+                let (within, beyond) = words.split_at(MAX_LEARNED_WORDS_PER_CONTEXT);
+                for word in within {
+                    assert!(predictor.learn_transition(Some("the"), word).is_some());
+                }
+                for word in beyond {
+                    assert_eq!(predictor.learn_transition(Some("the"), word), None);
+                    assert!(!predictor.has_learned(word), "{word} is one too many");
+                }
+                assert!(within.iter().all(|word| predictor.has_learned(word)));
+                assert!(
+                    predictor.learn_transition(Some("the"), "wa").is_some(),
+                    "a word the full context holds is still counted"
+                );
+                assert_eq!(predictor.learned_context_count(), 1);
+            }
+        }
+
+        phase only_letters_and_their_apostrophes_are_learned;
+        // What a committed word teaches: letters, and the apostrophes inside or
+        // at the end of them. Anything else is not a word and leaves no trace.
+        {
+            for (previous, word, expected) in [
+                (None, "Hello", Some(("", "hello"))),
+                (Some("Good"), " Morning ", Some(("good", "morning"))),
+                (Some("que"), "l'", Some(("que", "l'"))),
+                (None, "aujourd'hui", Some(("", "aujourd'hui"))),
+                (None, "'tis", None),
+                (None, "a1", None),
+                (None, "p@ss", None),
+                (None, "1234", None),
+                (None, "", None),
+                (None, "  ", None),
+            ] {
+                let taught = Predictor::transition(previous, word);
+                assert_eq!(
+                    taught
+                        .as_ref()
+                        .map(|(context, next)| (context.as_str(), next.as_str())),
+                    expected,
+                    "{word:?} after {previous:?}"
+                );
+            }
+            let mut p = small();
+            for not_a_word in ["p@ss", "1234", "'tis", ""] {
+                assert_eq!(p.learn_transition(Some("my"), not_a_word), None);
+                assert!(!p.has_learned(not_a_word));
+            }
+            assert_eq!(p.learned_context_count(), 0);
+        }
+    }
+
+    #[test]
+    fn embedded_models_complete_everyday_english_and_french() {
+        eprintln!("phase english_completes_everyday_and_tech_words");
+        {
+            let p = Predictor::english();
+            for (prefix, word) in [("wish", "wishlist"), ("scree", "screenshot")] {
+                let preds = p.predict_next(None, prefix);
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(
+                    words.contains(&word),
+                    "{prefix:?} should offer {word:?}: {words:?}"
+                );
+            }
+            for word in ["github", "wifi", "podcast", "login"] {
+                assert!(p.dictionary().contains(word), "{word} missing");
+            }
+        }
+
+        eprintln!("phase french_predicts_sensibly");
+        {
+            let p = Predictor::french();
+            let after_je: Vec<String> = p
+                .predict_next(Some("je"), "")
+                .into_iter()
+                .map(|(w, _)| w)
+                .collect();
+            assert!(after_je.iter().any(|w| w == "suis"), "je -> {after_je:?}");
+            let bonj = p.predict_next(None, "bonj");
+            assert_eq!(
+                bonj.first().map(|(w, _)| w.as_str()),
+                Some("bonjour"),
+                "{bonj:?}"
+            );
+            let tres = p.predict_next(None, "tres");
+            assert_eq!(
+                tres.first().map(|(w, _)| w.as_str()),
+                Some("très"),
+                "{tres:?}"
+            );
+            // Apostrophes: lexicalised words complete whole, elisions keep
+            // their prefix and complete the word after it.
+            let aujou = p.predict_next(None, "aujou");
+            assert_eq!(aujou.first().map(|(w, _)| w.as_str()), Some("aujourd'hui"));
+            let words =
+                |preds: Vec<(String, f32)>| preds.into_iter().map(|(w, _)| w).collect::<Vec<_>>();
+            assert!(words(p.predict_next(None, "l")).contains(&"l'".to_owned()));
+            assert_eq!(p.split_elision("l'homme"), Some(("l'", "homme")));
+            assert_eq!(p.split_elision("aujourd'hui"), None);
+            assert_eq!(p.split_elision("l'"), Some(("l'", "")));
+            let lhom = words(p.predict_next(None, "l'hom"));
+            assert_eq!(
+                lhom.first().map(String::as_str),
+                Some("l'homme"),
+                "{lhom:?}"
+            );
+            let quil = words(p.predict_next(Some("parce"), "qu'i"));
+            assert!(quil.contains(&"qu'il".to_owned()), "{quil:?}");
+            let dict = p.dictionary();
+            for (w1, successors) in &p.bigrams {
+                assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");
+                for (w2, _) in successors {
+                    assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
+                }
+            }
+        }
+    }
+}

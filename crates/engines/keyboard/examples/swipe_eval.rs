@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use osk::{GeometricSwipeModel, KeyAction, KeyboardLayout};
+use tilo_keyboard_engine::{GeometricSwipeModel, KeyAction, KeyboardLayout};
 use serde::Deserialize;
 use serde_json::json;
 use vello::kurbo::{Point, Rect};
@@ -138,7 +138,7 @@ fn geometry(
     source: &SourceLayout,
     width: f64,
     height: f64,
-) -> Vec<(osk::KeyId, Rect)> {
+) -> Vec<(tilo_keyboard_engine::KeyId, Rect)> {
     layout
         .rows
         .iter()
@@ -150,7 +150,7 @@ fn geometry(
                 };
                 let k = source.keys.iter().find(|k| &k.letter == letter)?;
                 Some((
-                    osk::KeyId::new(row, col),
+                    tilo_keyboard_engine::KeyId::new(row, col),
                     Rect::new(
                         (k.cx - k.rx) * width,
                         (k.cy - k.ry) * height,

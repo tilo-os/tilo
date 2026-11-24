@@ -57,7 +57,7 @@ impl OskWidget {
         if self.personalization_enabled
             && let Some(transitions) = self.learned.transitions.get(language.code())
         {
-            self.predictor.adopt_learned(transitions);
+            self.predictor.adopt_learned(crate::learned::counts(transitions));
         }
         self.swipe_model.set_language(language);
         self.autocorrect = None;

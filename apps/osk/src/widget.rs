@@ -941,7 +941,7 @@ impl OskWidget {
     fn adopt_learned(&mut self) {
         let learned = std::rc::Rc::clone(&self.learned);
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
-            self.predictor.adopt_learned(transitions);
+            self.predictor.adopt_learned(crate::learned::counts(transitions));
         }
         self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
@@ -2006,7 +2006,7 @@ impl OskWidget {
                 && let Some(offset) = self.touch_model.offset(k.ch)
             {
                 self.lesson.touch.retain(|(letter, _)| *letter != k.ch);
-                self.lesson.touch.push((k.ch, offset));
+                self.lesson.touch.push((k.ch, offset.into()));
             }
         }
         target
