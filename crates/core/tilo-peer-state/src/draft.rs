@@ -198,6 +198,16 @@ pub fn draft_local_write(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // A sealed write split into frames is decided once whole, as the segment that completes it:
+    // that one claims the whole write's changes, so a reader that holds the record sealed, and
+    // decides it by what its claims name, can decide it.
+    let mut envelopes = envelopes;
+    if sealed.is_some()
+        && envelopes.len() > 1
+        && let Some(last) = envelopes.last_mut()
+    {
+        last.claims = peer.sealed_claims((app, document), &mutation);
+    }
     // Taken only as its readers will take it: a write the workspace keeps and its readers
     // refuse would make the whole record unreadable for every one of them. A write split
     // into frames is decided where it is admitted, once it is whole.
