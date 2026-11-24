@@ -9523,6 +9523,138 @@
       ]
     },
     {
+      "kind": "keyboard",
+      "label": "Keyboard",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "layouts",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "KeyboardLayout"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "layouts_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "drawing",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "KeyboardDrawing"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "drawing_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "KeyboardDrawing",
+          "doc": "A keyboard's keys, drawn for one layout and physical model.",
+          "fields": [
+            {
+              "name": "layout",
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "type": "text"
+            },
+            {
+              "name": "width",
+              "type": "float"
+            },
+            {
+              "name": "height",
+              "type": "float"
+            },
+            {
+              "name": "level_count",
+              "type": "int"
+            },
+            {
+              "name": "keys",
+              "type": {
+                "list": {
+                  "named": "KeyboardKey"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "KeyboardKey",
+          "doc": "One key of the drawing: where its body is and what it types.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "outline",
+              "type": {
+                "list": {
+                  "named": "KeyboardPoint"
+                }
+              }
+            },
+            {
+              "name": "levels",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "KeyboardLayout",
+          "doc": "One keyboard layout this device installs, by the id it is typed by.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "KeyboardPoint",
+          "doc": "One corner of a key's physical outline.",
+          "fields": [
+            {
+              "name": "x",
+              "type": "float"
+            },
+            {
+              "name": "y",
+              "type": "float"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "privacy",
       "label": "Privacy",
       "version": 1,

@@ -363,6 +363,10 @@ tilo-bluetooth-address = { path = "../../core/bluetooth-address" }
 # The person's `network-usage` section, which this device's traffic totals are
 # counted into, and the readings its verb takes.
 settings-sections = { path = "../../desktop/settings-sections" }
+# The keyboard's physical outlines and its layout's legends, for drawing the keys a pane
+# inspects.
+tilo-keyboard-map = { path = "../tilo-keyboard-map" }
+tilo-pc-keyboard-geometry = { path = "../pc-keyboard-geometry" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
 tilo-native-media = { path = "../native-media" }

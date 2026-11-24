@@ -1,0 +1,372 @@
+//! This machine's keyboard published as a view draws it: the layouts it installs, and the keys
+//! of the layout being inspected — the one the pane previews, or the one the keyboard types —
+//! with what each key types at every modifier level.
+//!
+//! The settings choose what is inspected ([`InputDevicePrefs::keyboard_preview`], and the
+//! keyboard's model), so this reading follows the settings document and compiles a layout only
+//! when what it draws changes. The compiling is the device's: the layout's own symbols are read
+//! by the native XKB compiler, and their legends are spelled the way the layout's language
+//! spells them.
+
+use serde_json::{Map, Value};
+use settings_sections::prefs::InputDevicePrefs;
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_resource::NoEffect;
+use tilo_service::{Service, Started, offer, reading};
+
+pub(crate) const RESOURCE: &str = "session:keyboard";
+
+/// This machine's keyboard as the session publishes it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.keyboard", label = "Keyboard")]
+pub(crate) struct KeyboardRoot;
+
+pub(crate) use tilo_device_surfaces::keyboard::{
+    Keyboard, KeyboardDrawing, KeyboardKey, KeyboardLayout, KeyboardPoint,
+};
+
+/// The keyboard as the session serves it: the layouts installed, read once, and the drawing of
+/// the layout the settings name, compiled again only when what it draws changes.
+pub(crate) struct Served {
+    published: Keyboard,
+    /// The drawing's inputs when it was last compiled, so a settings change that leaves the
+    /// drawing as it was does not compile a layout again.
+    drawn_at: Option<(String, String, String, bool)>,
+    /// The settings document when this last read them.
+    settings: settings_store::SettingsFollower,
+}
+
+impl Served {
+    pub(crate) fn new() -> Self {
+        let (layouts, error) = installed_once();
+        Self {
+            published: Keyboard {
+                layouts: layouts.clone(),
+                layouts_error: error.clone(),
+                drawing: None,
+                drawing_error: None,
+            },
+            drawn_at: None,
+            settings: settings_store::SettingsFollower::default(),
+        }
+    }
+
+    /// The layout the settings inspect: the previewed one, or the one the keyboard types, with
+    /// the physical model and the XKB options it compiles with.
+    fn wanted(&self) -> (String, String, String, bool) {
+        let device: InputDevicePrefs = match serde_json::from_value(Value::Object(
+            settings_store::load_section(settings_store::hardware::INPUT_DEVICE_SECTION),
+        )) {
+            Ok(device) => device,
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "a settings document this reading does not know draws the keyboard as the defaults",
+                    tracing::warn!(%error, "the input device settings do not read")
+                );
+                InputDevicePrefs::default()
+            }
+        };
+        let input = settings_store::hardware::RichInputConfig::load();
+        let current = settings_store::keyboard_sources::current(&input);
+        let model = if settings_sections::prefs::valid_keyboard_model(&device.keyboard_model) {
+            device.keyboard_model.clone()
+        } else {
+            "pc105".to_owned()
+        };
+        let source = device
+            .keyboard_preview
+            .clone()
+            .unwrap_or_else(|| current.keyboard_layout.clone());
+        (
+            source,
+            model,
+            current.xkb_options().join(","),
+            chassis_is_compact(),
+        )
+    }
+
+    /// Draw the wanted layout, unless the same one is drawn already.
+    fn draw(&mut self, wanted: &(String, String, String, bool)) {
+        if self.drawn_at.as_ref() == Some(wanted) {
+            return;
+        }
+        let (source, model, options, compact) = wanted;
+        let drawn = drawing(source, model, options, *compact);
+        self.drawn_at = Some(wanted.clone());
+        match drawn {
+            Ok(drawing) => {
+                self.published.drawing = Some(drawing);
+                self.published.drawing_error = None;
+            }
+            Err(error) => {
+                self.published.drawing = None;
+                self.published.drawing_error = Some(error);
+            }
+        }
+    }
+}
+
+/// [`installed_layouts`], read once: xkeyboard-config's rules do not change under a session, and
+/// every service made in this process reads the same list.
+fn installed_once() -> &'static (Vec<KeyboardLayout>, Option<String>) {
+    static LAYOUTS: std::sync::LazyLock<(Vec<KeyboardLayout>, Option<String>)> =
+        std::sync::LazyLock::new(installed_layouts);
+    &LAYOUTS
+}
+
+/// The layouts this machine installs, and the input-method engines beside them that are
+/// installed too: what a person can type with.
+fn installed_layouts() -> (Vec<KeyboardLayout>, Option<String>) {
+    use settings_store::hardware::InputMethodEngine;
+
+    let (layouts, error) = tilo_keyboard_map::installed_layouts();
+    let mut layouts: Vec<KeyboardLayout> = layouts
+        .into_iter()
+        .map(|layout| KeyboardLayout {
+            id: layout.id,
+            label: layout.label,
+        })
+        .collect();
+    layouts.extend(
+        InputMethodEngine::ALL
+            .into_iter()
+            .filter(|engine| engine.is_installed())
+            .map(|engine| KeyboardLayout {
+                id: engine.source_id(),
+                label: engine.label().to_owned(),
+            }),
+    );
+    (layouts, error)
+}
+
+/// The keys of `source` as `model` lays them out, with their legends, cut to their box.
+fn drawing(
+    source: &str,
+    model: &str,
+    options: &str,
+    compact: bool,
+) -> Result<KeyboardDrawing, String> {
+    let (layout, variant) = source
+        .split_once(':')
+        .map_or((source, ""), |(layout, variant)| (layout, variant));
+    let geometries = pc_keyboard_geometry::models()?;
+    let geometry = geometries
+        .get(model)
+        .ok_or_else(|| format!("`{model}` is not a physical keyboard model"))?;
+    let keys = if compact {
+        pc_keyboard_geometry::compact(geometry)
+    } else {
+        geometry.keys.clone()
+    };
+    let (width, height, keys) = pc_keyboard_geometry::tight(keys);
+    let names: Vec<String> = keys.iter().map(|key| key.name.clone()).collect();
+    let native = match tilo_keyboard_map::compile(layout, variant, model, options, &names) {
+        Ok(native) => native,
+        // No installed keyboard data on this machine: the drawing's shape and the keys'
+        // positions are still known, so a key can be found and inspected; what it prints is
+        // the layout's to say, and nothing is printed.
+        Err(error) if error.is_unsupported() => {
+            return Ok(unlabelled(source, model, width, height, &keys, &names));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let keycaps = ui::Keycaps::from_xkb(layout, variant);
+    let english = ui::Keycaps::from_xkb("us", "");
+    let mut levels = 0;
+    let keys = native
+        .iter()
+        .zip(&keys)
+        .map(|(key, geometry)| {
+            levels = levels.max(key.levels.len());
+            KeyboardKey {
+                name: key.name.clone(),
+                outline: geometry
+                    .outline
+                    .iter()
+                    .map(|&[x, y]| KeyboardPoint { x, y })
+                    .collect(),
+                levels: key
+                    .levels
+                    .iter()
+                    .map(|symbols| {
+                        symbols
+                            .iter()
+                            .map(|symbol| {
+                                let printed = keycaps.native_symbol(&symbol.name, &symbol.text);
+                                if printed == english.native_symbol(&symbol.name, &symbol.text) {
+                                    short_legend(&symbol.name).map_or(printed, str::to_owned)
+                                } else {
+                                    printed
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    Ok(KeyboardDrawing {
+        layout: source.to_owned(),
+        model: model.to_owned(),
+        width,
+        height,
+        level_count: i64::try_from(levels).unwrap_or(0),
+        keys,
+    })
+}
+
+/// The drawing where this machine cannot compile a layout: the keys' shapes and places, with
+/// nothing printed on them.
+fn unlabelled(
+    source: &str,
+    model: &str,
+    width: f64,
+    height: f64,
+    keys: &[pc_keyboard_geometry::Key],
+    names: &[String],
+) -> KeyboardDrawing {
+    KeyboardDrawing {
+        layout: source.to_owned(),
+        model: model.to_owned(),
+        width,
+        height,
+        level_count: 1,
+        keys: names
+            .iter()
+            .zip(keys)
+            .map(|(name, key)| KeyboardKey {
+                name: name.clone(),
+                outline: key
+                    .outline
+                    .iter()
+                    .map(|&[x, y]| KeyboardPoint { x, y })
+                    .collect(),
+                levels: vec![String::new()],
+            })
+            .collect(),
+    }
+}
+
+/// A long key's name in the short form a keycap prints, where the layout does not print a name
+/// of its own for it.
+fn short_legend(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Print" | "Sys_Req" => "PrtSc",
+        "Scroll_Lock" => "ScrLk",
+        "Pause" | "Break" => "Pause",
+        "Num_Lock" => "Num",
+        "Prior" | "Page_Up" => "PgUp",
+        "Next" | "Page_Down" => "PgDn",
+        "Insert" => "Ins",
+        "Delete" => "Del",
+        "Caps_Lock" => "Caps",
+        "BackSpace" => "Bksp",
+        "Escape" => "Esc",
+        _ => return None,
+    })
+}
+
+/// Whether this machine is a laptop or another compact one, whose drawing leaves out the
+/// navigation cluster and the numpad. A machine that does not say is compact.
+fn chassis_is_compact() -> bool {
+    static COMPACT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *COMPACT.get_or_init(|| {
+        let chassis = match std::fs::read_to_string("/sys/class/dmi/id/chassis_type") {
+            Ok(text) => match text.trim().parse::<u32>() {
+                Ok(chassis) => Some(chassis),
+                Err(error) => {
+                    tilo_failure::ignored!(
+                        "a chassis type that is not a number is drawn as a compact machine's",
+                        tracing::debug!(%error, "the chassis type does not read as a number")
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "a machine that publishes no chassis type is drawn as a compact one",
+                    tracing::debug!(%error, "no chassis type to read")
+                );
+                None
+            }
+        };
+        compact_chassis(chassis)
+    })
+}
+
+fn compact_chassis(chassis: Option<u32>) -> bool {
+    // 3–7 are desktops, towers and racks; 13, 15–24 are the desktop's other bodies.
+    !matches!(chassis, Some(3..=7 | 13 | 15..=24))
+}
+
+impl Service for Served {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![offer::<NoEffect>(
+            tilo_resource::LiveRow::typed::<KeyboardRoot>(
+                RESOURCE,
+                crate::i18n::t("session-keyboard"),
+            )
+            .into_resource(),
+        )]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| reading(&self.published))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
+    }
+
+    fn poll(&mut self) -> bool {
+        let stamp = settings_store::stamp();
+        if !self.settings.changed(stamp) {
+            return false;
+        }
+        let before = self.published.drawing.clone();
+        let error = self.published.drawing_error.clone();
+        let wanted = self.wanted();
+        self.draw(&wanted);
+        self.published.drawing != before || self.published.drawing_error != error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A laptop's keyboard is drawn compact and a desktop's full, and a machine that does not
+    /// say is a laptop.
+    #[test]
+    fn the_machines_body_decides_which_drawing_it_gets() {
+        for desktop in [
+            Some(3),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(13),
+            Some(16),
+            Some(23),
+        ] {
+            assert!(!compact_chassis(desktop), "{desktop:?} is a desktop");
+        }
+        for compact in [Some(8), Some(9), Some(10), Some(14), Some(30), None] {
+            assert!(compact_chassis(compact), "{compact:?} is compact");
+        }
+    }
+
+    /// A keycap's short name is what a long key prints, and a key the table does not know
+    /// prints as itself.
+    #[test]
+    fn long_key_names_print_short() {
+        assert_eq!(short_legend("Escape"), Some("Esc"));
+        assert_eq!(short_legend("Page_Up"), Some("PgUp"));
+        assert_eq!(short_legend("a"), None);
+    }
+}

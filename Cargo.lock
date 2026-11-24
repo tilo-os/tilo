@@ -17816,6 +17816,7 @@ dependencies = [
 name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "tilo-app",
  "tilo-keyboard-engine",
  "tilo-vello",
@@ -20202,6 +20203,7 @@ dependencies = [
  "tilo-identity-authority",
  "tilo-identity-client",
  "tilo-key-group",
+ "tilo-keyboard-map",
  "tilo-live",
  "tilo-liveness",
  "tilo-location",
@@ -20220,6 +20222,7 @@ dependencies = [
  "tilo-onboarding-session",
  "tilo-package-store",
  "tilo-paths",
+ "tilo-pc-keyboard-geometry",
  "tilo-peer-state",
  "tilo-polkit-agent",
  "tilo-portal",

@@ -21,6 +21,7 @@ pub mod devices;
 pub mod displays;
 pub mod input;
 pub mod inputs;
+pub mod keyboard;
 pub mod lists;
 pub mod live;
 pub mod notifications;
@@ -73,6 +74,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         displays::surface(),
         displays::screen_surface(),
         inputs::surface(),
+        keyboard::surface(),
         privacy::surface(),
         notifications::surface(),
         osd::surface(),

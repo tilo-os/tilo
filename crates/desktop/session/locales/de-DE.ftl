@@ -196,6 +196,7 @@ session-displays = Bildschirme
 session-input-devices = Eingabegeräte
 session-privacy = Privatsphäre
 session-workspace-access = Zugriff im Arbeitsbereich
+session-keyboard = Tastatur
 wireless-unavailable = Kabellose Bildschirme sind gerade nicht verfügbar
 wireless-unavailable-detail = Versuch es gleich noch einmal.
 wireless-search-failed = Die Suche nach kabellosen Bildschirmen ist fehlgeschlagen

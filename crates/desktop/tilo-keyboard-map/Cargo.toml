@@ -18,6 +18,8 @@ native = ["dep:xkbcommon"]
 [dependencies]
 tilo-keyboard-engine = { path = "../../engines/keyboard" }
 ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
+# xkeyboard-config's rules, read for the layouts this device installs.
+quick-xml.workspace = true
 vello.workspace = true
 winit.workspace = true
 

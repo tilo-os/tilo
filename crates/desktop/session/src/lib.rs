@@ -245,6 +245,8 @@ mod here;
 mod host_shell;
 mod input_devices;
 #[cfg(target_os = "linux")]
+mod keyboard_map;
+#[cfg(target_os = "linux")]
 mod listings;
 mod live_list;
 // What the session publishes for the quick settings to draw: the Devices section's rows, the
