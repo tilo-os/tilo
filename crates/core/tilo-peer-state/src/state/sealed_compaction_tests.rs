@@ -237,7 +237,9 @@ fn signed(
 }
 
 /// Edits of the seeded record, each an incremental on the one before, as
-/// the plaintext a key holder's sealed write opens to.
+/// the plaintext a key holder's sealed write opens to. Each is a window's
+/// direct edit of the record, which names no finer action: it is the signing
+/// device's person's, whichever device seals it.
 pub(super) struct Author(pub(super) AutoCommit);
 
 impl Author {
@@ -245,10 +247,18 @@ impl Author {
         Self(AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap())
     }
 
+    /// Commit what is pending as a direct edit of the record.
+    pub(super) fn commit(&mut self) {
+        self.0.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+    }
+
     pub(super) fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
         let heads = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
-        self.0.commit();
+        self.commit();
         DocumentMutation::Incremental(self.0.save_after(&heads))
             .encode()
             .unwrap()
@@ -258,7 +268,7 @@ impl Author {
     fn edit_bytes(&mut self, key: &str, value: Vec<u8>) -> Vec<u8> {
         let heads = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
-        self.0.commit();
+        self.commit();
         DocumentMutation::Incremental(self.0.save_after(&heads))
             .encode()
             .unwrap()
@@ -2692,7 +2702,7 @@ impl Author {
                 .unwrap();
             self.0.splice_text(&text, 0, 0, body).unwrap();
         }
-        self.0.commit();
+        self.commit();
         DocumentMutation::Incremental(self.0.save_after(&heads))
             .encode()
             .unwrap()
@@ -3626,9 +3636,11 @@ fn a_device_removed_from_the_workspace_no_longer_holds_a_checkpoints_writes_back
     for key in [&f.owner, &f.other] {
         check_as(&mut f.replica, key, &keys, f.now);
     }
-    assert!(!f.replica
-        .publication()
-        .checkpoint_reached((APP, RECORD), (author, seq)));
+    assert!(
+        !f.replica
+            .publication()
+            .checkpoint_reached((APP, RECORD), (author, seq))
+    );
 
     // The editor's person leaves the workspace: no device of theirs reads its records any more.
     let editor = hex::encode(person(&f.replica, &f.editor));
