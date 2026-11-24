@@ -11,8 +11,8 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
+        Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/slides/app.tl");
@@ -93,6 +93,36 @@ mod cases {
                 .unwrap_or_else(|e| panic!("deck: {e}"));
             view.set_lazy_rows(false).unwrap();
             view
+        }
+
+        /// Why the app refused `action` with `given`, as its `require` says it.
+        fn refused(&self, action: &str, given: &[(&str, Value)]) -> String {
+            let args = self.app.args(&self.rt, action, given);
+            let id = self.app.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(other) => panic!("{action} was expected to be refused, and answered {other:?}"),
+                Err(error) => format!("{error:?}"),
+            }
+        }
+
+        /// Every change the deck's document holds, oldest first.
+        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
+            self.rt.history(&self.deck.doc).unwrap()
+        }
+
+        /// Why the app refused `action` with `given`, as its `require` says it.
+        fn refused(&self, action: &str, given: &[(&str, Value)]) -> String {
+            let args = self.app.args(&self.rt, action, given);
+            let id = self.app.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(other) => panic!("{action} was expected to be refused, and answered {other:?}"),
+                Err(error) => format!("{error:?}"),
+            }
+        }
+
+        /// Every change the deck's document holds, oldest first.
+        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
+            self.rt.history(&self.deck.doc).unwrap()
         }
     }
 
