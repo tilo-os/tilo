@@ -19,9 +19,8 @@
 
 #[cfg(test)]
 use super::BarrierFailure;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
@@ -500,7 +499,7 @@ fn make_durable(
         }
         Write::Beside { name, line } => append_beside(root, name, &line),
         Write::Replace { name, bytes } => {
-            tilo_files::native::atomic::write_with_mode(&root.join(name), &bytes, 0o600)
+            tilo_files::native::private::write_atomic(&root.join(name), &bytes)
                 .map_err(|_| "side file write not durable")
         }
     }
@@ -510,31 +509,19 @@ fn make_durable(
 /// directory's too when this created the file, so its name is durable.
 fn append_beside(root: &Path, name: &str, line: &[u8]) -> Result<(), &'static str> {
     let path = root.join(name);
-    let (mut file, created) = match OpenOptions::new()
-        .append(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-    {
+    let (mut file, created) = match tilo_files::native::private::create_new_append(&path) {
         Ok(file) => (file, true),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
-            OpenOptions::new()
-                .append(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)
-                .map_err(|_| "side file unavailable")?,
+            tilo_files::native::private::append(&path).map_err(|_| "side file unavailable")?,
             false,
         ),
         Err(_) => return Err("side file unavailable"),
     };
-    super::private_file(&file).map_err(|_| "side file unavailable")?;
     file.write_all(line)
         .and_then(|()| file.sync_data())
         .map_err(|_| "side file write not durable")?;
     if created {
-        File::open(root)
-            .and_then(|directory| directory.sync_all())
+        tilo_files::native::atomic::sync_directory(root)
             .map_err(|_| "side file write not durable")?;
     }
     Ok(())
@@ -604,12 +591,7 @@ pub(super) fn write_snapshot(
     let _ = injected;
     let temporary = root.join(format!(".write-{}", uuid::Uuid::new_v4()));
     let result: Result<File, &'static str> = (|| {
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)
+        let mut file = tilo_files::native::private::create_new_append(&temporary)
             .map_err(|_| "invocation journal temporary file unavailable")?;
         counted.write();
         file.write_all(bytes)
@@ -630,7 +612,7 @@ pub(super) fn write_snapshot(
             return Err(FAILED);
         }
         counted
-            .directory(|| File::open(root).and_then(|directory| directory.sync_all()))
+            .directory(|| tilo_files::native::atomic::sync_directory(root))
             .map_err(|_| FAILED)?;
         Ok(file)
     })();

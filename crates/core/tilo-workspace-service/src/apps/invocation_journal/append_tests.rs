@@ -186,10 +186,11 @@ tilo_test_env::scenario! {
             |_| Ok(()),
             |observed, directory| {
                 called.set(true);
-                assert_eq!(
-                    observed.metadata().unwrap().ino(),
-                    std::fs::metadata(root.join("records.json")).unwrap().ino()
-                );
+                let stamp = tilo_files::native::FileStamp::of_file(observed).unwrap();
+                let named = tilo_files::native::FileStamp::of(&root.join("records.json"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(stamp.id(), named.id(), "the store observed is the one named");
                 assert!(directory.metadata().unwrap().is_dir());
                 Err(std::io::Error::other("injected reconciliation failure"))
             },

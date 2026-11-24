@@ -1,5 +1,5 @@
 //! Windows ownership and DACL checks for identity secrets.
-use super::{File, Path, io};
+use super::{Access, File, Path, io};
 use std::os::windows::{
     ffi::OsStrExt,
     fs::MetadataExt,
@@ -20,8 +20,9 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_ALWAYS,
+        OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
     },
 };
 
@@ -132,7 +133,7 @@ fn validate(file: &File, user: &Account, directory: bool, check_acl: bool) -> io
     Ok(())
 }
 
-pub(super) fn directory(path: &Path) -> io::Result<()> {
+pub(super) fn directory(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -149,7 +150,8 @@ pub(super) fn directory(path: &Path) -> io::Result<()> {
         }
         let raw = CreateFileW(
             name.as_ptr(),
-            READ_CONTROL | WRITE_DAC | GENERIC_READ,
+            // Written too, so the directory can be flushed through this handle.
+            READ_CONTROL | WRITE_DAC | GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
@@ -187,16 +189,24 @@ pub(super) fn directory(path: &Path) -> io::Result<()> {
         if result != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(result.cast_signed()));
         }
-        validate(&file, &user, true, true)
+        validate(&file, &user, true, true)?;
+        Ok(file)
     }
 }
 
-pub(super) fn open(path: &Path, write: bool, create: bool, exclusive: bool) -> io::Result<File> {
+pub(super) fn open(path: &Path, access: Access, create: bool, exclusive: bool) -> io::Result<File> {
     let user = Account::current()?;
     let descriptor = user.descriptor(PRIVATE_SDDL)?;
     let attributes = attributes(&descriptor);
     let name = wide(path)?;
-    let access = GENERIC_READ | READ_CONTROL | if write { GENERIC_WRITE } else { 0 };
+    let access = GENERIC_READ
+        | READ_CONTROL
+        | match access {
+            Access::Read => 0,
+            Access::Write => GENERIC_WRITE,
+            // Written without the right to write anywhere but the end, as `std` appends.
+            Access::Append => FILE_GENERIC_WRITE & !FILE_WRITE_DATA,
+        };
     let disposition = if exclusive {
         CREATE_NEW
     } else if create {

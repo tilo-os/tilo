@@ -16,14 +16,13 @@
 //! has no newline: a store opened after it reads only up to the last complete
 //! line and writes that file whole with its next put.
 
-use std::fs::File;
 use std::io::{Read, Seek as _, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use super::writer::{Injected, Write as Staged};
-use super::{Durable, InvocationJournal, private_file};
+use super::{Durable, InvocationJournal};
 
 /// The file the attributions are appended to.
 pub(crate) const CONTENT_PUTS_FILE: &str = "content-puts.jsonl";
@@ -80,7 +79,7 @@ pub(super) struct ContentPutsStore {
 impl ContentPutsStore {
     /// The store `root`'s attribution file holds.
     pub(super) fn read(root: &Path) -> Result<Self, String> {
-        let mut file = match File::open(root.join(CONTENT_PUTS_FILE)) {
+        let mut file = match tilo_files::native::private::read(&root.join(CONTENT_PUTS_FILE)) {
             Ok(file) => file,
             // Nothing put yet: the first put finds nothing to compact.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -88,7 +87,6 @@ impl ContentPutsStore {
             }
             Err(_) => return Err("content put attribution unreadable".into()),
         };
-        private_file(&file).map_err(|_| "content put attribution unreadable")?;
         let size = file
             .metadata()
             .map_err(|_| "content put attribution unreadable")?

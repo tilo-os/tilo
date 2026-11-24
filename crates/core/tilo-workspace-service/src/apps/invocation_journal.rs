@@ -25,7 +25,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 #[path = "invocation_journal/content_puts.rs"]
 mod content_puts;
@@ -47,7 +47,6 @@ use writer::{Counted, Injected, Write as Staged, Writer};
 #[cfg(test)]
 #[path = "invocation_journal/effect_tests.rs"]
 mod effect_tests;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -612,7 +611,7 @@ impl InvocationJournal {
 
     pub fn open(root: &Path) -> Result<Self, String> {
         Self::open_with_parent_barrier(root, |parent| {
-            File::open(parent).and_then(|file| file.sync_all())
+            tilo_files::native::atomic::sync_directory(parent)
         })
     }
 
@@ -635,39 +634,18 @@ impl InvocationJournal {
         parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
         directory_barrier: impl FnOnce(&File, &File) -> std::io::Result<()>,
     ) -> Result<Self, String> {
-        let created = match std::fs::DirBuilder::new().mode(0o700).create(root) {
+        let created = match std::fs::create_dir(root) {
             Ok(()) => true,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
             Err(_) => return Err("invocation journal directory unavailable".into()),
         };
-        let metadata = std::fs::symlink_metadata(root)
-            .map_err(|_| "invocation journal directory unreadable")?;
-        if !metadata.is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
-            return Err("invocation journal requires a private directory".into());
-        }
-        // Retain the directory actually opened for this snapshot's
-        // reconciliation, rather than reopening its pathname after decoding.
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(root)
-            .map_err(|_| "invocation journal directory unavailable")?;
-        let actual_directory = directory
-            .metadata()
-            .map_err(|_| "invocation journal directory metadata unavailable")?;
-        if actual_directory.dev() != metadata.dev() || actual_directory.ino() != metadata.ino() {
-            return Err("invocation journal directory changed during open".into());
-        }
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(root.join("owner.lock"))
+        // Retain the directory actually opened, and checked private, for this
+        // snapshot's reconciliation, rather than reopening its pathname after
+        // decoding.
+        let directory = tilo_files::native::private::open_directory(root)
+            .map_err(|_| "invocation journal requires a private directory")?;
+        let lock = tilo_files::native::private::lock_file(&root.join("owner.lock"))
             .map_err(|_| "invocation journal lock unavailable")?;
-        private_file(&lock)?;
         let lock = advisory_lock::FileLock::try_exclusive(lock)
             .map_err(|_| "invocation journal already has a writer")?;
         let mut observed_store = None;
@@ -680,12 +658,7 @@ impl InvocationJournal {
             None
         } else {
             // Opened for appends too: a clean store keeps exactly this file.
-            match OpenOptions::new()
-                .read(true)
-                .append(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(root.join("records.json"))
-            {
+            match tilo_files::native::private::append(&root.join("records.json")) {
                 Ok(file) => Some(file),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(_) => return Err("invocation journal snapshot missing or unreadable".into()),
@@ -698,7 +671,6 @@ impl InvocationJournal {
         let loaded = match opened {
             None => Loaded::empty(uuid::Uuid::new_v4()),
             Some(mut file) => {
-                private_file(&file)?;
                 let loaded = Loaded::read(&mut file)?;
                 observed_store = Some(file);
                 loaded
@@ -1072,12 +1044,8 @@ impl InvocationJournal {
         if self.opening.is_some() {
             return Err("invocation journal requires recovery after a failed barrier".into());
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(self.root.join("records.json"))
+        let mut file = tilo_files::native::private::read(&self.root.join("records.json"))
             .map_err(|_| "invocation journal snapshot missing or unreadable")?;
-        private_file(&file)?;
         let loaded = Loaded::read(&mut file)?;
         self.snapshot = loaded.snapshot;
         self.index = loaded.index;
@@ -1644,16 +1612,6 @@ impl Serialize for DurableInvocation {
         }
         row.end()
     }
-}
-
-fn private_file(file: &File) -> Result<(), String> {
-    let metadata = file
-        .metadata()
-        .map_err(|_| "invocation journal file unreadable")?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
-        return Err("invocation journal requires private regular files".into());
-    }
-    Ok(())
 }
 
 pub(super) fn unknown(invocation: InvocationId) -> InvocationUpdate {

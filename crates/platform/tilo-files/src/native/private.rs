@@ -12,35 +12,62 @@ mod platform;
 /// request is refused rather than weakened.
 #[cfg(not(any(unix, windows)))]
 mod platform {
-    use super::{File, Path, io};
+    use super::{Access, File, Path, io};
 
-    pub fn directory(_path: &Path) -> io::Result<()> {
+    pub fn directory(_path: &Path) -> io::Result<File> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
-    pub fn open(_path: &Path, _write: bool, _create: bool, _exclusive: bool) -> io::Result<File> {
+    pub fn open(
+        _path: &Path,
+        _access: Access,
+        _create: bool,
+        _exclusive: bool,
+    ) -> io::Result<File> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
 
+/// What a private file is opened for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Read,
+    Write,
+    /// Read, and write at its end only.
+    Append,
+}
+
 #[cfg(unix)]
 mod platform {
-    use super::{File, OpenOptions, Path, io};
+    use super::{Access, File, OpenOptions, Path, io};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    pub fn directory(path: &Path) -> io::Result<()> {
+    pub fn directory(path: &Path) -> io::Result<File> {
+        let refused = || {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "a private directory must be this user's own and not a symlink",
+            )
+        };
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(path)?;
         let metadata = std::fs::symlink_metadata(path)?;
         if !metadata.is_dir() || !super::owned_by_me(&metadata) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "a private directory must be this user's own and not a symlink",
-            ));
+            return Err(refused());
         }
-        restrict(path, &metadata)
+        restrict(path, &metadata)?;
+        // What was restricted by its name is checked again as the directory opened.
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let opened = directory.metadata()?;
+        if !opened.is_dir() || !super::private_to_me(&opened) {
+            return Err(refused());
+        }
+        Ok(directory)
     }
 
     /// Mode `0700`, set only when the directory has another: a chmod that changes nothing still tells
@@ -53,10 +80,11 @@ mod platform {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
     }
 
-    pub fn open(path: &Path, write: bool, create: bool, exclusive: bool) -> io::Result<File> {
+    pub fn open(path: &Path, access: Access, create: bool, exclusive: bool) -> io::Result<File> {
         let file = OpenOptions::new()
             .read(true)
-            .write(write)
+            .write(access == Access::Write)
+            .append(access == Access::Append)
             .create(create)
             .create_new(exclusive)
             .mode(0o600)
@@ -210,11 +238,24 @@ pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)>
 
 /// Creates or restricts a user-owned private directory.
 pub fn directory(path: &Path) -> io::Result<()> {
+    open_directory(path).map(drop)
+}
+/// [`directory`], and the directory it made private, opened without following a link and checked
+/// as opened: a handle to flush after renaming into it.
+pub fn open_directory(path: &Path) -> io::Result<File> {
     platform::directory(path)
 }
 /// Opens a private regular file, validating the opened object's owner and access.
 pub fn read(path: &Path) -> io::Result<File> {
-    platform::open(path, false, false, false)
+    platform::open(path, Access::Read, false, false)
+}
+/// [`read`], and every write lands at the file's end, wherever the file was cut back to.
+pub fn append(path: &Path) -> io::Result<File> {
+    platform::open(path, Access::Append, false, false)
+}
+/// [`create_new`], written as [`append`] writes.
+pub fn create_new_append(path: &Path) -> io::Result<File> {
+    platform::open(path, Access::Append, false, true)
 }
 /// Unix ciphertext may retain inherited read permissions; this is only for authenticated ciphertext,
 /// never plaintext credentials or encryption keys. Other platforms keep the canonical private-file ACL
@@ -243,11 +284,11 @@ pub fn read_ciphertext(path: &Path) -> io::Result<File> {
 
 /// User-only access from the moment of creation.
 pub fn create_new(path: &Path) -> io::Result<File> {
-    platform::open(path, true, false, true)
+    platform::open(path, Access::Write, false, true)
 }
 /// Opens or creates a private file for read and write; the caller acquires locks.
 pub fn lock_file(path: &Path) -> io::Result<File> {
-    platform::open(path, true, true, false)
+    platform::open(path, Access::Write, true, false)
 }
 /// Validates an existing file before truncating it, or creates a new private file.
 pub fn rewrite(path: &Path) -> io::Result<File> {
