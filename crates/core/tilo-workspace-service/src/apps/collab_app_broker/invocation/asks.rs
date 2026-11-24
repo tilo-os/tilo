@@ -56,7 +56,8 @@ fn phrase_take(phrase: &str) -> Take {
     }
 }
 
-/// What the person reads of a call of `action` with `argument` before they answer its ask: each
+/// What the person reads of a call of `action` with `argument` (the wire argument: typed JSON
+/// behind [`tilo_actions::ARGUMENTS_JSON_PREFIX`]) before they answer its ask: each
 /// argument its declaration shows (`ActionContract::shows`), labelled as its parameter is
 /// published, in their language. Read from the call alone, with no call into the app, so the
 /// ask reads the same whether or not the app is running. A secret is shown withheld.
@@ -66,7 +67,8 @@ fn shown_facts(
 ) -> Vec<tilo_actions::remote::asked::Fact> {
     use tilo_actions::remote::asked::{Fact, ShownAs};
     let arguments: serde_json::Map<String, serde_json::Value> = argument
-        .and_then(|argument| serde_json::from_str(argument).ok())
+        .and_then(|argument| argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        .and_then(|json| serde_json::from_str(json).ok())
         .unwrap_or_default();
     action
         .contract
@@ -106,6 +108,29 @@ fn shown_on_ask(action: &PublishedAction, argument: Option<&str>, facts: &mut As
     facts.takes.extend(action.contract.takes.iter().cloned());
 }
 
+/// What the person reads when `caller`'s call of `action` with `argument` waits for their yes
+/// under `policy`: who asks, what it acts on, what the call shows and what they type to answer.
+pub(crate) fn asked_facts(
+    caller: Option<&tilo_actions::remote::Caller>,
+    action: &PublishedAction,
+    policy: &tilo_actions::ConfirmationPolicy,
+    argument: Option<&str>,
+) -> AskedFacts {
+    let mut facts = AskedFacts::by(
+        caller
+            .map(crate::workspaces::asking::asked_by)
+            .unwrap_or_default(),
+    );
+    facts.on = Some(action.resource_label.clone()).filter(|label| !label.is_empty());
+    facts.verb.clone_from(&action.action_label);
+    facts.destructive = !action.contract.can_be_undone();
+    if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = policy {
+        facts.takes.push(phrase_take(phrase));
+    }
+    shown_on_ask(action, argument, &mut facts);
+    facts
+}
+
 /// The parts of an invocation its ask is decided on.
 pub(super) struct Asking<'a> {
     pub(super) request: Option<&'a tilo_actions::remote::InvokeRequest>,
@@ -138,22 +163,7 @@ impl AppBrokerState {
         if !asks && !store && matches!(policy, tilo_actions::ConfirmationPolicy::None) {
             return Ok(false);
         }
-        let facts = || {
-            let mut facts = AskedFacts::by(
-                inputs
-                    .caller
-                    .map(crate::workspaces::asking::asked_by)
-                    .unwrap_or_default(),
-            );
-            facts.on = Some(action.resource_label.clone()).filter(|label| !label.is_empty());
-            facts.verb.clone_from(&action.action_label);
-            facts.destructive = !action.contract.can_be_undone();
-            if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = &policy {
-                facts.takes.push(phrase_take(phrase));
-            }
-            shown_on_ask(action, inputs.argument, &mut facts);
-            facts
-        };
+        let facts = || asked_facts(inputs.caller, action, &policy, inputs.argument);
         // A token minted for this very call answers for it where nobody's approve came back.
         if let Some(token) = inputs.token
             && inputs
@@ -272,9 +282,13 @@ mod tests {
     /// them type a user name and a password; the call itself carries neither.
     #[test]
     fn a_sign_in_shows_the_site_and_takes_the_password_as_a_secret() {
-        let argument = r#"{"id":4,"asker":"a1","site":"https://intranet.example","realm":"Staff","proxy":"false"}"#;
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            r#"{"id":4,"asker":"a1","site":"https://intranet.example","realm":"Staff","proxy":"false"}"#
+        );
         let mut facts = AskedFacts::default();
-        shown_on_ask(&sign_in(), Some(argument), &mut facts);
+        shown_on_ask(&sign_in(), Some(&argument), &mut facts);
         let shown: Vec<(&str, &str)> = facts
             .facts
             .iter()

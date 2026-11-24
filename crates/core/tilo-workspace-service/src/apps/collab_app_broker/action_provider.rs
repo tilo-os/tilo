@@ -821,6 +821,11 @@ impl AppBrokerState {
         {
             return true;
         }
+        // The app's own action in the person's workspace, named by the app rather than by the
+        // peer offering it now: the Browser raises its page's prompts this way.
+        if let Some((workspace, owner)) = application_provider(&target.provider) {
+            return owner == app_id && person.workspace() == Some(workspace);
+        }
         if let Some(row) = self
             .eager_catalogue(person, RowScope::Provider(&target.provider))
             .0
@@ -2208,13 +2213,18 @@ impl AppBrokerState {
                         return Err(ActionCallError::UnknownAction);
                     }
                     let argument = request.argument.to_slot();
-                    if !confirmation_satisfied(
-                        &action
-                            .contract
-                            .confirmation_for_argument(argument.as_deref()),
-                        request.confirmation.as_ref(),
-                    ) {
-                        return Err(ActionCallError::confirmation_required());
+                    let policy = action
+                        .contract
+                        .confirmation_for_argument(argument.as_deref());
+                    if !confirmation_satisfied(&policy, request.confirmation.as_ref()) {
+                        // Refused with what the person reads, so the dispatch that keeps the
+                        // call as its asked record shows them the call.
+                        return Err(ActionCallError::asks(super::invocation::asked_facts(
+                            Some(caller),
+                            action,
+                            &policy,
+                            argument.as_deref(),
+                        )));
                     }
                 }
                 Ok(workspace.clone())

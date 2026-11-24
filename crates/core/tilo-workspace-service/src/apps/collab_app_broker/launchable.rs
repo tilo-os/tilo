@@ -499,6 +499,7 @@ impl LaunchableCatalogue {
 mod tests {
     use std::sync::Weak;
 
+    use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
     use tilo_actions::remote::{
         ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
         RemoteActionTarget,
@@ -512,6 +513,25 @@ mod tests {
     use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
     const APP: &str = "so.tilo.files";
+
+    /// The card a call of the fixture app's `verb` on its files waits on its person's yes
+    /// with, asked by `by`.
+    fn card(by: AskedBy, verb: &str, destructive: bool) -> ActionCallError {
+        ActionCallError::asks(AskedFacts {
+            on: Some("Files".into()),
+            verb: verb.into(),
+            destructive,
+            ..AskedFacts::by(by)
+        })
+    }
+
+    /// Who asks when the fixture's agent calls.
+    fn scribe() -> AskedBy {
+        AskedBy::Agent(Named {
+            id: "scribe".into(),
+            name: "scribe".into(),
+        })
+    }
 
     fn action(name: &str, confirmation: tilo_actions::ConfirmationPolicy) -> PublishedAction {
         PublishedAction {
@@ -1238,7 +1258,7 @@ mod tests {
                     serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
                 )
                 .err(),
-                Some(ActionCallError::confirmation_required()),
+                Some(card(AskedBy::default(), "field-edit", true)),
                 "removing a note asks, as a delete verb does"
             );
         }
@@ -1289,7 +1309,7 @@ mod tests {
 
             assert_eq!(
                 invoke(&state, &agent, "5", "new-window", None).err(),
-                Some(ActionCallError::confirmation_required())
+                Some(card(scribe(), "new-window", false))
             );
             assert_eq!(
                 invoke(
@@ -1300,7 +1320,7 @@ mod tests {
                     Some(Confirmation::Confirmed)
                 )
                 .err(),
-                Some(ActionCallError::confirmation_required()),
+                Some(card(scribe(), "new-window", false)),
                 "an agent never confirms by its own word"
             );
             assert!(app.try_recv().is_err(), "nothing ran");
@@ -1676,7 +1696,7 @@ mod tests {
             );
             assert_eq!(
                 invoke(&state, &owner, &target.provider, "empty-trash", None),
-                Err(ActionCallError::confirmation_required()),
+                Err(card(AskedBy::default(), "empty-trash", false)),
                 "the app's own contract admits what it offers"
             );
         }
@@ -2434,7 +2454,7 @@ mod tests {
             );
             assert_eq!(
                 invoke(&state, &owner, &provider, "empty-trash", None),
-                Err(ActionCallError::confirmation_required()),
+                Err(card(AskedBy::default(), "Label of empty-trash", false)),
                 "the manifest's confirmation is asked for before the launch"
             );
             assert!(
@@ -2539,7 +2559,7 @@ mod tests {
 
             assert_eq!(
                 invoke(&state, &owner, &provider, "empty-trash", None),
-                Err(ActionCallError::confirmation_required())
+                Err(card(AskedBy::default(), "empty-trash", false))
             );
             assert_eq!(
                 invoke(

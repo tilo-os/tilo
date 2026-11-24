@@ -7,7 +7,7 @@ use super::*;
 mod admit;
 mod asks;
 
-pub(crate) use asks::Refusal;
+pub(crate) use asks::{Refusal, asked_facts};
 
 #[derive(Clone, Debug)]
 pub struct InvocationEnvelope {
