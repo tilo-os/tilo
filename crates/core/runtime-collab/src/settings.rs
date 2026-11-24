@@ -126,7 +126,7 @@ impl AppSettingsHandle {
 pub mod host {
     //! An app's settings calls answered from a settings source.
 
-    use std::cell::RefCell;
+    use std::sync::Mutex;
     use std::sync::Arc;
 
     use serde_json::{Map, Value};
@@ -165,7 +165,7 @@ pub mod host {
         revalidate: Revalidate,
         /// The view last answered and the revision it was answered as, so
         /// a change elsewhere in the document wakes no reader.
-        answered: RefCell<(u64, Map<String, Value>)>,
+        answered: Mutex<(u64, Map<String, Value>)>,
         /// Woken by the source on every change of its document.
         changed: Arc<tokio::sync::Notify>,
         /// Keeps this server listening to the source.
@@ -190,7 +190,7 @@ pub mod host {
                 display: None,
                 source,
                 revalidate,
-                answered: RefCell::new((0, Map::new())),
+                answered: Mutex::new((0, Map::new())),
                 changed,
                 _listener: listener,
             }
@@ -222,7 +222,10 @@ pub mod host {
         #[must_use]
         pub fn view(&self) -> (u64, Map<String, Value>) {
             let view = view(self.source.as_ref(), &self.app_id, &self.grants);
-            let mut answered = self.answered.borrow_mut();
+            let mut answered = self
+                .answered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if answered.0 == 0 || answered.1 != view {
                 answered.0 = answered.0.wrapping_add(1).max(1);
                 answered.1 = view;
