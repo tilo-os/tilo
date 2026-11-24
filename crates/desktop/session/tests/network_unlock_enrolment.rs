@@ -34,7 +34,7 @@ use tilo_unlock_protocol::{
     ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, Half, SlotId, decode_frame, encode_frame,
     frame_len,
 };
-use tilo_user_identity::{DeviceCapabilities, verify_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, verify_device_cert};
 
 /// The kind the sheet lists a peer's enrolment as.
 const ENROL_KIND: &str = "network.device-enrol";
