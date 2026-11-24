@@ -1,9 +1,9 @@
 //! Display intent an app's Settings pane asks of the session that owns the displays.
 //! The app supplies intent and the output set it observed; this session owns prior state,
-//! transaction identity and persistence, and the compositor keeps KMS. The device's daemon decides
-//! who the Settings worker is, and a request that changes anything is taken only for a person who
-//! may govern the workspace: an editor's Settings worker changes nothing here, however well it was
-//! admitted to the app's channel.
+//! transaction identity and persistence, and the compositor keeps KMS. A request that changes
+//! anything is admitted only from the device this workspace's identity enrolled and only for a
+//! person who may govern the workspace: a Settings worker on someone else's device changes nothing
+//! here, however well it was admitted to the app's channel.
 
 use std::sync::Arc;
 
@@ -12,6 +12,10 @@ use settings_store::display_control::{DisplayCommand, MAX_DISPLAY_CONTROL_BYTES}
 use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_workspace_service::apps::services::DisplayControlServices;
 
+/// This device's certificate in a workspace, for the person it belongs to.
+type Certificate =
+    dyn Fn(&str, &str) -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync;
+
 /// Whether a person may govern a workspace: its owner, or a role the workspace admits with
 /// governance.
 type Administrator = dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync;
@@ -19,15 +23,18 @@ type Administrator = dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync;
 /// The displays' state as the compositor published it.
 type Observed = dyn Fn() -> Option<DisplayHardwareSnapshot> + Send + Sync;
 
-/// The session's display service over its own settings document and the shell it shows.
+/// The session's display service over its own settings document, its identity store and the shell it
+/// shows.
 pub(crate) struct DisplayControl {
     source: Arc<dyn SettingsSource>,
+    certificate: Arc<Certificate>,
     may_administer: Arc<Administrator>,
     observed: Arc<Observed>,
 }
 
 impl DisplayControl {
-    /// The session's own answers: what the shell says the person may do in the workspace.
+    /// The session's own answers: what the identity store says this device is, and what the shell
+    /// says the person may do in the workspace.
     pub(crate) fn native(
         source: Arc<dyn SettingsSource>,
         shell: &Arc<crate::app_wire::LayoutAuthority>,
@@ -35,6 +42,7 @@ impl DisplayControl {
         let governing = Arc::clone(shell);
         Self {
             source,
+            certificate: Arc::new(tilo_identity_authority::device_certificate),
             may_administer: Arc::new(move |workspace: &str, person: &str| {
                 use tilo_broker_core::services::WorkspaceAuthority as _;
                 let mut may = false;
@@ -48,13 +56,13 @@ impl DisplayControl {
         }
     }
 
-    /// The answer to display intent the device's daemon asks for on behalf of the private Settings
-    /// worker `root` is on, in `workspace`.
+    /// The answer to display intent from the private Settings worker `root` /`device` is on, in
+    /// `workspace` .
     fn answer(
         &self,
         workspace: &str,
         root: [u8; 32],
-        _device: [u8; 32],
+        device: [u8; 32],
         command: &[u8],
     ) -> Result<Vec<u8>, String> {
         if command.len() > MAX_DISPLAY_CONTROL_BYTES {
@@ -66,6 +74,10 @@ impl DisplayControl {
             return self.execute(command);
         }
         let person = tilo_broker_core::person_id_for_root(root);
+        let certificate = (self.certificate)(workspace, &person)?;
+        if certificate.user_public_key != root || certificate.device_public_key != device {
+            return Err("The Settings worker is not on this accepted owner device.".into());
+        }
         if !(self.may_administer)(workspace, &person)? {
             return Err("The current workspace policy does not permit display changes.".into());
         }
@@ -169,9 +181,11 @@ mod tests {
         }
     }
 
-    /// Whether the workspace's policy lets the person govern it.
+    /// This device and the workspace's policy, as the host answers them.
     #[derive(Clone, Copy)]
     struct Device {
+        /// Whether this device's certificate names the worker's keys.
+        enrolled: bool,
         /// Whether the person may govern the workspace.
         governs: bool,
     }
@@ -179,6 +193,18 @@ mod tests {
     fn control(device: Device) -> DisplayControl {
         DisplayControl {
             source: document(),
+            certificate: Arc::new(move |_, _| {
+                Ok(tilo_user_identity::DeviceCert {
+                    user_public_key: ROOT,
+                    device_public_key: if device.enrolled { DEVICE } else { [9; 32] },
+                    device_label: "This laptop".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                    issuer: None,
+                })
+            }),
             may_administer: Arc::new(move |_, _| Ok(device.governs)),
             observed: Arc::new(|| Some(snapshot())),
         }
@@ -224,7 +250,10 @@ mod tests {
         {
             let reply: Value = serde_json::from_slice(
                 &asked(
-                    &control(Device { governs: true }),
+                    &control(Device {
+                        enrolled: true,
+                        governs: true,
+                    }),
                     ROOT,
                     DEVICE,
                     &DisplayCommand::Inspect,
@@ -240,12 +269,29 @@ mod tests {
             assert!(reply["transaction"].is_null(), "nothing was changed");
         }
 
-        phase a_display_change_requires_governing_policy;
-        // A change is taken only for a person who may govern the workspace. Which device and
-        // person the Settings worker is, is the device's daemon's decision, made before it asks
-        // this session.
+        phase a_display_change_requires_this_devices_certificate_and_governing_policy;
+        // A change is taken only from the device this workspace's identity enrolled, and only for a
+        // person who may govern the workspace.
         {
-            let editor = control(Device { governs: false });
+            let allowed = control(Device {
+                enrolled: true,
+                governs: true,
+            });
+            assert_eq!(
+                asked(&allowed, ROOT, [9; 32], &larger_mode())
+                    .expect_err("another device changes nothing"),
+                "The Settings worker is not on this accepted owner device."
+            );
+            assert_eq!(
+                asked(&allowed, [4; 32], DEVICE, &larger_mode())
+                    .expect_err("another person changes nothing"),
+                "The Settings worker is not on this accepted owner device."
+            );
+
+            let editor = control(Device {
+                enrolled: true,
+                governs: false,
+            });
             assert_eq!(
                 asked(&editor, ROOT, DEVICE, &larger_mode()).expect_err("an editor changes nothing"),
                 "The current workspace policy does not permit display changes."
@@ -259,7 +305,10 @@ mod tests {
         phase a_display_request_is_bounded_and_typed;
         // Intent that cannot be a display transaction is refused as such, never run as something else.
         {
-            let displays = control(Device { governs: true });
+            let displays = control(Device {
+                enrolled: true,
+                governs: true,
+            });
             assert_eq!(
                 displays
                     .answer("the-workspace", ROOT, DEVICE, b"not json")
@@ -279,7 +328,10 @@ mod tests {
             );
             let unavailable = DisplayControl {
                 observed: Arc::new(|| None),
-                ..control(Device { governs: true })
+                ..control(Device {
+                    enrolled: true,
+                    governs: true,
+                })
             };
             assert_eq!(
                 asked(&unavailable, ROOT, DEVICE, &DisplayCommand::Inspect)
@@ -295,7 +347,10 @@ mod tests {
             let source = document();
             let displays = DisplayControl {
                 source: Arc::clone(&source),
-                ..control(Device { governs: true })
+                ..control(Device {
+                    enrolled: true,
+                    governs: true,
+                })
             };
             let reply: Value = serde_json::from_slice(
                 &asked(&displays, ROOT, DEVICE, &larger_mode()).expect("the change is applied"),
