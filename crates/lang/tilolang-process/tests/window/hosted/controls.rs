@@ -586,15 +586,16 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        let acting = invoker.as_ref().map_or_else(
-            || ui::tilo_actions::Acting::person(self.person.clone()),
-            |invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.clone(),
-        );
+        // The broker always names the invoker it admitted: the person at the window when the
+        // call names no one else.
+        let invoker = invoker.unwrap_or_else(|| {
+            ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::person(
+                self.person.clone(),
+            ))
+        });
+        let acting = invoker.acting.clone();
         let actor = acting.by.clone();
-        let context = match invoker {
-            Some(invoker) => Some(ambient.cloned().unwrap_or_default().with_invoker(invoker)),
-            None => ambient.cloned(),
-        };
+        let context = Some(ambient.cloned().unwrap_or_default().with_invoker(invoker));
         let arguments = format!(
             "{}{}",
             ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
