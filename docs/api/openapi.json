@@ -11473,7 +11473,9 @@
             "description": "The name of the field to set.",
             "enum": [
               "url",
-              "title"
+              "title",
+              "capture",
+              "login_notice"
             ],
             "type": "string"
           },
@@ -12349,6 +12351,380 @@
         "required": [],
         "description": "Lets the site ask again for what it was refused."
       },
+      "tl.so.tilo.browser.Page.discover_logins.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reads the login forms this page asks for, through the engine's own credential store."
+      },
+      "tl.so.tilo.browser.Page.list_saved_logins.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lists the logins the engine keeps for this site."
+      },
+      "tl.so.tilo.browser.Page.capture_login.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginForm",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f"
+        ],
+        "description": "Takes what the person typed into a login form, so it can be saved for this site. The password\nstays in the engine's credential store and never crosses to the app."
+      },
+      "tl.so.tilo.browser.Page.save_login.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Saves the capture the engine took for this site."
+      },
+      "tl.so.tilo.browser.Page.fill_saved_login.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginForm",
+            "type": "object"
+          },
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginAccount",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f",
+          "a"
+        ],
+        "description": "Fills a form of this page with a login the engine keeps."
+      },
+      "tl.so.tilo.browser.Page.update_saved_login.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginForm",
+            "type": "object"
+          },
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginAccount",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f",
+          "a"
+        ],
+        "description": "Replaces a saved login with the capture the engine took."
+      },
+      "tl.so.tilo.browser.Page.delete_saved_login.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginAccount",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Forgets a login the engine keeps for this site."
+      },
+      "tl.so.tilo.browser.Page.cancel_login.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Turns down the login the engine offers to save."
+      },
+      "tl.so.tilo.browser.Page.discover_addresses.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reads the addresses the engine fills forms with."
+      },
+      "tl.so.tilo.browser.Page.fill_saved_address.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.LoginForm",
+            "type": "object"
+          },
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.Address",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f",
+          "a"
+        ],
+        "description": "Fills a form of this page with a saved address, through the engine."
+      },
+      "tl.so.tilo.browser.Page.remember_credential.Arguments": {
+        "type": "object",
+        "properties": {
+          "did": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "forms": {
+            "type": "string"
+          },
+          "accounts": {
+            "type": "string"
+          },
+          "capture": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "late": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "did",
+          "success",
+          "message",
+          "forms",
+          "accounts",
+          "capture",
+          "username",
+          "late"
+        ],
+        "description": "Writes what the engine's credential store answered into the page's record: the forms and\naccounts it listed, the capture it took, and its own words. The window raises it; a person,\nagent or script never does."
+      },
       "tl.so.tilo.browser.Page.sync_site_exceptions.Arguments": {
         "type": "object",
         "properties": {},
@@ -12902,6 +13278,107 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.browser.HistoryEntry.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.LoginForm.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.LoginForm.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "form",
+              "username",
+              "kind"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.LoginForm.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.LoginForm.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.LoginAccount.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.LoginAccount.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "account",
+              "username"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.LoginAccount.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.LoginAccount.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -79239,6 +79716,32 @@
         ],
         "description": ""
       },
+      "settings.notifications.set-quiet-hours.Arguments": {
+        "type": "object",
+        "properties": {
+          "start_minute": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_minute": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "weekdays": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_minute",
+          "end_minute",
+          "weekdays"
+        ],
+        "description": ""
+      },
       "settings.audio.set-mono-output.Arguments": {
         "type": "object",
         "properties": {
@@ -79709,110 +80212,6 @@
         "description": ""
       },
       "settings.agent-models.redo-model.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "settings.agent-provider-setup.add-provider.Arguments": {
-        "type": "object",
-        "properties": {
-          "preset": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "preset"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-provider-enabled.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "provider",
-          "on"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-provider-details.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "provider",
-          "label",
-          "endpoint"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-provider-protocol.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "protocol": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "protocol"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-provider-model.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "model"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-default-provider.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.refresh-providers.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -83129,6 +83528,72 @@
     {
       "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.Page",
+      "action": "discover_logins",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.discover_logins.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "list_saved_logins",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.list_saved_logins.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "capture_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.capture_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "save_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.save_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "fill_saved_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.fill_saved_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "update_saved_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.update_saved_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "delete_saved_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.delete_saved_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "cancel_login",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.cancel_login.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "discover_addresses",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.discover_addresses.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "fill_saved_address",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.fill_saved_address.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "remember_credential",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.remember_credential.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
       "action": "sync_site_exceptions",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.sync_site_exceptions.Arguments"
     },
@@ -83353,6 +83818,54 @@
       "resource": "tl.so.tilo.browser.HistoryEntry",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.browser.HistoryEntry.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginForm",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginForm.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginForm",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginForm.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginForm",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginForm.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginForm",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginForm.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginAccount",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginAccount.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginAccount",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginAccount.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginAccount",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginAccount.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.LoginAccount",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.LoginAccount.$scenario.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -107584,6 +108097,12 @@
     },
     {
       "app": "so.tilo.settings.sections",
+      "resource": "settings.notifications",
+      "action": "set-quiet-hours",
+      "arguments": "#/components/schemas/settings.notifications.set-quiet-hours.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
       "resource": "settings.audio",
       "action": "set-mono-output",
       "arguments": "#/components/schemas/settings.audio.set-mono-output.Arguments"
@@ -107779,48 +108298,6 @@
       "resource": "settings.agent-models",
       "action": "redo-model",
       "arguments": "#/components/schemas/settings.agent-models.redo-model.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "add-provider",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.add-provider.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-provider-enabled",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-enabled.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-provider-details",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-details.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-provider-protocol",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-protocol.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-provider-model",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-model.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-default-provider",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-default-provider.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "refresh-providers",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.refresh-providers.Arguments"
     }
   ]
 }

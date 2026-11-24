@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@e9f5985079a6b8bf";
+export const SURFACE = "so.tilo.browser@fa16aa89e2c41823";
 
 /** The arguments of `remove_bookmark`. */
 export interface RemoveBookmarkArgs {
@@ -78,6 +78,18 @@ export interface OpenFromPageArgs {
 export interface RememberHistoryArgs {
   direction: string;
   entries: string;
+}
+
+/** The arguments of `remember_credential`. */
+export interface RememberCredentialArgs {
+  did: string;
+  success: boolean;
+  message: string;
+  forms: string;
+  accounts: string;
+  capture: string;
+  username: string;
+  late: boolean;
 }
 
 /** The arguments of `went_to`. */
@@ -317,6 +329,10 @@ export interface Page extends tilo.Resource {
   o2occ235: Array<tilo.Entry<Download>>;  // downloads
   eg4w4fow: boolean;  // muted
   "252payib": SiteInfo | null;  // site
+  nfmtkvs7: Array<tilo.Entry<LoginForm>>;  // login_forms
+  jbnzv4tj: Array<tilo.Entry<LoginAccount>>;  // login_accounts
+  jz6xwcus: string;  // capture
+  wqz44fsx: string;  // login_notice
   ctm6ma5g: Array<tilo.Entry<HistoryEntry>>;  // back
   znzxwmxa: Array<tilo.Entry<HistoryEntry>>;  // forward
   eiqyiw53: boolean;  // loading
@@ -588,6 +604,52 @@ export interface Page extends tilo.Resource {
   block_site_permissions(): Promise<Answer>;
   /** Lets the site ask again for what it was refused. */
   ask_site_permissions_again(): Promise<Answer>;
+  /** Reads the login forms this page asks for, through the engine's own credential store. */
+  discover_logins(): Promise<Answer>;
+  /** Lists the logins the engine keeps for this site. */
+  list_saved_logins(): Promise<Answer>;
+  /** Takes what the person typed into a login form, so it can be saved for this site. The password stays in the engine's credential store and never crosses to the app. */
+  capture_login(args: {
+    f: LoginForm;
+  }): Promise<Answer>;
+  /** Saves the capture the engine took for this site. */
+  save_login(): Promise<Answer>;
+  /** Fills a form of this page with a login the engine keeps. */
+  fill_saved_login(args: {
+    f: LoginForm;
+    a: LoginAccount;
+  }): Promise<Answer>;
+  /** Replaces a saved login with the capture the engine took. */
+  update_saved_login(args: {
+    f: LoginForm;
+    a: LoginAccount;
+  }): Promise<Answer>;
+  /** Forgets a login the engine keeps for this site. */
+  delete_saved_login(args: {
+    a: LoginAccount;
+  }): Promise<Answer>;
+  /** Turns down the login the engine offers to save. */
+  cancel_login(): Promise<Answer>;
+  /** Reads the addresses the engine fills forms with. */
+  discover_addresses(): Promise<Answer>;
+  /** Fills a form of this page with a saved address, through the engine. */
+  fill_saved_address(args: {
+    f: LoginForm;
+    a: Address;
+  }): Promise<Answer>;
+  /** Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words. The window raises it; a person, agent or script never does. */
+  remember_credential(args: {
+    did: string;
+    success: boolean;
+    message: string;
+    forms: string;
+    accounts: string;
+    capture: string;
+    username: string;
+    late: boolean;
+  }): Promise<void>;
+  /** Runs `remember_credential` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remember_credentialMany(items: RememberCredentialArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Tells the engine which sites tracker protection is off for, as the Browser's own set says: the engine keeps the same list beside its filters. */
   sync_site_exceptions(): Promise<Answer>;
   /** Gives an extension the more access it asked for. The window raises it as the Browser's own call, and the person allows it on the system's card, which says what the extension could then do. */
@@ -645,7 +707,7 @@ export interface Page extends tilo.Resource {
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {
@@ -792,6 +854,37 @@ export function historyEntry(ws: tilo.Workspace, path: string): HistoryEntry {
   return resourceProxy(ws, path, SURFACE, HISTORYENTRY_ACTIONS) as unknown as HistoryEntry;
 }
 
+/** LoginForm — `tl.so.tilo.browser.LoginForm`. */
+export interface LoginForm extends tilo.Resource {
+  hdxbxfcl: string;  // form
+  enz3azev: string;  // username
+  kqqay3gr: string;  // kind
+}
+
+/** The actions `LoginForm` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LOGINFORM_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.LoginForm` kind at `path`. */
+export function loginForm(ws: tilo.Workspace, path: string): LoginForm {
+  return resourceProxy(ws, path, SURFACE, LOGINFORM_ACTIONS) as unknown as LoginForm;
+}
+
+/** LoginAccount — `tl.so.tilo.browser.LoginAccount`. */
+export interface LoginAccount extends tilo.Resource {
+  "53raewop": string;  // account
+  "5oqresy2": string;  // username
+}
+
+/** The actions `LoginAccount` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LOGINACCOUNT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.LoginAccount` kind at `path`. */
+export function loginAccount(ws: tilo.Workspace, path: string): LoginAccount {
+  return resourceProxy(ws, path, SURFACE, LOGINACCOUNT_ACTIONS) as unknown as LoginAccount;
+}
+
 /** Ask — `tl.so.tilo.browser.Ask`. */
 export interface Ask extends tilo.Resource {
   fqvhxdyr: string;  // op
@@ -823,6 +916,10 @@ export interface Ask extends tilo.Resource {
   "4vqdzqut": string | null;  // doing
   fbtgqfhx: string[] | null;  // origins
   ymm5jh2h: string | null;  // origin
+  wdlbrp6r: string | null;  // credential
+  x6klrsfn: string | null;  // capture
+  o345kv2f: string | null;  // account
+  cirolhk7: Address | null;  // address
   "7gcvts2u": number | null;  // generation
   ky26jv4a: string[] | null;  // paths
   iabkjt2r: string[] | null;  // steps

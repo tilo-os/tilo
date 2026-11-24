@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@f487e293a4c9727e";
+export const SURFACE = "so.tilo.settings.sections@795abeb58990c36e";
 
 export interface Ink {
   primary: number;
@@ -268,35 +268,6 @@ export interface AgentProviderShown {
   model_label: string;
 }
 
-export interface AgentProviderModelShown {
-  id: string;
-  label: string;
-}
-
-export interface AgentProviderPresetShown {
-  slug: string;
-  label: string;
-  description: string;
-  protocol: string;
-  authentication: string;
-}
-
-export interface AgentProviderSetupAgentProviderShown {
-  id: string;
-  label: string;
-  protocol: string;
-  endpoint: string;
-  location: string;
-  enabled: boolean;
-  models: AgentProviderModelShown[];
-  model: string;
-  model_label: string;
-  in_use: boolean;
-  authentication: string;
-  key: string;
-  sign_in: string;
-}
-
 export interface ActionShortcut {
   label: string;
   chord: string;
@@ -487,6 +458,13 @@ export interface RecordUpdateCheckArgs {
 export interface MuteAppArgs {
   app: string;
   duration: string;
+}
+
+/** The arguments of `set-quiet-hours`. */
+export interface SetQuietHoursArgs {
+  start_minute: number;
+  end_minute: number;
+  weekdays: number;
 }
 
 /** The arguments of `set-mono-output`. */
@@ -1095,11 +1073,18 @@ export interface Notifications extends tilo.Resource {
   }): Promise<void>;
   /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   muteAppMany(items: MuteAppArgs[]): Promise<tilo.ActionAnswer[]>;
+  setQuietHours(args: {
+    start_minute: number;
+    end_minute: number;
+    weekdays: number;
+  }): Promise<void>;
+  /** Runs `set-quiet-hours` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setQuietHoursMany(items: SetQuietHoursArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Notifications` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTIFICATIONS_ACTIONS = ["muteApp", "muteAppMany"] as const;
+export const NOTIFICATIONS_ACTIONS = ["muteApp", "muteAppMany", "setQuietHours", "setQuietHoursMany"] as const;
 
 /** The `settings.notifications` kind at `path`. */
 export function notifications(ws: tilo.Workspace, path: string): Notifications {
@@ -1357,7 +1342,7 @@ export function desktopControlsDevice(ws: tilo.Workspace, path: string): Desktop
   return resourceProxy(ws, path, SURFACE, DESKTOPCONTROLSDEVICE_ACTIONS, true) as unknown as DesktopControlsDevice;
 }
 
-/** Agent providers — `settings.agent-providers`. */
+/** Agent model providers — `settings.agent-providers`. */
 export interface AgentProviders extends tilo.Resource {
   readonly config: ProviderConfig;
   setProviders(args: {
@@ -1592,47 +1577,6 @@ export const AGENTMODELS_ACTIONS = ["useModel", "undoModel", "redoModel"] as con
 /** The `settings.agent-models` kind at `path`. */
 export function agentModels(ws: tilo.Workspace, path: string): AgentModels {
   return resourceProxy(ws, path, SURFACE, AGENTMODELS_ACTIONS) as unknown as AgentModels;
-}
-
-/** Agent provider setup — `settings.agent-provider-setup`. */
-export interface AgentProviderSetup extends tilo.Resource {
-  readonly providers: AgentProviderSetupAgentProviderShown[];
-  readonly default_provider: string;
-  readonly presets: AgentProviderPresetShown[];
-  addProvider(args: {
-    preset: string;
-  }): Promise<void>;
-  setProviderEnabled(args: {
-    provider: string;
-    on: boolean;
-  }): Promise<void>;
-  setProviderDetails(args: {
-    provider: string;
-    label: string;
-    endpoint: string;
-    model?: string;
-  }): Promise<void>;
-  setProviderProtocol(args: {
-    provider: string;
-    protocol: string;
-  }): Promise<void>;
-  setProviderModel(args: {
-    provider: string;
-    model: string;
-  }): Promise<void>;
-  setDefaultProvider(args: {
-    provider: string;
-  }): Promise<void>;
-  refreshProviders(): Promise<void>;
-}
-
-/** The actions `AgentProviderSetup` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const AGENTPROVIDERSETUP_ACTIONS = ["addProvider", "setProviderEnabled", "setProviderDetails", "setProviderProtocol", "setProviderModel", "setDefaultProvider", "refreshProviders"] as const;
-
-/** The `settings.agent-provider-setup` kind at `path`. */
-export function agentProviderSetup(ws: tilo.Workspace, path: string): AgentProviderSetup {
-  return resourceProxy(ws, path, SURFACE, AGENTPROVIDERSETUP_ACTIONS) as unknown as AgentProviderSetup;
 }
 
 /** Keyboard shortcuts — `settings.shortcuts-table`. */
