@@ -42,7 +42,9 @@ impl Entry {
             Value::Text(self.path.clone()),
             Value::Bool(self.folder),
             Value::Int(self.size),
-            Value::Int(self.modified),
+            // A `Time` is ISO-8601 text wherever the code holds one, so the entry can be stored
+            // in a resource's `Time` field as the type says it is.
+            Value::Text(tilolang::calendar::time_text(self.modified)),
             Value::Bool(self.hidden),
         ])
     }
@@ -69,7 +71,7 @@ impl TrashEntry {
             Value::Text(self.name.clone()),
             Value::Text(self.path.clone()),
             Value::Text(self.original.clone()),
-            Value::Int(self.deleted),
+            Value::Text(tilolang::calendar::time_text(self.deleted)),
         ])
     }
 }
@@ -571,7 +573,7 @@ pub const TRASH_ENTRY_FIELDS: &[(&str, &str, &str)] = &[
     (
         "deleted",
         "Time",
-        "When it was trashed; 0 when the trash does not say.",
+        "When it was trashed; the epoch when the trash does not say.",
     ),
 ];
 
@@ -583,7 +585,7 @@ pub const ENTRY_FIELDS: &[(&str, &str, &str)] = &[
     (
         "modified",
         "Time",
-        "When its content last changed; 0 when the disk does not say.",
+        "When its content last changed; the epoch when the disk does not say.",
     ),
     ("hidden", "Bool", "Whether its name starts with a dot."),
 ];

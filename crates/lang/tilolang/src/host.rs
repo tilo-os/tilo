@@ -628,7 +628,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ("until", "Time", "The instant the code stops being good."),
             ("period", "Int", "How many seconds one code stands."),
             ("digits", "Int", "How many digits it has."),
-            ("algorithm", "Text", "The hash it is made with: `SHA1`, `SHA256` or `SHA512`."),
+            (
+                "algorithm",
+                "Text",
+                "The hash it is made with: `SHA1`, `SHA256` or `SHA512`.",
+            ),
         ],
     },
     ValueType {
@@ -672,7 +676,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "modified",
                 "Time",
-                "When its content last changed; 0 when the disk does not say.",
+                "When its content last changed; the epoch when the disk does not say.",
             ),
             ("hidden", "Bool", "Whether its name starts with a dot."),
         ],
@@ -711,7 +715,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "deleted",
                 "Time",
-                "When it was trashed; 0 when the trash does not say.",
+                "When it was trashed; the epoch when the trash does not say.",
             ),
         ],
     },
