@@ -1833,7 +1833,7 @@ d-kga7o3ur = Fenster
     .w-fade-in = Einblenden
     .w-dip-to-black = Schwarzblende
     .w-wipe = Wischen
-    .w-use-its-format = Dessen Format übernehmen
+    .w-match = An { $name } anpassen
     .w-split-the-sound = Ton abtrennen
     .w-unlink = Verknüpfung lösen
     .w-marker-here = Marke hier
@@ -1944,6 +1944,22 @@ d-kga7o3ur = Fenster
     .w-reset-the-level-and-pan = Pegel und Panorama zurücksetzen
     .w-delete-the-track = Spur löschen
     .w-backing-plate = Hinterlegung
+    .w-system-sans = System-Sans
+    .w-curves = Kurven
+    .w-all = Alle
+    .w-the-curve = Die Kurve { $curve_channel }
+    .w-how-much-of-the-curve = Wie viel von der Kurve
+    .w-reset-the-curve = Kurve zurücksetzen
+    .w-fill-frame = Bildfeld füllen
+    .w-fit-it-to-the-picture = An das Bild anpassen
+    .w-go-to-where-the-mix-clipped = Dorthin, wo der Mix übersteuert hat
+    .w-go-to-where-it-clipped = Zur Übersteuerung springen
+    .w-the-mix-is-over-full-scale = Der Mix liegt { $over_words } über Vollaussteuerung
+    .w-the-mix-is-the-sum-of = Der Mix ist die Summe aller Spuren; alle zusammen leiser zu machen erhält die Balance
+    .w-in-places-the-mix-is-the = An { $len } Stellen; der Mix ist die Summe aller Spuren, alle zusammen leiser zu machen erhält die Balance
+    .w-bring-the-mix-down = Mix leiser machen
+    .w-check-the-mix = Mix prüfen
+    .w-rename-the-mark = Marke umbenennen
 
 d-bi2ut6h2 = Studio
     .w-open-in-the-editor = In der Bearbeitung öffnen
@@ -2381,3 +2397,176 @@ d-werb5t7p-filter-anchor_x = X
 d-werb5t7p-filter-anchor_y = Y
 
 d-fkdizcdd-filter-live_rate = Live-Geschwindigkeit
+
+d-2iqind2t = Stellen
+    .doc = Die Zeitpunkte auf der Zeitachse, an denen er über Vollaussteuerung ging, der Reihe nach.
+
+d-33lufvui = Stellen
+    .doc = Die Sekunden auf der Zeitachse, an denen der gemessene Mix über Vollaussteuerung ging.
+
+d-5sdhdf7o = Heiße Spuren
+    .doc = Die Spuren, die schon für sich über waren: was zuerst ins Auge fällt, denn der Mix ist die Summe aller.
+
+d-3onhtj2t = Kurve gesamt
+    .doc = Die Tonkurve eines Kanals: die x und y ihrer Punkte, je 0..1, aufsteigend in x.
+
+d-ex66wj7a = Kurve gesamt
+    .doc = Die Tonkurve eines Kanals, nach den drei Gradationsachsen angewandt: die x und y jedes Punktes, je 0..1, aufsteigend in x.
+
+d-ol3bgzw4 = Kurve gesamt
+    .doc = Die Tonkurve eines Kanals als x-und-y-Paare, je 0..1.
+
+d-n5lm4fa3 = Kurve Rot
+
+d-qahutbcr = Kurve Rot
+
+d-p7y2saed = Kurve Rot
+
+d-vl2qc7vg = Kurve Grün
+
+d-zc6isz2b = Kurve Grün
+
+d-gyh2nxn7 = Kurve Grün
+
+d-ba2d3rjj = Kurve Blau
+
+d-7ubzs7t5 = Kurve Blau
+
+d-jf6z7vea = Kurve Blau
+
+d-qai4utug = Kurvenanteil
+    .doc = Wie viel von der Kurve einfließt: 0 umgeht sie, 1 ist die Kurve wie gezeichnet.
+
+d-qjnl3pk6 = Kurvenanteil
+    .doc = Wie viel von der Kurve einfließt: 0 umgeht sie, 1 ist die Kurve wie gezeichnet.
+
+d-br257zpc = Kurvenanteil
+    .doc = Wie viel von der Kurve einfließt: 0 umgeht sie, 1 ist die Kurve wie gezeichnet.
+
+d-aj2coyre-filter-curve_mix = Kurvenanteil
+
+d-twd6225m-filter-curve_mix = Kurvenanteil
+
+d-werb5t7p-filter-curve_mix = Kurvenanteil
+
+d-j34pf5ka = Schrift
+    .doc = Die Schriftfamilie, in der die Worte eines Titels stehen; leer für das eigene Sans des Systems.
+
+d-ehpks3pq = Schrift
+
+d-xryucmpo = Übersteuerung, dB
+    .doc = Wie weit über Vollaussteuerung dieses Fenster den Mix gemessen hat, in Dezibel; 0, wenn er nicht darüber ging.
+
+d-y32rbhqo = Übersteuerung, dB
+    .doc = Wie weit über Vollaussteuerung der Mix ging, in Dezibel; 0, wenn er nicht darüber ging.
+
+d-czr6i2uz = Übersteuerung, dB
+
+d-pm66fu4a = Stellen
+
+d-fkdizcdd-filter-over_db = Übersteuerung, dB
+
+d-o5kywdxh = Live-Wort
+    .doc = Was eine laufende Wiedergabe von sich sagt: wo ihre Abspielmarke steht und was der bisher gehörte Mix gemessen hat.
+    .noun = { $count ->
+        [one] Live-Wort
+       *[other] Live-Worte
+    }
+
+d-o5kywdxh-filter-at = Zeitpunkt
+
+d-o5kywdxh-filter-over_db = Übersteuerung, dB
+
+d-it7no3yy = Zeitpunkt
+
+d-pejln2oj = Spuren
+    .doc = Die Spuren, die schon für sich über waren.
+
+d-hh44z4gm = Spuren
+
+d-6gyd7wgk = Mix-Antwort
+    .doc = Was das Gerät über den ganzen Mix eines Schnitts antwortet.
+    .noun = { $count ->
+        [one] Mix-Antwort
+       *[other] Mix-Antworten
+    }
+
+d-6gyd7wgk-filter-over_db = Übersteuerung, dB
+
+d-fiysox4k = Mix-Anfrage
+    .doc = Ein Schnitt, dessen Mix gefragt ist.
+    .noun = { $count ->
+        [one] Mix-Anfrage
+       *[other] Mix-Anfragen
+    }
+
+d-thpnmzhh = Projekt
+
+d-rdaudor4 = Kurve setzen
+    .doc = Setzt die Tonkurve eines Kanals aus den Punkten, die jemand geformt hat, und wendet sie sofort auf das Bild an.
+
+d-rdaudor4-channel = Kanal
+
+d-rdaudor4-points = Punkte
+
+d-n2uvapqz = Kurve zurücksetzen
+    .doc = Legt die Kurve eines Kanals wieder auf die gerade Linie: das Bild, wie die Gradation allein es lässt.
+
+d-n2uvapqz-channel = Kanal
+
+d-svcqgi2a = Kurvenanteil setzen
+    .doc = Wie viel von der Kurve das Bild aufnimmt: 0 umgeht sie ganz, 1 ist die Kurve wie gezeichnet.
+
+d-svcqgi2a-mix = Anteil
+
+d-vocgd4cm = Bildfeld füllen
+    .doc = Füllt das Bildfeld mit dem Bild, wie es kommt: jeder Zuschnitt, jede Skalierung, Drehung und Verschiebung zurückgenommen, sodass die Einpassung der Quelle so viel vom Bildfeld füllt, wie sie kann.
+    .w-the-picture-already-fills-the-frame = Das Bild füllt das Bildfeld schon
+
+d-pifueysw = An das Bild anpassen
+    .doc = Legt die Maske des Clips über das Bild, wie das Bildfeld es zeigt: die Einpassung der Quelle, dann ihr Zuschnitt, ihre Skalierung, ihre Drehung und ihre Verschiebung, sodass die Maske das Bild ausschneidet statt ein Feld geschätzter Größe.
+
+d-eyexjnvh = Schrift setzen
+    .doc = Die Schriftfamilie, in der die Worte eines Titels stehen, neu gezeichnet, während sie sich ändert.
+
+d-eyexjnvh-family = Familie
+
+d-yijzfat3 = Mix leiser machen
+    .doc = Senkt jede Spur um dieselbe Zahl von Dezibel und erhält dabei die Balance zwischen ihnen.
+    .w-is-not-a-number-of-decibels = { $db } ist keine Zahl von Dezibel, um den Mix leiser zu machen
+
+d-yijzfat3-db = Dezibel
+
+d-slc3fisu = Mix prüfen
+    .doc = Bittet dieses Gerät, den ganzen Mix des Schnitts zu messen, und merkt sich, wo er über Vollaussteuerung ging, damit Anzeige, Weg zu jeder Stelle und Leisermachen wissen, wovon sie sprechen.
+    .w-the-device-s-measure-of-the = Die Messung des Mixes durch das Gerät ließ sich nicht lesen
+
+d-qruse66d = Mix hören
+    .doc = Nimmt auf, was eine laufende Wiedergabe bisher gehört hat: das Übersteuern des Mixes wird beim Abspielen gehört, und die Anzeige und ihr Weg dorthin stehen ab der ersten Stelle, an der er über war.
+
+d-yxcs6mwu = Mix vergessen
+    .doc = Vergisst eine Messung eines Mixes, der seither geändert wurde: was gemessen wurde, beschreibt eine Summe, die es nicht mehr gibt.
+
+d-gs6wzbnh = Marke umbenennen
+    .doc = Benennt eine Marke um.
+    .w-a-marker-needs-a-name-to = Eine Marke braucht einen Namen, um gefunden zu werden
+
+d-gs6wzbnh-words = Worte
+
+d-cvul4ldi = Exportname
+    .w-webm = webm
+    .w-mov = mov
+    .w-mp4 = mp4
+
+d-hkdbseno = Schriftworte
+    .w-system-sans = System-Sans
+
+d-yhb723tk = Übersteuerungsworte
+    .w-db = +{ $db } dB
+    .w-db-2 = { $db } dB
+
+d-h6ihb5b6 = Bildfeld füllen~present
+
+d-uog5ccgf = Spuren leiser~present
+
+d-i6lazdy2 = Marke umbenennen~present

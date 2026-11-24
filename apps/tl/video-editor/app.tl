@@ -60,6 +60,8 @@ type Media (title: name, untitled: "Untitled source") {
     italic: Bool = false
     /// A title's backing plate, 0 for none.
     backdrop: Float = 0.0
+    /// The family a title's words are set in; empty for the system's own sans.
+    font: Text = ""
 
     search {
         sort name a_z
@@ -162,6 +164,15 @@ type Clip (title: name, untitled: "Clip") {
     mask_rotation: Float = 0.0
     mask_feather: Float = 0.12
     mask_invert: Bool = false
+    /// One channel's tone curve, applied after the three grade axes: the x and y of each
+    /// point, each 0..1, in ascending x. Empty is the straight line, and both ends always stay
+    /// so the ends of the curve are defined.
+    curve_master: List<Float>
+    curve_red: List<Float>
+    curve_green: List<Float>
+    curve_blue: List<Float>
+    /// How much of the curve is mixed in: 0 bypasses it, 1 is the curve as drawn.
+    curve_mix: Float = 1.0
     /// The link group this clip is one half of: its picture and its sound move together.
     link: Text = ""
     link_follows: Bool = true
@@ -211,6 +222,15 @@ type Project (title: name, untitled: "Untitled project") {
     exported: Text = ""
     /// Why the last thing the engine was asked failed.
     trouble: Text = ""
+    /// How far over full scale this window measured the mix, in decibels; 0 when it has not
+    /// gone over. A reading of this device, kept with the cut the window shows rather than in
+    /// the project file, so another member's device measures its own.
+    over_db: Float = 0.0
+    /// The timeline seconds where the mix it measured went over full scale.
+    clips_at: List<Float>
+    /// The tracks that were over on their own: what a person looks at first, since the mix is
+    /// the sum of all of them.
+    hot_tracks: List<Text>
 }
 
 /// The workspace's cuts, and the one the window has open.
@@ -310,6 +330,30 @@ type CutAsk {
     project: Text
 }
 
+/// What a live play says of itself: where its playhead is, and what the mix it has heard so far
+/// measured.
+type LiveWord {
+    at: Float = -1.0
+    /// How far over full scale the mix went, in decibels; 0 when it did not.
+    over_db: Float = 0.0
+    /// The timeline seconds where it went over, in order.
+    overs: List<Float>
+    /// The tracks that were over on their own.
+    tracks: List<Text>
+}
+
+/// What the device answers about a cut's whole mix.
+type MixAnswer {
+    over_db: Float = 0.0
+    overs: List<Float>
+    tracks: List<Text>
+}
+
+/// A cut whose mix is asked for.
+type MixAsk {
+    project: Text
+}
+
 /// A short piece of the cut's sound where the playhead was dragged.
 type ScrubAsk {
     project: Text
@@ -401,6 +445,13 @@ type ShotClip {
     crop_bottom: Float
     /// One JSON text an effect, in stack order.
     effects: List<Text>
+    /// One channel's tone curve: its points' x and y, each 0..1, in ascending x.
+    curve_master: List<Float>
+    curve_red: List<Float>
+    curve_green: List<Float>
+    curve_blue: List<Float>
+    /// How much of the curve is mixed in: 0 bypasses it, 1 is the curve as drawn.
+    curve_mix: Float
     /// One JSON text a key, in clip-local seconds.
     keys: List<Text>
     key_enabled: Bool
@@ -502,6 +553,7 @@ type SavedMedia {
     bold: Bool = true
     italic: Bool = false
     backdrop: Float = 0.0
+    font: Text = ""
 }
 
 type SavedTrack {
@@ -565,6 +617,13 @@ type SavedClip {
     keys: List<Text>
     /// One JSON text an effect of the clip, in stack order.
     effects: List<Text>
+    /// One channel's tone curve, as x and y pairs, each 0..1.
+    curve_master: List<Float>
+    curve_red: List<Float>
+    curve_green: List<Float>
+    curve_blue: List<Float>
+    /// How much of the curve is mixed in: 0 bypasses it, 1 is the curve as drawn.
+    curve_mix: Float = 1.0
 }
 
 /// Clips as a copy puts them on the person's clipboard: each with the source and track it came
@@ -670,7 +729,7 @@ fn shot_media(m: Media) -> ShotMedia {
         size: m.size,
         color: [m.red, m.green, m.blue, m.alpha],
         align: align_name(m.align),
-        font: "",
+        font: m.font,
         bold: m.bold,
         italic: m.italic,
         backdrop: m.backdrop,
@@ -725,6 +784,11 @@ fn shot_clip(c: Clip) -> ShotClip {
         effects: c.effects.map(
             e -> json.encode(ShotEffect(id: e.id(), form: e.form, amount: e.amount)),
         ),
+        curve_master: c.curve_master,
+        curve_red: c.curve_red,
+        curve_green: c.curve_green,
+        curve_blue: c.curve_blue,
+        curve_mix: c.curve_mix,
         keys: c.keys.map(
             k -> json.encode(ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp)),
         ),
@@ -783,6 +847,7 @@ fn saved(p: Project) -> Saved {
                     bold: m.bold,
                     italic: m.italic,
                     backdrop: m.backdrop,
+                    font: m.font,
                 ),
             ),
         ),
@@ -861,6 +926,11 @@ fn saved_clip(p: Project, c: Clip) -> SavedClip {
         effects: c.effects.map(
             e -> json.encode(ShotEffect(id: e.id(), form: e.form, amount: e.amount)),
         ),
+        curve_master: c.curve_master,
+        curve_red: c.curve_red,
+        curve_green: c.curve_green,
+        curve_blue: c.curve_blue,
+        curve_mix: c.curve_mix,
     )
 }
 
@@ -925,6 +995,11 @@ action restore_clip(
             mask_rotation: c.mask_rotation,
             mask_feather: c.mask_feather,
             mask_invert: c.mask_invert,
+            curve_master: c.curve_master,
+            curve_red: c.curve_red,
+            curve_green: c.curve_green,
+            curve_blue: c.curve_blue,
+            curve_mix: c.curve_mix,
             link: link,
         ),
     )
@@ -1079,6 +1154,11 @@ action split_at(p: Project, c: Clip, at: Float) {
             mask_rotation: c.mask_rotation,
             mask_feather: c.mask_feather,
             mask_invert: c.mask_invert,
+            curve_master: c.curve_master,
+            curve_red: c.curve_red,
+            curve_green: c.curve_green,
+            curve_blue: c.curve_blue,
+            curve_mix: c.curve_mix,
             link: c.link,
             link_follows: c.link_follows,
             sound_split: c.sound_split,
@@ -1567,6 +1647,7 @@ action open_project_file(e: Editor, file: File) -> Project (
                     bold: m.bold,
                     italic: m.italic,
                     backdrop: m.backdrop,
+                    font: m.font,
                 ),
             )
         }
@@ -2179,10 +2260,107 @@ action set_anchor(c: Clip, x: Float, y: Float) {
     redraw_clip(c)
 }
 
+/// The points of one channel's tone curve, as the editor shows them: the straight line when the
+/// channel has none, so the ends of the curve are always there to hold.
+fn curve_points(c: Clip, channel: Text) -> List<Float> {
+    let held = if channel == "red" {
+        c.curve_red
+    } else if channel == "green" {
+        c.curve_green
+    } else if channel == "blue" { c.curve_blue } else { c.curve_master }
+    if held.is_empty() { [0.0, 0.0, 1.0, 1.0] } else { held }
+}
+
+/// Sets one channel's tone curve from the points a person shaped, applied to the picture at
+/// once.
+action set_curve(c: Clip, channel: Text, points: List<Float>) {
+    if channel == "red" {
+        c.curve_red = points
+    } else if channel == "green" {
+        c.curve_green = points
+    } else if channel == "blue" {
+        c.curve_blue = points
+    } else {
+        c.curve_master = points
+    }
+    redraw_clip(c)
+}
+
+/// Puts one channel's curve back to the straight line: the picture as the grade alone leaves it.
+action reset_curve(c: Clip, channel: Text) {
+    set_curve(c, channel, [])
+}
+
+/// How much of the curve the picture takes: 0 bypasses it entirely, 1 is the curve as drawn.
+action set_curve_mix(c: Clip, mix: Float) {
+    c.curve_mix = mix.clamp(0.0, 1.0)
+    redraw_clip(c)
+}
+
 /// Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`.
 action set_mask(c: Clip, shape: Text) {
     require shape == "off" or shape == "rect" or shape == "ellipse" "{shape} is not a mask shape"
     c.mask_shape = if shape == "off" { "" } else { shape }
+    redraw_clip(c)
+}
+
+/// Whether the clip shows its picture plain as it comes: no crop, no scaling, no turn, no move.
+fn plain_frame(c: Clip) -> Bool {
+    c.scale_x == 1.0
+        and c.scale_y == 1.0
+        and c.pos_x == 0.0
+        and c.pos_y == 0.0
+        and c.rotation == 0.0
+        and c.crop_left == 0.0
+        and c.crop_right == 0.0
+        and c.crop_top == 0.0
+        and c.crop_bottom == 0.0
+}
+
+/// Fills the frame with the picture as it comes: every crop, scaling, turn and move taken
+/// back, so the source's own aspect-fit fills as much of the frame as it can.
+action fill_frame(c: Clip) (icon: .maximize, label: "Fill frame") {
+    require not plain_frame(c) "The picture already fills the frame"
+    c.scale_x = 1.0
+    c.scale_y = 1.0
+    c.pos_x = 0.0
+    c.pos_y = 0.0
+    c.rotation = 0.0
+    c.anchor_x = 0.5
+    c.anchor_y = 0.5
+    c.crop_left = 0.0
+    c.crop_right = 0.0
+    c.crop_top = 0.0
+    c.crop_bottom = 0.0
+    redraw_clip(c)
+}
+
+/// Fits the clip's mask over the picture as the frame shows it: the aspect-fit the source
+/// takes, then its crop, its scaling, its turn and its move, so a mask cuts out the picture
+/// rather than a box of guessed size.
+action fit_mask(c: Clip) (icon: .crop, label: "Fit it to the picture") {
+    let frame_aspect = match cut_of_clip(c) {
+        .some(p) => p.width.to_float() / p.height.to_float().max(1.0),
+        .none => 1.0,
+    }
+    let source_aspect = c.media.width.to_float() / c.media.height.to_float().max(1.0)
+    // The aspect-fit occupancy the picture takes at rest, as the compositor places it.
+    let across = 1.0
+    let up = 1.0
+    if source_aspect > frame_aspect {
+        up = frame_aspect / source_aspect.max(0.0001)
+    } else {
+        across = source_aspect / frame_aspect.max(0.0001)
+    }
+    let left = c.crop_left.clamp(0.0, 1.0)
+    let top = c.crop_top.clamp(0.0, 1.0)
+    let right = (1.0 - c.crop_right).clamp(0.0, 1.0)
+    let bottom = (1.0 - c.crop_bottom).clamp(0.0, 1.0)
+    c.mask_x = c.pos_x
+    c.mask_y = c.pos_y
+    c.mask_w = (across * c.scale_x.abs() * (right - left).max(0.0001)).clamp(0.02, 4.0)
+    c.mask_h = (up * c.scale_y.abs() * (bottom - top).max(0.0001)).clamp(0.02, 4.0)
+    c.mask_rotation = c.rotation
     redraw_clip(c)
 }
 
@@ -2212,22 +2390,38 @@ action set_title_style(m: Media, bold: Bool, italic: Bool) {
     redraw_media(m)
 }
 
+/// The family a title's words are set in, drawn again as it changes. The system's own sans
+/// is an empty family, which a box with no faces installed can still honour.
+action set_font(m: Media, family: Text) {
+    m.font = family
+    redraw_media(m)
+}
+
+/// What a title's font picker shows for the family in force.
+fn font_words(m: Media) -> Text {
+    if m.font == "" { std.say("System sans") } else { m.font }
+}
+
 /// One track's level, where the sound of everything on it sits in the mix.
 action set_track_gain(t: Track, db: Float) {
     t.gain_db = db.clamp(-60.0, 12.0)
+    if let p = cut_of_track(t) { forgot_mix(p) }
 }
 
 /// Where a track's sound sits across the stereo field: -1 hard left, 1 hard right.
 action set_track_pan(t: Track, pan: Float) {
     t.pan = pan.clamp(-1.0, 1.0)
+    if let p = cut_of_track(t) { forgot_mix(p) }
 }
 
 action set_track_muted(t: Track, muted: Bool) {
     t.muted = muted
+    if let p = cut_of_track(t) { forgot_mix(p) }
 }
 
 action set_track_solo(t: Track, solo: Bool) {
     t.solo = solo
+    if let p = cut_of_track(t) { forgot_mix(p) }
 }
 
 action set_track_locked(t: Track, locked: Bool) {
@@ -2238,6 +2432,81 @@ action set_track_locked(t: Track, locked: Bool) {
 action reset_mix(t: Track) (icon: .rotate_ccw, label: "Reset the level and pan") {
     t.gain_db = 0.0
     t.pan = 0.0
+    if let p = cut_of_track(t) { forgot_mix(p) }
+}
+
+/// Brings every track down by the same number of decibels, keeping the balance between them.
+///
+/// A mix is a sum, so scaling every layer of it scales the sum: the balance the person set
+/// stays where they put it. Moving only the tracks caught over would change that balance and
+/// would not even guarantee the sum fits — two tracks at two-thirds each are over without
+/// either being over alone. A number that brings nothing down refuses rather than quietly
+/// doing nothing.
+action trim_tracks(p: Project, db: Float) (icon: .volume_2, label: "Bring the mix down") {
+    require db > 0.0 "{db} is not a number of decibels to bring the mix down by"
+    for t in p.tracks {
+        t.gain_db = (t.gain_db - db).clamp(-60.0, 12.0)
+    }
+    check_mix(p)
+}
+
+/// Asks this device to measure the cut's whole mix, and keeps where it went over full scale so
+/// the flag, the way to each place and the trim know what they are talking about.
+action check_mix(p: Project) (icon: .activity, label: "Check the mix") {
+    match engine.call("mix", json.encode(MixAsk(project: json.encode(shot(p))))) {
+        .ok(text) => match json.decode<MixAnswer>(text) {
+            .ok(answer) => {
+                p.over_db = answer.over_db
+                p.clips_at = answer.overs
+                p.hot_tracks = answer.tracks
+            }
+            .err(_) => trouble(p, std.say("The device's measure of the mix could not be read")),
+        },
+        .err(why) => trouble(p, why),
+    }
+}
+
+/// Takes what a live play has heard so far: the mix clipping is heard as the cut plays, and the
+/// flag and its way there stand from the first place it went over.
+action hear_mix(p: Project) {
+    if p.live == "" {
+        return
+    }
+    match json.decode<LiveWord>(engine.state(p.live)) {
+        .ok(word) => {
+            p.over_db = word.over_db
+            p.clips_at = word.overs
+            p.hot_tracks = word.tracks
+        }
+        .err(_) => {}
+    }
+}
+
+/// Forgets a measurement of a mix that has been changed since: what was measured describes a
+/// sum that no longer exists.
+action forgot_mix(p: Project) {
+    p.over_db = 0.0
+    p.clips_at = []
+    p.hot_tracks = []
+}
+
+/// The next place after `at` the measured mix went over, wrapping to the first: pressing again
+/// comes back rather than doing nothing.
+fn next_clip_point(p: Project, at: Float) -> Float {
+    for t in p.clips_at {
+        if t > at + 0.001 {
+            return t
+        }
+    }
+    p.clips_at.first() ?? at
+}
+
+/// How far over full scale the mix was measured, to a tenth of a decibel.
+fn over_words(p: Project) -> Text {
+    let tenths = (p.over_db * 10.0).round()
+    let whole = tenths / 10
+    let part = tenths - whole * 10
+    if part == 0 { "+{whole} dB" } else { "+{whole}.{part} dB" }
 }
 
 /// One look of a title the inspector sets with a slider, drawn again as it changes.
@@ -2276,6 +2545,12 @@ fn cut_of_clip(c: Clip) -> Option<Project> {
     e.projects.find(p -> p.clips.any(x -> x.id() == c.id()))
 }
 
+/// The cut a track is in, as the editor holds it.
+fn cut_of_track(t: Track) -> Option<Project> {
+    let e = root Editor
+    e.projects.find(p -> p.tracks.any(x -> x.id() == t.id()))
+}
+
 /// The cut a source is in, as the editor holds it.
 fn cut_of_media(m: Media) -> Option<Project> {
     let e = root Editor
@@ -2285,6 +2560,9 @@ fn cut_of_media(m: Media) -> Option<Project> {
 /// Draws the frame the preview last showed again, so an edit made after it is seen at once. A
 /// cut whose frame the window never showed draws nothing: there is no place to draw it at.
 action redraw(p: Project) {
+    // Every edit lands here, and a measurement of the mix describes the cut it was taken
+    // from: an edit makes it describe a mix that no longer exists.
+    forgot_mix(p)
     if p.live != "" {
         if play_moving(p) {
             refresh_live(p)
@@ -2450,6 +2728,13 @@ action note_marker(k: Marker, note: Text) {
     k.note = note
 }
 
+/// Renames a mark. A name of nothing is refused: a mark nobody can find in the list is not a
+/// marker.
+action rename_marker(k: Marker, words: Text) (icon: .pencil, label: "Rename the mark") {
+    require words.trim() != "" "A marker needs a name to be found by"
+    k.name = words.trim()
+}
+
 /// Draws the filmstrip of the first clip whose frames are missing or stale.
 action draw_next_strip(p: Project) {
     for c in p.clips.sort_by(one -> one.start) {
@@ -2533,7 +2818,9 @@ action set_frame_size(p: Project, width: Int, height: Int) {
     redraw(p)
 }
 
-/// Takes its shape from a source: what "Use its format" does.
+/// Takes the cut's shape from a source: the frame size and rate it was shot at, so the cut is
+/// shown as the source is. The button that does it names the source, so pressing it is never a
+/// guess about which of several sources it meant.
 action adopt_format(p: Project, m: Media) {
     if m.width > 0 and m.height > 0 {
         p.width = m.width
@@ -2749,7 +3036,15 @@ action live_at(p: Project) -> Float {
     if p.live == "" {
         return -1.0
     }
-    engine.state(p.live).to_float() ?? -1.0
+    live_at_word(engine.state(p.live)) ?? -1.0
+}
+
+/// Where a live play's word says its playhead is, or nothing when it has not said yet.
+fn live_at_word(word: Text) -> Option<Float> {
+    match json.decode<LiveWord>(word) {
+        .ok(said) => if said.at >= 0.0 { .some(said.at) } else { .none },
+        .err(_) => .none,
+    }
 }
 
 /// Scrubs to the second `at`: the live play stops, the frame under the playhead is drawn,
@@ -3012,6 +3307,15 @@ view edit_menu(
         ui.MenuItem(std.say("Next marker"), icon: .chevron_right, key: ".") {
             on choose: set(playhead, next_mark(p, playhead))
         }
+        ui.MenuItem(
+            std.say("Go to where the mix clipped"),
+            icon: .locate_fixed,
+            key: if p.clips_at.is_empty() { .none } else { .some("c") },
+            disabled: p.clips_at.is_empty(),
+        ) {
+            on choose: set(playhead, next_clip_point(p, playhead))
+                .then(jump_to(p, next_clip_point(p, playhead)))
+        }
         if let c = chosen.last() {
             ui.MenuItem(std.say("Go to the clip"), icon: .locate_fixed, key: "g") {
                 on choose: set(playhead, c.start).then(set(scroll, (c.start - span / 4.0).max(0.0)))
@@ -3030,6 +3334,7 @@ view window(e: Editor) {
     state selected: List<Text> = []
     state picked_media: Text = ""
     state tab: Text = "clip"
+    state curve_channel: Text = "master"
     state resolution: Text = "1080"
     state container: Text = "mp4"
     state rate: Text = "30"
@@ -3037,7 +3342,7 @@ view window(e: Editor) {
     if let p = p {
         // What the live play says of itself: the timeline second it has reached, in the word
         // the device pushes with every few frames it draws.
-        let live_word = if p.live != "" { engine.state(p.live).to_float() } else { .none }
+        let live_word = if p.live != "" { live_at_word(engine.state(p.live)) } else { .none }
         // The playhead as the toolbar, the ruler and the clock draw it: the live play's own
         // word while the cut plays, so the head moves with the picture rather than once a second,
         // and the frame that stands otherwise.
@@ -3050,7 +3355,8 @@ view window(e: Editor) {
         }
         let live = p.live != "" and not ended
         if live {
-            every 1s: set(playhead, engine.state(p.live).to_float() ?? playhead)
+            every 1s: set(playhead, live_at_word(engine.state(p.live)) ?? playhead)
+                .then(hear_mix(p))
         }
         let chosen = p.clips.filter(c -> selected.contains(c.id()))
         let clip = clip_named(p, selected.last() ?? "")
@@ -3447,6 +3753,7 @@ view window(e: Editor) {
                                 rate,
                                 playhead,
                                 live,
+                                curve_channel,
                             )
                         }
                     }
@@ -3535,6 +3842,7 @@ template view inspector(
     rate: State<Text>,
     playhead: State<Float>,
     playing: Bool,
+    curve_channel: State<Text>,
 ) {
     if let c = clip {
         ui.ToggleGroup(selected: if tab == "clip" { 0 } else if tab == "look" { 1 } else { 2 }) {
@@ -3633,7 +3941,7 @@ template view inspector(
                         on change(v): set_look(c, .transition_duration, v)
                     }
                 }
-                ui.Button(std.say("Use its format"), icon: .crop) {
+                ui.Button(std.say("Match {c.media.name}"), icon: .crop) {
                     on press: adopt_format(p, c.media)
                 }
                 if c.link == "" {
@@ -3689,6 +3997,50 @@ template view inspector(
                 shows_value: true,
             ) {
                 on change(v): set_look(c, .saturation, v)
+            }
+            // The tone curve: one channel at a time, drawn as the picture gets it. A point
+            // put where the curve should bend, dragged to bend it, and let go outside the box
+            // to take it off again; the straight line is what a clip with no curve takes.
+            ui.Section(std.say("Curves")) {
+                ui.ToggleGroup(
+                    selected: if curve_channel == "red" {
+                        1
+                    } else if curve_channel == "green" {
+                        2
+                    } else if curve_channel == "blue" { 3 } else { 0 },
+                ) {
+                    ui.Segment(std.say("All")) {
+                        on press: set(curve_channel, "master")
+                    }
+                    ui.Segment(std.say("Red")) {
+                        on press: set(curve_channel, "red")
+                    }
+                    ui.Segment(std.say("Green")) {
+                        on press: set(curve_channel, "green")
+                    }
+                    ui.Segment(std.say("Blue")) {
+                        on press: set(curve_channel, "blue")
+                    }
+                }
+                ui.CurveEditor(
+                    points: curve_points(c, curve_channel),
+                    label: std.say("The {curve_channel} curve"),
+                ) {
+                    on change(points: List<Float>): set_curve(c, curve_channel, points)
+                }
+                ui.Slider(
+                    bind: c.curve_mix,
+                    label: std.say("How much of the curve"),
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    shows_value: true,
+                ) {
+                    on change(v): set_curve_mix(c, v)
+                }
+                ui.Button(std.say("Reset the curve"), icon: .rotate_ccw) {
+                    on press: reset_curve(c, curve_channel)
+                }
             }
             ui.Slider(
                 bind: c.scale_x,
@@ -3824,6 +4176,11 @@ template view inspector(
                 ) {
                     on change(v): set_look(c, .crop_bottom, v)
                 }
+                // The way back: the picture as the source comes, filling what the frame gives
+                // it. Offered only where there is something to take back.
+                ui.Button(std.say("Fill frame"), icon: .maximize) {
+                    on press: fill_frame(c)
+                }
             }
             ui.Toggle(bind: c.key_enabled, label: std.say("Remove a colour"))
             row(gap: .tight, align: .center, wrap: true) {
@@ -3915,6 +4272,9 @@ template view inspector(
                 if c.mask_shape != "" {
                     ui.Toggle(shown: c.mask_invert, label: std.say("Keep the outside")) {
                         on check(on): invert_mask(c, on)
+                    }
+                    ui.Button(std.say("Fit it to the picture"), icon: .crop) {
+                        on press: fit_mask(c)
                     }
                     ui.Slider(
                         bind: c.mask_x,
@@ -4203,6 +4563,18 @@ template view inspector(
                     on choose: set_align(m, .right)
                 }
             }
+            // The faces this device sets text in, with the system's own sans at the head so
+            // there is always a way back to it.
+            ui.MenuButton(font_words(m), icon: .type) {
+                ui.MenuItem(std.say("System sans"), checked: m.font == "") {
+                    on choose: set_font(m, "")
+                }
+                for family in fonts() {
+                    ui.MenuItem(family, checked: m.font == family) {
+                        on choose: set_font(m, family)
+                    }
+                }
+            }
         } else {
             if m.missing {
                 ui.Text(
@@ -4217,7 +4589,7 @@ template view inspector(
                 ui.Button(std.say("Place at the playhead"), icon: .plus) {
                     on press: place_media(p, m, playhead)
                 }
-                ui.Button(std.say("Use its format"), icon: .crop) {
+                ui.Button(std.say("Match {m.name}"), icon: .crop) {
                     on press: adopt_format(p, m)
                 }
                 ui.Button(std.say("Relink the source"), icon: .link) {
@@ -4249,6 +4621,40 @@ template view inspector(
     }
     // The mix: every track's level, pan and switches, whichever clip is chosen.
     ui.Section(std.say("Tracks")) {
+        // What the mix measured: a clipping flag that says how far over full scale it went and
+        // takes the playhead to the next place it did, and the one trim that ends it without
+        // changing the balance.
+        if p.over_db > 0.0 {
+            ui.Banner(
+                std.say("The mix is {over_words(p)} over full scale"),
+                message: if p.clips_at.is_empty() {
+                    std.say(
+                        "The mix is the sum of every track, so bringing them all down keeps the balance",
+                    )
+                } else {
+                    std.say(
+                        "In {p.clips_at.len()} places; the mix is the sum of every track, so bringing them all down keeps the balance",
+                    )
+                },
+                kind: .warning,
+            )
+            row(gap: .tight, align: .center, wrap: true) {
+                if not p.clips_at.is_empty() {
+                    ui.Button(std.say("Go to where it clipped"), icon: .locate_fixed) {
+                        on press: set(playhead, next_clip_point(p, playhead))
+                            .then(
+                                jump_to(p, next_clip_point(p, playhead)),
+                            )
+                    }
+                }
+                ui.Button(std.say("Bring the mix down"), icon: .volume_2) {
+                    on press: trim_tracks(p, p.over_db)
+                }
+            }
+        }
+        ui.Button(std.say("Check the mix"), icon: .activity) {
+            on press: check_mix(p)
+        }
         for t in ordered_tracks(p) {
             stack(gap: .tight) {
                 row(gap: .tight, align: .center) {
@@ -4304,7 +4710,9 @@ template view inspector(
         ui.Section(std.say("Markers")) {
             for k in p.markers.sort_by(x -> x.t) {
                 row(gap: .tight, align: .center) {
-                    ui.Text(k.name, role: .body)
+                    // The name is typed where it stands: a blank entry keeps the name it
+                    // had, so a mark cannot lose the name it is found by.
+                    ui.EditableLabel(bind: k.name, label: std.say("Rename the mark"))
                     ui.Text(clock(k.t), role: .caption, numeric: true)
                     ui.Button(
                         "",

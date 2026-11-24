@@ -42,6 +42,9 @@ mod cases {
         streams: Rc<RefCell<Vec<Stream>>>,
         /// The jobs a stream started, in order.
         live: Rc<RefCell<Vec<String>>>,
+        /// What this device measures the cut's mix at, when a test says it clips: how far over
+        /// full scale, and where.
+        over: Rc<RefCell<Option<(f64, Vec<f64>)>>>,
     }
 
     impl Engine {
@@ -76,6 +79,12 @@ mod cases {
 
         /// Says the live play reached `at`, as the device pushes it with every few frames.
         fn reached(&self, job: &str, at: f64) {
+            self.heard(job, at, 0.0, &[]);
+        }
+
+        /// Says the live play reached `at`, having heard the mix go `over_db` over full scale at
+        /// `overs`: what the device pushes as it plays.
+        fn heard(&self, job: &str, at: f64, over_db: f64, overs: &[f64]) {
             let push = self
                 .streams
                 .borrow()
@@ -83,7 +92,13 @@ mod cases {
                 .find(|(started, _)| started == job)
                 .map(|(_, push)| std::sync::Arc::clone(push))
                 .expect("the stream the job names");
-            push.state(job, &format!("{at:.2}"));
+            let word = serde_json::json!({
+                "at": at,
+                "over_db": over_db,
+                "overs": overs,
+                "tracks": [],
+            });
+            push.state(job, &word.to_string());
         }
     }
 
@@ -107,6 +122,16 @@ mod cases {
                 "sample" => Ok(r#"{"red":0.25,"green":0.5,"blue":0.75}"#.to_owned()),
                 "scrub" | "cut" => Ok(String::new()),
                 "waveform" => Ok(r#"{"peaks":[0.2,0.6,0.4,0.9]}"#.to_owned()),
+                "mix" => {
+                    let said = self.over.borrow().clone();
+                    let (over_db, overs) = said.unwrap_or((0.0, Vec::new()));
+                    Ok(serde_json::json!({
+                        "over_db": over_db,
+                        "overs": overs,
+                        "tracks": [],
+                    })
+                    .to_string())
+                }
                 other => Err(format!("`{other}` is no op this device runs")),
             }
         }
@@ -263,8 +288,17 @@ mod cases {
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
+            self.try_call(action, args).unwrap()
+        }
+
+        /// A call that may be refused, which a `require` that does not hold is.
+        fn try_call(
+            &self,
+            action: &str,
+            args: Vec<Value>,
+        ) -> Result<InvokeOutcome, tilolang_runtime::RuntimeError> {
             let id = self.app.action(action);
-            self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
+            self.rt.invoke_action(&me(), (id.as_str(), args))
         }
 
         /// A source a person chose, as the device hands it over.
@@ -331,6 +365,20 @@ mod cases {
             }
         }
 
+        /// A `List<Float>` field of a record, as numbers.
+        fn numbers(&self, r: &ResourceRef, field: &str) -> Vec<f64> {
+            match self.rt.read(r, field).unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        Value::Float(n) => n,
+                        other => panic!("{field} holds {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
         /// The bin's second line for the row of the source called `title`.
         fn bin_meta(&self, title: &str) -> Option<String> {
             let window = self.window();
@@ -376,6 +424,47 @@ mod cases {
             let clip = self.clips(&p).into_iter().next().expect("a clip");
             (p, media, clip)
         }
+    }
+
+    /// A title placed on the cut's video track, as `add_title` makes it.
+    fn a_title(s: &Studio, p: &ResourceRef) -> ResourceRef {
+        let made = s.call(
+            "add_title",
+            vec![
+                Value::resource(p),
+                Value::text("Harbour"),
+                Value::Float(0.0),
+            ],
+        );
+        if let InvokeOutcome::Done(Value::Ref(r)) = made {
+            return std::rc::Rc::unwrap_or_clone(r.target);
+        }
+        panic!("a title is not placed: {made:?}");
+    }
+
+    /// The cut as the device read it, from the last ask of `op`.
+    fn cut_of(s: &Studio, op: &str) -> serde_json::Value {
+        let ask: serde_json::Value = serde_json::from_str(&s.engine.input_of(op)).expect("the ask");
+        serde_json::from_str(ask["project"].as_str().expect("the cut")).expect("the cut reads")
+    }
+
+    /// A number a window keeps as its own state, whatever the state's slot wraps it in.
+    fn number_state(window: &ViewInstance, name: &str) -> Option<f64> {
+        match window.view_state(name) {
+            Some(Value::Float(n)) => Some(n),
+            Some(Value::Opt(Some(inner))) => match *inner {
+                Value::Float(n) => Some(n),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The number a JSON object holds under `key`.
+    fn json_number(value: &serde_json::Value, key: &str) -> f64 {
+        value[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{key} is {value:?}"))
     }
 
     /// A `Look` case, as the inspector's sliders name it.
@@ -1296,6 +1385,375 @@ mod cases {
             );
             s.call("remove_clips", vec![Value::resource(&p), both]);
             assert_eq!(s.clips(&p).len(), 4);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_mark_is_renamed_and_keeps_a_name;
+
+        phase a_mark_takes_a_new_name;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            let made = s.call("add_marker", vec![Value::resource(&p), Value::Float(3.0)]);
+            let marker = match made {
+                InvokeOutcome::Done(Value::Ref(r)) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("a marker is not made: {other:?}"),
+            };
+            assert_eq!(s.text(&marker, "name"), "Marker 1");
+            s.call("rename_marker", vec![Value::resource(&marker), Value::text("  Beat  ")]);
+            assert_eq!(s.text(&marker, "name"), "Beat", "trimmed, and the name is the mark's");
+        }
+
+        phase a_mark_is_not_left_with_no_name;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            let made = s.call("add_marker", vec![Value::resource(&p), Value::Float(3.0)]);
+            let marker = match made {
+                InvokeOutcome::Done(Value::Ref(r)) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("a marker is not made: {other:?}"),
+            };
+            let blank = s.try_call("rename_marker", vec![Value::resource(&marker), Value::text("   ")]);
+            assert!(blank.is_err(), "a blank name is refused: {blank:?}");
+            assert_eq!(
+                s.text(&marker, "name"),
+                "Marker 1",
+                "so the mark keeps the name it had: a mark nobody can find is not a marker"
+            );
+        }
+
+        phase the_marker_list_types_the_name_where_it_stands;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            s.call("add_marker", vec![Value::resource(&p), Value::Float(3.0)]);
+            let window = s.window();
+            let label = of_kind(window.tree(), "ui.EditableLabel")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the mark's name is edited in place:\n{}", dump(window.tree())));
+            assert!(
+                match label.props.get("value") {
+                    Some(Value::Text(name)) => name == "Marker 1",
+                    other => other.is_none(),
+                },
+                "it shows the name the mark has: {:?}",
+                label.props.get("value")
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_picture_fills_the_frame_and_a_mask_fits_it;
+
+        phase filling_the_frame_takes_every_crop_scale_turn_and_move_back;
+        {
+            let s = Studio::new();
+            let (_, _, clip) = s.placed();
+            let scale = look_case(&s, "scale_x");
+            s.call("set_look", vec![Value::resource(&clip), scale, Value::Float(0.5)]);
+            let crop = look_case(&s, "crop_left");
+            s.call("set_look", vec![Value::resource(&clip), crop, Value::Float(0.2)]);
+            assert_eq!(s.number(&clip, "scale_x"), 0.5);
+            assert_eq!(s.number(&clip, "crop_left"), 0.2);
+            s.call("fill_frame", vec![Value::resource(&clip)]);
+            assert_eq!(s.number(&clip, "scale_x"), 1.0, "the picture as it comes");
+            assert_eq!(s.number(&clip, "crop_left"), 0.0, "no crop");
+            assert_eq!(s.number(&clip, "pos_x"), 0.0);
+            // Nothing left to take back, the action refuses rather than pretending it did
+            // something.
+            let again = s.try_call("fill_frame", vec![Value::resource(&clip)]);
+            assert!(again.is_err(), "a picture already plain is refused: {again:?}");
+        }
+
+        phase a_mask_is_fitted_over_the_picture_as_the_frame_shows_it;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            // The source is 1920 × 1080 and the cut 1000 × 500: wider than the source, so the
+            // picture takes the full height and 16/9 of the width.
+            s.call(
+                "set_frame_size",
+                vec![Value::resource(&p), Value::Int(1000), Value::Int(500)],
+            );
+            s.call("set_mask", vec![Value::resource(&clip), Value::text("rect")]);
+            s.call("fit_mask", vec![Value::resource(&clip)]);
+            let across = (1920.0_f64 / 1080.0) / 2.0;
+            assert!(
+                (s.number(&clip, "mask_w") - across).abs() < 1e-6,
+                "the mask takes the picture's width: {} against {across}",
+                s.number(&clip, "mask_w")
+            );
+            assert!((s.number(&clip, "mask_h") - 1.0).abs() < 1e-6, "and its whole height");
+            // Scaled up, the mask grows with it and follows the move.
+            let scale = look_case(&s, "scale_x");
+            s.call("set_look", vec![Value::resource(&clip), scale, Value::Float(2.0)]);
+            let across_again = look_case(&s, "pos_x");
+            s.call("set_look", vec![Value::resource(&clip), across_again, Value::Float(0.25)]);
+            s.call("fit_mask", vec![Value::resource(&clip)]);
+            assert!((s.number(&clip, "mask_w") - 2.0 * across).abs() < 1e-6);
+            assert!((s.number(&clip, "mask_x") - 0.25).abs() < 1e-6, "it moves with the picture");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_mix_says_where_it_clipped_and_comes_down_as_one;
+
+        phase the_device_measures_where_the_mix_goes_over;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            *s.engine.over.borrow_mut() = Some((6.0, vec![3.0, 7.5]));
+            s.call("check_mix", vec![Value::resource(&p)]);
+            assert_eq!(s.number(&p, "over_db"), 6.0, "how far over full scale");
+            assert_eq!(s.numbers(&p, "clips_at"), vec![3.0, 7.5], "and where");
+        }
+
+        phase a_play_hears_the_mix_as_it_goes;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            s.call(
+                "play_cut",
+                vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
+            );
+            s.engine.heard("live-1", 4.0, 4.5, &[3.0]);
+            s.call("hear_mix", vec![Value::resource(&p)]);
+            assert_eq!(s.number(&p, "over_db"), 4.5, "what the play has heard so far");
+            assert_eq!(s.numbers(&p, "clips_at"), vec![3.0]);
+            let at = s.call("live_at", vec![Value::resource(&p)]);
+            assert!(
+                matches!(at, InvokeOutcome::Done(Value::Float(f)) if (f - 4.0).abs() < 1e-9),
+                "the play's word says where it stands: {at:?}"
+            );
+        }
+
+        phase the_window_flags_the_clip_and_presses_take_the_playhead_there;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            *s.engine.over.borrow_mut() = Some((6.0, vec![3.0, 7.5]));
+            s.call("check_mix", vec![Value::resource(&p)]);
+            let window = s.window();
+            assert!(
+                of_kind(window.tree(), "ui.Banner")
+                    .iter()
+                    .any(|banner| banner.props.get("title").and_then(Value::as_text)
+                        == Some("The mix is +6 dB over full scale")),
+                "the mix's flag says how far over it went:\n{}",
+                dump(window.tree())
+            );
+            // The button beside the tracks takes the playhead to the first place it clipped,
+            // and the device is asked for the frame there.
+            let go = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| button.props.get("label").and_then(Value::as_text)
+                    == Some("Go to where it clipped"))
+                .expect("the way to the clip");
+            let key = go.key.clone();
+            let jumped = window.fire_with(&key, "press", None);
+            assert!(matches!(jumped, Ok(InvokeOutcome::Done(_))), "{jumped:?}");
+            assert_eq!(number_state(&window, "playhead"), Some(3.0));
+            let ask: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
+            assert_eq!(json_number(&ask, "at"), 3.0, "the frame where it clipped");
+            // Pressing again goes to the next place, and then round to the first.
+            let again = window.fire_with(&key, "press", None);
+            assert!(matches!(again, Ok(InvokeOutcome::Done(_))), "{again:?}");
+            assert_eq!(number_state(&window, "playhead"), Some(7.5));
+            let round = window.fire_with(&key, "press", None);
+            assert!(matches!(round, Ok(InvokeOutcome::Done(_))), "{round:?}");
+            assert_eq!(
+                number_state(&window, "playhead"),
+                Some(3.0),
+                "it comes back rather than stopping at the last place"
+            );
+        }
+
+        phase the_trim_comes_down_as_one_and_keeps_the_balance;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            let tracks = s.tracks(&p);
+            let gain = |t: &ResourceRef| s.number(t, "gain_db");
+            *s.engine.over.borrow_mut() = Some((6.0, vec![3.0]));
+            s.call("check_mix", vec![Value::resource(&p)]);
+            let over = s.number(&p, "over_db");
+            // The trim is what ends it: the device measures the mix the trim made, and it fits.
+            *s.engine.over.borrow_mut() = None;
+            s.call("trim_tracks", vec![Value::resource(&p), Value::Float(over)]);
+            for track in &tracks {
+                assert_eq!(gain(track), -6.0, "every track comes down by the same amount");
+            }
+            assert_eq!(s.number(&p, "over_db"), 0.0, "the trim measures the mix it made");
+            assert!(s.numbers(&p, "clips_at").is_empty());
+            let nothing = s.try_call("trim_tracks", vec![Value::resource(&p), Value::Float(0.0)]);
+            assert!(nothing.is_err(), "a trim of nothing is refused: {nothing:?}");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_clip_takes_a_tone_curve_per_channel;
+
+        phase a_channel_curve_reaches_the_device_that_draws_it;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            let points = Value::List(vec![
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.5),
+                Value::Float(0.7),
+                Value::Float(1.0),
+                Value::Float(1.0),
+            ]);
+            s.call("set_curve", vec![Value::resource(&clip), Value::text("red"), points]);
+            assert_eq!(s.numbers(&clip, "curve_red"), vec![0.0, 0.0, 0.5, 0.7, 1.0, 1.0]);
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let cut = cut_of(&s, "still");
+            let asked: serde_json::Value =
+                serde_json::from_str(cut["clips"][0].as_str().unwrap()).expect("the clip");
+            let red: Vec<f64> = asked["curve_red"]
+                .as_array()
+                .expect("the red curve")
+                .iter()
+                .map(|n| n.as_f64().expect("a number"))
+                .collect();
+            assert_eq!(red, vec![0.0, 0.0, 0.5, 0.7, 1.0, 1.0], "the grade gets its points");
+            assert!(
+                asked["curve_master"].as_array().is_some_and(Vec::is_empty),
+                "the master is left straight"
+            );
+            // Bypassed, mixed out, and back to the straight line.
+            s.call("set_curve_mix", vec![Value::resource(&clip), Value::Float(0.0)]);
+            assert_eq!(s.number(&clip, "curve_mix"), 0.0);
+            s.call("reset_curve", vec![Value::resource(&clip), Value::text("red")]);
+            assert!(s.numbers(&clip, "curve_red").is_empty(), "the straight line");
+        }
+
+        phase the_inspector_shows_the_curve_and_its_edits_land;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            let points = Value::List(vec![
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.25),
+                Value::Float(0.4),
+                Value::Float(1.0),
+                Value::Float(1.0),
+            ]);
+            s.call("set_curve", vec![Value::resource(&clip), Value::text("master"), points]);
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let window = s.window();
+            let span = of_kind(window.tree(), "ui.TimelineSpan").remove(0).key.clone();
+            let picked = window.fire_with(&span, "pressed", Some(&Value::Int(0)));
+            assert!(matches!(picked, Ok(InvokeOutcome::Done(_))), "{picked:?}");
+            let window = s.window();
+            let look = of_kind(window.tree(), "ui.Segment")
+                .into_iter()
+                .find(|segment| segment.props.get("label").and_then(Value::as_text) == Some("Look"))
+                .expect("the Look tab");
+            let look = look.key.clone();
+            let opened = window.fire_with(&look, "press", None);
+            assert!(matches!(opened, Ok(InvokeOutcome::Done(_))), "{opened:?}");
+            let window = s.window();
+            let editor = of_kind(window.tree(), "ui.CurveEditor")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the curve editor:\n{}", dump(window.tree())));
+            let drawn = match editor.props.get("points") {
+                Some(Value::List(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Float(n) => *n,
+                        other => panic!("a point reads {other:?}"),
+                    })
+                    .collect::<Vec<f64>>(),
+                other => panic!("the editor's points read {other:?}"),
+            };
+            assert_eq!(drawn, vec![0.0, 0.0, 0.25, 0.4, 1.0, 1.0], "it draws the model's points");
+            // A drag the editor reports writes the channel it shows, and the picture follows.
+            let key = editor.key.clone();
+            let moved = Value::List(vec![
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.5),
+                Value::Float(0.6),
+                Value::Float(1.0),
+                Value::Float(1.0),
+            ]);
+            let done = window.fire_with(&key, "change", Some(&moved));
+            assert!(matches!(done, Ok(InvokeOutcome::Done(_))), "{done:?}");
+            assert_eq!(
+                s.numbers(&clip, "curve_master"),
+                vec![0.0, 0.0, 0.5, 0.6, 1.0, 1.0],
+                "the shaped curve is the clip's"
+            );
+            let cut = cut_of(&s, "still");
+            let asked: serde_json::Value =
+                serde_json::from_str(cut["clips"][0].as_str().unwrap()).expect("the clip");
+            let master: Vec<f64> = asked["curve_master"]
+                .as_array()
+                .expect("the master curve")
+                .iter()
+                .map(|n| n.as_f64().expect("a number"))
+                .collect();
+            assert_eq!(master, vec![0.0, 0.0, 0.5, 0.6, 1.0, 1.0], "and the picture follows");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_title_is_set_in_the_font_the_person_chose;
+
+        phase a_title_takes_a_family_and_the_engine_draws_it;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            let title = a_title(&s, &p);
+            s.call("set_font", vec![Value::resource(&title), Value::text("DejaVu Serif")]);
+            assert_eq!(s.text(&title, "font"), "DejaVu Serif");
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let cut = cut_of(&s, "still");
+            let media: serde_json::Value =
+                serde_json::from_str(cut["media"][0].as_str().unwrap()).expect("the source");
+            assert_eq!(
+                media["font"], "DejaVu Serif",
+                "the device is asked for the title in the family the person chose"
+            );
+            // The system's own sans is a family of no name, and a way back to it.
+            s.call("set_font", vec![Value::resource(&title), Value::text("")]);
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let cut = cut_of(&s, "still");
+            let media: serde_json::Value =
+                serde_json::from_str(cut["media"][0].as_str().unwrap()).expect("the source");
+            assert_eq!(media["font"], "", "back to the system's own sans");
+        }
+
+        phase the_inspector_offers_the_faces_this_device_sets_text_in;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            let title = a_title(&s, &p);
+            let window = s.window();
+            let _ = &title;
+            let row = of_kind(window.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|row| row.props.get("title").and_then(Value::as_text) == Some("Harbour"))
+                .expect("the title's row in the bin");
+            let key = row.key.clone();
+            let opened = window.fire_with(&key, "activate", None);
+            assert!(matches!(opened, Ok(InvokeOutcome::Done(_))), "{opened:?}");
+            let window = s.window();
+            assert!(
+                of_kind(window.tree(), "ui.MenuButton")
+                    .iter()
+                    .any(|button| button.props.get("label").and_then(Value::as_text)
+                        == Some("System sans")),
+                "the title's font picker names the family in force:\n{}",
+                dump(window.tree())
+            );
         }
     }
 }
