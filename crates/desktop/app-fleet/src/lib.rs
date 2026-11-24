@@ -231,6 +231,8 @@ mod tests {
         }
     }
 
+    // The surfaces are compiled in only for a server that runs hosted programs.
+    #[cfg(feature = "surfaces")]
     #[test]
     fn every_surface_is_the_one_its_app_ships() {
         let mut checked = 0;
