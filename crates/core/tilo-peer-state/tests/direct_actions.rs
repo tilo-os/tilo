@@ -435,13 +435,15 @@ async fn a_device_that_is_not_the_sender_is_refused() {
         "nothing reached the dispatcher"
     );
 
-    // A request naming a third device is not this one's to answer.
+    // A request naming a third device, one this device has no link to, is not this one's to
+    // answer. (The stranger above dialled it, so its link would pass the request on.)
+    let unreached = device(&stranger_root, 11);
     let elsewhere = SignedDeviceAction::sign(
         &DeviceAction {
             workspace: WORKSPACE.into(),
             request_id: uuid::Uuid::from_u128(2),
             source: b.1.device_public_key,
-            target: c.1.device_public_key,
+            target: unreached.1.device_public_key,
             message: catalogue(),
             placement: None,
         },
@@ -1220,12 +1222,21 @@ async fn an_invocation_runs_as_the_key_that_signed_it() {
         other => panic!("a signed invocation runs, got {other:?}"),
     };
     assert_eq!(ran.signed, asked.signed);
+    // The caller is the key that signed, in the run its link carries.
+    let signer = &dispatcher.callers()[0];
+    let expected = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     assert_eq!(
-        dispatcher.callers()[0],
-        Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key)
-            .in_workspace(WORKSPACE.to_owned()),
+        signer.acting(),
+        expected.acting(),
         "the caller is the key that signed"
     );
+    assert_eq!(signer.device_public_key(), Some(&b.1.device_public_key));
+    assert_eq!(
+        signer.user_public_key(),
+        Some(&root.verifying_key().to_bytes())
+    );
+    assert_eq!(signer.workspace(), Some(WORKSPACE));
+    assert_eq!(signer.forwarder(), None);
 
     // A request whose invocation was changed after signing is refused, for its target, its
     // argument, or the workspace it is sent to.
