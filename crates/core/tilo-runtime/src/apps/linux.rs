@@ -37,8 +37,14 @@ pub(super) fn launch(
         command.arg("--open-uri").arg(uri);
     }
     if shows == super::Shows::Nothing {
-        // No display: the app's own loop takes its actions, so a server runs it too, and it ends
-        // after the idle time a tilolang process does; the dispatch starts it again.
+        // The toolkit's loop runs the app's code even drawing nothing, and the first window the
+        // shell asks of the process takes its place, so it is handed the display where this
+        // device has one. Where it has none (a server, nobody signed in), the app's own loop
+        // takes its actions all the same. It ends after the idle time a tilolang process does;
+        // the dispatch starts it again.
+        if let Ok(socket) = wayland_socket() {
+            command.arg("--wayland-socket").arg(socket);
+        }
         command.env(ui::process::NO_WINDOW_ENV, "1").env(
             ui::process::NO_WINDOW_IDLE_ENV,
             crate::IDLE.as_secs().to_string(),
