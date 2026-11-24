@@ -456,6 +456,18 @@ fn state_meta<'a>(
         .collect()
 }
 
+/// The ids of the views `view` calls, in the order it calls them: the views that stand in its
+/// frame, and so the anchors a test reaches through it.
+fn views_called(ir: &crate::ir::Module, view: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (caller, callee) in &ir.view_calls {
+        if caller == view && !out.contains(callee) {
+            out.push(callee.clone());
+        }
+    }
+    out
+}
+
 /// The views the checker made of UI loop bodies: the host calls them like declared views.
 fn row_views(
     ir: &crate::ir::Module,
@@ -476,6 +488,7 @@ fn row_views(
             doc: String::new(),
             params: params_meta(&v.params, app),
             anchors: Vec::new(),
+            calls: views_called(ir, &v.id),
             reaches: fx.reaches.get(v.func).cloned().unwrap_or_default(),
             state: state_meta(
                 template_states
@@ -839,6 +852,7 @@ fn build_meta(
                         doc: String::new(),
                         params: params_meta(&v.params, app),
                         anchors: Vec::new(),
+                        calls: views_called(ir, &v.id),
                         reaches: v
                             .func
                             .and_then(|f| fx.reaches.get(f).cloned())
@@ -875,6 +889,7 @@ fn build_meta(
                     doc: doc(&v.doc),
                     params: params_meta(&c.params, app),
                     anchors,
+                    calls: views_called(ir, &c.id),
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
                     state: state_meta(
                         env.states.iter().filter(|s| s.view == v.name.name).chain(

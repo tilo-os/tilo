@@ -618,6 +618,7 @@ fn lower(
         }
     }
     let capture_protected = c.protected_closure();
+    let view_calls = c.view_edges;
     let module = ir::Module {
         funcs,
         views,
@@ -626,6 +627,7 @@ fn lower(
         shows,
         words: c.words,
         capture_protected,
+        view_calls,
     };
     let shown = c.shown;
     // Every prop a view gives a described component is one that component declares.
@@ -685,6 +687,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         ty,
         suggested: proposal,
@@ -726,6 +729,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         ty: Ty::View,
         suggested: false,

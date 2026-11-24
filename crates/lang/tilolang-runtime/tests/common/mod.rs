@@ -881,10 +881,36 @@ impl App {
         f.unwrap_or_else(|| panic!("no fn {name}")).id.clone()
     }
 
+    /// Where `view` puts the control written `as name`: its own anchor, or one a view it calls
+    /// declares, as the nodes of the views it calls stand in its frame.
     pub fn anchor(&self, view: &str, name: &str) -> String {
-        let v = self.meta().views.iter().find(|v| v.name == view).unwrap();
-        let a = v.anchors.iter().find(|a| a.name == name);
-        a.unwrap_or_else(|| panic!("no anchor {name}")).id.clone()
+        let meta = self.meta();
+        let start = meta
+            .views
+            .iter()
+            .find(|v| v.name == view)
+            .unwrap_or_else(|| panic!("no view {view}"));
+        let mut seen = std::collections::HashSet::new();
+        let mut look = vec![start];
+        let mut searched: Vec<&str> = Vec::new();
+        while let Some(v) = look.pop() {
+            if !seen.insert(v.id.as_str()) {
+                continue;
+            }
+            searched.push(v.name.as_str());
+            if let Some(a) = v.anchors.iter().find(|a| a.name == name) {
+                return a.id.clone();
+            }
+            for id in &v.calls {
+                if let Some(called) = meta.views.iter().find(|c| c.id == *id) {
+                    look.push(called);
+                }
+            }
+        }
+        panic!(
+            "no anchor `{name}` in view `{view}` or the views it calls ({})",
+            searched.join(", ")
+        );
     }
 
     /// The arguments of `action` with the parameters `given` names set and the rest left to

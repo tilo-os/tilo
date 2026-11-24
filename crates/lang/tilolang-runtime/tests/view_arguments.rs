@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
 
     /// The package `source` compiled and its view `view` opened over its root, as a window does:
     /// whether the view ran.
@@ -149,5 +149,49 @@ view t(r: T) {
 }
 "#;
         opens(source, "t").expect("the chooser fills the files, and the button binds the rest");
+    }
+
+    /// A control in a view the tested view calls is reached through the view it is called
+    /// through: a test presses what the window shows, not only what one view declares.
+    #[test]
+    fn a_control_in_a_nested_view_is_reached_through_the_view_that_calls_it() {
+        let source = r#"app so.tilo.t "T"
+
+type T {
+    label: Text
+}
+
+root T
+
+default view t for T
+
+action set_label(t: T) {
+    t.label = "pressed"
+}
+
+view t(r: T) {
+    controls(r)
+}
+
+view controls(r: T) {
+    ui.Button("Press") {
+        on press: set_label(r)
+    } as press
+}
+"#;
+        let app = App::compile(source, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
+        app.load(&rt);
+        let root = rt.create_root("T").expect("a root");
+        let mut view = rt
+            .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
+            .expect("the view opens");
+        let press = app.anchor("t", "press");
+        assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
+        assert!(matches!(
+            view.press(&press).expect("the button runs"),
+            InvokeOutcome::Done(_)
+        ));
+        assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
     }
 }

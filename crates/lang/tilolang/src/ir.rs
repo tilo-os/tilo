@@ -166,6 +166,9 @@ pub struct Module {
     /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
     /// those a protected template expanded in, and those showing one of either.
     pub capture_protected: Vec<String>,
+    /// Each call of one view from another, the caller first: the nested views that stand in a
+    /// view's frame.
+    pub view_calls: Vec<(String, String)>,
 }
 
 /// An argument of an action a view applies that computes from view state (`set(open, not open)`),

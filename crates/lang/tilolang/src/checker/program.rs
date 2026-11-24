@@ -104,6 +104,7 @@ pub fn check_program(
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         lets,
     }
