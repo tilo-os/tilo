@@ -57,8 +57,12 @@ pub(crate) struct Bound {
     /// does not depend on which items those have.
     pub loops: Vec<Rc<LoopRows>>,
     /// The space the host last said layout gave the call's `fragment`: what its `space` reads.
-    /// Until the host says, the one its parent boundary has.
+    /// Until the host says, the one its parent boundary has, and it follows that one for as
+    /// long as the host names no space of its own.
     pub space: Space,
+    /// Whether the host named this boundary's own space, rather than it reading the one of the
+    /// boundary that placed it.
+    pub space_given: bool,
     pub space_reads: Vec<(String, f64)>,
     /// Whether it showed something only the window knows: a member's name, a day or a time
     /// of day in the person's formats, a word in the language their window speaks.
@@ -97,6 +101,7 @@ impl Bound {
             colls: Vec::new(),
             loops: Vec::new(),
             space: Space::default(),
+            space_given: false,
             space_reads: Vec::new(),
             person_reads: false,
             state_reads: Vec::new(),
@@ -493,7 +498,6 @@ pub(crate) struct Live {
     by_key: HashMap<String, BoundId>,
     index: Index,
     dirty: BTreeSet<BoundId>,
-    pub space: Space,
     pub viewer: Actor,
     pub window: String,
     /// Whether rows of lists wait to be shown before they render.
@@ -550,6 +554,7 @@ impl Live {
             colls: Vec::new(),
             loops: Vec::new(),
             space: Space::default(),
+            space_given: false,
             space_reads: Vec::new(),
             person_reads: false,
             state_reads: Vec::new(),
@@ -567,7 +572,6 @@ impl Live {
             by_key: HashMap::new(),
             index: Index::default(),
             dirty: BTreeSet::new(),
-            space: Space::default(),
             viewer,
             window,
             lazy_rows: true,
@@ -975,8 +979,10 @@ impl Live {
     }
 
     /// Layout gave the boundary `key` (empty or the root's key for the view's root) the space
-    /// `space`: mark it to run again when a value it read of its own space differs. Whether it
-    /// does. A key no boundary stands at now is forgotten: the host tells again once the
+    /// `space`: mark it to run again when a value it read of its own space differs, and so each
+    /// boundary inside it the host has named no space of its own — what it reads is the space of
+    /// the boundary that placed it, so the room around the window reaches it. Whether any of
+    /// them runs. A key no boundary stands at now is forgotten: the host tells again once the
     /// boundary it names arrives, as it does after every layout.
     pub fn set_space(&mut self, key: &str, space: Space) -> bool {
         let id = if key.is_empty() || key == self.tree.key {
@@ -987,19 +993,60 @@ impl Live {
                 None => return false,
             }
         };
-        if id == ROOT {
-            self.space = space;
-        }
-        let moved = self.bound(id).is_some_and(|b| {
-            b.space_reads
-                .iter()
-                .any(|(name, seen)| space.field(name) != Some(*seen))
-        });
-        if let Some(b) = self.bound_mut(id) {
-            b.space = space;
-        }
-        if moved {
+        let (hit, children) = self.give_space(id, space);
+        if hit {
             self.dirty.insert(id);
+        }
+        self.descend_space(children, space, hit)
+    }
+
+    /// Give boundary `id` the space `space` the host named it: its own from now on, whatever
+    /// the boundary above it is given. Whether a value it read of space differs, and the
+    /// boundaries it holds now.
+    fn give_space(&mut self, id: BoundId, space: Space) -> (bool, Vec<BoundId>) {
+        let Some(b) = self.bound_mut(id) else {
+            return (false, Vec::new());
+        };
+        let moved = b
+            .space_reads
+            .iter()
+            .any(|(name, seen)| space.field(name) != Some(*seen));
+        b.space = space;
+        b.space_given = true;
+        let children = b.children.clone();
+        (moved, children)
+    }
+
+    /// Boundary `id` reads `space`, the one of the boundary that placed it, when the host has
+    /// named no space of its own: whether a value it read of space differs, and the boundaries
+    /// it holds. `None` when it has a space of its own and keeps it.
+    fn adopt_space(&mut self, id: BoundId, space: Space) -> Option<(bool, Vec<BoundId>)> {
+        let b = self.bound_mut(id)?;
+        if b.space_given {
+            return None;
+        }
+        let hit = b
+            .space_reads
+            .iter()
+            .any(|(name, seen)| space.field(name) != Some(*seen));
+        b.space = space;
+        let children = b.children.clone();
+        Some((hit, children))
+    }
+
+    /// The boundaries `children` the host has named no space of their own read `space`, the one
+    /// of the boundary that placed them, and so do theirs: each runs again when a value it read
+    /// differs. Whether any of them does.
+    fn descend_space(&mut self, children: Vec<BoundId>, space: Space, mut moved: bool) -> bool {
+        for child in children {
+            let Some((hit, below)) = self.adopt_space(child, space) else {
+                continue;
+            };
+            if hit {
+                self.dirty.insert(child);
+            }
+            let below_moved = self.descend_space(below, space, false);
+            moved |= hit || below_moved;
         }
         moved
     }

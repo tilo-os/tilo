@@ -94,9 +94,10 @@ view player_bar(p: Player) {
   little hysteresis so a window resized right at one doesn't flicker.
 - Each view sees its own container's space: a card in a grid cell sees the cell, a row of a list
   sees the row's slot. A view call that takes only values is a boundary of its own and is given
-  the room it was placed in; one that takes view state is expanded where it is called (a template,
-  like a view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's
-  row reads the row's, and the page above it reads the room the pages area has. Layout tells each
+  the room it was placed in; until layout says where that is, it reads its caller's room, as the
+  caller's changes. One that takes view state is expanded where it is called (a template, like a
+  view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's row
+  reads the row's, and the page above it reads the room the pages area has. Layout tells each
   the size it gave it, as it gives it — a window being dragged, a rail folded away, a sidebar made
   wider — so a view that fits something to the room it has (`fit width`, a page whole on screen)
   computes from what it reads and follows live, and nothing polls for it.

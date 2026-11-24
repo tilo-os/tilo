@@ -181,6 +181,21 @@ view paged(a: Album) {\n    std.page(a, canvas: true, fill: true) {\n        she
             // The root's space is the root's: the shelf reads none, so nothing runs.
             assert!(!view.set_space("", Space::from_rem(10.0, 20.0)));
             assert_eq!(said(&view), "short cover");
+
+            // A host that names only the root's room: a call layout has not placed reads the
+            // room of the call that placed it, and follows it as that changes.
+            let mut unnamed = rt
+                .open_view(&me(), &app.view("shelf"), vec![Value::resource(&album.target)])
+                .unwrap();
+            assert_eq!(said(&unnamed), "short cover", "{}", dump(unnamed.tree()));
+            assert!(unnamed.set_space("", Space::from_rem(10.0, 60.0)));
+            unnamed.poll_patches().unwrap();
+            assert_eq!(
+                said(&unnamed),
+                "tall cover",
+                "the shelf line reads the shelf's room: {}",
+                dump(unnamed.tree())
+            );
         }
 
         phase a_view_call_in_a_page_is_a_boundary_of_its_own;
