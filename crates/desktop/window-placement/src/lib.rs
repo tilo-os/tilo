@@ -268,6 +268,25 @@ struct Windows {
     items: Items,
 }
 
+impl Windows {
+    /// The app `tab` answers for, and what it says in place of the window: the app is gone but
+    /// its tab stays until the person decides what to do, saying why with the name it had, and
+    /// Reopen to try again. `None` for a tab that answers for nothing.
+    fn answer_in(&self, tab: TabId) -> Option<(String, Outcome)> {
+        let app = self.crashed.borrow().get(&tab).cloned()?;
+        let title = self
+            .titles
+            .borrow()
+            .get(&app)
+            .cloned()
+            .unwrap_or_else(|| app_name(&self.names, &app));
+        let answer = self.answers.borrow().get(&app).cloned().unwrap_or_else(|| {
+            Closed::default().outcome(&title, tilo_session_core::desktop::i18n::t("answer-reopen"))
+        });
+        Some((app, answer))
+    }
+}
+
 impl TileSource for Windows {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         // A window this device left open whose app did not come back says so
@@ -282,20 +301,9 @@ impl TileSource for Windows {
                 detail: note.clone(),
             });
         }
-        let Some(app) = self.crashed.borrow().get(&tab.id).cloned() else {
+        let Some((app, answer)) = self.answer_in(tab.id) else {
             return TileHost::new(ui::widget::TileContent::Arriving);
         };
-        // The app is gone but its tab stays until the person decides what to
-        // do: a notice with the name it had, and Reopen to try again.
-        let title = self
-            .titles
-            .borrow()
-            .get(&app)
-            .cloned()
-            .unwrap_or_else(|| app_name(&self.names, &app));
-        let answer = self.answers.borrow().get(&app).cloned().unwrap_or_else(|| {
-            Closed::default().outcome(&title, tilo_session_core::desktop::i18n::t("answer-reopen"))
-        });
         let launches = Rc::clone(&self.launches);
         let held = Rc::clone(&self.held);
         let reopened = app;
@@ -799,6 +807,17 @@ impl DesktopPolicy {
             .iter()
             .filter(|(_, known)| known.as_str() == asked)
             .map(|(tab, _)| *tab)
+            .collect()
+    }
+
+    /// What each tab on the desktop says in place of a window that did not come or went away,
+    /// in tree order: the app's could-not-open or stopped-working answer, with its Reopen. Tabs
+    /// whose window is there, or on its way, say nothing.
+    #[must_use]
+    pub fn said_in_tabs(&self) -> Vec<(TabId, Outcome)> {
+        let tree = self.handle.read(Clone::clone);
+        tabs(&tree)
+            .filter_map(|tab| Some((tab.id, self.tiles.answer_in(tab.id)?.1)))
             .collect()
     }
 

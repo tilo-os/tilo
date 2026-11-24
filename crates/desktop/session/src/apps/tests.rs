@@ -126,17 +126,11 @@ fn a_compositor_that_drew_without_a_gpu_pins_its_apps_to_the_software_renderer()
     }
 }
 
-/// The desktop the apps are started from, laid out as wide as an output: what its notice tabs
-/// draw on.
+/// The desktop the apps are started from, as wide as an output: where their tabs and the
+/// answers in them stand.
 fn shell() -> ShellDesktop {
-    let (desktop, _strips) = crate::platform::surfaces::desktop(7, 1.0);
-    desktop.with_widgets(|widgets| {
-        widgets.set_placement(tilo_session_core::surface::Placement {
-            origin: (0, 0),
-            size: (1200, 800),
-            scale: 1.0,
-        });
-    });
+    let desktop = crate::platform::surfaces::desktop(7);
+    desktop.with_policy(|policy| policy.set_viewport_width(1200.0));
     desktop
 }
 
@@ -201,10 +195,7 @@ fn showed_after_in(end: End, asked_to_end: bool, session_ending: fn() -> bool) -
         said: OutputTail::default(),
     });
     apps.follow();
-    desktop.with_widgets(|widgets| {
-        widgets.relayout();
-        ui::a11y::texts(widgets.host_mut().root_widget())
-    })
+    texts(&desktop)
 }
 
 /// An app that ends cleanly before the window the person asked for came never opened: its tab
@@ -227,7 +218,7 @@ fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
             )
         })
         .unwrap();
-    desktop.with_widgets(WidgetSurface::relayout);
+    desktop.pass();
     let asked = desktop.take_launches();
     assert_eq!(asked.len(), 1, "the person asked for Canvas");
     // The launch was asked for the tab the shell held for it, and ended before its window
@@ -251,10 +242,7 @@ fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
         said: OutputTail::default(),
     });
     apps.follow_ended();
-    let shown = desktop.with_widgets(|widgets| {
-        widgets.relayout();
-        ui::a11y::texts(widgets.host_mut().root_widget())
-    });
+    let shown = texts(&desktop);
     assert!(
         shown.iter().any(|text| text.contains("could not open")),
         "the tab says Canvas could not open: {shown:?}"
@@ -303,11 +291,41 @@ fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said
     });
 }
 
-/// What the shell shows as text now.
+/// What the desktop says now, after its pass: each tab's title, and what a tab says in place of
+/// a window that did not come or went away, with its button.
 fn texts(desktop: &ShellDesktop) -> Vec<String> {
-    desktop.with_widgets(|widgets| {
-        widgets.relayout();
-        ui::a11y::texts(widgets.host_mut().root_widget())
+    desktop.pass();
+    desktop.with_policy(|policy| {
+        let mut shown: Vec<String> = policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.title.clone())
+                .collect()
+        });
+        for (_, said) in policy.said_in_tabs() {
+            shown.extend(
+                [said.what, said.why]
+                    .into_iter()
+                    .filter(|text| !text.is_empty()),
+            );
+            shown.extend(said.retry);
+        }
+        shown
+    })
+}
+
+/// What the answers on the desktop keep behind their Details: what the launch said.
+fn details(desktop: &ShellDesktop) -> Vec<String> {
+    desktop.pass();
+    desktop.with_policy(|policy| {
+        policy
+            .said_in_tabs()
+            .into_iter()
+            .map(|(_, said)| said.technical_details)
+            .collect()
     })
 }
 
@@ -331,16 +349,11 @@ fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
         );
         // What the app printed waits behind the card's Details, kept in the app's own words for
         // whoever opens them.
-        let detailed = desktop.with_widgets(|widgets| {
-            widgets.relayout();
-            let host = widgets.host_mut();
-            let id = host.a11y_node_named("Details")?;
-            host.a11y_node(id)?.description().map(str::to_owned)
-        });
+        let detailed = details(&desktop);
         assert!(
             detailed
-                .as_deref()
-                .is_some_and(|details| details.contains("the display refused this app")),
+                .iter()
+                .any(|details| details.contains("the display refused this app")),
             "{n}: with what Canvas said: {detailed:?}"
         );
     }
@@ -570,7 +583,7 @@ fn a_windows_program_is_named_by_its_name_and_a_windowless_one_leaves_no_tab() {
             )
         })
         .unwrap();
-    desktop.with_widgets(WidgetSurface::relayout);
+    desktop.pass();
     let asked = desktop.take_launches();
     assert_eq!(asked.len(), 1, "a tab is held");
     started(&apps, asked[0].tab);
@@ -607,7 +620,7 @@ fn a_stop_the_person_asked_for_before_the_window_came_closes_its_tab() {
             )
         })
         .unwrap();
-    desktop.with_widgets(WidgetSurface::relayout);
+    desktop.pass();
     let asked = desktop.take_launches();
     assert_eq!(asked.len(), 1, "the person asked for Canvas");
     note_launch(
