@@ -424,7 +424,6 @@ d-yyin4m4b = Bibliothek
     .w-can-t-save-what-fetched = Can't save what { $name } fetched
     .w-can-t-reach = Can't reach { $name }
     .w-last-fetched = { $reason }. Last fetched { $fetched }
-    .w-try-again = Try again
     .w-nothing-liked-yet = Nothing liked yet
     .w-nothing-kept-for-offline = Nothing kept for offline
     .w-recommendations = Empfehlungen

@@ -268,7 +268,6 @@ d-mufcicuu = Feed
     .w-can-t-save-what-fetched = Was { $name } geantwortet hat, lässt sich nicht sichern
     .w-can-t-reach = { $name } ist nicht erreichbar
     .w-last-fetched = { $reason }. Zuletzt geholt { $fetched }
-    .w-try-again = Erneut versuchen
     .w-nothing-on-the-watch-queue = Nichts auf der Warteschlange
     .w-play-all = Alle abspielen
     .w-videos-oldest-first = { $len } Videos, älteste zuerst
